@@ -1,0 +1,201 @@
+{
+  "version": "1.0",
+  "name": "honda-pilot-2019",
+  "description": "2019 Honda Pilot Elite — generic profile (no VIN/plate). Standard OBD-II Mode 01 PIDs plus Honda Mode 22 ATF temp. Gear and TPMS PIDs are stub-only and need to be filled in from a community-shared profile.",
+  "protocol": "ISO15765-4 11-bit @ 500kbaud",
+  "pids": [
+    {
+      "name": "engine_rpm",
+      "pid": "010C",
+      "expression": "((A*256)+B)/4",
+      "type": "decimal",
+      "period": 1000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 9000,
+      "unit": "rpm"
+    },
+    {
+      "name": "vehicle_speed",
+      "pid": "010D",
+      "expression": "A",
+      "type": "decimal",
+      "period": 1000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 220,
+      "unit": "kph"
+    },
+    {
+      "name": "throttle_position",
+      "pid": "0111",
+      "expression": "(A*100)/255",
+      "type": "decimal",
+      "period": 1000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 100,
+      "unit": "percent"
+    },
+    {
+      "name": "control_module_voltage",
+      "pid": "0142",
+      "expression": "((A*256)+B)/1000",
+      "type": "decimal",
+      "period": 1000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 18,
+      "unit": "volt"
+    },
+    {
+      "name": "coolant_temp",
+      "pid": "0105",
+      "expression": "A-40",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": -40,
+      "max": 215,
+      "unit": "celsius"
+    },
+    {
+      "name": "intake_air_temp",
+      "pid": "010F",
+      "expression": "A-40",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": -40,
+      "max": 215,
+      "unit": "celsius"
+    },
+    {
+      "name": "maf_air_flow",
+      "pid": "0110",
+      "expression": "((A*256)+B)/100",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 655,
+      "unit": "g/s"
+    },
+    {
+      "name": "engine_load",
+      "pid": "0104",
+      "expression": "(A*100)/255",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 100,
+      "unit": "percent"
+    },
+    {
+      "name": "fuel_level",
+      "pid": "012F",
+      "expression": "(A*100)/255",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 100,
+      "unit": "percent"
+    },
+    {
+      "name": "engine_oil_temp",
+      "pid": "015C",
+      "expression": "A-40",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": -40,
+      "max": 210,
+      "unit": "celsius"
+    },
+    {
+      "name": "atf_temp_f",
+      "pid": "2201",
+      "init": "220001",
+      "expression": "(AA*9/5)-40",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": -40,
+      "max": 350,
+      "unit": "fahrenheit",
+      "notes": "Honda Mode 22 — auto-trans fluid temp. °C variant: AA-40."
+    },
+    {
+      "name": "fuel_status",
+      "pid": "0103",
+      "expression": "A",
+      "type": "decimal",
+      "period": 20000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 255,
+      "unit": "bitfield",
+      "notes": "1=open loop (cold), 2=closed loop, 4=open loop (load), 8=open loop (fault), 16=closed-loop with O2 fault."
+    },
+    {
+      "name": "stft_b1",
+      "pid": "0106",
+      "expression": "((A-128)*100)/128",
+      "type": "decimal",
+      "period": 20000,
+      "send_to": "MQTT",
+      "min": -100,
+      "max": 100,
+      "unit": "percent"
+    },
+    {
+      "name": "ltft_b1",
+      "pid": "0107",
+      "expression": "((A-128)*100)/128",
+      "type": "decimal",
+      "period": 20000,
+      "send_to": "MQTT",
+      "min": -100,
+      "max": 100,
+      "unit": "percent"
+    },
+    {
+      "name": "fuel_rate",
+      "pid": "015E",
+      "expression": "((A*256)+B)/20",
+      "type": "decimal",
+      "period": 5000,
+      "send_to": "MQTT",
+      "min": 0,
+      "max": 200,
+      "unit": "l/h",
+      "notes": "Reported by some Pilot trims; falls back to MAF-derived estimate when missing."
+    }
+  ],
+  "stub_pids": [
+    {
+      "name": "gear",
+      "pid": "TBD",
+      "notes": "Honda Mode 22 — exact PID and byte index needs to be transcribed from a community-shared 2019 Pilot profile (see Piloteers forum threads in docs/research/honda-pilot-pids.md)."
+    },
+    {
+      "name": "tpms_pressure_fl",
+      "pid": "TBD",
+      "notes": "Honda Mode 22 — 2-byte int per tire, scale TBD. Same caveat as gear."
+    },
+    {
+      "name": "tpms_pressure_fr",
+      "pid": "TBD"
+    },
+    {
+      "name": "tpms_pressure_rl",
+      "pid": "TBD"
+    },
+    {
+      "name": "tpms_pressure_rr",
+      "pid": "TBD"
+    }
+  ]
+}
