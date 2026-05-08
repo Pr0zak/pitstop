@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Mint secrets, write .env, create CT 231 on pve5, capture DHCP IP.
+# Mint secrets, write .env, create CT, capture DHCP IP.
 # Output: prints the captured IP on the last line of stdout.
 set -euo pipefail
 
 CT_ID="${PITSTOP_CT_ID:-231}"
-PVE_HOST="${PITSTOP_PVE:-pve5}"
+PVE_HOST="${PITSTOP_PVE:?set PITSTOP_PVE=<your-pve-host>}"
 HOSTNAME="${PITSTOP_HOSTNAME:-pitstop}"
 STORAGE="${PITSTOP_STORAGE:-local-lvm-2t}"
 DISK_GB="${PITSTOP_DISK_GB:-30}"
@@ -12,7 +12,7 @@ CORES="${PITSTOP_CORES:-2}"
 RAM_MB="${PITSTOP_RAM_MB:-6144}"
 SWAP_MB="${PITSTOP_SWAP_MB:-2048}"
 TZ_VAL="${PITSTOP_TZ:-America/Chicago}"
-REPO_DIR="${PITSTOP_REPO_DIR:-/home/spider/pitstop}"
+REPO_DIR="${PITSTOP_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SECRETS_FILE="${PITSTOP_SECRETS_FILE:-${HOME}/.pitstop-deploy-secrets.txt}"
 
 bold() { printf '\e[1m%s\e[0m\n' "$*"; }

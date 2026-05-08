@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Pre-flight validation. No side effects on pve5 or anywhere else — just checks.
+# Pre-flight validation. No side effects on the PVE host or anywhere else — just checks.
 # Exits non-zero with explicit reason on failure.
 set -euo pipefail
 
 CT_ID="${PITSTOP_CT_ID:-231}"
-PVE_HOST="${PITSTOP_PVE:-pve5}"
+PVE_HOST="${PITSTOP_PVE:?set PITSTOP_PVE=<your-pve-host>}"
 STORAGE="${PITSTOP_STORAGE:-local-lvm-2t}"
 MIN_FREE_GB="${PITSTOP_MIN_FREE_GB:-50}"
 PIHOLE_HOST="${PITSTOP_PIHOLE:-pihole.local}"
-REPO_DIR="${PITSTOP_REPO_DIR:-/home/spider/pitstop}"
+REPO_DIR="${PITSTOP_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 bold() { printf '\e[1m%s\e[0m\n' "$*"; }
 ok()   { printf '  \e[32m✓\e[0m %s\n' "$*"; }

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CT_ID="${PITSTOP_CT_ID:-231}"
-PVE_HOST="${PITSTOP_PVE:-pve5}"
+PVE_HOST="${PITSTOP_PVE:?set PITSTOP_PVE=<your-pve-host>}"
 CT_IP="${1:?CT_IP required}"
 PIHOLE_HOST="${PITSTOP_PIHOLE:-pihole.local}"
 PIHOLE_PASSWORD="${PITSTOP_PIHOLE_PASSWORD:-}"

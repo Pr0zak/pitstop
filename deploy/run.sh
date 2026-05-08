@@ -8,7 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PITSTOP_REPO_DIR:-$(cd "${HERE}/.." && pwd)}"
 SECRETS_FILE="${PITSTOP_SECRETS_FILE:-${HOME}/.pitstop-deploy-secrets.txt}"
 CT_ID="${PITSTOP_CT_ID:-231}"
-PVE_HOST="${PITSTOP_PVE:-pve5}"
+PVE_HOST="${PITSTOP_PVE:?set PITSTOP_PVE=<your-pve-host>}"
 LOG_DIR_BASE="${HOME}/.pitstop-deploy-logs"
 
 bold() { printf '\e[1m%s\e[0m\n' "$*"; }
