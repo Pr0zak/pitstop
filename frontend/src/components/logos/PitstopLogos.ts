@@ -126,4 +126,4 @@ export const LOGOS: LogoMeta[] = [
 ];
 
 export const STORAGE_KEY = "pitstop_logo";
-export const DEFAULT_LOGO: LogoName = "arc";
+export const DEFAULT_LOGO: LogoName = "arc-ticks-redline";
