@@ -11,6 +11,9 @@ frontend/data/
 *.csv.zip
 *.fuelio
 fuelio-*/
+# Allow synthetic test fixtures (deliberately hand-crafted, no real data).
+!deploy/tests/fixtures/*.csv
+!deploy/tests/fixtures/*.csv.zip
 
 # Photos / blobs
 photos/

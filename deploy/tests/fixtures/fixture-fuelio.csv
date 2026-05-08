@@ -1,0 +1,33 @@
+"## Vehicle"
+"Name","Description","DistUnit","FuelUnit","ConsumptionUnit","ImportCSVDateFormat","VIN","Insurance","Plate","Make","Model","Year","TankCount","Tank1Type","Tank2Type","Active","Tank1Capacity","Tank2Capacity","FuelUnitTank2","FuelConsumptionTank2","guid","lastupdated"
+"FixtureCar","synthetic test fixture","1","1","1","yyyy-MM-dd","","","","Generic","TestModel","2020","1","100","0","1","15.0","0.0","1","1","fixture-vehicle-0001","1700000000000"
+
+"## Log"
+"Data","Odo (mi)","Fuel (us gallons)","Full","Price","mpg","latitude","longitude","City","Notes","Missed","TankNumber","FuelType","VolumePrice","StationID","ExcludeDistance","UniqueId","TankCalc","Weather","guid","lastupdated"
+"2024-01-05","10000","12.5","1","45.00","","","","","","0","1","100","3.60","0","0","1","0","","fixture-fillup-0001","1700000001000"
+"2024-01-15","10300","11.8","1","42.48","25.42","","","","","0","1","100","3.60","0","0","2","0","","fixture-fillup-0002","1700000002000"
+"2024-01-25","10620","12.2","1","43.92","26.23","","","","","0","1","100","3.60","0","0","3","0","","fixture-fillup-0003","1700000003000"
+
+"## CostCategories"
+"CostTypeID","Name","priority","color","guid","lastupdated"
+"1","Service","1","#1f77b4","fixture-cat-service","1700000000000"
+"2","Maintenance","2","#ff7f0e","fixture-cat-maint","1700000000000"
+"3","Repairs","3","#2ca02c","fixture-cat-repairs","1700000000000"
+"4","Insurance","4","#d62728","fixture-cat-insurance","1700000000000"
+"5","Tires","5","#9467bd","fixture-cat-tires","1700000000000"
+"6","Wash","6","#8c564b","fixture-cat-wash","1700000000000"
+"7","Tolls","7","#e377c2","fixture-cat-tolls","1700000000000"
+"8","Parking","8","#7f7f7f","fixture-cat-parking","1700000000000"
+"9","Other","9","#bcbd22","fixture-cat-other","1700000000000"
+
+"## Costs"
+"CostTitle","Date","Odo","CostTypeID","Notes","Cost","flag","idR","read","RemindOdo","RemindDate","isTemplate","RepeatOdo","RepeatMonths","isIncome","UniqueId","guid","lastupdated"
+"Oil change","2024-01-10","10100","1","synthetic service entry","65.00","0","0","0","15100","2025-01-10","0","5000","6","0","1","fixture-expense-0001","1700000010000"
+
+"## Pictures"
+"Filename","Note","Type","target_id","guid","lastupdated"
+
+"## Category"
+"IdCategory","Name","guid","lastupdated"
+"1","Private","fixture-tripcat-private","1700000000000"
+"2","Work","fixture-tripcat-work","1700000000000"
