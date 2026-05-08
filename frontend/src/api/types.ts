@@ -1,0 +1,236 @@
+// Types mirror the API contract documented in CLAUDE thread for Phase B.
+// If the backend OpenAPI is wired up later, swap to openapi-typescript-generated types.
+
+export interface Vehicle {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string | null;
+  make?: string | null;
+  model?: string | null;
+  year?: number | null;
+  vin?: string | null;
+  fuelio_guid?: string | null;
+  pid_profile_id?: string | null;
+  pid_profile?: { id: string; name: string; description?: string | null } | null;
+  tank_count?: number | null;
+  tank1_capacity?: number | null;
+  tank2_capacity?: number | null;
+  active?: boolean;
+  // server-augmented fields (if available)
+  last_seen_at?: string | null;
+  last_metric?: string | null;
+  latest?: Record<string, number | string | null> | null;
+}
+
+export interface Profile {
+  id: string;
+  name: string;
+  description?: string | null;
+  body?: unknown;
+}
+
+export interface Reading {
+  time: string;
+  vehicle_id: string;
+  metric: string;
+  value_num?: number | null;
+  value_text?: string | null;
+  source?: string | null;
+}
+
+export interface AggregateBucket {
+  bucket: string;
+  avg: number | null;
+  min: number | null;
+  max: number | null;
+  count: number;
+}
+
+export interface Trip {
+  id: string;
+  vehicle_id: string;
+  started_at: string;
+  ended_at?: string | null;
+  duration_s?: number | null;
+  distance_mi?: number | null;
+  max_speed?: number | null;
+  max_rpm?: number | null;
+  fuel_used?: number | null;
+  dtc_count?: number | null;
+  category?: string | null;
+  notes?: string | null;
+}
+
+export interface TripSample {
+  time: string;
+  vehicle_speed?: number | null;
+  engine_rpm?: number | null;
+  coolant_temp?: number | null;
+  atf_temp_f?: number | null;
+  oil_temp?: number | null;
+  throttle_position?: number | null;
+  fuel_level?: number | null;
+  control_module_voltage?: number | null;
+  gps_lat?: number | null;
+  gps_lon?: number | null;
+}
+
+export interface TripDetail extends Trip {
+  samples: TripSample[];
+}
+
+export interface Dtc {
+  id: string;
+  vehicle_id: string;
+  code: string;
+  description?: string | null;
+  detected_at: string;
+  cleared_at?: string | null;
+  active: boolean;
+}
+
+export interface HaSettings {
+  enabled: boolean;
+  url?: string | null;
+  token_set: boolean;
+  discovery_prefix?: string | null;
+  per_pid_toggles?: Record<string, boolean> | null;
+}
+
+export interface HomeLocation {
+  lat?: number | null;
+  lon?: number | null;
+}
+
+export interface Settings {
+  ha: HaSettings;
+  home: HomeLocation;
+  disk_alert_pct?: number | null;
+}
+
+export interface Fillup {
+  id: string;
+  vehicle_id: string;
+  fillup_date: string;
+  odometer?: number | null;
+  volume?: number | null;
+  full_tank?: boolean;
+  partial?: boolean;
+  total_price?: number | null;
+  unit_price?: number | null;
+  station_id?: string | null;
+  station_name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  city?: string | null;
+  notes?: string | null;
+  tank_number?: number | null;
+  fuel_type?: number | null;
+  exclude_distance?: boolean;
+  missed?: boolean;
+  mpg_recomputed?: number | null;
+  mpg_reported?: number | null;
+  fuelio_guid?: string | null;
+}
+
+export interface Expense {
+  id: string;
+  vehicle_id: string;
+  title: string;
+  expense_date: string;
+  odometer?: number | null;
+  cost: number;
+  category_id?: string | null;
+  category_name?: string | null;
+  notes?: string | null;
+  remind_odo?: number | null;
+  remind_date?: string | null;
+  repeat_odo?: number | null;
+  repeat_months?: number | null;
+  is_income?: boolean;
+  is_template?: boolean;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  priority?: number | null;
+  color?: string | null;
+}
+
+export interface Reminder {
+  expense_id: string;
+  vehicle_id: string;
+  title: string;
+  category_name?: string | null;
+  current_odo?: number | null;
+  remind_odo?: number | null;
+  remind_date?: string | null;
+  miles_remaining?: number | null;
+  days_remaining?: number | null;
+  status: "overdue" | "upcoming";
+}
+
+export interface ReminderGroup {
+  overdue: Reminder[];
+  upcoming: Reminder[];
+}
+
+export interface MpgPoint {
+  period: string;
+  mpg: number | null;
+  fillup_count?: number;
+}
+
+export interface CostPerMiPoint {
+  period: string;
+  cost_per_mi: number | null;
+  miles?: number | null;
+  total_cost?: number | null;
+}
+
+export interface MonthlySpend {
+  month: string;
+  fuel: number;
+  service: number;
+  total: number;
+}
+
+export interface StationCluster {
+  id: string;
+  latitude: number;
+  longitude: number;
+  name?: string | null;
+  fillup_count: number;
+  total_volume?: number | null;
+  last_visit?: string | null;
+}
+
+export interface MpgOverlay {
+  obd: { period: string; mpg: number | null }[];
+  fillup: { period: string; mpg: number | null }[];
+}
+
+export interface LiveMessage {
+  vehicle_id: string;
+  time: string;
+  metric: string;
+  value_num?: number | null;
+  value_text?: string | null;
+  source?: string | null;
+}
+
+export type AnalyticsWindow = "month" | "3m" | "year" | "all";
+
+export interface FuelioImportPreview {
+  dry_run: boolean;
+  vehicles?: { name: string; guid: string; existing: boolean }[];
+  fillups?: { total: number; new: number; updated: number };
+  expenses?: { total: number; new: number; updated: number };
+  pictures?: { total: number };
+  warnings?: string[];
+  errors?: string[];
+  // backend may include other fields; we accept them as-is
+  [key: string]: unknown;
+}
