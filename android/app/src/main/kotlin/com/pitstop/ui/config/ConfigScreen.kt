@@ -27,13 +27,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -41,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.ble.ScannedDevice
+import kotlin.math.max
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +57,20 @@ fun ConfigScreen(
     val form by viewModel.form.collectAsStateWithLifecycle()
     val scanResults by viewModel.scanResults.collectAsStateWithLifecycle()
     val scanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val bufferedCount by viewModel.bufferedCount.collectAsStateWithLifecycle()
+    val lastFlushAt by viewModel.lastFlushAtMs.collectAsStateWithLifecycle()
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        viewModel.toast.collect { t ->
+            val msg = when (t) {
+                is ConfigToast.FlushedOk -> "Sent ${t.count} log${if (t.count == 1) "" else "s"}"
+                ConfigToast.FlushedEmpty -> "Buffer empty"
+                is ConfigToast.FlushedError -> "Flush failed: ${t.message}"
+            }
+            snackbarHostState.showSnackbar(msg)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -63,6 +83,7 @@ fun ConfigScreen(
                 },
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -166,6 +187,39 @@ fun ConfigScreen(
                 }
             }
 
+            SectionHeader("Logging")
+            Card {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Verbose logging", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Includes debug-level entries when shipping logs to the depot.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = form.verboseLogging,
+                            onCheckedChange = { v -> viewModel.update { it.copy(verboseLogging = v) } },
+                        )
+                    }
+                    Spacer(Modifier.padding(vertical = 4.dp))
+                    Text(
+                        "Buffered: $bufferedCount  ·  Last flush: ${formatRelative(lastFlushAt)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.padding(vertical = 4.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.flushLogsNow() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Send logs now")
+                    }
+                }
+            }
+
             Spacer(Modifier.padding(vertical = 4.dp))
             Button(
                 onClick = { viewModel.save() },
@@ -175,6 +229,17 @@ fun ConfigScreen(
             }
             Spacer(Modifier.padding(vertical = 16.dp))
         }
+    }
+}
+
+private fun formatRelative(tsMs: Long?): String {
+    if (tsMs == null) return "never"
+    val delta = max(0L, System.currentTimeMillis() - tsMs)
+    return when {
+        delta < 1_500 -> "just now"
+        delta < 60_000 -> "${delta / 1000}s ago"
+        delta < 3_600_000 -> "${delta / 60_000}m ago"
+        else -> "${delta / 3_600_000}h ago"
     }
 }
 

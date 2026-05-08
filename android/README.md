@@ -44,6 +44,7 @@ app/src/main/kotlin/com/pitstop/
 ├── ble/                      BleScanner + WiCanBleManager (Nordic library)
 ├── mqtt/                     HiveMQ MQTT v3 publisher
 ├── obd/                      Pid table + ELM/raw response parser
+├── log/                      LogBuffer (ring) + LogShipper (drain to /api/logs) + masking
 ├── service/                  PitstopBridgeService + BridgeStateBus
 └── ui/
     ├── theme/                PitstopTheme (M3 dark/light)
@@ -101,6 +102,38 @@ If the backend wants `vehicle_id` (UUID) instead of the slug, the slug→UUID re
 should accept the slug in the body and respond with the canonical id. Slug-based
 addressing matches the MQTT topic convention (`bridge/<vehicle_slug>/<metric>`),
 which is preferable.
+
+## Structured logging (`com.pitstop.log`)
+
+The app ships a structured-log feed to the backend's `/api/logs` depot:
+
+- **`LogBuffer`** — process-wide ring buffer (default 1000 entries). API:
+  `debug/info/warn/error(message, context: Map<String, Any?>)`. `debug()` is gated by
+  `Settings.verboseLogging` (toggle in the Config screen) — when off, `debug()` calls are
+  no-ops at zero allocation. Drop policy is drop-oldest with logcat notice.
+- **`LogShipper`** — coroutine drain owned by the foreground service. Flushes every 60 s
+  (or 120 s in `batterySaving` mode while the BLE/MQTT layer is in long-disconnect
+  backoff), or eagerly when the buffer reaches 50 entries, or via explicit `flushNow()`
+  from the Config screen's "Send logs now" button. On POST failure entries are returned
+  to the buffer head and exponential backoff (2 s → 60 s) gates the next attempt.
+- **`device_id`** — seeded once from `Settings.Secure.ANDROID_ID` (or a random UUID if the
+  device returns a blank id), persisted in DataStore. Stable across reinstall on most
+  devices, but resets on factory reset.
+- **Masking helpers** in `LogMasking.kt`:
+  - `maskMac("AA:BB:CC:DD:1A:B2") -> "xx:xx:xx:xx:1A:B2"` — keep last 4 octets only.
+  - `loggableUrl(...)` — drops userinfo + query params before logging the URL.
+  - `roundCoord(value, decimals)` — round GPS coords for log output (info+ uses 2 decimals,
+    debug may use 5).
+
+`ObdResponseParser` is intentionally pure — parse-failure warnings live at the call-site
+in `PitstopBridgeService.onUartFrame()` where the surrounding context (which PID, which
+frame text) is available.
+
+`PitstopAuthInterceptor` takes a `Lazy<LogBuffer>` to avoid a Hilt cycle: the LogShipper
+needs `PitstopApi`, which is built on the same OkHttp client as the interceptor. Logging
+in the interceptor is **error-only** and never includes the bearer token bytes; the
+`/api/logs` endpoint itself is excluded from interceptor logging to prevent feedback
+loops.
 
 ## OEM-specific BLE quirks
 

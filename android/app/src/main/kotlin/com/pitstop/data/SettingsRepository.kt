@@ -2,6 +2,7 @@ package com.pitstop.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -29,6 +30,21 @@ class SettingsRepository @Inject constructor(
         val bleMac: Preferences.Key<String> = stringPreferencesKey("ble_device_mac")
         val bleName: Preferences.Key<String> = stringPreferencesKey("ble_device_name")
         val publishHz: Preferences.Key<Float> = floatPreferencesKey("publish_hz")
+        val verboseLogging: Preferences.Key<Boolean> = booleanPreferencesKey("verbose_logging")
+        val deviceId: Preferences.Key<String> = stringPreferencesKey("device_id")
+    }
+
+    /**
+     * Stable device id for log shipping. Seeded once from `Settings.Secure.ANDROID_ID`
+     * (or a random UUID fallback) by [LogShipper]. Stored here so the same value
+     * persists across reinstall on most devices, but resets on factory reset.
+     */
+    val deviceId: Flow<String?> = context.dataStore.data.map { it[Keys.deviceId] }
+
+    suspend fun deviceIdOrNull(): String? = context.dataStore.data.first()[Keys.deviceId]
+
+    suspend fun setDeviceId(id: String) {
+        context.dataStore.edit { it[Keys.deviceId] = id }
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { prefs ->
@@ -40,6 +56,7 @@ class SettingsRepository @Inject constructor(
             bleDeviceMac = prefs[Keys.bleMac]?.takeIf { it.isNotBlank() },
             bleDeviceName = prefs[Keys.bleName]?.takeIf { it.isNotBlank() },
             publishHz = prefs[Keys.publishHz] ?: 1f,
+            verboseLogging = prefs[Keys.verboseLogging] ?: false,
         )
     }
 
@@ -65,6 +82,7 @@ class SettingsRepository @Inject constructor(
             settings.bleDeviceMac?.let { prefs[Keys.bleMac] = it } ?: prefs.remove(Keys.bleMac)
             settings.bleDeviceName?.let { prefs[Keys.bleName] = it } ?: prefs.remove(Keys.bleName)
             prefs[Keys.publishHz] = settings.publishHz
+            prefs[Keys.verboseLogging] = settings.verboseLogging
         }
         if (mqttPassword != null) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
         if (ingestToken != null) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)

@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.content.Context
 import android.util.Log
+import com.pitstop.log.LogBuffer
+import com.pitstop.log.maskMac
 import no.nordicsemi.android.ble.BleManager
 import no.nordicsemi.android.ble.data.Data
 import java.util.UUID
@@ -24,7 +26,10 @@ import java.util.UUID
  * Battery-aware reconnect: the foreground service handles the backoff. This manager just
  * reports state changes through [stateCallback].
  */
-class WiCanBleManager(context: Context) : BleManager(context) {
+class WiCanBleManager(
+    context: Context,
+    private val logBuffer: LogBuffer? = null,
+) : BleManager(context) {
 
     interface UartStateCallback {
         fun onConnectionStateChange(state: ConnectionState)
@@ -43,8 +48,19 @@ class WiCanBleManager(context: Context) : BleManager(context) {
 
     override fun getMinLogPriority(): Int = Log.WARN
 
+    /**
+     * Mirror Nordic BLE library log lines into our [LogBuffer]. We keep `Log.println` too
+     * so logcat still works during development. Messages are short and pre-redacted by the
+     * library — no MACs in there in practice.
+     */
     override fun log(priority: Int, message: String) {
         Log.println(priority, TAG, message)
+        when {
+            priority >= Log.ERROR -> logBuffer?.error("ble: $message")
+            priority >= Log.WARN -> logBuffer?.warn("ble: $message")
+            priority >= Log.INFO -> logBuffer?.info("ble: $message")
+            else -> logBuffer?.debug("ble: $message")
+        }
     }
 
     override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
@@ -59,9 +75,14 @@ class WiCanBleManager(context: Context) : BleManager(context) {
             if (rxOk && txOk) {
                 rx = rxChar
                 tx = txChar
+                logBuffer?.info(
+                    "ble service matched",
+                    mapOf("service" to uuids.serviceUuid.toString()),
+                )
                 return true
             }
         }
+        logBuffer?.warn("ble required UART service not found")
         return false
     }
 
@@ -87,22 +108,37 @@ class WiCanBleManager(context: Context) : BleManager(context) {
     @SuppressLint("MissingPermission")
     fun connectToDevice(device: BluetoothDevice) {
         stateCallback?.onConnectionStateChange(ConnectionState.CONNECTING)
+        logBuffer?.info("ble connect", mapOf("mac" to maskMac(device.address)))
         connect(device)
             .retry(3, 250)
             .useAutoConnect(false)
             .timeout(15_000)
-            .done { stateCallback?.onConnectionStateChange(ConnectionState.CONNECTED) }
-            .fail { _, _ -> stateCallback?.onConnectionStateChange(ConnectionState.FAILED) }
+            .done {
+                logBuffer?.info("ble connected", mapOf("mac" to maskMac(device.address)))
+                stateCallback?.onConnectionStateChange(ConnectionState.CONNECTED)
+            }
+            .fail { _, status ->
+                logBuffer?.warn(
+                    "ble connect failed",
+                    mapOf("mac" to maskMac(device.address), "status" to status),
+                )
+                stateCallback?.onConnectionStateChange(ConnectionState.FAILED)
+            }
             .enqueue()
     }
 
     fun disconnectDevice() {
+        logBuffer?.info("ble disconnect")
         disconnect().enqueue()
         stateCallback?.onConnectionStateChange(ConnectionState.DISCONNECTED)
     }
 
     fun writeCommand(ascii: String) {
-        val target = rx ?: return
+        val target = rx ?: run {
+            logBuffer?.warn("ble write skipped: no rx characteristic")
+            return
+        }
+        logBuffer?.debug("ble write", mapOf("cmd" to ascii.trim()))
         writeCharacteristic(
             target,
             ascii.toByteArray(Charsets.US_ASCII),

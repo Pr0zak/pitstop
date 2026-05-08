@@ -20,6 +20,10 @@ import com.pitstop.PitstopApp
 import com.pitstop.R
 import com.pitstop.ble.WiCanBleManager
 import com.pitstop.data.SettingsRepository
+import com.pitstop.log.LogBuffer
+import com.pitstop.log.LogShipper
+import com.pitstop.log.loggableUrl
+import com.pitstop.log.maskMac
 import com.pitstop.mqtt.MqttPublisher
 import com.pitstop.obd.ObdResponseParser
 import com.pitstop.obd.Pid
@@ -53,6 +57,8 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var mqttPublisher: MqttPublisher
     @Inject lateinit var stateBus: BridgeStateBus
+    @Inject lateinit var logBuffer: LogBuffer
+    @Inject lateinit var logShipper: LogShipper
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bleManager: WiCanBleManager? = null
@@ -72,6 +78,10 @@ class PitstopBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         startForegroundWithNotification()
+        // Start log shipping as soon as the service exists so initial connect failures
+        // (eg. broker unreachable) reach the depot.
+        logShipper.start()
+        logBuffer.info("bridge service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,10 +99,14 @@ class PitstopBridgeService : Service() {
     }
 
     override fun onDestroy() {
+        logBuffer.info("bridge service destroying")
         scope.cancel()
         bleManager?.disconnectDevice()
         bleManager = null
         mqttPublisher.disconnect()
+        // Final flush: don't wait — the shipper job dies with the singleton scope only
+        // when the process dies. Stopping it lets the buffer accrue until the next start.
+        logShipper.stop()
         super.onDestroy()
     }
 
@@ -104,6 +118,15 @@ class PitstopBridgeService : Service() {
             val secrets = settingsRepository.current()
             val s = secrets.settings
             vehicleSlug = s.vehicleSlug.ifBlank { "vehicle" }
+            logBuffer.info(
+                "bridge start",
+                mapOf(
+                    "vehicle_slug" to vehicleSlug,
+                    "broker" to loggableUrl(s.brokerUrl),
+                    "ble_mac" to maskMac(s.bleDeviceMac),
+                    "verbose_logging" to s.verboseLogging,
+                ),
+            )
 
             stateBus.update {
                 it.copy(
@@ -122,6 +145,7 @@ class PitstopBridgeService : Service() {
 
             val mac = s.bleDeviceMac
             if (mac.isNullOrBlank()) {
+                logBuffer.warn("bridge: no ble device configured")
                 stateBus.update {
                     it.copy(
                         phase = BridgePhase.Error,
@@ -138,6 +162,7 @@ class PitstopBridgeService : Service() {
 
     private suspend fun connectMqttWithRetry(url: String, user: String, password: String) {
         if (url.isBlank()) {
+            logBuffer.warn("mqtt skipped: no broker url configured")
             stateBus.update { it.copy(brokerConnected = false) }
             return
         }
@@ -148,6 +173,10 @@ class PitstopBridgeService : Service() {
                 stateBus.update { it.copy(brokerConnected = true) }
                 return
             } catch (e: Exception) {
+                logBuffer.warn(
+                    "mqtt retry scheduled",
+                    mapOf("backoff_ms" to delayMs, "err" to (e.message ?: e::class.java.simpleName)),
+                )
                 stateBus.update { it.copy(brokerConnected = false, errorMessage = "MQTT: ${e.message}") }
                 delay(delayMs)
                 delayMs = (delayMs * 2).coerceAtMost(30_000L)
@@ -162,6 +191,7 @@ class PitstopBridgeService : Service() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
                 != PackageManager.PERMISSION_GRANTED
             ) {
+                logBuffer.error("ble: missing BLUETOOTH_CONNECT permission")
                 stateBus.update {
                     it.copy(
                         phase = BridgePhase.Error,
@@ -173,6 +203,7 @@ class PitstopBridgeService : Service() {
         }
         val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val adapter: BluetoothAdapter = btManager.adapter ?: run {
+            logBuffer.error("ble: no bluetooth adapter on device")
             stateBus.update {
                 it.copy(phase = BridgePhase.Error, errorMessage = "No Bluetooth adapter")
             }
@@ -183,6 +214,10 @@ class PitstopBridgeService : Service() {
             val device = try {
                 adapter.getRemoteDevice(mac)
             } catch (e: Exception) {
+                logBuffer.error(
+                    "ble: bad mac",
+                    mapOf("mac" to maskMac(mac), "err" to (e.message ?: e::class.java.simpleName)),
+                )
                 stateBus.update {
                     it.copy(phase = BridgePhase.Error, errorMessage = "Bad MAC: $mac")
                 }
@@ -192,7 +227,7 @@ class PitstopBridgeService : Service() {
             stateBus.update { it.copy(phase = BridgePhase.Connecting, deviceName = name, deviceMac = mac) }
             updateNotification(getString(R.string.bridge_state_connecting, name ?: mac))
 
-            val mgr = WiCanBleManager(applicationContext)
+            val mgr = WiCanBleManager(applicationContext, logBuffer)
             bleManager = mgr
             mgr.setStateCallback(object : WiCanBleManager.UartStateCallback {
                 override fun onConnectionStateChange(state: WiCanBleManager.ConnectionState) {
@@ -223,6 +258,8 @@ class PitstopBridgeService : Service() {
 
             if (stateBus.status.value.phase == BridgePhase.Connected) {
                 reconnectAttempt = 0
+                logShipper.batterySaving = false
+                logBuffer.info("ble link ready; entering poll loop")
                 updateNotification(
                     getString(
                         R.string.bridge_state_connected,
@@ -232,11 +269,21 @@ class PitstopBridgeService : Service() {
                 runPollLoop()
                 // runPollLoop() returns when the BLE link drops. Fall through to backoff.
             } else {
+                logBuffer.warn("ble link did not reach READY before timeout")
                 bleManager?.disconnectDevice()
             }
 
             val backoffSec = (1 shl reconnectAttempt.coerceAtMost(5)).coerceAtMost(30)
             reconnectAttempt += 1
+            // After 4 consecutive misses (~30s+), tell the log shipper we're in a long
+            // disconnect — it'll halve its flush rate to save battery.
+            if (reconnectAttempt >= 4) {
+                logShipper.batterySaving = true
+            }
+            logBuffer.info(
+                "ble reconnect scheduled",
+                mapOf("attempt" to reconnectAttempt, "backoff_s" to backoffSec),
+            )
             updateNotification("Disconnected — retrying in ${backoffSec}s")
             stateBus.update { it.copy(phase = BridgePhase.Disconnected) }
             delay(backoffSec * 1_000L)
@@ -293,11 +340,30 @@ class PitstopBridgeService : Service() {
             return
         }
 
-        val parsed = ObdResponseParser.parse(frameText.toByteArray(Charsets.US_ASCII)) ?: return
+        val parsed = ObdResponseParser.parse(frameText.toByteArray(Charsets.US_ASCII))
+        if (parsed == null) {
+            // Don't log every short fragment — only frames that look like full responses.
+            // Heuristic: contains '>' or is at least 6 chars after trimming.
+            val trimmed = frameText.trim()
+            if (trimmed.length >= 6) {
+                logBuffer.warn(
+                    "obd parse failed",
+                    mapOf("frame" to trimmed.take(48)),
+                )
+            }
+            return
+        }
         val pid = pidsToPoll.firstOrNull {
             it.mode == parsed.mode && it.pid == parsed.pid
         } ?: return
-        val value = pid.parser(parsed.data) ?: return
+        val value = pid.parser(parsed.data)
+        if (value == null) {
+            logBuffer.warn(
+                "obd value parser returned null",
+                mapOf("pid" to pid.name, "data_bytes" to parsed.data.size),
+            )
+            return
+        }
 
         stateBus.publishMetric(pid.name, value)
         val topic = "bridge/${vehicleSlug}/${pid.name}"
@@ -312,6 +378,7 @@ class PitstopBridgeService : Service() {
     }
 
     private fun stopBridge() {
+        logBuffer.info("bridge stop requested")
         pollJob?.cancel()
         pollJob = null
         bleManager?.disconnectDevice()

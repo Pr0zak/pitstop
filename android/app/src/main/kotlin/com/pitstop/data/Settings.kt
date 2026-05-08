@@ -12,6 +12,11 @@ data class Settings(
     val bleDeviceMac: String? = null,
     val bleDeviceName: String? = null,
     val publishHz: Float = 1f,
+    /**
+     * When true, `LogBuffer.debug(...)` calls are recorded and shipped to the server log
+     * depot. When false (default) debug lines are no-ops; info/warn/error always record.
+     */
+    val verboseLogging: Boolean = false,
 )
 
 data class SettingsWithSecrets(

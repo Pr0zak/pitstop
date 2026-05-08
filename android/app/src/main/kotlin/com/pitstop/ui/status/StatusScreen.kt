@@ -88,6 +88,12 @@ fun StatusScreen(
                 totalPublished = ui.totalPublished,
             )
 
+            LogsRow(
+                buffered = ui.logsBuffered,
+                lastFlushMs = ui.logsLastFlushMs,
+                lastResult = ui.logsLastResult,
+            )
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onOpenLive,
@@ -208,6 +214,28 @@ private fun BrokerCard(
             )
             Text(
                 "Published total: $totalPublished",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LogsRow(
+    buffered: Int,
+    lastFlushMs: Long?,
+    lastResult: String,
+) {
+    Card {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Logs  ·  buffered $buffered  ·  last flush ${formatRelative(lastFlushMs)}  ·  last result $lastResult",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

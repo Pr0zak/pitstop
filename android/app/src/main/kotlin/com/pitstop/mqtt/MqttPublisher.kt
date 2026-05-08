@@ -4,6 +4,8 @@ import com.hivemq.client.mqtt.MqttClient
 import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient
 import com.hivemq.client.mqtt.mqtt3.exceptions.Mqtt3ConnAckException
+import com.pitstop.log.LogBuffer
+import com.pitstop.log.loggableUrl
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.URI
 import java.util.UUID
@@ -22,7 +24,9 @@ import kotlin.coroutines.resumeWithException
  * because the bridge wants to coordinate BLE liveness with broker liveness.
  */
 @Singleton
-class MqttPublisher @Inject constructor() {
+class MqttPublisher @Inject constructor(
+    private val logBuffer: LogBuffer,
+) {
 
     @Volatile private var client: Mqtt3AsyncClient? = null
     @Volatile private var lastUrl: String? = null
@@ -40,6 +44,11 @@ class MqttPublisher @Inject constructor() {
 
         // Disconnect existing client if URL changed.
         if (lastUrl != brokerUrl) disconnect()
+
+        logBuffer.info(
+            "mqtt connecting",
+            mapOf("broker" to loggableUrl(brokerUrl), "ssl" to ssl, "auth" to username.isNotBlank()),
+        )
 
         val builder = MqttClient.builder()
             .useMqttVersion3()
@@ -65,10 +74,18 @@ class MqttPublisher @Inject constructor() {
             }
             connectBuilder.send()
                 .whenComplete { _, t ->
-                    if (t == null) cont.resume(Unit)
-                    else cont.resumeWithException(
-                        if (t is Mqtt3ConnAckException) t else RuntimeException(t.message, t),
-                    )
+                    if (t == null) {
+                        logBuffer.info("mqtt connected", mapOf("host" to host, "port" to port))
+                        cont.resume(Unit)
+                    } else {
+                        logBuffer.error(
+                            "mqtt connect failed",
+                            mapOf("host" to host, "port" to port, "err" to (t.message ?: t::class.java.simpleName)),
+                        )
+                        cont.resumeWithException(
+                            if (t is Mqtt3ConnAckException) t else RuntimeException(t.message, t),
+                        )
+                    }
                 }
             cont.invokeOnCancellation { c.disconnect() }
         }
@@ -87,12 +104,24 @@ class MqttPublisher @Inject constructor() {
                 if (t == null) {
                     publishCount.incrementAndGet()
                     lastPublishMs.set(System.currentTimeMillis())
+                    logBuffer.debug(
+                        "mqtt publish",
+                        mapOf("topic" to topic, "bytes" to payload.length),
+                    )
+                } else {
+                    logBuffer.warn(
+                        "mqtt publish failed",
+                        mapOf("topic" to topic, "err" to (t.message ?: t::class.java.simpleName)),
+                    )
                 }
             }
     }
 
     fun disconnect() {
-        client?.disconnect()
+        client?.let {
+            logBuffer.info("mqtt disconnecting")
+            it.disconnect()
+        }
         client = null
     }
 
