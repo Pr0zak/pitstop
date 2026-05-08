@@ -15,8 +15,10 @@ android {
         applicationId = "com.pitstop"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI passes BUILD_VERSION_NAME (from the v* tag) and BUILD_VERSION_CODE
+        // (the GH Actions run number). Local builds keep safe defaults.
+        versionCode = System.getenv("BUILD_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("BUILD_VERSION_NAME") ?: "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
