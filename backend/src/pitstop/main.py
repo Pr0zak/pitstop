@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import asyncpg
 from fastapi import FastAPI
 
-from .api import health
+from .api import health, imports
 from .config import settings
 from .workers.bus import bus
 from .workers.ingest import MqttIngest
@@ -55,3 +55,4 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="pitstop", lifespan=lifespan)
 app.include_router(health.router)
+app.include_router(imports.router)
