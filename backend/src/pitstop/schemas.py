@@ -8,7 +8,8 @@ attribute and item access).
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
@@ -273,3 +274,158 @@ class SettingsUpdate(BaseModel):
 
 # Forward-compat: AnalyticsWindow is referenced by Task #16 endpoints.
 AnalyticsWindow = Literal["month", "3m", "year", "all"]
+
+
+# ---------------------------------------------------------------------------
+# Fillups
+# ---------------------------------------------------------------------------
+
+
+class FillupBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    vehicle_id: UUID
+    fillup_date: datetime
+    odo: float
+    fuel_volume: float
+    is_full: bool = True
+    is_missed: bool = False
+    price_total: Decimal | None = None
+    price_per_unit: Decimal | None = None
+    lat: float | None = None
+    lon: float | None = None
+    city: str | None = None
+    station_id: int | None = None
+    tank_number: int = 1
+    fuel_type: int | None = None
+    weather: str | None = None
+    notes: str | None = None
+
+
+class FillupCreate(FillupBase):
+    pass
+
+
+class FillupUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    fillup_date: datetime | None = None
+    odo: float | None = None
+    fuel_volume: float | None = None
+    is_full: bool | None = None
+    is_missed: bool | None = None
+    price_total: Decimal | None = None
+    price_per_unit: Decimal | None = None
+    lat: float | None = None
+    lon: float | None = None
+    city: str | None = None
+    station_id: int | None = None
+    tank_number: int | None = None
+    fuel_type: int | None = None
+    weather: str | None = None
+    notes: str | None = None
+
+
+class FillupOut(FillupBase):
+    id: UUID
+    fuelio_guid: str | None = None
+    mpg_reported: float | None = None
+    mpg: float | None = None  # recomputed by API; None on partial fillups
+
+
+# ---------------------------------------------------------------------------
+# Expenses
+# ---------------------------------------------------------------------------
+
+
+class ExpenseBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    vehicle_id: UUID
+    expense_date: date
+    odo: float | None = None
+    cost_type_id: int | None = None
+    title: str | None = None
+    notes: str | None = None
+    cost: Decimal
+    is_income: bool = False
+    is_template: bool = False
+    remind_odo: float | None = None
+    remind_date: date | None = None
+    repeat_odo: float | None = None
+    repeat_months: float | None = None
+    flag: int = 0
+
+
+class ExpenseCreate(ExpenseBase):
+    pass
+
+
+class ExpenseUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    expense_date: date | None = None
+    odo: float | None = None
+    cost_type_id: int | None = None
+    title: str | None = None
+    notes: str | None = None
+    cost: Decimal | None = None
+    is_income: bool | None = None
+    is_template: bool | None = None
+    remind_odo: float | None = None
+    remind_date: date | None = None
+    repeat_odo: float | None = None
+    repeat_months: float | None = None
+    flag: int | None = None
+
+
+class ExpenseOut(ExpenseBase):
+    id: UUID
+    fuelio_guid: str | None = None
+
+
+class ExpenseCategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    priority: int = 0
+    color: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Maintenance
+# ---------------------------------------------------------------------------
+
+
+class ReminderOverdue(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    expense_id: UUID
+    title: str | None
+    category: str | None
+    current_odo: float | None
+    remind_odo: float | None
+    remind_date: date | None
+    miles_over: float | None
+    days_over: int | None
+    notes: str | None
+
+
+class ReminderUpcoming(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    expense_id: UUID
+    title: str | None
+    category: str | None
+    current_odo: float | None
+    remind_odo: float | None
+    remind_date: date | None
+    miles_until: float | None
+    days_until: int | None
+    notes: str | None
+
+
+class RemindersOut(BaseModel):
+    overdue: list[ReminderOverdue]
+    upcoming: list[ReminderUpcoming]

@@ -11,10 +11,14 @@ import asyncpg
 from fastapi import FastAPI
 
 from .api import (
+    analytics,
     dtcs,
+    expenses,
+    fillups,
     health,
     imports,
     live_ws,
+    maintenance,
     profiles,
     readings,
 )
@@ -109,4 +113,8 @@ app.include_router(readings.router)
 app.include_router(trips_api.router)
 app.include_router(dtcs.router)
 app.include_router(settings_api.router)
+app.include_router(fillups.router)
+app.include_router(expenses.router)
+app.include_router(analytics.router)
+app.include_router(maintenance.router)
 app.include_router(live_ws.router)
