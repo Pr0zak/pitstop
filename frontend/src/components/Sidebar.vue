@@ -12,6 +12,7 @@ import {
   Bug,
   Car,
   FileJson,
+  HelpCircle,
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
@@ -68,6 +69,7 @@ const route = useRoute();
 
 const items = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
+  { to: "/setup", label: "Setup", icon: HelpCircle },
   { to: "/live", label: "Live", icon: Activity },
   { to: "/trips", label: "Trips", icon: Route },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
