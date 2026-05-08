@@ -23,10 +23,29 @@ class Settings(BaseSettings):
 
     pid_profiles_dir: str = "/app/pid_profiles"
 
+    # Trip detector tuning (seconds).
+    trip_silence_open_s: int = 120
+    trip_silence_close_s: int = 60
+    trip_low_voltage_threshold: float = 12.0
+    trip_low_voltage_consecutive: int = 3
+
+    # MQTT ingest tuning.
+    ingest_batch_max_rows: int = 100
+    ingest_batch_max_ms: int = 200
+    vehicle_cache_ttl_s: int = 300
+
     @property
     def database_url(self) -> str:
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def asyncpg_dsn(self) -> str:
+        """Plain asyncpg DSN (no SQLAlchemy driver prefix)."""
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
