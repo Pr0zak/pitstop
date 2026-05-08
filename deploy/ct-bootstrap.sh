@@ -21,11 +21,20 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 apt-get update -y
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-echo "[ct-bootstrap] runc 1.1.x swap (Debian's runc, mandatory for unprivileged LXC + Docker)"
-apt-get install -y runc
-cp /usr/sbin/runc /usr/bin/runc.bak.$(date +%s) 2>/dev/null || true
-cp /usr/sbin/runc /usr/bin/runc
-systemctl restart docker
+if grep -qa container=lxc /proc/1/environ 2>/dev/null; then
+  echo "[ct-bootstrap] runc 1.1.x swap for unprivileged LXC + Docker"
+  # containerd.io's bundled runc 1.2+ trips on
+  # net.ipv4.ip_unprivileged_port_start sysctl write inside an unprivileged LXC.
+  # Install Debian runc 1.1.x, stash a copy, reinstall containerd.io (apt
+  # removes docker-ce/containerd.io when the Debian runc package conflicts),
+  # then swap the binary at /usr/bin/runc to point at the stashed Debian one.
+  apt-get install -y runc
+  cp /usr/sbin/runc /root/runc-debian
+  apt-get install -y --reinstall containerd.io docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin
+  systemctl stop docker
+  cp /root/runc-debian /usr/bin/runc
+  systemctl start docker
+fi
 
 echo "[ct-bootstrap] /opt/pitstop layout"
 mkdir -p /opt/pitstop /opt/pitstop/data/db /opt/pitstop/data/mosquitto /opt/pitstop/data/photos /opt/pitstop/data/backups

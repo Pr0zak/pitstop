@@ -80,7 +80,9 @@ pct exec ${CT_ID} -- bash -c "
   cd /opt/pitstop
   docker run --rm -v /opt/pitstop/mosquitto/config:/mosquitto/config eclipse-mosquitto:2.0 \
     mosquitto_passwd -b -c /mosquitto/config/passwd '${MQTT_USER}' '${MQTT_PASSWORD}'
-  chmod 0700 /opt/pitstop/mosquitto/config/passwd
+  # Mosquitto inside the container runs as UID 1883.
+  chown 1883:1883 /opt/pitstop/mosquitto/config/passwd
+  chmod 0640 /opt/pitstop/mosquitto/config/passwd
 "
 EOSSH
 
