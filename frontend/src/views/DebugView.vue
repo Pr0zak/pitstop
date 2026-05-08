@@ -296,7 +296,7 @@ const empty = computed(() => !loading.value && entries.value.length === 0);
         </thead>
         <tbody>
           <template v-for="e in entries" :key="e.id">
-            <tr class="clickable row" @click="toggleExpand(e.id)">
+            <tr class="clickable log-row" @click="toggleExpand(e.id)">
               <td class="ts" :title="e.ts">{{ fmtRelative(e.ts) }}</td>
               <td class="src">
                 <span class="badge">{{ sourceLabel(e.source) }}</span>
