@@ -385,14 +385,16 @@ class MqttIngest:
             log.error("pid_readings batch insert failed (%d rows): %s", len(rows), exc)
             return
         # Best-effort vehicle_state update — separate connection so a failure
-        # here can't block readings inserts. Update one row per vehicle with
-        # the latest reading we saw in this batch.
-        latest_per_vehicle: dict[UUID, _PendingReading] = {}
+        # here can't block readings inserts. Keep the latest reading per
+        # (vehicle, metric) within the batch so a fast burst of multiple
+        # metrics all land in the snapshot, not just the last topic.
+        latest_per_vm: dict[tuple[UUID, str], _PendingReading] = {}
         for r in batch:
-            cur = latest_per_vehicle.get(r.vehicle_id)
+            key = (r.vehicle_id, r.metric)
+            cur = latest_per_vm.get(key)
             if cur is None or r.time >= cur.time:
-                latest_per_vehicle[r.vehicle_id] = r
-        for r in latest_per_vehicle.values():
+                latest_per_vm[key] = r
+        for r in latest_per_vm.values():
             try:
                 async with self._pool.acquire() as conn:
                     await conn.execute(
