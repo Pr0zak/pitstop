@@ -97,6 +97,135 @@ const props = withDefaults(defineProps<Props>(), {
       <circle cx="32" cy="44" r="3" :fill="color" />
     </g>
 
+    <!-- arc-ticks-fine — 9 evenly-spaced inward ticks, length 3 -->
+    <g v-if="name === 'arc-ticks-fine'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 54 44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <line x1="10" y1="44" x2="13" y2="44" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="11.68" y1="35.58" x2="14.46" y2="36.73" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="16.44" y1="28.44" x2="18.57" y2="30.57" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="23.58" y1="23.68" x2="24.73" y2="26.45" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="25" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="40.42" y1="23.68" x2="39.27" y2="26.45" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="47.56" y1="28.44" x2="45.43" y2="30.57" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="52.32" y1="35.58" x2="49.54" y2="36.73" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="51" y2="44" :stroke="color" stroke-width="2" stroke-linecap="round" />
+      <path d="M 32 44 L 47.56 28.44" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-ticks-major — alternating long/short ticks, 5 major + 4 minor -->
+    <g v-if="name === 'arc-ticks-major'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 54 44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <!-- 5 major ticks at α=0/45/90/135/180, length 4 -->
+      <line x1="10" y1="44" x2="14" y2="44" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <line x1="16.44" y1="28.44" x2="19.27" y2="31.27" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="26" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <line x1="47.56" y1="28.44" x2="44.73" y2="31.27" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="50" y2="44" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <!-- 4 minor ticks at α=22.5/67.5/112.5/157.5, length 2 -->
+      <line x1="11.68" y1="35.58" x2="13.52" y2="36.34" :stroke="color" stroke-width="2" stroke-linecap="round" opacity="0.7" />
+      <line x1="23.58" y1="23.68" x2="24.34" y2="25.52" :stroke="color" stroke-width="2" stroke-linecap="round" opacity="0.7" />
+      <line x1="40.42" y1="23.68" x2="39.66" y2="25.52" :stroke="color" stroke-width="2" stroke-linecap="round" opacity="0.7" />
+      <line x1="52.32" y1="35.58" x2="50.48" y2="36.34" :stroke="color" stroke-width="2" stroke-linecap="round" opacity="0.7" />
+      <path d="M 32 44 L 47.56 28.44" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-ticks-out — five ticks radiating outward beyond the arc -->
+    <g v-if="name === 'arc-ticks-out'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 54 44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <!-- Outward ticks: from r=22 (arc) to r=25, length 3 -->
+      <line x1="10" y1="44" x2="7" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="16.44" y1="28.44" x2="14.32" y2="26.32" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="19" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="47.56" y1="28.44" x2="49.68" y2="26.32" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="57" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <path d="M 32 44 L 47.56 28.44" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-ticks-redline — five ticks + last quarter of arc in warn -->
+    <g v-if="name === 'arc-ticks-redline'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 47.56 28.44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <path
+        d="M 47.56 28.44 A 22 22 0 0 1 54 44"
+        :stroke="accent"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <line x1="10" y1="44" x2="14" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="16.44" y1="28.44" x2="19.27" y2="31.27" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="26" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="47.56" y1="28.44" x2="44.73" y2="31.27" :stroke="accent" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="50" y2="44" :stroke="accent" stroke-width="2.5" stroke-linecap="round" />
+      <path d="M 32 44 L 50.5 32.7" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <circle cx="50.5" cy="32.7" r="3" :fill="accent" />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-ticks-pointer — five ticks, needle is a triangular pointer -->
+    <g v-if="name === 'arc-ticks-pointer'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 54 44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <line x1="10" y1="44" x2="14" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="16.44" y1="28.44" x2="19.27" y2="31.27" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="26" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="47.56" y1="28.44" x2="44.73" y2="31.27" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="50" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <!-- Triangle needle: tapered from pivot toward ¾ position -->
+      <path
+        d="M 47.56 28.44 L 33.06 42.94 L 30.94 45.06 Z"
+        :fill="color"
+      />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-ticks-min — only three ticks (left/top/right) -->
+    <g v-if="name === 'arc-ticks-min'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 54 44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <line x1="10" y1="44" x2="14" y2="44" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="26" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="50" y2="44" :stroke="color" stroke-width="2.8" stroke-linecap="round" />
+      <path d="M 32 44 L 47.56 28.44" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
     <!-- arc-dotted — arc rendered as a row of dots with brighter end dot -->
     <g v-if="name === 'arc-dotted'">
       <!-- 9 dots traced along the arc r=22, center (32,44), 180°→0° -->

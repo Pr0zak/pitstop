@@ -10,6 +10,12 @@ export type LogoName =
   | "arc"
   | "arc-redline"
   | "arc-ticks"
+  | "arc-ticks-fine"
+  | "arc-ticks-major"
+  | "arc-ticks-out"
+  | "arc-ticks-redline"
+  | "arc-ticks-pointer"
+  | "arc-ticks-min"
   | "arc-dotted"
   | "arc-segments"
   | "arc-needle"
@@ -40,7 +46,37 @@ export const LOGOS: LogoMeta[] = [
   {
     name: "arc-ticks",
     label: "Speedo + ticks",
-    description: "Arc with five tick marks (0/¼/½/¾/full), needle at ¾.",
+    description: "Arc with five tick marks (0/¼/½/¾/full), needle at ¾. Original.",
+  },
+  {
+    name: "arc-ticks-fine",
+    label: "Ticks · fine",
+    description: "Same layout, but nine evenly-spaced ticks for an instrument feel.",
+  },
+  {
+    name: "arc-ticks-major",
+    label: "Ticks · major+minor",
+    description: "Five long ticks at the cardinals with four short ones between them.",
+  },
+  {
+    name: "arc-ticks-out",
+    label: "Ticks · radiating",
+    description: "Five ticks radiating outward beyond the arc, like spokes.",
+  },
+  {
+    name: "arc-ticks-redline",
+    label: "Ticks + redline",
+    description: "Five ticks plus the last quarter of the arc painted warn-colour.",
+  },
+  {
+    name: "arc-ticks-pointer",
+    label: "Ticks + triangle",
+    description: "Five ticks; the needle is a tapered triangular pointer.",
+  },
+  {
+    name: "arc-ticks-min",
+    label: "Ticks · minimal",
+    description: "Just three ticks at left/top/right and a needle. Calmer than the original.",
   },
   {
     name: "arc-dotted",
