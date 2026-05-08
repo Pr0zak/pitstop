@@ -21,6 +21,7 @@ from .api import (
     maintenance,
     profiles,
     readings,
+    utils as utils_api,
 )
 from .api import settings as settings_api
 from .api import trips as trips_api
@@ -125,3 +126,4 @@ app.include_router(expenses.router)
 app.include_router(analytics.router)
 app.include_router(maintenance.router)
 app.include_router(live_ws.router)
+app.include_router(utils_api.router)

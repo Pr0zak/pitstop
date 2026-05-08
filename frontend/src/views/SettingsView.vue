@@ -6,6 +6,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon } from "lucide-vue-next";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
 import { parseLatLon, roundCoords } from "@/utils/parseLatLon";
+import { apiQuery } from "@/api";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -135,12 +136,38 @@ const shareLink = ref("");
 const shareLinkStatus = ref<"idle" | "ok" | "fail">("idle");
 const shareLinkMsg = ref<string | null>(null);
 
-function applyShareLink() {
-  const parsed = parseLatLon(shareLink.value);
+async function applyShareLink() {
+  let working = shareLink.value.trim();
+  let parsed = parseLatLon(working);
+
+  // Short Google / Apple / OSM links → backend follows the redirect for us.
+  if (
+    !parsed &&
+    /^https:\/\/(maps\.app\.goo\.gl|goo\.gl|g\.co|g\.page|apple\.co|osm\.org)\//i.test(
+      working,
+    )
+  ) {
+    shareLinkStatus.value = "idle";
+    shareLinkMsg.value = "Resolving short link…";
+    try {
+      const r = await apiQuery.get<{ resolved: string; hops: number }>(
+        "/utils/resolve-url",
+        { params: { url: working } },
+      );
+      working = r.data.resolved;
+      parsed = parseLatLon(working);
+    } catch (e: unknown) {
+      shareLinkStatus.value = "fail";
+      shareLinkMsg.value =
+        e instanceof Error ? `Resolver failed: ${e.message}` : "Resolver failed";
+      return;
+    }
+  }
+
   if (!parsed) {
     shareLinkStatus.value = "fail";
     shareLinkMsg.value =
-      "Could not extract lat/lon. Paste a long Google Maps URL (the kind with @LAT,LON in it), or a `LAT, LON` pair. Short `maps.app.goo.gl` links need to be opened first.";
+      "Could not extract lat/lon. Paste a Google Maps long URL (the kind with @LAT,LON in it), a short `maps.app.goo.gl/...` link, or a `LAT, LON` pair.";
     return;
   }
   const r = roundCoords(parsed.lat, parsed.lon);
@@ -262,10 +289,11 @@ function geolocate() {
             v-else-if="shareLinkStatus === 'fail'"
             class="muted warn-text"
           >{{ shareLinkMsg }}</small>
+          <small v-else-if="shareLinkMsg" class="muted">{{ shareLinkMsg }}</small>
           <small v-else class="muted">
-            Supports Google Maps long URLs, Apple Maps, OpenStreetMap, or a plain
-            <code>lat, lon</code> pair. Short links (<code>maps.app.goo.gl/...</code>)
-            need to be opened in a browser first.
+            Supports Google Maps long &amp; short URLs (incl.
+            <code>maps.app.goo.gl/...</code>), Apple Maps, OpenStreetMap, or a
+            plain <code>lat, lon</code> pair.
           </small>
         </label>
       </div>
