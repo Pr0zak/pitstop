@@ -45,6 +45,165 @@ const props = withDefaults(defineProps<Props>(), {
       <circle cx="32" cy="44" r="2.5" :fill="color" />
     </g>
 
+    <!-- arc-redline — base arc with last quarter painted warn-color -->
+    <g v-if="name === 'arc-redline'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 42 25"
+        :stroke="color"
+        stroke-width="5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <path
+        d="M 42 25 A 22 22 0 0 1 54 44"
+        :stroke="accent"
+        stroke-width="5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <path
+        d="M 32 44 L 49 30"
+        :stroke="color"
+        stroke-width="3"
+        stroke-linecap="round"
+        opacity="0.55"
+      />
+      <circle cx="49" cy="30" r="4" :fill="accent" />
+      <circle cx="32" cy="44" r="2.5" :fill="color" />
+    </g>
+
+    <!-- arc-ticks — arc with five perpendicular tick marks -->
+    <g v-if="name === 'arc-ticks'">
+      <path
+        d="M 10 44 A 22 22 0 0 1 54 44"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <!-- Five tick marks at 180/135/90/45/0 degrees from center (32,44) -->
+      <line x1="10" y1="44" x2="14" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="16.5" y1="28.5" x2="19.4" y2="31.4" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="32" y1="22" x2="32" y2="26" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="47.5" y1="28.5" x2="44.6" y2="31.4" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <line x1="54" y1="44" x2="50" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
+      <!-- Needle at ¾ position -->
+      <path
+        d="M 32 44 L 47.5 28.5"
+        :stroke="color"
+        stroke-width="3"
+        stroke-linecap="round"
+      />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-dotted — arc rendered as a row of dots with brighter end dot -->
+    <g v-if="name === 'arc-dotted'">
+      <!-- 9 dots traced along the arc r=22, center (32,44), 180°→0° -->
+      <circle cx="10" cy="44" r="2.2" :fill="color" />
+      <circle cx="13.2" cy="35.6" r="2.2" :fill="color" />
+      <circle cx="19.4" cy="28.6" r="2.2" :fill="color" />
+      <circle cx="26.6" cy="23.6" r="2.2" :fill="color" />
+      <circle cx="32" cy="22" r="2.2" :fill="color" />
+      <circle cx="37.4" cy="23.6" r="2.2" :fill="color" />
+      <circle cx="44.6" cy="28.6" r="2.2" :fill="color" />
+      <circle cx="50.8" cy="35.6" r="2.2" :fill="color" />
+      <circle cx="54" cy="44" r="3.4" :fill="accent" />
+      <!-- Faint needle line + pivot -->
+      <path
+        d="M 32 44 L 54 44"
+        :stroke="color"
+        stroke-width="2.5"
+        stroke-linecap="round"
+        opacity="0.45"
+      />
+      <circle cx="32" cy="44" r="2.5" :fill="color" />
+    </g>
+
+    <!-- arc-segments — three coloured arc zones -->
+    <g v-if="name === 'arc-segments'">
+      <!-- green zone: 180°→120° -->
+      <path
+        d="M 10 44 A 22 22 0 0 1 21 25"
+        stroke="#3fb950"
+        stroke-width="5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <!-- amber zone: 120°→60° -->
+      <path
+        d="M 21 25 A 22 22 0 0 1 43 25"
+        stroke="#d29922"
+        stroke-width="5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <!-- red zone: 60°→0° -->
+      <path
+        d="M 43 25 A 22 22 0 0 1 54 44"
+        :stroke="accent"
+        stroke-width="5"
+        stroke-linecap="round"
+        fill="none"
+      />
+      <!-- Needle pointing into the amber zone -->
+      <path
+        d="M 32 44 L 32 22"
+        :stroke="color"
+        stroke-width="3"
+        stroke-linecap="round"
+      />
+      <circle cx="32" cy="44" r="3" :fill="color" />
+    </g>
+
+    <!-- arc-needle — no arc; just the needle and pivot -->
+    <g v-if="name === 'arc-needle'">
+      <!-- Long needle from pivot to upper-right -->
+      <path
+        d="M 32 44 L 50 22"
+        :stroke="color"
+        stroke-width="5"
+        stroke-linecap="round"
+      />
+      <!-- Tip dot for emphasis -->
+      <circle cx="50" cy="22" r="4" :fill="color" />
+      <!-- Pivot ring -->
+      <circle
+        cx="32"
+        cy="44"
+        r="6"
+        :stroke="color"
+        stroke-width="3"
+        fill="none"
+      />
+      <circle cx="32" cy="44" r="1.6" :fill="color" />
+    </g>
+
+    <!-- arc-360 — full circular tach with a single 12-o-clock tick + needle -->
+    <g v-if="name === 'arc-360'">
+      <circle
+        cx="32"
+        cy="32"
+        r="22"
+        :stroke="color"
+        stroke-width="3.5"
+        fill="none"
+      />
+      <line x1="32" y1="10" x2="32" y2="14" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <line x1="50" y1="32" x2="54" y2="32" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <line x1="32" y1="50" x2="32" y2="54" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <line x1="10" y1="32" x2="14" y2="32" :stroke="color" stroke-width="3" stroke-linecap="round" />
+      <!-- Needle to ~2 o'clock -->
+      <path
+        d="M 32 32 L 47 21"
+        :stroke="color"
+        stroke-width="3.5"
+        stroke-linecap="round"
+      />
+      <circle cx="47" cy="21" r="3.5" :fill="color" />
+      <circle cx="32" cy="32" r="3.5" :fill="color" />
+    </g>
+
     <!-- wrench-gauge — dial + wrench -->
     <g v-if="name === 'wrench-gauge'">
       <circle

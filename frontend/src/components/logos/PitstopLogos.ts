@@ -8,6 +8,12 @@
  */
 export type LogoName =
   | "arc"
+  | "arc-redline"
+  | "arc-ticks"
+  | "arc-dotted"
+  | "arc-segments"
+  | "arc-needle"
+  | "arc-360"
   | "wrench-gauge"
   | "lights"
   | "spark"
@@ -25,6 +31,36 @@ export const LOGOS: LogoMeta[] = [
     name: "arc",
     label: "Speedo arc",
     description: "Tachometer arc with a needle dot at the redline.",
+  },
+  {
+    name: "arc-redline",
+    label: "Speedo + redline",
+    description: "Same arc; the last quarter is warn-coloured to mark the redline.",
+  },
+  {
+    name: "arc-ticks",
+    label: "Speedo + ticks",
+    description: "Arc with five tick marks (0/¼/½/¾/full), needle at ¾.",
+  },
+  {
+    name: "arc-dotted",
+    label: "Speedo dotted",
+    description: "Arc rendered as a row of dots, with a brighter dot at the needle tip.",
+  },
+  {
+    name: "arc-segments",
+    label: "Speedo zones",
+    description: "Three coloured arc segments — green / amber / warn — and a needle.",
+  },
+  {
+    name: "arc-needle",
+    label: "Needle only",
+    description: "No arc; just the needle and pivot. The most reductive of the set.",
+  },
+  {
+    name: "arc-360",
+    label: "Full tach",
+    description: "Closed circular tach with a single tick at 12 o'clock and a needle.",
   },
   {
     name: "wrench-gauge",
