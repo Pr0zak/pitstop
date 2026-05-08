@@ -400,11 +400,11 @@ class MqttIngest:
                         INSERT INTO vehicle_state
                             (vehicle_id, last_seen_at, last_metric, latest, updated_at)
                         VALUES (
-                            $1, $2, $3,
-                            jsonb_build_object($3, jsonb_build_object(
+                            $1::uuid, $2::timestamptz, $3::text,
+                            jsonb_build_object($3::text, jsonb_build_object(
                                 'value_num', $4::float8,
                                 'value_text', $5::text,
-                                'time', to_char($2 AT TIME ZONE 'UTC',
+                                'time', to_char($2::timestamptz AT TIME ZONE 'UTC',
                                     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                                 'source', $6::text
                             )),
