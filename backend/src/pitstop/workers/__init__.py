@@ -1,1 +1,1 @@
-"""Background workers: MQTT ingest, trip detector, (future) HA mirror."""
+"""Background workers: MQTT ingest, trip detector, HA mirror."""

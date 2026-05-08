@@ -27,6 +27,7 @@ from .api import trips as trips_api
 from .api import vehicles as vehicles_api
 from .config import settings
 from .workers.bus import bus
+from .workers.ha_mirror import HaMirror
 from .workers.ingest import MqttIngest
 from .workers.trip_detector import TripDetector
 
@@ -74,8 +75,10 @@ async def lifespan(app: FastAPI):
     pool: asyncpg.Pool | None = None
     ingest_task: asyncio.Task | None = None
     trip_task: asyncio.Task | None = None
+    ha_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
+    ha_mirror: HaMirror | None = None
     try:
         pool = await asyncpg.create_pool(
             dsn=settings.asyncpg_dsn, min_size=1, max_size=10
@@ -85,8 +88,10 @@ async def lifespan(app: FastAPI):
         await _seed_pid_profiles(pool)
         ingest = MqttIngest(pool=pool, bus_=bus, config=settings)
         trip_detector = TripDetector(pool=pool, bus_=bus, config=settings)
+        ha_mirror = HaMirror(pool=pool, bus_=bus, config=settings)
         ingest_task = asyncio.create_task(ingest.run(), name="mqtt-ingest")
         trip_task = asyncio.create_task(trip_detector.run(), name="trip-detector")
+        ha_task = asyncio.create_task(ha_mirror.run(), name="ha-mirror")
         yield
     finally:
         log.info("pitstop backend stopping")
@@ -94,7 +99,9 @@ async def lifespan(app: FastAPI):
             ingest.stop()
         if trip_detector is not None:
             trip_detector.stop()
-        for task in (ingest_task, trip_task):
+        if ha_mirror is not None:
+            ha_mirror.stop()
+        for task in (ingest_task, trip_task, ha_task):
             if task is None:
                 continue
             task.cancel()
