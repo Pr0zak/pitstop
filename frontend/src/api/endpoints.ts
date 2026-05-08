@@ -19,6 +19,9 @@ import type {
   MpgOverlay,
   AnalyticsWindow,
   FuelioImportPreview,
+  LogEntry,
+  LogIngestEntry,
+  LogRecentParams,
 } from "./types";
 
 // ─── vehicles ─────────────────────────────────────────────────────────
@@ -254,6 +257,21 @@ export async function listReminders(vehicleId?: string): Promise<ReminderGroup> 
 }
 export async function markReminderDone(expenseId: string): Promise<void> {
   await apiIngest.post(`/maintenance/reminders/${expenseId}/done`);
+}
+
+// ─── logs ─────────────────────────────────────────────────────────────
+
+export async function listRecentLogs(p: LogRecentParams = {}): Promise<LogEntry[]> {
+  const r = await apiQuery.get<LogEntry[]>("/logs/recent", { params: p });
+  return r.data;
+}
+
+export async function ingestLogs(entries: LogIngestEntry[]): Promise<void> {
+  await apiIngest.post("/logs", { entries });
+}
+
+export async function deleteLogsOlderThan(days: number): Promise<void> {
+  await apiIngest.delete("/logs/older-than", { params: { days } });
 }
 
 // ─── imports ──────────────────────────────────────────────────────────

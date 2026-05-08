@@ -223,6 +223,44 @@ export interface LiveMessage {
 
 export type AnalyticsWindow = "month" | "3m" | "year" | "all";
 
+// ─── logs ─────────────────────────────────────────────────────────────
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+export type LogSource = "phone" | "web" | "backend" | "wican" | "test";
+
+export interface LogEntry {
+  id: number | string;
+  ts: string;
+  source: LogSource;
+  level: LogLevel;
+  message: string;
+  vehicle_id?: string | null;
+  device_id?: string | null;
+  context?: Record<string, unknown> | null;
+  client_ts?: string | null;
+}
+
+export interface LogIngestEntry {
+  ts?: string;
+  source: LogSource;
+  level: LogLevel;
+  message: string;
+  vehicle_id?: string | null;
+  device_id?: string | null;
+  client_ts?: string;
+  context?: Record<string, unknown> | null;
+}
+
+export interface LogRecentParams {
+  source?: string;
+  level?: string;
+  vehicle_id?: string;
+  from?: string;
+  to?: string;
+  q?: string;
+  limit?: number;
+}
+
 export interface FuelioImportPreview {
   dry_run: boolean;
   vehicles?: { name: string; guid: string; existing: boolean }[];
