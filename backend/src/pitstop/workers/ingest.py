@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import json
 import logging
 import operator
 import time
@@ -315,6 +316,73 @@ class MqttIngest:
         # Otherwise plain text.
         return None, s
 
+    def _fanout_json_payload(
+        self,
+        payload: str,
+        profile_pids: dict[str, dict] | None,
+        vehicle_id: UUID,
+        source: str,
+        when: datetime,
+    ) -> list[_PendingReading] | None:
+        """Recognise a WiCAN AutoPID consolidated-JSON payload and fan it out.
+
+        WiCAN publishes one JSON object per polling cycle to a single topic,
+        with per-PID name→value pairs at the top level (e.g.
+        ``{"engine_rpm": 1600, "vehicle_speed": 42}``). For pitstop's table
+        we want one reading per (vehicle, metric, time), so we expand the
+        object here into a list of _PendingReading rows that share the
+        same timestamp.
+
+        Returns ``None`` when the payload isn't a JSON object — caller falls
+        back to the scalar path. Returns ``[]`` when the payload is a JSON
+        object but every key is unparseable, so we silently drop and don't
+        re-treat the whole string as a scalar.
+        """
+        s = payload.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return None
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        out: list[_PendingReading] = []
+        for k, v in obj.items():
+            if not isinstance(k, str):
+                continue
+            metric = k.strip()
+            if not metric:
+                continue
+            value_num: float | None = None
+            value_text: str | None = None
+            if isinstance(v, bool):
+                value_num = float(v)
+            elif isinstance(v, (int, float)):
+                value_num = float(v)
+            elif v is None:
+                continue  # drop nulls; nothing to record
+            elif isinstance(v, str):
+                # If the value is itself a hex/string blob, run it through
+                # the same per-metric path so profile formulas still apply.
+                vn, vt = self._parse_payload(metric, v, profile_pids, vehicle_id)
+                value_num, value_text = vn, vt
+            else:
+                value_text = json.dumps(v)
+            if value_num is None and value_text is None:
+                continue
+            out.append(
+                _PendingReading(
+                    vehicle_id=vehicle_id,
+                    time=when,
+                    metric=metric,
+                    value_num=value_num,
+                    value_text=value_text,
+                    source=source,
+                )
+            )
+        return out
+
     async def _handle_message(self, msg: aiomqtt.Message) -> None:
         topic = str(msg.topic)
         parsed = parse_topic(topic)
@@ -330,35 +398,51 @@ class MqttIngest:
         if resolved is None:
             return
         vehicle_id, profile_pids = resolved
-        value_num, value_text = self._parse_payload(
-            parsed.metric, payload, profile_pids, vehicle_id
-        )
-        if value_num is None and value_text is None:
-            return  # blank payload
         now = datetime.now(tz=UTC)
-        reading = _PendingReading(
-            vehicle_id=vehicle_id,
-            time=now,
-            metric=parsed.metric,
-            value_num=value_num,
-            value_text=value_text,
-            source=parsed.source,
+
+        # WiCAN AutoPID publishes one consolidated JSON object per cycle to
+        # one topic (e.g. {"engine_rpm":1600,"vehicle_speed":42,...} to
+        # wican/<slug>/pid). When we receive a JSON object payload, fan out
+        # each top-level key as its own reading. Per-metric topics with
+        # scalar payloads still flow through the legacy path below.
+        readings = self._fanout_json_payload(
+            payload, profile_pids, vehicle_id, parsed.source, now
         )
+        if readings is None:
+            value_num, value_text = self._parse_payload(
+                parsed.metric, payload, profile_pids, vehicle_id
+            )
+            if value_num is None and value_text is None:
+                return  # blank payload
+            readings = [
+                _PendingReading(
+                    vehicle_id=vehicle_id,
+                    time=now,
+                    metric=parsed.metric,
+                    value_num=value_num,
+                    value_text=value_text,
+                    source=parsed.source,
+                )
+            ]
+        if not readings:
+            return
+
         async with self._batch_lock:
-            self._batch.append(reading)
+            self._batch.extend(readings)
             full = len(self._batch) >= self._cfg.ingest_batch_max_rows
         if full:
             await self._flush()
-        await self._bus.publish(
-            TelemetryEvent(
-                vehicle_id=reading.vehicle_id,
-                time=reading.time,
-                metric=reading.metric,
-                value_num=reading.value_num,
-                value_text=reading.value_text,
-                source=reading.source,
+        for reading in readings:
+            await self._bus.publish(
+                TelemetryEvent(
+                    vehicle_id=reading.vehicle_id,
+                    time=reading.time,
+                    metric=reading.metric,
+                    value_num=reading.value_num,
+                    value_text=reading.value_text,
+                    source=reading.source,
+                )
             )
-        )
 
     async def _flush(self) -> None:
         async with self._batch_lock:
