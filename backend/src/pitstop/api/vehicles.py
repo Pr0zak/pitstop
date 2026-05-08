@@ -60,7 +60,7 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
         "pid_profile_id": row["pid_profile_id"],
         "last_seen_at": row["last_seen_at"],
         "last_metric": row["last_metric"],
-        "latest": row["latest"] if isinstance(row["latest"], dict) else {},
+        "latest": row["latest"] or {},
         "pid_profile": (
             {"name": row["profile_name"], "description": row["profile_description"]}
             if row["profile_name"] is not None

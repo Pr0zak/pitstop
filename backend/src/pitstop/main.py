@@ -90,8 +90,24 @@ async def lifespan(app: FastAPI):
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
     try:
+        async def _init_conn(conn: asyncpg.Connection) -> None:
+            # Register a JSON codec so JSONB columns deserialize to Python
+            # dicts/lists automatically (and dicts on the way in serialize
+            # to JSON). Without this asyncpg hands JSONB to the app as a
+            # raw `str` and every endpoint has to remember to json.loads().
+            for typ in ("jsonb", "json"):
+                await conn.set_type_codec(
+                    typ,
+                    encoder=json.dumps,
+                    decoder=json.loads,
+                    schema="pg_catalog",
+                )
+
         pool = await asyncpg.create_pool(
-            dsn=settings.asyncpg_dsn, min_size=1, max_size=10
+            dsn=settings.asyncpg_dsn,
+            min_size=1,
+            max_size=10,
+            init=_init_conn,
         )
         app.state.pg_pool = pool
         app.state.bus = bus
