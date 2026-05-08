@@ -9,7 +9,7 @@ bold "[Tier B] schema + seed checks"
 
 # 1. Tables present
 tables_csv="$(ct_psql "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema='public'")"
-expected=(vehicles pid_profiles pid_readings trips dtc_events vehicle_state settings lookup_units expense_categories fillups expenses pictures trip_categories)
+expected=(vehicles pid_profiles pid_readings trips dtc_events vehicle_state settings lookup_units expense_categories fillups expenses pictures trip_categories client_logs)
 for t in "${expected[@]}"; do
   if [[ ",${tables_csv}," == *",${t},"* ]]; then
     ok "table $t exists"
@@ -47,5 +47,10 @@ ok "honda-pilot-2019 profile seeded"
 n="$(ct_psql "SELECT count(*) FROM trip_categories")"
 [[ "$n" -ge 2 ]] || fail "trip_categories count=$n (expected ≥ 2)"
 ok "trip_categories = $n (≥ 2)"
+
+# 8. client_logs has both check constraints
+n="$(ct_psql "SELECT count(*) FROM information_schema.table_constraints WHERE table_name='client_logs' AND constraint_type='CHECK' AND constraint_name LIKE 'client_logs_%_check'")"
+[[ "$n" == "2" ]] || fail "client_logs check constraints count=$n (expected 2)"
+ok "client_logs source/level check constraints present"
 
 bold "[Tier B] PASS"

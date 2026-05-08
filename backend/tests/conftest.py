@@ -81,6 +81,7 @@ def test_app() -> FastAPI:
         health,
         imports,
         live_ws,
+        logs as logs_api,
         maintenance,
         profiles,
         readings,
@@ -115,6 +116,7 @@ def test_app() -> FastAPI:
     app.include_router(analytics.router)
     app.include_router(maintenance.router)
     app.include_router(live_ws.router)
+    app.include_router(logs_api.router)
     return app
 
 

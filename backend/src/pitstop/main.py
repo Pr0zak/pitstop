@@ -21,12 +21,14 @@ from .api import (
     maintenance,
     profiles,
     readings,
-    utils as utils_api,
 )
+from .api import logs as logs_api
 from .api import settings as settings_api
 from .api import trips as trips_api
+from .api import utils as utils_api
 from .api import vehicles as vehicles_api
 from .config import settings
+from .logging_handler import DbLogHandler, run_db_log_drainer
 from .workers.bus import bus
 from .workers.ha_mirror import HaMirror
 from .workers.ingest import MqttIngest
@@ -34,6 +36,12 @@ from .workers.trip_detector import TripDetector
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 log = logging.getLogger(__name__)
+
+# Install the depot handler at import time so any startup-phase warnings get
+# captured (the actual asyncio queue is wired up in lifespan once a loop
+# exists). Attaching to the root logger means every module's logger feeds it.
+db_log_handler = DbLogHandler()
+logging.getLogger().addHandler(db_log_handler)
 
 
 async def _seed_pid_profiles(pool: asyncpg.Pool) -> None:
@@ -77,6 +85,7 @@ async def lifespan(app: FastAPI):
     ingest_task: asyncio.Task | None = None
     trip_task: asyncio.Task | None = None
     ha_task: asyncio.Task | None = None
+    log_drain_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
@@ -87,6 +96,12 @@ async def lifespan(app: FastAPI):
         app.state.pg_pool = pool
         app.state.bus = bus
         await _seed_pid_profiles(pool)
+        # Bind the log handler now that we have a running loop.
+        loop = asyncio.get_running_loop()
+        db_log_handler.attach(loop)
+        log_drain_task = asyncio.create_task(
+            run_db_log_drainer(db_log_handler, pool), name="db-log-drainer"
+        )
         ingest = MqttIngest(pool=pool, bus_=bus, config=settings)
         trip_detector = TripDetector(pool=pool, bus_=bus, config=settings)
         ha_mirror = HaMirror(pool=pool, bus_=bus, config=settings)
@@ -102,7 +117,7 @@ async def lifespan(app: FastAPI):
             trip_detector.stop()
         if ha_mirror is not None:
             ha_mirror.stop()
-        for task in (ingest_task, trip_task, ha_task):
+        for task in (ingest_task, trip_task, ha_task, log_drain_task):
             if task is None:
                 continue
             task.cancel()
@@ -127,3 +142,4 @@ app.include_router(analytics.router)
 app.include_router(maintenance.router)
 app.include_router(live_ws.router)
 app.include_router(utils_api.router)
+app.include_router(logs_api.router)

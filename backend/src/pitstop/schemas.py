@@ -429,3 +429,56 @@ class ReminderUpcoming(BaseModel):
 class RemindersOut(BaseModel):
     overdue: list[ReminderOverdue]
     upcoming: list[ReminderUpcoming]
+
+
+# ---------------------------------------------------------------------------
+# Client logs (centralized log depot)
+# ---------------------------------------------------------------------------
+
+
+LogSource = Literal["phone", "web", "backend", "wican", "test"]
+LogLevel = Literal["debug", "info", "warn", "error"]
+
+
+class ClientLogEntry(BaseModel):
+    """One inbound log line from a client. ``ts`` is optional — when present
+    we store it as ``client_ts`` and let the server stamp ``ts`` itself so
+    the tail view sees server-arrival order."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ts: datetime | None = None
+    source: LogSource
+    level: LogLevel
+    message: str = Field(min_length=1, max_length=4000)
+    vehicle_id: UUID | None = None
+    device_id: str | None = Field(default=None, max_length=128)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClientLogIngest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    entries: list[ClientLogEntry] = Field(min_length=1, max_length=500)
+
+
+class ClientLogIngestResult(BaseModel):
+    accepted: int
+
+
+class ClientLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ts: datetime
+    source: str
+    level: str
+    message: str
+    vehicle_id: UUID | None = None
+    device_id: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+    client_ts: datetime | None = None
+
+
+class ClientLogDeleteResult(BaseModel):
+    deleted: int

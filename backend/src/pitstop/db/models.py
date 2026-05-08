@@ -439,3 +439,61 @@ class Picture(Base):
     kind: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     lastupdated_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Client logs (centralized log depot)
+# ---------------------------------------------------------------------------
+
+
+class ClientLog(Base):
+    """Centralized log entry from phone / web / wican / backend.
+
+    Not a hypertable: volume is expected to be low (warn/error from the
+    backend, occasional client diagnostics) and DELETEs for retention pruning
+    should stay cheap. ``ts`` is the server-arrival timestamp; ``client_ts``
+    preserves the timestamp the client reported (may differ — e.g. queued
+    while the phone was offline).
+    """
+
+    __tablename__ = "client_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('phone', 'web', 'backend', 'wican', 'test')",
+            name="client_logs_source_check",
+        ),
+        CheckConstraint(
+            "level IN ('debug', 'info', 'warn', 'error')",
+            name="client_logs_level_check",
+        ),
+        Index("ix_client_logs_ts", text("ts DESC")),
+        Index(
+            "ix_client_logs_source_level_ts",
+            "source",
+            "level",
+            text("ts DESC"),
+        ),
+        Index("ix_client_logs_vehicle_ts", "vehicle_id", text("ts DESC")),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    level: Mapped[str] = mapped_column(Text, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    vehicle_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("vehicles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    device_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    client_ts: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
