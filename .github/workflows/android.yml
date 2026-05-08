@@ -1,0 +1,108 @@
+name: android
+
+# Two roles in one workflow:
+#   - on every push that touches android/** → compile-check (assembleDebug)
+#     so we catch Kotlin / Compose breakage before tagging.
+#   - on every v* tag → build debug APK and attach it to the GitHub Release.
+#
+# Phase B / pre-1.0: ships unsigned debug APKs because the user is the only
+# consumer and "install unknown apps" works fine. When we want signed
+# releases (Play Internal track, real distribution), add ANDROID_KEYSTORE_B64
+# + ANDROID_KEYSTORE_PASSWORD + ANDROID_KEY_ALIAS + ANDROID_KEY_PASSWORD
+# secrets and split this into android-debug-build.yml + android-release.yml
+# the same way myvitals does.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "android/**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Leave empty for a compile-check only."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Compute version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${TAG#v}"
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            VERSION="0.0.0-${GITHUB_SHA::7}"
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "BUILD_VERSION_NAME=$VERSION" >> $GITHUB_ENV
+          echo "BUILD_VERSION_CODE=$GITHUB_RUN_NUMBER" >> $GITHUB_ENV
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build assembleDebug
+        working-directory: android
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew :app:assembleDebug --no-daemon --warning-mode=summary
+          else
+            gradle :app:assembleDebug --no-daemon --warning-mode=summary
+          fi
+
+      - name: Surface APK metadata
+        if: success()
+        run: |
+          APK=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n1)
+          if [ -n "$APK" ]; then
+            ls -lh "$APK"
+            echo "Debug APK built — Kotlin + Compose compile clean."
+          fi
+
+      - name: Stage release artifact
+        if: steps.ver.outputs.is_release == 'true'
+        id: stage
+        run: |
+          mkdir -p release
+          APK=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n1)
+          OUT="release/pitstop-${{ steps.ver.outputs.version }}-debug.apk"
+          cp "$APK" "$OUT"
+          (cd release && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256")
+          echo "apk=$OUT" >> $GITHUB_OUTPUT
+
+      - name: Attach APK to GitHub Release
+        if: steps.ver.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          files: |
+            release/*.apk
+            release/*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
