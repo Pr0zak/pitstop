@@ -23,6 +23,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
+def _slugify(s: str) -> str:
+    """Best-effort slug from a free-text name. Lowercases, swaps non-allowed
+    chars for ``-``, collapses runs, strips leading/trailing ``-``. Returns
+    ``""`` for input that has no slug-able characters at all so the caller
+    can decide whether to fall back further (e.g. random UUID prefix)."""
+    import re
+
+    out = re.sub(r"[^a-z0-9_-]+", "-", s.lower())
+    out = re.sub(r"-{2,}", "-", out).strip("-")
+    return out
+
+
 class VehicleBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,7 +67,28 @@ class VehicleBase(BaseModel):
 
 
 class VehicleCreate(VehicleBase):
-    pass
+    # On create only, slug is optional — we'll derive it from `name` if blank.
+    slug: str | None = None  # type: ignore[assignment]
+
+    @field_validator("slug")
+    @classmethod
+    def _slug_optional_format(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if not _SLUG_RE.match(v):
+            raise ValueError("slug must match [a-z0-9_-]+")
+        return v
+
+    def effective_slug(self) -> str:
+        """Either the explicit slug, or one derived from ``name``."""
+        if self.slug:
+            return self.slug
+        derived = _slugify(self.name)
+        if not derived:
+            raise ValueError(
+                "could not derive slug from name; please supply slug explicitly"
+            )
+        return derived
 
 
 class VehicleUpdate(BaseModel):

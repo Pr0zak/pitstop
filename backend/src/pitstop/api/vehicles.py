@@ -128,7 +128,7 @@ async def create_vehicle(
                 )
                 RETURNING id
                 """,
-                body.slug, body.name, body.description, body.make, body.model,
+                body.effective_slug(), body.name, body.description, body.make, body.model,
                 body.year, body.vin, body.plate, body.fuelio_guid,
                 body.dist_unit, body.fuel_unit, body.consumption_unit,
                 body.tank_count, body.tank1_type, body.tank2_type,

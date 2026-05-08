@@ -12,6 +12,8 @@ const showModal = ref(false);
 const editing = ref<Vehicle | null>(null);
 const form = ref({
   name: "",
+  slug: "",
+  slug_touched: false,
   description: "",
   year: undefined as number | undefined,
   make: "",
@@ -20,6 +22,24 @@ const form = ref({
   fuelio_guid: "",
   active: true,
 });
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function onNameInput() {
+  if (!form.value.slug_touched) {
+    form.value.slug = slugify(form.value.name);
+  }
+}
+function onSlugInput() {
+  form.value.slug_touched = true;
+  form.value.slug = slugify(form.value.slug);
+}
 const submitError = ref<string | null>(null);
 const submitting = ref(false);
 
@@ -27,6 +47,8 @@ function openCreate() {
   editing.value = null;
   form.value = {
     name: "",
+    slug: "",
+    slug_touched: false,
     description: "",
     year: undefined,
     make: "",
@@ -43,6 +65,8 @@ function openEdit(v: Vehicle) {
   editing.value = v;
   form.value = {
     name: v.name ?? "",
+    slug: v.slug ?? "",
+    slug_touched: true,
     description: v.description ?? "",
     year: v.year ?? undefined,
     make: v.make ?? "",
@@ -61,6 +85,7 @@ async function submit() {
   try {
     const payload: Partial<Vehicle> = {
       name: form.value.name.trim(),
+      slug: form.value.slug.trim() || undefined, // backend derives if blank
       description: form.value.description.trim() || null,
       year: form.value.year ?? null,
       make: form.value.make.trim() || null,
@@ -156,7 +181,24 @@ async function remove(v: Vehicle) {
             </button>
           </header>
           <form @submit.prevent="submit">
-            <label>Name<input v-model="form.name" required /></label>
+            <label>
+              Name
+              <input v-model="form.name" required @input="onNameInput" />
+            </label>
+            <label>
+              Slug
+              <input
+                v-model="form.slug"
+                placeholder="auto-derived from name"
+                pattern="[a-z0-9_-]+"
+                @input="onSlugInput"
+              />
+              <small class="muted">
+                Lowercase letters, digits, <code>_</code>, <code>-</code>.
+                This is the topic prefix the WiCAN device uses
+                (<code>wican/&lt;slug&gt;/...</code>).
+              </small>
+            </label>
             <label>Description<input v-model="form.description" /></label>
             <div class="grid">
               <label>Year<input type="number" v-model.number="form.year" /></label>
