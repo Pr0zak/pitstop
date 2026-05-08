@@ -29,6 +29,7 @@ Read [PLAN.md](./PLAN.md) and [docs/decisions.md](./docs/decisions.md) before ma
 - **HA plumbing built but disabled** by default. Toggle in Settings → Home Assistant.
 - **Profile JSONs seed the DB**, then DB is the source of truth. Files in `pid_profiles/` are the seed only.
 - **Multi-vehicle from day one** — your garage already has Pilot + Truck + SeaDoo per the Fuelio export.
+- **Web/phone parity, server is source of truth** (ADR-013). Vue frontend and Android app must keep feature parity for shared workflows. The Android app is collect+ship+cache; never persists authoritative state. Both clients consume the same backend API contract — design endpoints first.
 
 ## UI design workflow
 
@@ -48,7 +49,7 @@ When demonstrating with sample data, write it to `data/` (gitignored) or `/tmp/`
 
 ## Build phase
 
-Currently **planning**. Implementation starts at Task #1 (scaffold + Compose). See [TODO.md](./TODO.md) for the 18-task list.
+Phase A + B + C complete; deployed at CT 231 / `10.0.0.83`. Future work follows [ADR-013](./docs/decisions.md#adr-013--webphone-parity-server-is-source-of-truth) — backend contract first, then web + Android consume it.
 
 ## Repo
 

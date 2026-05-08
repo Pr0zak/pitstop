@@ -121,3 +121,25 @@ ADR-style. Append-only. Each decision has Context → Decision → Consequence.
 **Decision.** Use [claude.ai/design](https://claude.ai/design) for visual mockup help, layout planning, and component variants before implementing in Vue.
 
 **Consequence.** Faster iteration on layouts. Not a substitute for actually wiring up the components — just shortens the "what should this look like" loop.
+
+---
+
+## ADR-013 — Web/phone parity; server is source of truth
+
+**Context.** Two clients ship for pitstop: the Vue web dashboard (laptop / desktop UX, browsing + analytics) and the Android app (driveway + pump + on-the-road UX). Without a rule, they'll drift: a fuel-quick-add on the phone with no matching read on the web, or a settings field that only one client respects, etc. Worse, the phone is tempted to keep authoritative state of its own ("just in case the broker's down") which guarantees future merge conflicts when the phone reconnects.
+
+**Decision.**
+
+1. **Feature parity** for shared workflows. Anything that produces or queries persisted data must be reachable from both clients. Acceptable asymmetries: write-only flows that are mobile-native by design (fuel quick-add with auto-GPS, photo capture) need only a *read* counterpart on web; deeply technical editors (PID profile JSON, alembic-style admin) can stay web-only. Where there's ambiguity, ship parity.
+2. **The Android app is collect+ship+cache, not own.** It may cache server records locally for fast reads (last fillups, vehicle config, recent trips) and may buffer writes when offline. It **never persists authoritative state**. When a write is buffered offline, it lands on the server at next reconnect and the cache is reconciled from the server's response.
+3. **Server is the single source of truth.** Every entity (vehicles, trips, readings, fillups, expenses, settings, logs, profiles) lives in TimescaleDB / Postgres. Both clients are read-through against the same REST API; live data is read-through against the same WebSocket.
+4. **One contract, two consumers.** API endpoint and payload shape are designed up front. The web and Android implementations consume the same wire schema. New features add a backend endpoint first.
+
+**Consequence.**
+
+- More planning before adding mobile-only or web-only features — but no merge surprises.
+- Phone offline behaviour is deliberate: outbox pattern for writes, cache-as-fallback for reads.
+- Some duplication of UI work across trees, mitigated by sharing the backend contract.
+- When the user logs a fillup at a pump, walks home, opens the laptop, the row is already there. When they edit a vehicle on the laptop, the phone sees it on the next refresh.
+
+This rule was set by the user on 2026-05-08 after Phase B; backfilling parity for views the phone doesn't yet have (trips list, analytics, fuel history, maintenance reminders) is on the Phase D / Android-2 roadmap.
