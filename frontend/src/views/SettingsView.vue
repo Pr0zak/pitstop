@@ -3,7 +3,9 @@ import { ref, onMounted, computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useSettingsStore } from "@/stores/settings";
-import { Save, Plug, RefreshCw } from "lucide-vue-next";
+import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon } from "lucide-vue-next";
+import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
+import { parseLatLon, roundCoords } from "@/utils/parseLatLon";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -128,6 +130,37 @@ async function testHa() {
   }
 }
 
+const showPicker = ref(false);
+const shareLink = ref("");
+const shareLinkStatus = ref<"idle" | "ok" | "fail">("idle");
+const shareLinkMsg = ref<string | null>(null);
+
+function applyShareLink() {
+  const parsed = parseLatLon(shareLink.value);
+  if (!parsed) {
+    shareLinkStatus.value = "fail";
+    shareLinkMsg.value =
+      "Could not extract lat/lon. Paste a long Google Maps URL (the kind with @LAT,LON in it), or a `LAT, LON` pair. Short `maps.app.goo.gl` links need to be opened first.";
+    return;
+  }
+  const r = roundCoords(parsed.lat, parsed.lon);
+  homeLat.value = r.lat;
+  homeLon.value = r.lon;
+  shareLinkStatus.value = "ok";
+  shareLinkMsg.value = `Set to ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}`;
+  shareLink.value = "";
+  setTimeout(() => {
+    shareLinkStatus.value = "idle";
+    shareLinkMsg.value = null;
+  }, 4_000);
+}
+
+function onPicked(lat: number, lon: number) {
+  homeLat.value = lat;
+  homeLon.value = lon;
+  showPicker.value = false;
+}
+
 function geolocate() {
   if (!("geolocation" in navigator)) {
     alert("Geolocation not available in this browser");
@@ -202,9 +235,49 @@ function geolocate() {
         </label>
       </div>
       <div class="actions">
+        <button type="button" @click="showPicker = true">
+          <MapPin :size="14" /> Pick on map
+        </button>
         <button type="button" @click="geolocate">Use current location</button>
       </div>
+      <div class="share-row">
+        <label>
+          <span class="row-label"><LinkIcon :size="12" /> Paste shared link or coords</span>
+          <div class="share-input-row">
+            <input
+              type="text"
+              v-model="shareLink"
+              placeholder="https://www.google.com/maps/place/.../@39.0,-94.6,15z … or 39.0, -94.6"
+              @keydown.enter.prevent="applyShareLink"
+            />
+            <button type="button" @click="applyShareLink" :disabled="!shareLink.trim()">
+              Apply
+            </button>
+          </div>
+          <small
+            v-if="shareLinkStatus === 'ok'"
+            class="badge success"
+          >{{ shareLinkMsg }}</small>
+          <small
+            v-else-if="shareLinkStatus === 'fail'"
+            class="muted warn-text"
+          >{{ shareLinkMsg }}</small>
+          <small v-else class="muted">
+            Supports Google Maps long URLs, Apple Maps, OpenStreetMap, or a plain
+            <code>lat, lon</code> pair. Short links (<code>maps.app.goo.gl/...</code>)
+            need to be opened in a browser first.
+          </small>
+        </label>
+      </div>
     </section>
+
+    <HomeLocationPicker
+      v-if="showPicker"
+      :initial-lat="homeLat"
+      :initial-lon="homeLon"
+      @pick="onPicked"
+      @cancel="showPicker = false"
+    />
 
     <section class="card">
       <h3>Home Assistant mirror</h3>
@@ -347,5 +420,23 @@ label.cb {
 }
 small {
   font-size: 0.75rem;
+}
+.share-row {
+  margin-top: 0.7rem;
+}
+.share-row .row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.share-input-row {
+  display: flex;
+  gap: 0.4rem;
+}
+.share-input-row input {
+  flex: 1;
+}
+.warn-text {
+  color: var(--c-warn);
 }
 </style>

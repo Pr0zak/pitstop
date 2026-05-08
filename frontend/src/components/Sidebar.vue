@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import {
   LayoutDashboard,
@@ -15,6 +15,33 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-vue-next";
+import PitstopLogo from "@/components/logos/PitstopLogo.vue";
+import {
+  STORAGE_KEY as LOGO_KEY,
+  DEFAULT_LOGO,
+  type LogoName,
+} from "@/components/logos/PitstopLogos";
+
+const logoName = ref<LogoName>(DEFAULT_LOGO);
+function loadLogo() {
+  try {
+    const v = localStorage.getItem(LOGO_KEY) as LogoName | null;
+    if (v) logoName.value = v;
+  } catch {
+    /* ignore */
+  }
+}
+function onLogoChanged(e: Event) {
+  const detail = (e as CustomEvent<LogoName>).detail;
+  if (detail) logoName.value = detail;
+}
+onMounted(() => {
+  loadLogo();
+  window.addEventListener("pitstop-logo-changed", onLogoChanged);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("pitstop-logo-changed", onLogoChanged);
+});
 
 const COLLAPSED_KEY = "pitstop_sidebar_collapsed";
 const collapsed = ref<boolean>(
@@ -63,10 +90,12 @@ const widthVar = computed(() =>
 
 <template>
   <aside class="sidebar" :class="{ collapsed }" :style="{ width: widthVar }">
-    <div class="brand">
-      <div class="logo">PS</div>
+    <RouterLink to="/logos" class="brand" title="Pick a logo">
+      <div class="logo">
+        <PitstopLogo :name="logoName" :size="22" color="var(--c-accent)" accent="var(--c-warn)" />
+      </div>
       <span v-if="!collapsed" class="brand-name">pitstop</span>
-    </div>
+    </RouterLink>
     <nav>
       <RouterLink
         v-for="item in items"

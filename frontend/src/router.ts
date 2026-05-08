@@ -73,6 +73,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import("./views/SettingsView.vue"),
     meta: { title: "Settings" },
   },
+  {
+    path: "/logos",
+    name: "logos",
+    component: () => import("./views/LogosView.vue"),
+    meta: { title: "Logo concepts" },
+  },
   // catch-all → overview
   { path: "/:catchAll(.*)", redirect: "/" },
 ];
