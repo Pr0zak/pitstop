@@ -1,0 +1,74 @@
+"""Aliases for WiCAN's auto-named Mode 01 / Honda PIDs → pitstop canonical names.
+
+When the user runs WiCAN's Standard PIDs scan, the device auto-names each PID
+``<HEX>-<Description>`` (e.g. ``0C-EngineRPM``, ``05-EngineCoolantTemp``).
+Pitstop's frontend gauges, profile JSON, and analytics queries look for the
+shorter canonical names (e.g. ``engine_rpm``, ``coolant_temp``).
+
+Renaming each PID in the WiCAN UI works but is tedious and is also lost on a
+factory reset. Translating at ingest is the cheaper path: the user can leave
+the WiCAN's Standard PIDs untouched, and we map them on the way into the DB.
+
+Anything not in this map passes through unchanged so Honda-specific metrics
+(``A6-Odometer``, ``9D-EngineFuelRate``, ``67-EngineCoolantTemp1`` …) are
+still recorded — they just stay under WiCAN's hex-prefixed names until or
+unless we add a UI for them.
+"""
+from __future__ import annotations
+
+# WiCAN-named → pitstop canonical.
+WICAN_TO_CANONICAL: dict[str, str] = {
+    # Standard OBD-II Mode 01 PIDs the gauges + analytics expect.
+    "04-CalcEngineLoad": "engine_load",
+    "05-EngineCoolantTemp": "coolant_temp",
+    "0B-IntakeManiAbsPress": "intake_manifold_pressure",
+    "0C-EngineRPM": "engine_rpm",
+    "0D-VehicleSpeed": "vehicle_speed",
+    "0E-TimingAdvance": "timing_advance",
+    "0F-IntakeAirTemp": "intake_air_temp",
+    "10-MAFAirFlowRate": "maf_air_flow",
+    "11-ThrottlePosition": "throttle_position",
+    "1F-TimeSinceEngStart": "time_since_engine_start",
+    "21-DistanceMILOn": "distance_mil_on",
+    "2F-FuelTankLevel": "fuel_level",
+    "31-DistanceSinceCodeClear": "distance_since_code_clear",
+    "33-AbsBaroPres": "barometric_pressure",
+    "42-ControlModuleVolt": "control_module_voltage",
+    "43-AbsLoadValue": "absolute_load",
+    "45-RelThrottlePos": "relative_throttle_position",
+    "5C-EngineOilTemp": "engine_oil_temp",
+    "62-ActualEngTorqPct": "engine_torque_pct",
+    "63-EngRefTorq": "engine_reference_torque",
+    "9D-EngineFuelRate": "fuel_rate",
+    "A6-Odometer": "odometer",
+    # Fuel trims — paired bank (1) maps to canonical, bank 2 keeps its suffix.
+    "06-ShortFuelTrimBank1": "stft_b1",
+    "07-LongFuelTrimBank1": "ltft_b1",
+    "08-ShortFuelTrimBank2": "stft_b2",
+    "09-LongFuelTrimBank2": "ltft_b2",
+    "55-ShortSecOxyTrimBank1": "stft_sec_b1",
+    "56-LongSecOxyTrimBank1": "ltft_sec_b1",
+    "57-ShortSecOxyTrimBank2": "stft_sec_b2",
+    "58-LongSecOxyTrimBank2": "ltft_sec_b2",
+    # Honda dual-sensor variants — prefer Sensor1/A as the canonical when
+    # both are present, since the Mode 01 PID (05/0F/10) is the same value
+    # the dashboard uses anyway. Sensor2/B stay under WiCAN names.
+    "67-EngineCoolantTemp1": "coolant_temp",
+    "68-IntakeAirTempSens1": "intake_air_temp",
+    "66-MAFSensorA": "maf_air_flow",
+    # WiCAN's reserved synthetic key — drop it; pitstop has its own ts.
+    "timestamp": "_drop_",
+}
+
+
+def normalise(metric: str) -> str | None:
+    """Translate a WiCAN-published metric name to pitstop's canonical name.
+
+    Returns the canonical name, the original name (if no mapping exists), or
+    ``None`` to drop the metric (used for synthetic ``timestamp``-style keys
+    that duplicate values pitstop already records server-side).
+    """
+    target = WICAN_TO_CANONICAL.get(metric)
+    if target == "_drop_":
+        return None
+    return target if target is not None else metric

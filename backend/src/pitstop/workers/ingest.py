@@ -31,6 +31,7 @@ from ..config import Settings
 from ..config import settings as default_settings
 from .bus import EventBus, TelemetryEvent
 from .bus import bus as default_bus
+from .wican_aliases import normalise
 
 log = logging.getLogger(__name__)
 
@@ -354,6 +355,13 @@ class MqttIngest:
             metric = k.strip()
             if not metric:
                 continue
+            # Translate WiCAN auto-names ("0C-EngineRPM") to pitstop canonical
+            # names ("engine_rpm") so the frontend gauges + analytics work
+            # without renaming every PID in the WiCAN UI.
+            canonical = normalise(metric)
+            if canonical is None:
+                continue  # explicitly-dropped key (e.g. WiCAN's synthetic timestamp)
+            metric = canonical
             value_num: float | None = None
             value_text: str | None = None
             if isinstance(v, bool):
