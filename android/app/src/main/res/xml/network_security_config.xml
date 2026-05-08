@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- LAN-only at launch (ADR-011). HTTP plaintext to RFC1918 + tailscale CGNAT
+         is acceptable since the path is encrypted by Tailscale (WireGuard). -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

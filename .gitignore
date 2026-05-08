@@ -1,8 +1,8 @@
 # Privacy-first defaults — see CLAUDE.md "Privacy" section.
 # Never commit personal/private data to the public repo.
 
-# Local data (Fuelio imports, photos, exports)
-data/
+# Local data (Fuelio imports, photos, exports) — top-level only, not Kotlin packages
+/data/
 backend/data/
 frontend/data/
 
@@ -38,6 +38,16 @@ photos/
 *.keystore
 keystore.properties
 google-services.json
+
+# Android Gradle build artifacts
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.apk
+*.aab
 
 # Real (non-generic) PID profiles
 pid_profiles/private-*.json

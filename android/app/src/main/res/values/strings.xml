@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pitstop</string>
+
+    <!-- Bridge service -->
+    <string name="bridge_notification_title">Pitstop bridge</string>
+    <string name="bridge_action_stop">Stop</string>
+    <string name="bridge_state_idle">Idle</string>
+    <string name="bridge_state_scanning">Scanning for WiCAN…</string>
+    <string name="bridge_state_connecting">Connecting to %1$s…</string>
+    <string name="bridge_state_connected">Connected — publishing %1$d metrics</string>
+    <string name="bridge_state_disconnected">BLE disconnected — retrying</string>
+    <string name="bridge_state_error">Error: %1$s</string>
+
+    <!-- Config -->
+    <string name="config_title">Pitstop configuration</string>
+    <string name="config_broker_url">Broker URL</string>
+    <string name="config_broker_url_hint">tcp://your-pitstop-ip:1883</string>
+    <string name="config_mqtt_user">MQTT username</string>
+    <string name="config_mqtt_password">MQTT password</string>
+    <string name="config_vehicle_slug">Vehicle slug</string>
+    <string name="config_vehicle_slug_hint">e.g. my-car</string>
+    <string name="config_api_base">API base URL</string>
+    <string name="config_api_base_hint">http://your-pitstop-ip:8000</string>
+    <string name="config_ingest_token">Ingest token</string>
+    <string name="config_ble_device">BLE device</string>
+    <string name="config_scan">Scan</string>
+    <string name="config_save">Save</string>
+    <string name="config_first_run_hint">First-run note: this app reaches your pitstop broker over LAN. Off-network use requires Tailscale on this phone with \"Use Tailscale subnets\" enabled.</string>
+</resources>
