@@ -92,7 +92,7 @@ const widthVar = computed(() =>
   <aside class="sidebar" :class="{ collapsed }" :style="{ width: widthVar }">
     <RouterLink to="/logos" class="brand" title="Pick a logo">
       <div class="logo">
-        <PitstopLogo :name="logoName" :size="22" color="var(--c-accent)" accent="var(--c-warn)" />
+        <PitstopLogo :name="logoName" :size="22" color="#ffffff" accent="#ffe9a8" />
       </div>
       <span v-if="!collapsed" class="brand-name">pitstop</span>
     </RouterLink>

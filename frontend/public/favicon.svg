@@ -1,0 +1,33 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+>
+  <!-- pitstop favicon — arc-ticks-redline (default brand mark).
+       Hard-coded colors so the SVG renders correctly outside the app's
+       theme context. -->
+  <rect width="64" height="64" rx="12" fill="#0e1116"/>
+  <!-- Main arc 180° → 45° (left and top section) -->
+  <path d="M 10 44 A 22 22 0 0 1 47.56 28.44"
+        stroke="#2f81f7" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+  <!-- Redline arc 45° → 0° -->
+  <path d="M 47.56 28.44 A 22 22 0 0 1 54 44"
+        stroke="#d29922" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+  <!-- Ticks: 3 in accent, last 2 in warn -->
+  <line x1="10"    y1="44"    x2="14"    y2="44"
+        stroke="#2f81f7" stroke-width="3" stroke-linecap="round"/>
+  <line x1="16.44" y1="28.44" x2="19.27" y2="31.27"
+        stroke="#2f81f7" stroke-width="3" stroke-linecap="round"/>
+  <line x1="32"    y1="22"    x2="32"    y2="26"
+        stroke="#2f81f7" stroke-width="3" stroke-linecap="round"/>
+  <line x1="47.56" y1="28.44" x2="44.73" y2="31.27"
+        stroke="#d29922" stroke-width="3" stroke-linecap="round"/>
+  <line x1="54"    y1="44"    x2="50"    y2="44"
+        stroke="#d29922" stroke-width="3" stroke-linecap="round"/>
+  <!-- Needle into the redline -->
+  <path d="M 32 44 L 50.5 32.7"
+        stroke="#2f81f7" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="50.5" cy="32.7" r="3.5" fill="#d29922"/>
+  <circle cx="32"   cy="44"   r="3.5" fill="#2f81f7"/>
+</svg>
