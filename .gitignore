@@ -1,0 +1,72 @@
+# Privacy-first defaults — see CLAUDE.md "Privacy" section.
+# Never commit personal/private data to the public repo.
+
+# Local data (Fuelio imports, photos, exports)
+data/
+backend/data/
+frontend/data/
+
+# Fuelio / OBD raw exports (privacy)
+*.csv
+*.csv.zip
+*.fuelio
+fuelio-*/
+
+# Photos / blobs
+photos/
+*.jpg
+*.jpeg
+*.png
+!frontend/src/assets/**/*.png
+!frontend/src/assets/**/*.jpg
+!docs/**/*.png
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+*.key
+*.crt
+
+# Android signing
+*.jks
+*.keystore
+keystore.properties
+google-services.json
+
+# Real (non-generic) PID profiles
+pid_profiles/private-*.json
+pid_profiles/*-real.json
+
+# DB dumps / backups
+*.sql.gz
+*.dump
+backups/
+
+# Build / runtime
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+frontend/dist/
+backend/dist/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude Code local config (contains absolute paths, agent defs)
+.claude/
+
+# Docker volumes (if mounted at repo root accidentally)
+db_data/
+mosquitto_data/
+mosquitto_log/
