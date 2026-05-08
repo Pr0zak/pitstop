@@ -37,5 +37,13 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "N"]
 
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's standard pattern uses Depends(...)/Query(...) in defaults; B008
+# would force a wrapper for every dependency. N803/N806 occur where we
+# accept ``from`` as a query alias (Python keyword) so we use ``from_``.
+"src/pitstop/api/*.py" = ["B008", "N803"]
+# Tests use whatever capitalisation makes the assertion clearest.
+"tests/*.py" = ["B008", "N802", "N803"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,8 +1,12 @@
 import shutil
+from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter
+import asyncpg
+from fastapi import APIRouter, Depends
 from sqlalchemy import text
 
+from ..db.deps import get_pool
 from ..db.session import engine
 from ..version import BUILD_TIME, GIT_SHA, VERSION
 
@@ -36,3 +40,27 @@ async def health_db() -> dict[str, str]:
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@router.get("/health/ingest")
+async def health_ingest(pool: asyncpg.Pool = Depends(get_pool)) -> dict[str, Any]:
+    """Most recent pid_readings row across all vehicles, with lag."""
+    async with pool.acquire() as conn:
+        last = await conn.fetchval(
+            "SELECT max(time) FROM pid_readings"
+        )
+    if last is None:
+        return {"ok": False, "last_message_at": None, "lag_s": None}
+    now = datetime.now(UTC)
+    lag = max((now - last).total_seconds(), 0.0)
+    # Considered healthy if we've heard within the last 10 minutes; tunable.
+    return {"ok": lag < 600.0, "last_message_at": last.isoformat(), "lag_s": lag}
+
+
+@router.get("/health/trips")
+async def health_trips(pool: asyncpg.Pool = Depends(get_pool)) -> dict[str, int]:
+    async with pool.acquire() as conn:
+        n = await conn.fetchval(
+            "SELECT count(*) FROM trips WHERE ended_at IS NULL"
+        )
+    return {"open_trips": int(n or 0)}
