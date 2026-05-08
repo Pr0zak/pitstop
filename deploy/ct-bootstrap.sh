@@ -30,6 +30,18 @@ systemctl restart docker
 echo "[ct-bootstrap] /opt/pitstop layout"
 mkdir -p /opt/pitstop /opt/pitstop/data/db /opt/pitstop/data/mosquitto /opt/pitstop/data/photos /opt/pitstop/data/backups
 
+echo "[ct-bootstrap] disk monitoring cron"
+if [ -f /opt/pitstop/deploy/disk-cron.sh ]; then
+  install -m 0755 /opt/pitstop/deploy/disk-cron.sh /usr/local/bin/pitstop-disk-cron
+  cat > /etc/cron.daily/pitstop-disk <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/pitstop-disk-cron
+EOF
+  chmod 0755 /etc/cron.daily/pitstop-disk
+  install -d -m 0755 /var/log
+  touch /var/log/pitstop-disk.log
+fi
+
 echo "[ct-bootstrap] timezone $TZ_VAL"
 ln -sf "/usr/share/zoneinfo/$TZ_VAL" /etc/localtime || true
 
