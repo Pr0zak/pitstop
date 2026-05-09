@@ -64,6 +64,24 @@ class WiCanBleManager(
     }
 
     override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
+        // Diagnostic: dump every advertised service + each characteristic's
+        // properties bitmap. When the static UUID list misses, we want
+        // ground-truth so we can patch the candidate list rather than
+        // guess from the firmware source.
+        val discoveredSummary = gatt.services.joinToString("; ") { svc ->
+            val chars = svc.characteristics.joinToString(",") { c ->
+                "${c.uuid}/0x${Integer.toHexString(c.properties)}"
+            }
+            "${svc.uuid}[${chars}]"
+        }
+        logBuffer?.info(
+            "ble services discovered",
+            mapOf(
+                "count" to gatt.services.size,
+                "services" to discoveredSummary.take(800),
+            ),
+        )
+
         for (uuids in CANDIDATE_PROFILES) {
             val service = gatt.getService(uuids.serviceUuid) ?: continue
             val rxChar = service.getCharacteristic(uuids.rxUuid) ?: continue
