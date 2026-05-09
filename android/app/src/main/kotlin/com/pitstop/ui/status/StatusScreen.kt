@@ -36,10 +36,18 @@ import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import com.pitstop.service.BridgePhase
 import com.pitstop.ui.components.PillState
 import com.pitstop.ui.components.StatusPill
 import kotlin.math.max
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,16 +56,32 @@ fun StatusScreen(
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val refreshing = remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
             com.pitstop.ui.components.PitstopTopAppBar(title = "Home")
         },
     ) { padding ->
+        PullToRefreshBox(
+            isRefreshing = refreshing.value,
+            onRefresh = {
+                refreshing.value = true
+                coroutineScope.launch {
+                    viewModel.refreshHomeData()
+                    delay(800)
+                    refreshing.value = false
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -131,6 +155,21 @@ fun StatusScreen(
                     Text("Open Live in browser")
                 }
             }
+
+            // Footer — version + build identity. Useful at install
+            // troubleshooting time so the user can match what's on the
+            // phone against the GitHub release tag without digging into
+            // the OS app-info screen.
+            Spacer(Modifier.size(4.dp))
+            Text(
+                "pitstop  v${com.pitstop.BuildConfig.VERSION_NAME}  ·  build ${com.pitstop.BuildConfig.VERSION_CODE}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Spacer(Modifier.size(20.dp))
+        }
         }
     }
 }
