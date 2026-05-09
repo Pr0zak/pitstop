@@ -121,6 +121,13 @@ class WiCanBleManager(
     override fun onServicesInvalidated() {
         rx = null
         tx = null
+        // Tell the foreground service the link is gone so it can flip phase
+        // back to Disconnected and schedule a reconnect with backoff. Without
+        // this, the service stays in Connected phase, the poll loop keeps
+        // queueing writes that all silently drop, and we get hundreds of
+        // "ble write skipped" lines without ever triggering recovery.
+        logBuffer?.info("ble services invalidated")
+        stateCallback?.onConnectionStateChange(ConnectionState.DISCONNECTED)
     }
 
     @SuppressLint("MissingPermission")
@@ -151,9 +158,18 @@ class WiCanBleManager(
         stateCallback?.onConnectionStateChange(ConnectionState.DISCONNECTED)
     }
 
+    /** Throttle for the "no rx characteristic" warn — log at most once per
+     * 5 s while the rx target is null, so a transient disconnect doesn't
+     * spam hundreds of identical lines into the depot. */
+    private var lastSkippedWarnAt: Long = 0
+
     fun writeCommand(ascii: String) {
         val target = rx ?: run {
-            logBuffer?.warn("ble write skipped: no rx characteristic")
+            val now = System.currentTimeMillis()
+            if (now - lastSkippedWarnAt > 5_000L) {
+                lastSkippedWarnAt = now
+                logBuffer?.warn("ble write skipped: no rx characteristic (will reconnect)")
+            }
             return
         }
         logBuffer?.debug("ble write", mapOf("cmd" to ascii.trim()))
