@@ -52,11 +52,20 @@ class UpdateChecker @Inject constructor(
                     "update check",
                     mapOf("current" to current, "latest" to latestTag, "newer" to newer),
                 )
+                // Pick the .apk asset (CI publishes "pitstop-<ver>-debug.apk"
+                // alongside its sha256 sidecar). We deliberately ignore the
+                // .sha256 file and any other extras.
+                val apk = parsed.assets.firstOrNull {
+                    it.name.endsWith(".apk", ignoreCase = true)
+                }
                 UpdateInfo(
                     currentVersion = current,
                     latestVersion = latestTag,
                     isNewer = newer,
                     releaseUrl = parsed.htmlUrl,
+                    apkUrl = apk?.browserDownloadUrl,
+                    apkAssetName = apk?.name,
+                    apkSizeBytes = apk?.size ?: 0L,
                     notes = parsed.body.orEmpty().take(2_000),
                 )
             }
@@ -101,6 +110,15 @@ class UpdateChecker @Inject constructor(
         @kotlinx.serialization.SerialName("tag_name") val tagName: String,
         @kotlinx.serialization.SerialName("html_url") val htmlUrl: String,
         val body: String? = null,
+        val assets: List<GhAsset> = emptyList(),
+    )
+
+    @Serializable
+    private data class GhAsset(
+        val name: String,
+        @kotlinx.serialization.SerialName("browser_download_url")
+        val browserDownloadUrl: String,
+        val size: Long = 0L,
     )
 }
 
@@ -109,5 +127,10 @@ data class UpdateInfo(
     val latestVersion: String,
     val isNewer: Boolean,
     val releaseUrl: String,
+    /** Direct download URL for the published APK asset, if any. */
+    val apkUrl: String? = null,
+    /** Asset filename (used for the on-disk Downloads/-… path). */
+    val apkAssetName: String? = null,
+    val apkSizeBytes: Long = 0L,
     val notes: String,
 )

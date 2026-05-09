@@ -18,6 +18,12 @@
     <!-- Notifications (Android 13+) — required for the foreground service notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- In-app update flow: download the APK from GitHub Releases via
+         DownloadManager and open the system package installer. The OS
+         still prompts the user to grant "Install unknown apps" the first
+         time it's used. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Bluetooth (Android 12+ runtime perms) -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"

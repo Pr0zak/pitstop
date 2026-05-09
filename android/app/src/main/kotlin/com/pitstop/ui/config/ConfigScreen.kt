@@ -87,8 +87,12 @@ fun ConfigScreen(
                 is ConfigToast.FlushedError -> "Flush failed: ${t.message}"
                 is ConfigToast.UpdateUpToDate -> "You're on the latest (v${t.current})"
                 is ConfigToast.UpdateAvailable ->
-                    "v${t.latest} available — open Home to download"
+                    "v${t.latest} available — tap Download to install"
                 is ConfigToast.UpdateCheckError -> "Update check failed: ${t.message}"
+                is ConfigToast.UpdateDownloadStarted ->
+                    "Downloading v${t.version}… installer will open when ready"
+                ConfigToast.UpdateDownloadFailed ->
+                    "Download failed — check Logs and try again"
             }
             snackbarHostState.showSnackbar(msg)
         }
@@ -171,7 +175,9 @@ fun ConfigScreen(
                 checking = checkingUpdate,
                 latestVersionFound = latestUpdate?.latestVersion,
                 latestIsNewer = latestUpdate?.isNewer == true,
+                hasApkAsset = latestUpdate?.apkUrl != null,
                 onCheck = { viewModel.checkForUpdates() },
+                onDownload = { viewModel.downloadAndInstall() },
             )
 
             // Save bar — sticky-ish at the very bottom of the scroll.
@@ -582,7 +588,9 @@ private fun AppSection(
     checking: Boolean,
     latestVersionFound: String?,
     latestIsNewer: Boolean,
+    hasApkAsset: Boolean,
     onCheck: () -> Unit,
+    onDownload: () -> Unit,
 ) {
     SettingsSection(title = "App") {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -614,6 +622,24 @@ private fun AppSection(
                     )
                 } else {
                     Text("Check now")
+                }
+            }
+        }
+        if (latestIsNewer && latestVersionFound != null) {
+            Spacer(Modifier.size(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (hasApkAsset) "v$latestVersionFound is ready to install."
+                    else "v$latestVersionFound has no APK asset on the release page.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = onDownload,
+                    enabled = hasApkAsset,
+                ) {
+                    Text("Download & install")
                 }
             }
         }

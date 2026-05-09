@@ -15,6 +15,7 @@ import com.pitstop.service.BridgeStateBus
 import com.pitstop.service.BridgeStatus
 import com.pitstop.update.UpdateChecker
 import com.pitstop.update.UpdateInfo
+import com.pitstop.update.UpdateInstaller
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -54,6 +55,8 @@ sealed interface ConfigToast {
     data class UpdateAvailable(val current: String, val latest: String, val url: String) : ConfigToast
     data class UpdateUpToDate(val current: String) : ConfigToast
     data class UpdateCheckError(val message: String) : ConfigToast
+    data class UpdateDownloadStarted(val version: String) : ConfigToast
+    object UpdateDownloadFailed : ConfigToast
 }
 
 @HiltViewModel
@@ -66,6 +69,7 @@ class ConfigViewModel @Inject constructor(
     stateBus: BridgeStateBus,
     private val mqttPublisher: MqttPublisher,
     private val updateChecker: UpdateChecker,
+    private val updateInstaller: UpdateInstaller,
 ) : AndroidViewModel(application) {
 
     private val _checkingUpdate = MutableStateFlow(false)
@@ -240,6 +244,24 @@ class ConfigViewModel @Inject constructor(
             } finally {
                 _checkingUpdate.value = false
             }
+        }
+    }
+
+    /**
+     * Kick off an APK download via [UpdateInstaller]. When the download
+     * finishes, the system installer dialog opens automatically.
+     * Snackbar reports start/failure; progress shows in the system
+     * download notification, which is the right surface for it.
+     */
+    fun downloadAndInstall() {
+        val info = _latestUpdate.value ?: return
+        if (!info.isNewer) return
+        viewModelScope.launch {
+            val id = updateInstaller.startDownload(info)
+            _toast.emit(
+                if (id != null) ConfigToast.UpdateDownloadStarted(info.latestVersion)
+                else ConfigToast.UpdateDownloadFailed,
+            )
         }
     }
 
