@@ -648,6 +648,20 @@ class MqttIngest:
                 )
         except (asyncpg.PostgresError, OSError) as exc:
             log.warning("engine_events insert failed: %s", exc)
+        # Fan out to the in-process bus so the trip detector reacts in
+        # real time. Synthetic metric name `_engine_state` is recognised
+        # there as authoritative trip-boundary signal; value_text carries
+        # the new state.
+        await self._bus.publish(
+            TelemetryEvent(
+                vehicle_id=vehicle_id,
+                time=when,
+                metric="_engine_state",
+                value_num=None,
+                value_text=state,
+                source="bridge",
+            )
+        )
 
     async def _flush(self) -> None:
         async with self._batch_lock:

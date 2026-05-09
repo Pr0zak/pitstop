@@ -168,28 +168,61 @@ async def compute_trip_stats(
         ended_at,
     )
 
-    # Distance from speed integration (kph * dt) using a window function.
-    # If a vehicle ever publishes 'odo_km', a future enhancement could prefer
-    # the diff there — for now, speed integration is the only source.
+    # Distance preference order:
+    #   1) GPS haversine sum from gps_points (accurate, immune to OBD speed
+    #      noise / dropped frames). PostGIS would be cleaner but we don't
+    #      ship the extension; the formula below is the standard 6371-km
+    #      great-circle approximation, plenty for trip totals.
+    #   2) Vehicle-speed integration (kph * dt) as a fallback when no GPS.
     distance_km = await conn.fetchval(
         """
-        SELECT COALESCE(SUM(value_num * dt) / 3600.0, 0)
+        SELECT COALESCE(SUM(
+            2 * 6371.0 * asin(sqrt(
+                pow(sin(radians(lat - lag_lat) / 2), 2) +
+                cos(radians(lag_lat)) * cos(radians(lat)) *
+                pow(sin(radians(lon - lag_lon) / 2), 2)
+            ))
+        ), 0)
         FROM (
             SELECT
-                value_num,
+                lat, lon,
+                LAG(lat) OVER (ORDER BY time) AS lag_lat,
+                LAG(lon) OVER (ORDER BY time) AS lag_lon,
                 EXTRACT(EPOCH FROM (time - LAG(time) OVER (ORDER BY time)))
                     AS dt
-            FROM pid_readings
+            FROM gps_points
             WHERE vehicle_id = $1
-              AND metric = 'vehicle_speed'
               AND time >= $2 AND time <= $3
-        ) s
-        WHERE dt IS NOT NULL AND dt < 60
+        ) g
+        WHERE lag_lat IS NOT NULL AND dt IS NOT NULL AND dt < 60
         """,
         vehicle_id,
         started_at,
         ended_at,
     )
+    # Fallback: speed integration if GPS gave us nothing. Older trips that
+    # predate gps_points (or vehicles without GPS plumbed through the
+    # bridge) take this path.
+    if not distance_km:
+        distance_km = await conn.fetchval(
+            """
+            SELECT COALESCE(SUM(value_num * dt) / 3600.0, 0)
+            FROM (
+                SELECT
+                    value_num,
+                    EXTRACT(EPOCH FROM (time - LAG(time) OVER (ORDER BY time)))
+                        AS dt
+                FROM pid_readings
+                WHERE vehicle_id = $1
+                  AND metric = 'vehicle_speed'
+                  AND time >= $2 AND time <= $3
+            ) s
+            WHERE dt IS NOT NULL AND dt < 60
+            """,
+            vehicle_id,
+            started_at,
+            ended_at,
+        )
 
     # Fuel used: integrate maf_air_flow (g/s) / 14.7 (stoich) / 749.9 (g/L)
     # across the trip duration. ~14.7 g air per 1 g fuel; gasoline density
@@ -295,6 +328,25 @@ class TripDetector:
     async def _on_event(self, event: TelemetryEvent) -> None:
         async with self._states_lock:
             state = self._states.setdefault(event.vehicle_id, _VehicleState())
+
+            # Authoritative engine on/off transitions short-circuit the
+            # silence-based heuristic. The bridge publishes these from
+            # the v0.1.70 EngineState detector so trip boundaries snap
+            # to actual key-on / key-off rather than "first frame after
+            # 120s gap" / "60s of silence" approximations.
+            if event.metric == "_engine_state":
+                state.last_seen_at = event.time
+                if event.value_text == "on":
+                    if state.current_trip_id is None:
+                        await self._open_trip(state, event.vehicle_id, event.time)
+                    state.last_event_in_trip_at = event.time
+                elif event.value_text == "off":
+                    if state.current_trip_id is not None:
+                        await self._close_trip(
+                            state, event.vehicle_id, event.time, "engine_off"
+                        )
+                return
+
             decision = decide_on_event(
                 state,
                 event.time,

@@ -153,6 +153,54 @@ async def get_trip(
     return out
 
 
+@router.get(
+    "/{trip_id}/route",
+    dependencies=[Depends(require_query_token)],
+)
+async def get_trip_route(
+    trip_id: UUID = FastAPIPath(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Return the GPS polyline + per-point metadata for a trip.
+
+    Used by the frontend trip detail page to render a MapLibre line.
+    Empty array when the trip predates gps_points or the bridge had
+    no GPS during the trip; the page should fall back to a no-map view.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT vehicle_id, started_at, ended_at FROM trips WHERE id = $1",
+            trip_id,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="trip not found")
+        ended = row["ended_at"] or row["started_at"]
+        points = await conn.fetch(
+            """
+            SELECT time, lat, lon, alt_m, speed_mps, heading_deg, accuracy_m
+              FROM gps_points
+             WHERE vehicle_id = $1 AND time >= $2 AND time <= $3
+             ORDER BY time ASC
+            """,
+            row["vehicle_id"], row["started_at"], ended,
+        )
+    return {
+        "trip_id": trip_id,
+        "points": [
+            {
+                "t": p["time"],
+                "lat": float(p["lat"]),
+                "lon": float(p["lon"]),
+                "alt_m": float(p["alt_m"]) if p["alt_m"] is not None else None,
+                "speed_mps": float(p["speed_mps"]) if p["speed_mps"] is not None else None,
+                "heading_deg": float(p["heading_deg"]) if p["heading_deg"] is not None else None,
+                "accuracy_m": float(p["accuracy_m"]) if p["accuracy_m"] is not None else None,
+            }
+            for p in points
+        ],
+    }
+
+
 @router.patch(
     "/{trip_id}",
     response_model=TripOut,
