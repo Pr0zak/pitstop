@@ -19,9 +19,12 @@ import kotlin.coroutines.resumeWithException
  * Thin wrapper around the HiveMQ MQTT v3 async client. We use v3 because Mosquitto's
  * default config speaks v3.1.1 cleanly without requiring v5 properties.
  *
- * Connection model: one client per process. The bridge service holds it and reconnects
- * on its own backoff schedule. We do NOT use the HiveMQ "automatic reconnect" feature
- * because the bridge wants to coordinate BLE liveness with broker liveness.
+ * Connection model: one client per process. We enable HiveMQ's automatic reconnect so
+ * mid-session drops (phone sleeps, Wi-Fi flips, broker restart) are handled transparently
+ * and `isConnected()` stays accurate. Without it, QoS-0 publishes succeed locally into
+ * a dead socket and `isConnected()` returns stale `true` — the bridge's UI then says
+ * "broker on" while nothing reaches the server. A disconnected-listener mirrors the
+ * client's connection state to the log buffer so we can see drops in /debug.
  */
 @Singleton
 class MqttPublisher @Inject constructor(
@@ -42,8 +45,10 @@ class MqttPublisher @Inject constructor(
         // Parse "tcp://host:1883" / "ssl://host:8883". Accept bare "host:1883".
         val (host, port, ssl) = parseBrokerUrl(brokerUrl)
 
-        // Disconnect existing client if URL changed.
-        if (lastUrl != brokerUrl) disconnect()
+        // Always tear down any prior client before building a new one. HiveMQ's
+        // auto-reconnect keeps an old client alive in the background otherwise,
+        // which would compete with the new one and confuse the connection state.
+        disconnect()
 
         logBuffer.info(
             "mqtt connecting",
@@ -55,6 +60,20 @@ class MqttPublisher @Inject constructor(
             .identifier("pitstop-android-${UUID.randomUUID()}")
             .serverHost(host)
             .serverPort(port)
+            .automaticReconnectWithDefaultConfig()
+            .addDisconnectedListener { ctx ->
+                logBuffer.warn(
+                    "mqtt disconnected",
+                    mapOf(
+                        "source" to ctx.source.toString(),
+                        "cause" to (ctx.cause.message ?: ctx.cause::class.java.simpleName),
+                        "reconnect" to ctx.reconnector.isReconnect,
+                    ),
+                )
+            }
+            .addConnectedListener {
+                logBuffer.info("mqtt connected", mapOf("host" to host, "port" to port))
+            }
 
         if (ssl) builder.sslWithDefaultConfig()
 
@@ -75,7 +94,7 @@ class MqttPublisher @Inject constructor(
             connectBuilder.send()
                 .whenComplete { _, t ->
                     if (t == null) {
-                        logBuffer.info("mqtt connected", mapOf("host" to host, "port" to port))
+                        // Connected-listener already logs the success; just resume here.
                         cont.resume(Unit)
                     } else {
                         logBuffer.error(

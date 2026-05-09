@@ -174,6 +174,11 @@ class PitstopBridgeService : Service() {
             // Drain backlog whenever the broker is reachable. Runs forever
             // until the bridge is stopped.
             launch { runOfflineDrainLoop() }
+            // Mirror HiveMQ's live connection state into the bridge bus so
+            // every screen / Android Auto tile reflects reconnects driven by
+            // the client's automatic-reconnect loop without us re-running
+            // connectMqttWithRetry.
+            launch { trackBrokerLiveness() }
 
             val mac = s.bleDeviceMac
             if (mac.isNullOrBlank()) {
@@ -189,6 +194,55 @@ class PitstopBridgeService : Service() {
             }
 
             connectBleWithRetry(mac, s.bleDeviceName)
+        }
+    }
+
+    // Engine-state hysteresis: WiCAN occasionally answers STOPPED for one
+    // specific PID (e.g. an unsupported one) while the engine is running.
+    // Require a few consecutive STOPPED responses with no real frame in
+    // between before we declare engine-off. A single live frame resets the
+    // counter and immediately flips to engine-on.
+    private var stoppedRunLength = 0
+    private val engineOffThreshold = 6
+
+    private fun onEngineOnSignal() {
+        stoppedRunLength = 0
+        val s = stateBus.status.value
+        if (s.engineState != EngineState.On) {
+            logBuffer.info("engine on")
+            stateBus.update {
+                it.copy(
+                    engineState = EngineState.On,
+                    engineStateChangedAtMs = System.currentTimeMillis(),
+                )
+            }
+        }
+    }
+
+    private fun onEngineOffSignal() {
+        stoppedRunLength += 1
+        if (stoppedRunLength < engineOffThreshold) return
+        val s = stateBus.status.value
+        if (s.engineState != EngineState.Off) {
+            logBuffer.info("engine off (wican reports stopped)")
+            stateBus.update {
+                it.copy(
+                    engineState = EngineState.Off,
+                    engineStateChangedAtMs = System.currentTimeMillis(),
+                )
+            }
+        }
+    }
+
+    private suspend fun trackBrokerLiveness() {
+        var last: Boolean? = null
+        while (scope.isActive) {
+            val now = mqttPublisher.isConnected()
+            if (now != last) {
+                stateBus.update { it.copy(brokerConnected = now) }
+                last = now
+            }
+            delay(2_000L)
         }
     }
 
@@ -312,12 +366,33 @@ class PitstopBridgeService : Service() {
             if (reconnectAttempt >= 4) {
                 logShipper.batterySaving = true
             }
+            // BLE link dropped — engine state is no longer observable. WiCAN
+            // sleeps ~5 min after key-off and won't be reachable until CAN
+            // traffic wakes it (engine start). Mark engineState=Unknown and
+            // reset the STOPPED counter so the next session re-evaluates from
+            // scratch instead of inheriting stale "Off" from a prior trip.
+            stoppedRunLength = 0
+            val priorEngine = stateBus.status.value.engineState
             logBuffer.info(
                 "ble reconnect scheduled",
-                mapOf("attempt" to reconnectAttempt, "backoff_s" to backoffSec),
+                mapOf(
+                    "attempt" to reconnectAttempt,
+                    "backoff_s" to backoffSec,
+                    "engine_was" to priorEngine.name.lowercase(),
+                ),
             )
-            updateNotification("Disconnected — retrying in ${backoffSec}s")
-            stateBus.update { it.copy(phase = BridgePhase.Disconnected) }
+            val msg = if (priorEngine == EngineState.Off) {
+                "WiCAN asleep — will wake on engine start"
+            } else {
+                "Disconnected — retrying in ${backoffSec}s"
+            }
+            updateNotification(msg)
+            stateBus.update {
+                it.copy(
+                    phase = BridgePhase.Disconnected,
+                    engineState = EngineState.Unknown,
+                )
+            }
             delay(backoffSec * 1_000L)
         }
     }
@@ -374,9 +449,22 @@ class PitstopBridgeService : Service() {
 
         val parsed = ObdResponseParser.parse(frameText.toByteArray(Charsets.US_ASCII))
         if (parsed == null) {
+            val trimmed = frameText.trim()
+            // WiCAN's "STOPPED" / "NO DATA" / "UNABLE TO CONNECT" responses are
+            // not parser errors — they're the device telling us the engine is
+            // off. Surface that as an engine-state change instead of spamming
+            // /debug with warn-level "obd parse failed" lines, and skip the
+            // log entirely (parser already filters these from real frames).
+            val upper = trimmed.uppercase()
+            val isEngineOffSignal = upper.startsWith("STOPPED") ||
+                upper.startsWith("NO DATA") ||
+                upper.startsWith("UNABLE TO CONNECT")
+            if (isEngineOffSignal) {
+                onEngineOffSignal()
+                return
+            }
             // Don't log every short fragment — only frames that look like full responses.
             // Heuristic: contains '>' or is at least 6 chars after trimming.
-            val trimmed = frameText.trim()
             if (trimmed.length >= 6) {
                 logBuffer.warn(
                     "obd parse failed",
@@ -385,6 +473,8 @@ class PitstopBridgeService : Service() {
             }
             return
         }
+        // Real OBD response → engine is awake.
+        onEngineOnSignal()
         val pid = pidsToPoll.firstOrNull {
             it.mode == parsed.mode && it.pid == parsed.pid
         } ?: return

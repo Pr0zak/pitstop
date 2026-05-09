@@ -9,6 +9,17 @@ import javax.inject.Singleton
 
 enum class BridgePhase { Idle, Scanning, Connecting, Connected, Disconnected, Error }
 
+/**
+ * Engine state derived from WiCAN responses, not BLE link state. Knowing whether
+ * the engine is *actually running* is independent from whether we are paired:
+ *   - WiCAN sleeps ~5 min after key-off; BLE drops once it sleeps. Before that
+ *     drop, we'll see [Off] frames (`STOPPED`/`NO DATA`) but BLE is still up.
+ *   - When the phone returns to the car after a long break, BLE may not link
+ *     until the engine starts and CAN traffic wakes WiCAN.
+ *   - [Unknown] is the start-up / no-data-yet state — we haven't decided yet.
+ */
+enum class EngineState { Unknown, On, Off }
+
 data class BridgeStatus(
     val phase: BridgePhase = BridgePhase.Idle,
     val deviceName: String? = null,
@@ -21,6 +32,10 @@ data class BridgeStatus(
     val totalPublished: Long = 0,
     val lastFrameAtMs: Long? = null,
     val metricsActive: Int = 0,
+    /** Engine running / off / unknown — derived from OBD frames (see EngineState). */
+    val engineState: EngineState = EngineState.Unknown,
+    /** When the engine state was last positively asserted (ms epoch). */
+    val engineStateChangedAtMs: Long? = null,
     /**
      * Bytes currently sitting in the on-disk [com.pitstop.mqtt.OfflineBuffer]
      * waiting to drain. Drives the "X queued" pill in the Live view so the

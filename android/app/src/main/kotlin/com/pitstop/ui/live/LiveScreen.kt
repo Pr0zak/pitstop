@@ -116,6 +116,15 @@ fun LiveScreen(
                     label = if (brokerConnected) "Broker live" else "Broker off",
                     compact = true,
                 )
+                val (engineLabel, enginePill) = when (bridgeStatus.engineState) {
+                    com.pitstop.service.EngineState.On ->
+                        "Engine on" to PillState.Healthy
+                    com.pitstop.service.EngineState.Off ->
+                        "Engine off" to PillState.Offline
+                    com.pitstop.service.EngineState.Unknown ->
+                        "Engine ?" to PillState.Neutral
+                }
+                StatusPill(state = enginePill, label = engineLabel, compact = true)
             }
 
             // ── Hero gauges: Speed + RPM ──────────────────────────────

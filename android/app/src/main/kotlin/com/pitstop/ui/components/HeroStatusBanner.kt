@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.pitstop.service.BridgePhase
+import com.pitstop.service.EngineState
 
 /**
  * Big "All systems live" / "Bridge stopped" headline that lives above
@@ -39,6 +40,7 @@ import com.pitstop.service.BridgePhase
 fun HeroStatusBanner(
     phase: BridgePhase,
     brokerConnected: Boolean,
+    engineState: EngineState = EngineState.Unknown,
     vehicleName: String? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -58,21 +60,33 @@ fun HeroStatusBanner(
             "Waiting on BLE handshake",
             PillState.Connecting,
         )
-        BridgePhase.Connected ->
-            if (brokerConnected) Triple(
-                "All systems live",
-                vehicleName?.let { "$it · streaming to broker" } ?: "Streaming to broker",
-                PillState.Healthy,
-            ) else Triple(
+        BridgePhase.Connected -> when {
+            engineState == EngineState.Off -> Triple(
+                "Engine off",
+                "OBD link is up; nothing to publish until next start",
+                PillState.Neutral,
+            )
+            !brokerConnected -> Triple(
                 "Broker offline",
                 "OBD link is up but the broker is unreachable",
                 PillState.Degraded,
             )
-        BridgePhase.Disconnected -> Triple(
-            "Reconnecting",
-            "Lost the OBD link, retrying with backoff",
-            PillState.Degraded,
-        )
+            else -> Triple(
+                "All systems live",
+                vehicleName?.let { "$it · streaming to broker" } ?: "Streaming to broker",
+                PillState.Healthy,
+            )
+        }
+        BridgePhase.Disconnected ->
+            if (engineState == EngineState.Off) Triple(
+                "WiCAN asleep",
+                "Will wake automatically when the engine starts",
+                PillState.Neutral,
+            ) else Triple(
+                "Reconnecting",
+                "Lost the OBD link, retrying with backoff",
+                PillState.Degraded,
+            )
         BridgePhase.Error -> Triple(
             "Bridge error",
             "Tap Start to retry",

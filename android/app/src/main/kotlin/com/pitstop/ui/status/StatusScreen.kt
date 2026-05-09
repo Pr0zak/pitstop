@@ -90,6 +90,7 @@ fun StatusScreen(
             com.pitstop.ui.components.HeroStatusBanner(
                 phase = ui.status.phase,
                 brokerConnected = ui.status.brokerConnected,
+                engineState = ui.status.engineState,
                 vehicleName = ui.status.deviceName,
             )
 
