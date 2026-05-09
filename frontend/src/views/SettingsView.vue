@@ -60,6 +60,7 @@ onMounted(async () => {
       diskAlertPct.value = s.disk_alert_pct ?? null;
     }
     await loadStorage();
+    await loadDevices();
   }
 });
 
@@ -195,6 +196,59 @@ function onPicked(lat: number, lon: number) {
   homeLat.value = lat;
   homeLon.value = lon;
   showPicker.value = false;
+}
+
+// ── Devices: WiCAN → vehicle mapping ────────────────────────────────
+//
+// Backed by /admin/devices. Mapped devices have a row in
+// device_vehicle_map that the ingest worker consults when the topic's
+// slug doesn't match a vehicle directly. Unmapped devices are MAC-style
+// topic ids the worker has been dropping (parsed from backend log
+// warnings); user picks a vehicle from the dropdown to assign.
+
+const devices = ref<api.DeviceMapping[]>([]);
+const devicesLoading = ref(false);
+const devicesError = ref<string | null>(null);
+const allVehicles = ref<{ id: string; slug: string; name: string }[]>([]);
+
+async function loadDevices() {
+  if (!auth.hasQueryToken) return;
+  devicesLoading.value = true;
+  devicesError.value = null;
+  try {
+    const [list, vs] = await Promise.all([
+      api.listDevices(),
+      api.listVehicles(),
+    ]);
+    devices.value = list;
+    allVehicles.value = vs.map((v) => ({ id: v.id, slug: v.slug, name: v.name }));
+  } catch (e: unknown) {
+    devicesError.value = e instanceof Error ? e.message : "load failed";
+  } finally {
+    devicesLoading.value = false;
+  }
+}
+
+async function assignDevice(deviceId: string, vehicleId: string) {
+  if (!vehicleId) return;
+  try {
+    await api.mapDevice(deviceId, vehicleId);
+    await loadDevices();
+  } catch (e: unknown) {
+    devicesError.value = e instanceof Error ? e.message : "assign failed";
+  }
+}
+
+async function unassignDevice(deviceId: string) {
+  if (!window.confirm(`Unmap ${deviceId}? Future readings will be dropped until you remap it.`)) {
+    return;
+  }
+  try {
+    await api.unmapDevice(deviceId);
+    await loadDevices();
+  } catch (e: unknown) {
+    devicesError.value = e instanceof Error ? e.message : "unmap failed";
+  }
 }
 
 // ── Storage / data retention ────────────────────────────────────────
@@ -506,6 +560,93 @@ function geolocate() {
       <span v-if="saveStatus === 'saved'" class="badge success">Saved</span>
       <span v-if="saveStatus === 'error'" class="badge danger">{{ saveError }}</span>
     </div>
+
+    <!-- Devices: WiCAN → vehicle mapping -->
+    <section class="card">
+      <h3>
+        Devices
+        <button
+          type="button"
+          class="ghost"
+          style="margin-left: auto; font-size: 0.78rem"
+          @click="loadDevices"
+          :disabled="devicesLoading"
+        >
+          <RefreshCw :size="12" /> {{ devicesLoading ? "…" : "Refresh" }}
+        </button>
+      </h3>
+      <p class="muted">
+        Tie a WiCAN OBD device (or a phone bridge) to a vehicle so its
+        published metrics route correctly. Devices listed below
+        <strong>without</strong> a vehicle have been dropping messages
+        — pick a vehicle to start ingesting.
+      </p>
+
+      <div v-if="devicesError" class="banner warn">{{ devicesError }}</div>
+
+      <table v-if="devices.length > 0" class="data" style="margin-top: 0.5rem">
+        <thead>
+          <tr>
+            <th>Device ID</th>
+            <th>Kind</th>
+            <th>Vehicle</th>
+            <th>Last seen</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="d in devices" :key="d.device_id">
+            <td><code>{{ d.device_id }}</code></td>
+            <td>
+              <span class="badge">{{ d.kind ?? "unknown" }}</span>
+              <span
+                v-if="!d.mapped"
+                class="badge warn"
+                style="margin-left: 0.3rem"
+              >
+                {{ d.warn_count ?? "?" }} drops/24h
+              </span>
+            </td>
+            <td>
+              <select
+                :value="d.vehicle_id ?? ''"
+                @change="(e) => assignDevice(d.device_id, (e.target as HTMLSelectElement).value)"
+              >
+                <option value="" disabled>— pick vehicle —</option>
+                <option
+                  v-for="v in allVehicles"
+                  :key="v.id"
+                  :value="v.id"
+                >
+                  {{ v.name }}
+                </option>
+              </select>
+            </td>
+            <td>
+              <code v-if="d.last_seen_at">
+                {{ d.last_seen_at.slice(0, 19).replace("T", " ") }}
+              </code>
+              <span v-else class="muted">—</span>
+            </td>
+            <td>
+              <button
+                v-if="d.mapped"
+                class="ghost"
+                type="button"
+                @click="unassignDevice(d.device_id)"
+                title="Unmap"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="muted small">
+        No devices seen yet. Once your WiCAN starts publishing it'll
+        appear here.
+      </p>
+    </section>
 
     <!-- Storage / data retention -->
     <section class="card">

@@ -207,6 +207,140 @@ async def purge_readings(
     }
 
 
+@router.get(
+    "/devices",
+    dependencies=[Depends(require_query_token)],
+)
+async def list_devices(
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> list[dict[str, Any]]:
+    """List every WiCAN / phone device the backend has either:
+      - explicitly mapped to a vehicle (device_vehicle_map row)
+      - seen recently in the WiCAN log warnings (parsed from client_logs)
+
+    Lets the admin UI render: mapped devices with a name + status, plus
+    unmapped MAC-style topics that the ingest worker has been dropping
+    so the user can one-tap-assign them.
+    """
+    async with pool.acquire() as conn:
+        mapped = await conn.fetch(
+            """
+            SELECT d.device_id, d.vehicle_id, d.kind, d.label,
+                   d.first_seen_at, d.last_seen_at,
+                   v.name AS vehicle_name, v.slug AS vehicle_slug
+              FROM device_vehicle_map d
+              LEFT JOIN vehicles v ON v.id = d.vehicle_id
+             ORDER BY d.last_seen_at DESC NULLS LAST
+            """,
+        )
+        # Unmapped devices observed via backend log warnings in the last
+        # 24h. The warning message format is stable
+        # ("dropping message for unknown device/slug 'XXX'") so a regex
+        # extraction is reliable enough.
+        unmapped_rows = await conn.fetch(
+            """
+            SELECT DISTINCT
+                substring(message FROM 'unknown device/slug ''([^'']+)''') AS device_id,
+                max(ts) AS last_seen_at,
+                count(*) AS warn_count
+              FROM client_logs
+             WHERE source = 'backend'
+               AND message LIKE 'dropping message for unknown device/slug %'
+               AND ts > now() - interval '24 hours'
+             GROUP BY 1
+             HAVING substring(message FROM 'unknown device/slug ''([^'']+)''') IS NOT NULL
+             ORDER BY 2 DESC
+            """,
+        )
+        # Filter out unmapped device_ids that already have a row (race).
+        mapped_ids = {r["device_id"] for r in mapped}
+        unmapped = [
+            {
+                "device_id": r["device_id"],
+                "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
+                "warn_count": int(r["warn_count"]),
+                "mapped": False,
+            }
+            for r in unmapped_rows
+            if r["device_id"] and r["device_id"] not in mapped_ids
+        ]
+    return [
+        {
+            "device_id": r["device_id"],
+            "kind": r["kind"],
+            "label": r["label"],
+            "vehicle_id": str(r["vehicle_id"]) if r["vehicle_id"] else None,
+            "vehicle_name": r["vehicle_name"],
+            "vehicle_slug": r["vehicle_slug"],
+            "first_seen_at": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
+            "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
+            "mapped": True,
+        }
+        for r in mapped
+    ] + unmapped
+
+
+class _DeviceMapPayload(__import__("pydantic").BaseModel):
+    vehicle_id: str
+    kind: str = "wican"
+    label: str | None = None
+
+
+@router.post(
+    "/devices/{device_id}/map",
+    dependencies=[Depends(require_ingest_token)],
+)
+async def map_device(
+    device_id: str,
+    body: _DeviceMapPayload,
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Create or update a device → vehicle mapping. Idempotent."""
+    from uuid import UUID
+    try:
+        vid = UUID(body.vehicle_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="vehicle_id must be a UUID") from exc
+    async with pool.acquire() as conn:
+        veh = await conn.fetchrow("SELECT 1 FROM vehicles WHERE id = $1", vid)
+        if veh is None:
+            raise HTTPException(status_code=404, detail="vehicle not found")
+        await conn.execute(
+            """
+            INSERT INTO device_vehicle_map (device_id, vehicle_id, kind, label)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (device_id) DO UPDATE
+                SET vehicle_id = EXCLUDED.vehicle_id,
+                    kind = EXCLUDED.kind,
+                    label = EXCLUDED.label
+            """,
+            device_id,
+            vid,
+            body.kind,
+            body.label,
+        )
+    log.info("device mapped: device_id=%s → vehicle_id=%s kind=%s",
+             device_id, vid, body.kind)
+    return {"device_id": device_id, "vehicle_id": str(vid), "mapped": True}
+
+
+@router.delete(
+    "/devices/{device_id}/map",
+    dependencies=[Depends(require_ingest_token)],
+)
+async def unmap_device(
+    device_id: str,
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        rowcount = await conn.execute(
+            "DELETE FROM device_vehicle_map WHERE device_id = $1",
+            device_id,
+        )
+    log.info("device unmapped: device_id=%s (%s)", device_id, rowcount)
+    return {"device_id": device_id, "mapped": False}
+
+
 @router.post(
     "/cleanup/sliver-trips",
     dependencies=[Depends(require_ingest_token)],

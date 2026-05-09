@@ -193,6 +193,9 @@ class VehicleCache:
             entry = self._cache.get(slug)
             if entry and entry.expires_at > now:
                 return entry.vehicle_id, entry.profile_pids
+            # First try the direct slug match (covers the common case where
+            # the WiCAN MQTT prefix was set to a real vehicle slug like
+            # "pilot19" at config time).
             row = await pool.fetchrow(
                 """
                 SELECT v.id, p.profile
@@ -203,8 +206,36 @@ class VehicleCache:
                 slug,
             )
             if row is None:
+                # Fall back to device_vehicle_map — handles the WiCAN-using-
+                # MAC-as-topic case ("wican/94a9901b16d1/...") so the user
+                # doesn't have to reconfigure the device.
+                row = await pool.fetchrow(
+                    """
+                    SELECT v.id, p.profile
+                      FROM device_vehicle_map d
+                      JOIN vehicles v ON v.id = d.vehicle_id
+                      LEFT JOIN pid_profiles p ON p.id = v.pid_profile_id
+                     WHERE d.device_id = $1
+                    """,
+                    slug,
+                )
+                if row is not None:
+                    # Touch last_seen_at on the mapping so the admin UI
+                    # can sort active devices first. Fire-and-forget so
+                    # ingest doesn't block on the write.
+                    await pool.execute(
+                        "UPDATE device_vehicle_map SET last_seen_at = now() "
+                        "WHERE device_id = $1",
+                        slug,
+                    )
+            if row is None:
                 if slug not in self._misses:
-                    log.warning("dropping message for unknown vehicle slug %r", slug)
+                    log.warning(
+                        "dropping message for unknown device/slug %r — "
+                        "map it via POST /admin/devices/%s/map "
+                        "or set the device's MQTT topic to a vehicle slug",
+                        slug, slug,
+                    )
                     self._misses.add(slug)
                 return None
             profile_pids: dict[str, dict] = {}

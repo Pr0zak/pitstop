@@ -346,6 +346,45 @@ export async function purgeLogs(
   return r.data;
 }
 
+// ── admin: device → vehicle mapping ───────────────────────────────────
+
+export interface DeviceMapping {
+  device_id: string;
+  kind?: string;
+  label?: string | null;
+  vehicle_id?: string | null;
+  vehicle_name?: string | null;
+  vehicle_slug?: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  warn_count?: number;
+  mapped: boolean;
+}
+
+export async function listDevices(): Promise<DeviceMapping[]> {
+  const r = await apiQuery.get<DeviceMapping[]>("/admin/devices");
+  return r.data;
+}
+
+export async function mapDevice(
+  deviceId: string,
+  vehicleId: string,
+  kind = "wican",
+  label: string | null = null,
+): Promise<DeviceMapping> {
+  const r = await apiIngest.post<DeviceMapping>(
+    `/admin/devices/${encodeURIComponent(deviceId)}/map`,
+    { vehicle_id: vehicleId, kind, label },
+  );
+  return r.data;
+}
+
+export async function unmapDevice(deviceId: string): Promise<void> {
+  await apiIngest.delete(
+    `/admin/devices/${encodeURIComponent(deviceId)}/map`,
+  );
+}
+
 // ─── imports ──────────────────────────────────────────────────────────
 
 export async function importFuelio(
