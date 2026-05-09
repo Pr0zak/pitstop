@@ -138,6 +138,11 @@ fun ConfigScreen(
                 value = form.ingestToken,
                 onValueChange = { v -> viewModel.update { it.copy(ingestToken = v) } },
             )
+            SecretField(
+                label = "Query token",
+                value = form.queryToken,
+                onValueChange = { v -> viewModel.update { it.copy(queryToken = v) } },
+            )
 
             SectionHeader("BLE device")
             Card {

@@ -31,7 +31,6 @@ class PitstopAuthInterceptor @Inject constructor(
         val secrets = runBlocking { settingsRepository.current() }
         val baseUrl = secrets.settings.apiBaseUrl.trim()
             .ifEmpty { return chain.proceed(chain.request()) }
-        val token = secrets.ingestToken
         val newBase = baseUrl.trimEnd('/').toHttpUrlOrNull()
             ?: return chain.proceed(chain.request())
 
@@ -41,6 +40,23 @@ class PitstopAuthInterceptor @Inject constructor(
             .host(newBase.host)
             .port(newBase.port)
             .build()
+
+        // Token selection follows the backend's auth policy:
+        //   /api/fillups, /api/logs    → INGEST_TOKEN (write path)
+        //   /api/vehicles, /analytics  → QUERY_TOKEN  (read path)
+        // Method-based heuristic is good enough: GET → query token,
+        // anything else → ingest token. Falls back to whichever is
+        // populated when only one is set so existing single-token
+        // users keep working without re-configuring.
+        val isRead = original.method.equals("GET", ignoreCase = true)
+        val token = if (isRead && secrets.queryToken.isNotBlank()) {
+            secrets.queryToken
+        } else if (!isRead && secrets.ingestToken.isNotBlank()) {
+            secrets.ingestToken
+        } else {
+            // Single-token fallback.
+            secrets.queryToken.ifBlank { secrets.ingestToken }
+        }
 
         val builder = original.newBuilder().url(newUrl)
         if (token.isNotBlank()) builder.header("Authorization", "Bearer $token")

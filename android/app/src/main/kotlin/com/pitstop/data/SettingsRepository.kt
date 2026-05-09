@@ -79,6 +79,7 @@ class SettingsRepository @Inject constructor(
             settings = s,
             mqttPassword = secretStore.read(SecretStore.KEY_MQTT_PASSWORD),
             ingestToken = secretStore.read(SecretStore.KEY_INGEST_TOKEN),
+            queryToken = secretStore.read(SecretStore.KEY_QUERY_TOKEN),
         )
     }
 
@@ -86,6 +87,7 @@ class SettingsRepository @Inject constructor(
         settings: Settings,
         mqttPassword: String?,
         ingestToken: String?,
+        queryToken: String? = null,
     ) {
         context.dataStore.edit { prefs ->
             prefs[Keys.brokerUrl] = settings.brokerUrl.trim()
@@ -99,5 +101,6 @@ class SettingsRepository @Inject constructor(
         }
         if (mqttPassword != null) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
         if (ingestToken != null) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)
+        if (queryToken != null) secretStore.write(SecretStore.KEY_QUERY_TOKEN, queryToken)
     }
 }

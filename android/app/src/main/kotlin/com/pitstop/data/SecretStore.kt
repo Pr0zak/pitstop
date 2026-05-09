@@ -42,5 +42,6 @@ class SecretStore @Inject constructor(
     companion object {
         const val KEY_MQTT_PASSWORD = "mqtt_password"
         const val KEY_INGEST_TOKEN = "ingest_token"
+        const val KEY_QUERY_TOKEN = "query_token"
     }
 }

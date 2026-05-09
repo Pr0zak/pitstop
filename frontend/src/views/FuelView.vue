@@ -281,10 +281,23 @@ const summary = computed(() => {
 //    null when there isn't enough history for the chart to be useful.
 
 // $/gal time series — line chart of price_per_unit by fillup date.
+//
+// price_per_unit is Decimal serialised as a JSON string. Coerce here.
 const ppgChart = computed(() => {
   const items = (statsFillupsQ.data.value?.items ?? [])
-    .filter((f): f is Fillup & { price_per_unit: number; fillup_date: string } =>
-      typeof f.price_per_unit === "number" && f.price_per_unit > 0 && !!f.fillup_date,
+    .map((f) => {
+      const ppgRaw = f.price_per_unit;
+      const ppg =
+        typeof ppgRaw === "number"
+          ? ppgRaw
+          : typeof ppgRaw === "string" && ppgRaw.length > 0
+            ? Number(ppgRaw)
+            : null;
+      return { ppg, fillup_date: f.fillup_date };
+    })
+    .filter(
+      (x): x is { ppg: number; fillup_date: string } =>
+        x.ppg != null && Number.isFinite(x.ppg) && x.ppg > 0 && !!x.fillup_date,
     )
     .sort(
       (a, b) =>
@@ -292,7 +305,7 @@ const ppgChart = computed(() => {
     );
   if (items.length < 2) return null;
   const t = items.map((f) => Math.round((Date.parse(f.fillup_date) || 0) / 1000));
-  const y = items.map((f) => f.price_per_unit);
+  const y = items.map((f) => f.ppg);
   const aligned: uPlot.AlignedData = [t, y];
   const opts: uPlot.Options = {
     width: 600,
@@ -526,7 +539,7 @@ const rangeEstimate = computed<{
                 </td>
                 <td>
                   {{ f.price_total != null
-                      ? fmtMoney(f.price_total)
+                      ? fmtMoney(Number(f.price_total))
                       : fmtMoney(
                           (Number(f.price_per_unit) || 0) * (f.fuel_volume ?? 0)
                         )

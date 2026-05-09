@@ -23,4 +23,6 @@ data class SettingsWithSecrets(
     val settings: Settings,
     val mqttPassword: String,
     val ingestToken: String,
+    /** Read-only token for /api/{vehicles, fillups, analytics, ...} GETs. */
+    val queryToken: String = "",
 )

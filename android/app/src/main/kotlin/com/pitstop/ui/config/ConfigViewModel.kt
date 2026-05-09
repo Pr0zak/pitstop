@@ -29,6 +29,7 @@ data class ConfigFormState(
     val vehicleSlug: String = "",
     val apiBaseUrl: String = "",
     val ingestToken: String = "",
+    val queryToken: String = "",
     val bleDeviceMac: String? = null,
     val bleDeviceName: String? = null,
     val verboseLogging: Boolean = false,
@@ -78,6 +79,7 @@ class ConfigViewModel @Inject constructor(
                 vehicleSlug = secrets.settings.vehicleSlug,
                 apiBaseUrl = secrets.settings.apiBaseUrl,
                 ingestToken = secrets.ingestToken,
+                queryToken = secrets.queryToken,
                 bleDeviceMac = secrets.settings.bleDeviceMac,
                 bleDeviceName = secrets.settings.bleDeviceName,
                 verboseLogging = secrets.settings.verboseLogging,
@@ -143,6 +145,7 @@ class ConfigViewModel @Inject constructor(
                 ),
                 mqttPassword = f.mqttPassword,
                 ingestToken = f.ingestToken,
+                queryToken = f.queryToken,
             )
             _form.value = _form.value.copy(saved = true)
         }

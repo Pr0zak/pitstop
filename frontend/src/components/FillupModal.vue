@@ -50,8 +50,10 @@ watch(
         fillup_date: init.fillup_date?.slice(0, 16) ?? new Date().toISOString().slice(0, 16),
         odo: init.odo ?? undefined,
         fuel_volume: init.fuel_volume ?? undefined,
-        price_total: init.price_total ?? undefined,
-        price_per_unit: init.price_per_unit != null ? Number(init.price_per_unit) : undefined,
+        price_total:
+          init.price_total != null ? Number(init.price_total) : undefined,
+        price_per_unit:
+          init.price_per_unit != null ? Number(init.price_per_unit) : undefined,
         is_full: init.is_full ?? true,
         is_missed: init.is_missed ?? false,
         station_name: init.city ?? "",

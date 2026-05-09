@@ -127,8 +127,11 @@ export interface Fillup {
   fuel_volume?: number | null;     // gallons or l depending on vehicle.fuel_unit
   is_full?: boolean;
   is_missed?: boolean;
-  price_total?: number | null;
-  price_per_unit?: number | string | null;  // backend serialises NUMERIC as string sometimes
+  // Both NUMERIC(10,N) — backend's Pydantic serialises Decimal as JSON
+  // string, so consumers must coerce via Number() / our `toNum` helper
+  // before doing arithmetic. The type reflects that reality.
+  price_total?: number | string | null;
+  price_per_unit?: number | string | null;
   station_id?: number | null;
   city?: string | null;
   lat?: number | null;

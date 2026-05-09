@@ -66,12 +66,24 @@ const mpgTrendQ = useAsync(
 
 interface HeroFillup {
   fillup_date: string;
-  price_total: number | null;
-  price_per_unit: number | null;
+  // Backend serializes numeric(10,N) Decimal as JSON string, not number.
+  // We coerce defensively below so the type signature reflects reality.
+  price_total: number | string | null;
+  price_per_unit: number | string | null;
   fuel_volume: number;
   odo: number;
   is_full: boolean;
   is_missed: boolean;
+}
+
+/** Coerce Decimal-as-string OR number OR null to a finite number, or null. */
+function toNum(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.length > 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 const heroData = computed(() => {
@@ -85,9 +97,9 @@ const heroData = computed(() => {
 
   // Latest fillup price/gal + 30-day average for delta.
   const latest = fillups[0] ?? null;
-  const latestPpg = latest?.price_per_unit ?? null;
+  const latestPpg = toNum(latest?.price_per_unit ?? null);
   const ppgPoints = fillups
-    .map((f) => f.price_per_unit)
+    .map((f) => toNum(f.price_per_unit))
     .filter((v): v is number => v != null && v > 0);
   const avgPpg = ppgPoints.length > 0
     ? ppgPoints.reduce((s, v) => s + v, 0) / ppgPoints.length
@@ -102,7 +114,7 @@ const heroData = computed(() => {
   const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const monthCost = fillups
     .filter((f) => (f.fillup_date ?? "").startsWith(thisMonth))
-    .reduce((s, f) => s + (f.price_total ?? 0), 0);
+    .reduce((s, f) => s + (toNum(f.price_total) ?? 0), 0);
   const monthCount = fillups.filter((f) =>
     (f.fillup_date ?? "").startsWith(thisMonth),
   ).length;
@@ -293,7 +305,7 @@ function num(key: string): number | null {
           <ul v-else class="recent">
             <li v-for="f in fillupsQ.data.value.items" :key="f.id">
               <span>{{ fmtDate(f.fillup_date) }}</span>
-              <span class="muted">{{ fmtMpg(f.mpg) }} · {{ fmtMoney(f.price_total) }}</span>
+              <span class="muted">{{ fmtMpg(f.mpg) }} · {{ fmtMoney(toNum(f.price_total) ?? 0) }}</span>
             </li>
           </ul>
         </section>
