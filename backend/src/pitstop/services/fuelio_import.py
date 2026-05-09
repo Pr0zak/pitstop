@@ -592,7 +592,17 @@ class FuelioImporter:
                 "is_missed": _bool01(row.get("Missed")),
                 "price_total": _maybe_decimal(row.get("Price")),
                 "price_per_unit": _maybe_decimal(row.get("VolumePrice")),
-                "mpg_reported": _maybe_float(row.get("mpg")),
+                # Fuelio's exports vary on the column name for the
+                # user-reported MPG: older exports use "mpg", newer use
+                # "Consumption" or "Economy" depending on locale + units.
+                # Try every variant we've observed in the wild before
+                # giving up — the value is purely informational (the API
+                # recomputes its own MPG on read), but carrying it
+                # through preserves the user's original Fuelio number
+                # for direct comparison in the UI.
+                "mpg_reported": _maybe_float(
+                    _val(row, "mpg", "MPG", "Consumption", "Economy", "L/100km")
+                ),
                 "lat": _maybe_float(row.get("latitude")),
                 "lon": _maybe_float(row.get("longitude")),
                 "city": row.get("City") or None,

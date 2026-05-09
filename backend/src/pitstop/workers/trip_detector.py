@@ -414,6 +414,34 @@ class TripDetector:
                 stats = await compute_trip_stats(
                     conn, trip_id, vehicle_id, started_at, ended_at
                 )
+                # Discard sliver-trips. A parked car publishing battery /
+                # temp readings every minute would otherwise auto-open +
+                # auto-close a 0-km "trip" every silence window. Below
+                # the threshold we delete the row outright so it never
+                # appears in /trips.
+                if (
+                    stats["distance_km"] is None
+                    or float(stats["distance_km"]) < self._cfg.trip_min_distance_km
+                ):
+                    await conn.execute(
+                        "DELETE FROM trips WHERE id = $1",
+                        trip_id,
+                    )
+                    log.info(
+                        "discarded sliver trip %s vehicle=%s reason=%s "
+                        "distance_km=%s threshold_km=%s",
+                        trip_id,
+                        vehicle_id,
+                        reason,
+                        stats["distance_km"],
+                        self._cfg.trip_min_distance_km,
+                    )
+                    state.current_trip_id = None
+                    state.current_trip_started = None
+                    state.last_event_in_trip_at = None
+                    state.metrics_seen.clear()
+                    state.low_voltage_count = 0
+                    return
                 await conn.execute(
                     """
                     UPDATE trips

@@ -54,11 +54,28 @@ async def reminders(
     vehicle_id: UUID | None = Query(default=None),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, Any]:
-    where = ["(remind_odo IS NOT NULL AND remind_odo > 0) OR remind_date IS NOT NULL"]
+    # Filter to "real reminders" only.
+    #
+    # A reminder counts when:
+    #   - remind_odo > 0 (an explicit miles-from-now trigger), OR
+    #   - remind_date IS NOT NULL AND remind_date >= e.expense_date
+    #     (date-based reminders are always set into the future relative
+    #     to the expense — a Fuelio export of an old expense often
+    #     carries remind_date = "2011-01-01" alongside expense_date in
+    #     2024+, which is the sentinel we want to exclude)
+    #
+    # Without this filter, the user's car-wash receipts from 14 years ago
+    # surface as "5,606 days overdue" because the SQL only checked
+    # `remind_date IS NOT NULL` and the column was populated with a
+    # placeholder date in the original Fuelio data.
+    where = [
+        "((remind_odo IS NOT NULL AND remind_odo > 0) "
+        "OR (remind_date IS NOT NULL AND remind_date >= e.expense_date))"
+    ]
     args: list[Any] = []
     if vehicle_id is not None:
         args.append(vehicle_id)
-        where.insert(0, f"vehicle_id = ${len(args)}")
+        where.insert(0, f"e.vehicle_id = ${len(args)}")
     sql = (
         "SELECT e.id, e.vehicle_id, e.title, e.notes, e.odo, "
         "       e.remind_odo, e.remind_date, "
