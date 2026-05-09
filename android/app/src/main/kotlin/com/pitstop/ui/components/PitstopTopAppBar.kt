@@ -44,6 +44,13 @@ fun PitstopTopAppBar(
     // chrome (mark + "pitstop" wordmark). The `title` param is kept on
     // the function signature for source-compat with existing call sites
     // but ignored in the render — easier than touching every caller.
+    //
+    // Also: windowInsets = WindowInsets(0) — the outer Scaffold (in
+    // MainActivity) already absorbs the status-bar inset for the whole
+    // pager. Without this override the per-screen inner Scaffold's
+    // TopAppBar re-applies the same inset on top, ending up with
+    // double-padding (the brand mark sits ~80 dp lower than it should
+    // and there's a fat empty band above the title).
     CenterAlignedTopAppBar(
         title = {
             androidx.compose.foundation.layout.Row(
@@ -64,6 +71,7 @@ fun PitstopTopAppBar(
             titleContentColor = MaterialTheme.colorScheme.onSurface,
         ),
         scrollBehavior = scrollBehavior,
+        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     )
 }
 

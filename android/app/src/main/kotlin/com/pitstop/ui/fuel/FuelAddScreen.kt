@@ -127,6 +127,7 @@ fun FuelAddScreen(
                         )
                     }
                 },
+                windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
                 actions = {
                     androidx.compose.material3.TextButton(
                         onClick = { viewModel.submit() },
