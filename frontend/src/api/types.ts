@@ -210,18 +210,25 @@ export interface MonthlySpend {
 }
 
 export interface StationCluster {
-  id: string;
-  latitude: number;
-  longitude: number;
+  cluster_id: string;
+  lat: number | null;
+  lon: number | null;
   name?: string | null;
   fillup_count: number;
   total_volume?: number | null;
+  total_cost?: number | null;
   last_visit?: string | null;
 }
 
+/**
+ * /analytics/mpg-overlay returns two parallel time-series:
+ *   obd_mpg     — derived per-trip from distance / fuel-used-l
+ *   fillup_mpg  — recomputed per-fillup from (distance since last full / volume)
+ * Both are sparse — each entry is a single sample.
+ */
 export interface MpgOverlay {
-  obd: { period: string; mpg: number | null }[];
-  fillup: { period: string; mpg: number | null }[];
+  obd_mpg: { time: string; mpg: number }[];
+  fillup_mpg: { time: string; mpg: number }[];
 }
 
 export interface LiveMessage {

@@ -62,7 +62,7 @@ const overlayQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
       ? api.mpgOverlay(vehicleId.value)
-      : Promise.resolve({ obd: [], fillup: [] }),
+      : Promise.resolve({ obd_mpg: [], fillup_mpg: [] }),
   [vehicleId, tab],
 );
 
@@ -149,11 +149,11 @@ const stationSuggestions = computed<string[]>(() => {
 const stationMarkers = computed(() => {
   const cs = stationsQ.data.value ?? [];
   return cs
-    .filter((c) => c.latitude != null && c.longitude != null)
+    .filter((c) => c.lat != null && c.lon != null)
     .map((c) => ({
-      id: c.id,
-      lng: c.longitude,
-      lat: c.latitude,
+      id: c.cluster_id,
+      lng: c.lon!,
+      lat: c.lat!,
       properties: {
         label: c.name ?? "Unnamed station",
         fillup_count: c.fillup_count,
@@ -207,23 +207,23 @@ const cpmChart = computed(() => {
 });
 
 const overlayChart = computed(() => {
-  const obd = overlayQ.data.value?.obd ?? [];
-  const fillup = overlayQ.data.value?.fillup ?? [];
+  const obd = overlayQ.data.value?.obd_mpg ?? [];
+  const fillup = overlayQ.data.value?.fillup_mpg ?? [];
   if (obd.length === 0 && fillup.length === 0) return null;
   const tsSet = new Set<number>();
-  for (const p of obd) tsSet.add(Math.round((Date.parse(p.period) || 0) / 1000));
-  for (const p of fillup) tsSet.add(Math.round((Date.parse(p.period) || 0) / 1000));
+  for (const p of obd) tsSet.add(Math.round((Date.parse(p.time) || 0) / 1000));
+  for (const p of fillup) tsSet.add(Math.round((Date.parse(p.time) || 0) / 1000));
   const ts = Array.from(tsSet).sort((a, b) => a - b);
   const idx = new Map<number, number>();
   ts.forEach((t, i) => idx.set(t, i));
   const obdCol: (number | null)[] = new Array(ts.length).fill(null);
   const fillCol: (number | null)[] = new Array(ts.length).fill(null);
   for (const p of obd) {
-    const i = idx.get(Math.round((Date.parse(p.period) || 0) / 1000));
+    const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
     if (i != null) obdCol[i] = p.mpg ?? null;
   }
   for (const p of fillup) {
-    const i = idx.get(Math.round((Date.parse(p.period) || 0) / 1000));
+    const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
     if (i != null) fillCol[i] = p.mpg ?? null;
   }
   const aligned: uPlot.AlignedData = [ts, obdCol, fillCol];
