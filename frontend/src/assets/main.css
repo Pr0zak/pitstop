@@ -1,39 +1,93 @@
-:root {
-  /* base palette — dark only */
-  --c-bg: #0e1116;
-  --c-surface: #151a22;
-  --c-surface-2: #1d242e;
-  --c-surface-3: #232b37;
-  --c-text: #e6edf3;
-  --c-muted: #8b949e;
-  --c-faint: #5b6573;
-  --c-accent: #2f81f7;
-  --c-accent-soft: rgba(47, 129, 247, 0.12);
-  --c-success: #3fb950;
-  --c-warn: #d29922;
-  --c-danger: #f85149;
-  --c-border: #30363d;
-  --c-border-soft: #21262d;
+/* Pitstop design system — applied from claude.ai/design handoff bundle.
+   Tokens mirror /tmp/pitstop-design/pitstop/project/lib/tokens.jsx (TOK).
+   Type stack: Geist (UI) + Geist Mono (numeric, tabular). Tabular numerals
+   are on by default everywhere a metric appears.
 
-  /* layout */
+   Surfaces are a graduated dark ramp (bg0..bg4); ink ramp ink0..ink4 for
+   text contrast; lines are alpha-on-white so they sit cleanly on any
+   surface. Single warm-coral accent for redline / primary CTA / overdue
+   state — never as a decorative pop. */
+
+:root {
+  /* ── Surface ramp ─── */
+  --c-bg: #0a0c10;        /* page background */
+  --c-bg1: #0e1014;       /* large blocks (sidebar, deep panels) */
+  --c-bg2: #14171d;       /* cards (one step up) */
+  --c-bg3: #1a1e26;       /* nested cards / hover */
+  --c-bg4: #21262f;       /* inputs / pressed */
+  --c-surface: var(--c-bg2);
+  --c-surface-2: var(--c-bg3);
+  --c-surface-3: var(--c-bg4);
+
+  /* ── Ink ramp ─── */
+  --c-ink0: #f3f4f7;      /* primary headings, hero numbers */
+  --c-ink1: #e7e9ee;      /* primary body */
+  --c-ink2: #9aa0aa;      /* secondary / muted */
+  --c-ink3: #6a6f78;      /* tertiary / faint */
+  --c-ink4: #474c55;      /* disabled / decorative */
+  --c-text: var(--c-ink1);
+  --c-muted: var(--c-ink2);
+  --c-faint: var(--c-ink3);
+
+  /* ── Lines ─── */
+  --c-line0: rgba(255, 255, 255, 0.06);  /* hairline */
+  --c-line1: rgba(255, 255, 255, 0.10);  /* default */
+  --c-line2: rgba(255, 255, 255, 0.16);  /* emphatic */
+  --c-border: var(--c-line1);
+  --c-border-soft: var(--c-line0);
+
+  /* ── Accent: warm coral redline ─── */
+  --c-accent: #ff5b3a;
+  --c-accent-1: #ff7a52;
+  --c-accent-deep: #d8401f;
+  --c-accent-soft: rgba(255, 91, 58, 0.12);
+  --c-amber: #ff8a1f;
+
+  /* ── Semantic ─── */
+  --c-success: #4ade80;
+  --c-success-deep: #16a34a;
+  --c-warn: #ffb020;
+  --c-danger: #ff3a2e;
+  --c-info: #60a5fa;
+
+  /* ── Layout ─── */
   --sidebar-w: 220px;
   --sidebar-w-collapsed: 64px;
   --topbar-h: 56px;
 
-  /* radius / shadow */
+  /* ── Radius / shadow ─── */
   --r-sm: 4px;
   --r-md: 8px;
   --r-lg: 12px;
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3);
 
-  /* type */
+  /* ── Type ─── */
   font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
-    sans-serif;
+    'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
   font-size: 14px;
   line-height: 1.45;
+  letter-spacing: -0.005em;
   color-scheme: dark;
 }
+
+/* Type roles. Use these instead of ad-hoc font sizes — keeps the
+   instrument-cluster feel coherent across the app. */
+.t-display { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 56px; line-height: 0.96; letter-spacing: -0.025em; font-weight: 500; color: var(--c-ink0); font-variant-numeric: tabular-nums; }
+.t-mono-xl { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 96px; line-height: 0.92; letter-spacing: -0.04em; font-weight: 500; color: var(--c-ink0); font-variant-numeric: tabular-nums; }
+.t-mono-l  { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 56px; line-height: 1.0; letter-spacing: -0.03em; font-weight: 500; color: var(--c-ink0); font-variant-numeric: tabular-nums; }
+.t-mono-m  { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 22px; line-height: 1.1; letter-spacing: -0.015em; font-weight: 500; color: var(--c-ink0); font-variant-numeric: tabular-nums; }
+.t-mono-s  { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 14px; line-height: 1.3; font-weight: 500; color: var(--c-ink2); font-variant-numeric: tabular-nums; }
+.t-h1 { font-size: 32px; line-height: 1.1; letter-spacing: -0.018em; font-weight: 600; color: var(--c-ink0); }
+.t-h2 { font-size: 22px; line-height: 1.2; letter-spacing: -0.012em; font-weight: 600; color: var(--c-ink0); }
+.t-h3 { font-size: 16px; line-height: 1.3; font-weight: 600; color: var(--c-ink0); }
+.t-body { font-size: 14px; line-height: 1.45; color: var(--c-ink2); }
+.t-cap  { font-size: 12px; line-height: 1.35; color: var(--c-ink3); }
+.t-label{ font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--c-ink3); }
+
+/* Numeric values default to mono-tabular. */
+.num,
+.tabular { font-family: 'Geist Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 
 * {
   box-sizing: border-box;
@@ -47,6 +101,7 @@ body,
   min-height: 100vh;
   background: var(--c-bg);
   color: var(--c-text);
+  font-family: inherit;
 }
 
 a {
@@ -64,12 +119,14 @@ h4 {
   margin: 0 0 0.75rem 0;
   font-weight: 600;
   letter-spacing: -0.01em;
+  color: var(--c-ink0);
 }
 h1 {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
+  letter-spacing: -0.018em;
 }
 h2 {
-  font-size: 1.2rem;
+  font-size: 1.25rem;
 }
 h3 {
   font-size: 1rem;
@@ -82,10 +139,10 @@ p {
 code,
 pre {
   font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    monospace;
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-border-soft);
+    'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', monospace;
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line0);
   border-radius: var(--r-sm);
 }
 code {
@@ -95,6 +152,11 @@ code {
 pre {
   padding: 0.8em 1em;
   overflow-x: auto;
+}
+
+::selection {
+  background: rgba(255, 91, 58, 0.3);
+  color: #fff;
 }
 
 /* form primitives */
@@ -116,11 +178,12 @@ input[type="date"],
 input[type="datetime-local"],
 select,
 textarea {
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-border);
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line1);
   border-radius: var(--r-sm);
-  padding: 0.4rem 0.6rem;
+  padding: 0.45rem 0.7rem;
   outline: none;
+  transition: border-color 120ms, box-shadow 120ms;
 }
 input:focus,
 select:focus,
@@ -130,18 +193,18 @@ textarea:focus {
 }
 
 button {
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-border);
-  color: var(--c-text);
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line1);
+  color: var(--c-ink0);
   border-radius: var(--r-sm);
-  padding: 0.4rem 0.8rem;
+  padding: 0.45rem 0.85rem;
   cursor: pointer;
-  transition:
-    background 0.12s,
-    border-color 0.12s;
+  font-weight: 500;
+  transition: background 120ms, border-color 120ms;
 }
 button:hover:not(:disabled) {
-  background: var(--c-surface-3);
+  background: var(--c-bg4);
+  border-color: var(--c-line2);
 }
 button:disabled {
   opacity: 0.5;
@@ -150,23 +213,23 @@ button:disabled {
 button.primary {
   background: var(--c-accent);
   border-color: var(--c-accent);
-  color: white;
+  color: #fff;
 }
 button.primary:hover:not(:disabled) {
-  filter: brightness(1.1);
-  background: var(--c-accent);
+  background: var(--c-accent-1);
+  border-color: var(--c-accent-1);
 }
 button.danger {
   background: var(--c-danger);
   border-color: var(--c-danger);
-  color: white;
+  color: #fff;
 }
 button.ghost {
   background: transparent;
   border-color: transparent;
 }
 button.ghost:hover:not(:disabled) {
-  background: var(--c-surface-2);
+  background: var(--c-bg3);
 }
 
 /* utility classes */
@@ -192,18 +255,18 @@ button.ghost:hover:not(:disabled) {
 
 /* card */
 .card {
-  background: var(--c-surface);
-  border: 1px solid var(--c-border-soft);
+  background: var(--c-bg2);
+  border: 1px solid var(--c-line0);
   border-radius: var(--r-md);
   padding: 1rem 1.1rem;
 }
 .card h3 {
   margin: 0 0 0.5rem 0;
-  font-size: 0.85rem;
-  color: var(--c-muted);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--c-ink3);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
 /* table */
@@ -215,24 +278,33 @@ table.data {
 table.data th,
 table.data td {
   text-align: left;
-  padding: 0.55rem 0.7rem;
-  border-bottom: 1px solid var(--c-border-soft);
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--c-line0);
 }
 table.data th {
-  color: var(--c-muted);
+  color: var(--c-ink3);
   font-weight: 500;
-  font-size: 0.78rem;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
 }
 table.data tbody tr {
-  transition: background 0.1s;
+  transition: background 100ms;
 }
 table.data tbody tr:hover {
-  background: var(--c-surface-2);
+  background: var(--c-bg2);
 }
 table.data tbody tr.clickable {
   cursor: pointer;
+}
+/* Numeric cells should be tabular. */
+table.data td.num,
+table.data td.tabular,
+table.data th.num,
+table.data th.tabular {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 /* badges */
@@ -240,27 +312,32 @@ table.data tbody tr.clickable {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  padding: 0.15rem 0.5rem;
+  padding: 0.15rem 0.55rem;
   border-radius: 999px;
   font-size: 0.75rem;
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-border-soft);
-  color: var(--c-muted);
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line0);
+  color: var(--c-ink2);
 }
 .badge.success {
-  background: rgba(63, 185, 80, 0.12);
-  border-color: rgba(63, 185, 80, 0.3);
+  background: rgba(74, 222, 128, 0.10);
+  border-color: rgba(74, 222, 128, 0.28);
   color: var(--c-success);
 }
 .badge.warn {
-  background: rgba(210, 153, 34, 0.12);
-  border-color: rgba(210, 153, 34, 0.3);
+  background: rgba(255, 176, 32, 0.10);
+  border-color: rgba(255, 176, 32, 0.28);
   color: var(--c-warn);
 }
 .badge.danger {
-  background: rgba(248, 81, 73, 0.12);
-  border-color: rgba(248, 81, 73, 0.3);
+  background: rgba(255, 58, 46, 0.10);
+  border-color: rgba(255, 58, 46, 0.28);
   color: var(--c-danger);
+}
+.badge.accent {
+  background: var(--c-accent-soft);
+  border-color: rgba(255, 91, 58, 0.28);
+  color: var(--c-accent);
 }
 
 /* scrollbar */
@@ -269,11 +346,11 @@ table.data tbody tr.clickable {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--c-surface-3);
+  background: var(--c-bg4);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--c-border);
+  background: var(--c-line2);
 }
 ::-webkit-scrollbar-track {
   background: transparent;

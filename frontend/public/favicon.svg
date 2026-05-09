@@ -4,30 +4,27 @@
   width="64"
   height="64"
 >
-  <!-- pitstop favicon — arc-ticks-redline (default brand mark).
+  <!-- pitstop favicon — arc-ticks-redline 270° (claude.ai/design canonical).
        Hard-coded colors so the SVG renders correctly outside the app's
-       theme context. -->
-  <rect width="64" height="64" rx="12" fill="#0e1116"/>
-  <!-- Main arc 180° → 45° (left and top section) -->
-  <path d="M 10 44 A 22 22 0 0 1 47.56 28.44"
-        stroke="#2f81f7" stroke-width="4.5" stroke-linecap="round" fill="none"/>
-  <!-- Redline arc 45° → 0° -->
-  <path d="M 47.56 28.44 A 22 22 0 0 1 54 44"
-        stroke="#d29922" stroke-width="4.5" stroke-linecap="round" fill="none"/>
-  <!-- Ticks: 3 in accent, last 2 in warn -->
-  <line x1="10"    y1="44"    x2="14"    y2="44"
-        stroke="#2f81f7" stroke-width="3" stroke-linecap="round"/>
-  <line x1="16.44" y1="28.44" x2="19.27" y2="31.27"
-        stroke="#2f81f7" stroke-width="3" stroke-linecap="round"/>
-  <line x1="32"    y1="22"    x2="32"    y2="26"
-        stroke="#2f81f7" stroke-width="3" stroke-linecap="round"/>
-  <line x1="47.56" y1="28.44" x2="44.73" y2="31.27"
-        stroke="#d29922" stroke-width="3" stroke-linecap="round"/>
-  <line x1="54"    y1="44"    x2="50"    y2="44"
-        stroke="#d29922" stroke-width="3" stroke-linecap="round"/>
-  <!-- Needle into the redline -->
-  <path d="M 32 44 L 50.5 32.7"
-        stroke="#2f81f7" stroke-width="3.5" stroke-linecap="round"/>
-  <circle cx="50.5" cy="32.7" r="3.5" fill="#d29922"/>
-  <circle cx="32"   cy="44"   r="3.5" fill="#2f81f7"/>
+       theme context. Centre 32,33; radius 24; redline +95°→+135°. -->
+  <rect width="64" height="64" rx="12" fill="#0a0c10"/>
+  <!-- Cool arc body: -135° → +95° -->
+  <path d="M 15.03 50 A 24 24 0 1 1 55.86 39.04"
+        stroke="#e7e9ee" stroke-width="3.5" stroke-linecap="butt"
+        fill="none" opacity="0.92"/>
+  <!-- Redline segment: +95° → +135° -->
+  <path d="M 55.86 39.04 A 24 24 0 0 1 48.97 50"
+        stroke="#ff5b3a" stroke-width="3.5" stroke-linecap="round"
+        fill="none"/>
+  <!-- Major ticks (cool) -->
+  <line x1="15.03" y1="50"    x2="18.21" y2="46.82" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="13.76" y1="38.27" x2="18.13" y2="37.10" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="20.74" y1="22.74" x2="23.92" y2="25.92" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="32"    y1="9"     x2="32"    y2="13.5"  stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="43.26" y1="22.74" x2="40.08" y2="25.92" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <!-- Major ticks inside redline (accent) -->
+  <line x1="50.24" y1="38.27" x2="45.87" y2="37.10" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
+  <line x1="48.97" y1="50"    x2="45.79" y2="46.82" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
+  <!-- Hub dot -->
+  <circle cx="32" cy="33" r="2" fill="#ff5b3a"/>
 </svg>

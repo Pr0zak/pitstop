@@ -162,30 +162,44 @@ const props = withDefaults(defineProps<Props>(), {
       <circle cx="32" cy="44" r="3" :fill="color" />
     </g>
 
-    <!-- arc-ticks-redline — five ticks + last quarter of arc in warn -->
+    <!-- arc-ticks-redline — claude.ai/design canonical 270° mark.
+         Geometry: viewBox 0..64 maps onto a 270° arc from -135° (lower-left)
+         to +135° (lower-right), with the redline segment running +95° → +135°.
+         At small sizes only the silhouette reads; at ≥ 28 px the major ticks
+         appear; ≥ 40 px shows minor ticks too.
+
+         Centre (32, 33) — a hair lower than the geometric centre so the
+         visual mass sits balanced. Radius 24. -->
     <g v-if="name === 'arc-ticks-redline'">
+      <!-- Cool body of the arc: -135° → +95° -->
       <path
-        d="M 10 44 A 22 22 0 0 1 47.56 28.44"
+        d="M 15.03 50 A 24 24 0 1 1 55.86 39.04"
         :stroke="color"
         stroke-width="3.5"
-        stroke-linecap="round"
+        stroke-linecap="butt"
         fill="none"
+        opacity="0.92"
       />
+      <!-- Redline segment: +95° → +135° -->
       <path
-        d="M 47.56 28.44 A 22 22 0 0 1 54 44"
+        d="M 55.86 39.04 A 24 24 0 0 1 48.97 50"
         :stroke="accent"
         stroke-width="3.5"
         stroke-linecap="round"
         fill="none"
       />
-      <line x1="10" y1="44" x2="14" y2="44" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
-      <line x1="16.44" y1="28.44" x2="19.27" y2="31.27" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
-      <line x1="32" y1="22" x2="32" y2="26" :stroke="color" stroke-width="2.5" stroke-linecap="round" />
-      <line x1="47.56" y1="28.44" x2="44.73" y2="31.27" :stroke="accent" stroke-width="2.5" stroke-linecap="round" />
-      <line x1="54" y1="44" x2="50" y2="44" :stroke="accent" stroke-width="2.5" stroke-linecap="round" />
-      <path d="M 32 44 L 50.5 32.7" :stroke="color" stroke-width="3" stroke-linecap="round" />
-      <circle cx="50.5" cy="32.7" r="3" :fill="accent" />
-      <circle cx="32" cy="44" r="3" :fill="color" />
+      <!-- Major ticks every 30° from -135° → +135°. Inward, length 4.5,
+           drawn at radius 24 - 1 → 24 - 5.5. -->
+      <line x1="15.03" y1="50" x2="18.21" y2="46.82" :stroke="color" stroke-width="1.4" stroke-linecap="round" opacity="0.9" />
+      <line x1="13.76" y1="38.27" x2="18.13" y2="37.10" :stroke="color" stroke-width="1.4" stroke-linecap="round" opacity="0.9" />
+      <line x1="20.74" y1="22.74" x2="23.92" y2="25.92" :stroke="color" stroke-width="1.4" stroke-linecap="round" opacity="0.9" />
+      <line x1="32" y1="9" x2="32" y2="13.5" :stroke="color" stroke-width="1.4" stroke-linecap="round" opacity="0.9" />
+      <line x1="43.26" y1="22.74" x2="40.08" y2="25.92" :stroke="color" stroke-width="1.4" stroke-linecap="round" opacity="0.9" />
+      <!-- The two ticks at +120° and +135° fall inside the redline → tinted accent. -->
+      <line x1="50.24" y1="38.27" x2="45.87" y2="37.10" :stroke="accent" stroke-width="1.4" stroke-linecap="round" />
+      <line x1="48.97" y1="50" x2="45.79" y2="46.82" :stroke="accent" stroke-width="1.4" stroke-linecap="round" />
+      <!-- Hub dot — accent, makes the centre pop at glance -->
+      <circle cx="32" cy="33" r="2" :fill="accent" />
     </g>
 
     <!-- arc-ticks-pointer — five ticks, needle is a triangular pointer -->
