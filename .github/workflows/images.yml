@@ -63,3 +63,4 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ github.event.head_commit.timestamp }}
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}

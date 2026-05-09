@@ -17,6 +17,7 @@ import {
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
+  Github,
 } from "lucide-vue-next";
 import PitstopLogo from "@/components/logos/PitstopLogo.vue";
 import {
@@ -24,6 +25,19 @@ import {
   DEFAULT_LOGO,
   type LogoName,
 } from "@/components/logos/PitstopLogos";
+import { getVersion } from "@/api/endpoints";
+
+const serverVersion = ref<string | null>(null);
+const serverSha = ref<string | null>(null);
+async function loadVersion() {
+  try {
+    const v = await getVersion();
+    serverVersion.value = v.version;
+    serverSha.value = v.git_sha;
+  } catch {
+    /* ignore — /version isn't critical */
+  }
+}
 
 const logoName = ref<LogoName>(DEFAULT_LOGO);
 function loadLogo() {
@@ -40,6 +54,7 @@ function onLogoChanged(e: Event) {
 }
 onMounted(() => {
   loadLogo();
+  void loadVersion();
   window.addEventListener("pitstop-logo-changed", onLogoChanged);
 });
 onBeforeUnmount(() => {
@@ -118,6 +133,24 @@ const widthVar = computed(() =>
         <span v-if="!collapsed" class="label">{{ item.label }}</span>
       </RouterLink>
     </nav>
+    <div v-if="!collapsed" class="footer">
+      <span
+        v-if="serverVersion"
+        class="version"
+        :title="serverSha ? `git ${serverSha.slice(0, 7)}` : undefined"
+      >
+        {{ serverVersion }}
+      </span>
+      <a
+        href="https://github.com/Pr0zak/pitstop"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="github-link"
+        title="View on GitHub"
+      >
+        <Github :size="14" />
+      </a>
+    </div>
     <button class="collapse" @click="toggle" :title="collapsed ? 'Expand' : 'Collapse'">
       <ChevronRight v-if="collapsed" :size="16" />
       <ChevronLeft v-else :size="16" />
@@ -237,6 +270,27 @@ nav {
 }
 .label {
   flex: 1;
+}
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.72rem;
+  color: var(--c-muted);
+  border-top: 1px solid var(--c-line0);
+}
+.footer .version {
+  letter-spacing: 0.02em;
+}
+.footer .github-link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--c-muted);
+  text-decoration: none;
+}
+.footer .github-link:hover {
+  color: var(--c-ink0);
 }
 .collapse {
   margin: 0.5rem;

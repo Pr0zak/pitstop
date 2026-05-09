@@ -17,8 +17,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
+ARG VERSION=dev
 ENV GIT_SHA=${GIT_SHA} \
-    BUILD_TIME=${BUILD_TIME}
+    BUILD_TIME=${BUILD_TIME} \
+    PITSTOP_VERSION=${VERSION}
 
 EXPOSE 8000
 

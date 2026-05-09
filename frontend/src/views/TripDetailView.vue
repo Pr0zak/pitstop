@@ -24,6 +24,13 @@ const { data: trip, loading, error, reload } = useAsync(
   () => api.getTrip(tripId.value),
   [tripId],
 );
+// Route polyline now comes from /trips/{id}/route which queries the
+// dedicated gps_points hypertable. The legacy `samples.gps_lat/gps_lon`
+// path is kept for backwards-compat with trips ingested before v0.1.78.
+const { data: routeData } = useAsync(
+  () => api.getTripRoute(tripId.value),
+  [tripId],
+);
 
 // Build uPlot data + options from samples.
 type ChartData = { aligned: uPlot.AlignedData; opts: uPlot.Options } | null;
@@ -85,6 +92,11 @@ const chart = computed<ChartData>(() => {
 });
 
 const route2D = computed<[number, number][]>(() => {
+  // Prefer gps_points (richer + accurate); fall back to legacy
+  // samples.gps_lat/gps_lon for trips from before v0.1.78.
+  if (routeData.value?.points?.length) {
+    return routeData.value.points.map((p) => [p.lon, p.lat] as [number, number]);
+  }
   if (!trip.value?.samples) return [];
   return trip.value.samples
     .filter((s) => s.gps_lat != null && s.gps_lon != null)
@@ -170,9 +182,14 @@ async function saveMeta() {
           </div>
 
           <div class="card">
-            <h3>Route</h3>
+            <header class="chart-head">
+              <h3>Route</h3>
+              <span v-if="routeData?.points?.length" class="muted small">
+                {{ routeData.points.length }} GPS points
+              </span>
+            </header>
             <div v-if="route2D.length === 0" class="muted">
-              No GPS samples for this trip.
+              No GPS data captured for this trip.
             </div>
             <MapLibreMap v-else :route="route2D" :height="360" />
           </div>

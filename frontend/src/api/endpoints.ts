@@ -106,8 +106,32 @@ export async function listTrips(
   const total = parseInt(r.headers["x-total-count"] ?? "0", 10) || r.data.length;
   return { items: r.data, total };
 }
+export interface ServerVersion {
+  version: string;
+  git_sha: string;
+  build_time: string;
+}
+export async function getVersion(): Promise<ServerVersion> {
+  // /version is unauthenticated — include skipAuth via raw axios.
+  const r = await apiQuery.get<ServerVersion>("/version");
+  return r.data;
+}
+
 export async function getTrip(id: string): Promise<TripDetail> {
   const r = await apiQuery.get<TripDetail>(`/trips/${id}`);
+  return r.data;
+}
+export interface TripRoutePoint {
+  t: string;
+  lat: number;
+  lon: number;
+  alt_m: number | null;
+  speed_mps: number | null;
+  heading_deg: number | null;
+  accuracy_m: number | null;
+}
+export async function getTripRoute(id: string): Promise<{ trip_id: string; points: TripRoutePoint[] }> {
+  const r = await apiQuery.get<{ trip_id: string; points: TripRoutePoint[] }>(`/trips/${id}/route`);
   return r.data;
 }
 export async function updateTrip(id: string, payload: Partial<Trip>): Promise<Trip> {

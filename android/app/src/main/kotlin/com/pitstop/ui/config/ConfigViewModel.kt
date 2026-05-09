@@ -248,6 +248,32 @@ class ConfigViewModel @Inject constructor(
     }
 
     /**
+     * Manually reconnect the MQTT client. Useful when the phone has been
+     * sleeping (Doze) and the user wants to immediately verify the bridge
+     * is talking to the broker without waiting for HiveMQ's
+     * automatic-reconnect timer. Tears down the existing client and
+     * re-runs connectMqttWithRetry against the saved settings.
+     */
+    fun reconnectBroker() {
+        viewModelScope.launch {
+            val secrets = settingsRepository.current()
+            if (secrets.settings.brokerUrl.isBlank()) return@launch
+            runCatching {
+                mqttPublisher.connect(
+                    secrets.settings.brokerUrl,
+                    secrets.settings.mqttUser,
+                    secrets.mqttPassword,
+                )
+            }.onFailure { exc ->
+                logBuffer.warn(
+                    "manual mqtt reconnect failed",
+                    mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
+                )
+            }
+        }
+    }
+
+    /**
      * Kick off an APK download via [UpdateInstaller]. When the download
      * finishes, the system installer dialog opens automatically.
      * Snackbar reports start/failure; progress shows in the system

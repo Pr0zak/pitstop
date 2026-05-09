@@ -140,6 +140,7 @@ fun ConfigScreen(
                 form = form,
                 brokerConnected = brokerConnected,
                 totalPublished = totalPublished,
+                onReconnect = { viewModel.reconnectBroker() },
                 update = { transform -> viewModel.update(transform) },
             )
 
@@ -310,6 +311,7 @@ private fun MqttBrokerSection(
     form: ConfigFormState,
     brokerConnected: Boolean,
     totalPublished: Long,
+    onReconnect: () -> Unit,
     update: ((ConfigFormState) -> ConfigFormState) -> Unit,
 ) {
     SettingsSection(
@@ -326,7 +328,11 @@ private fun MqttBrokerSection(
                 "Published: $totalPublished",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
             )
+            OutlinedButton(onClick = onReconnect) {
+                Text(if (brokerConnected) "Reconnect" else "Connect")
+            }
         }
         OutlinedTextField(
             value = form.brokerUrl,
@@ -592,6 +598,7 @@ private fun AppSection(
     onCheck: () -> Unit,
     onDownload: () -> Unit,
 ) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     SettingsSection(title = "App") {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
@@ -601,6 +608,21 @@ private fun AppSection(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://github.com/Pr0zak/pitstop"),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        runCatching { ctx.startActivity(intent) }
+                    },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        "github.com/Pr0zak/pitstop",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 if (latestVersionFound != null) {
                     Text(
                         if (latestIsNewer) "Latest on GitHub: v$latestVersionFound (newer)"
