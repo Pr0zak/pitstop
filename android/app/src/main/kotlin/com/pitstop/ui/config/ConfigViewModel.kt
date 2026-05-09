@@ -107,6 +107,12 @@ class ConfigViewModel @Inject constructor(
     private val _form = MutableStateFlow(ConfigFormState())
     val form: StateFlow<ConfigFormState> = _form.asStateFlow()
 
+    /** False until the form has been populated from disk. Save() refuses
+     *  to write while false — prevents the init-race that wiped saved
+     *  secrets when a Save fired before init's coroutine completed. */
+    private val _formReady = MutableStateFlow(false)
+    val formReady: StateFlow<Boolean> = _formReady.asStateFlow()
+
     private val _scanResults = MutableStateFlow<List<ScannedDevice>>(emptyList())
     val scanResults: StateFlow<List<ScannedDevice>> = _scanResults.asStateFlow()
 
@@ -134,6 +140,7 @@ class ConfigViewModel @Inject constructor(
                 bleDeviceName = secrets.settings.bleDeviceName,
                 verboseLogging = secrets.settings.verboseLogging,
             )
+            _formReady.value = true
         }
     }
 
@@ -181,6 +188,13 @@ class ConfigViewModel @Inject constructor(
     }
 
     fun save() {
+        // Refuse to write while the form hasn't loaded existing values
+        // off disk yet — saving the default-empty state would clobber
+        // every persisted field.
+        if (!_formReady.value) {
+            logBuffer.warn("config save blocked: form not yet loaded")
+            return
+        }
         viewModelScope.launch {
             val f = _form.value
             settingsRepository.update(

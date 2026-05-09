@@ -112,8 +112,20 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
             prefs[Keys.unitSystem] = settings.unitSystem
         }
-        if (mqttPassword != null) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
-        if (ingestToken != null) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)
-        if (queryToken != null) secretStore.write(SecretStore.KEY_QUERY_TOKEN, queryToken)
+        // Treat blank as "leave alone" rather than "clear" — otherwise a
+        // save fired before the form's init coroutine has populated the
+        // secret from disk silently wipes the stored value. The user has
+        // no way to recover except retyping. (This was the cause of the
+        // 0.1.82 → broker NOT_AUTHORIZED loop.)
+        // Explicit clears go through clearSecret() below.
+        if (!mqttPassword.isNullOrBlank()) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
+        if (!ingestToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)
+        if (!queryToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_QUERY_TOKEN, queryToken)
+    }
+
+    /** Explicit clear of a single secret. Used by Settings UI when the
+     *  user actually wants to remove a stored credential. */
+    suspend fun clearSecret(key: String) {
+        secretStore.write(key, "")
     }
 }
