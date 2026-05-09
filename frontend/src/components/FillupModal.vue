@@ -13,7 +13,25 @@ const props = defineProps<{
   // input so the user knows what number to expect on a fresh entry.
   lastFillupOdo?: number | null;
   lastFillupDate?: string | null;
+  // Full vehicle list for the in-modal picker — lets the user save
+  // the fillup against a different vehicle without changing the
+  // global vehicle selection. Defaults to props.vehicle when blank.
+  allVehicles?: Vehicle[];
 }>();
+// Per-modal vehicle override. Defaults to whichever vehicle the
+// modal was opened against; user can switch via the dropdown.
+const selectedVehicleId = ref<string>(props.vehicle.id);
+watch(
+  () => props.vehicle.id,
+  (id) => {
+    selectedVehicleId.value = id;
+  },
+);
+const availableVehicles = computed<Vehicle[]>(() =>
+  props.allVehicles && props.allVehicles.length > 0
+    ? props.allVehicles
+    : [props.vehicle],
+);
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "saved", fillup: Fillup): void;
@@ -146,7 +164,7 @@ async function save() {
   }
   try {
     const payload: Partial<Fillup> = {
-      vehicle_id: props.vehicle.id,
+      vehicle_id: selectedVehicleId.value,
       fillup_date: form.value.fillup_date
         ? new Date(form.value.fillup_date).toISOString()
         : undefined,
@@ -208,6 +226,23 @@ async function save() {
           </button>
         </header>
         <form @submit.prevent="save">
+          <!-- Vehicle picker — lets the user log this fillup against a
+               different vehicle than the one the global picker has
+               selected. Hidden when there's only one vehicle to choose
+               from. -->
+          <label v-if="availableVehicles.length > 1">
+            Vehicle
+            <select v-model="selectedVehicleId">
+              <option
+                v-for="v in availableVehicles"
+                :key="v.id"
+                :value="v.id"
+              >
+                {{ v.name }}
+                <template v-if="v.active === false">(archived)</template>
+              </option>
+            </select>
+          </label>
           <div class="row two">
             <label>
               Date / time

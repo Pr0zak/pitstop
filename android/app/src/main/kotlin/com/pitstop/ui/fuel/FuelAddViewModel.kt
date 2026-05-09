@@ -238,16 +238,25 @@ class FuelAddViewModel @Inject constructor(
     }
 
     fun submit() {
+        // Synchronous re-entry guard. Without this, three rapid taps fire
+        // three viewModelScope.launch{} coroutines before any of them can
+        // flip the submitting flag — and we just shipped 3 duplicate
+        // fillups to the user's drive in production. Set the flag on the
+        // calling thread so a second tap inside the same frame sees it
+        // already true and bails.
+        if (_form.value.submitting) return
+        _form.value = _form.value.copy(submitting = true, errorMessage = null)
+
         viewModelScope.launch {
             val f = _form.value
             val gallons = f.gallons.toDoubleOrNull()
             val totalPrice = f.totalPrice.toDoubleOrNull()
             if (gallons == null || gallons <= 0) {
-                _form.value = f.copy(errorMessage = "Enter gallons")
+                _form.value = f.copy(submitting = false, errorMessage = "Enter gallons")
                 return@launch
             }
             if (totalPrice == null || totalPrice < 0) {
-                _form.value = f.copy(errorMessage = "Enter total price")
+                _form.value = f.copy(submitting = false, errorMessage = "Enter total price")
                 return@launch
             }
             val settings = settingsRepository.current().settings
@@ -255,7 +264,10 @@ class FuelAddViewModel @Inject constructor(
             // bridge's configured vehicle (matches pre-picker behaviour).
             val targetSlug = f.selectedVehicleSlug.ifBlank { settings.vehicleSlug }
             if (targetSlug.isBlank() || settings.apiBaseUrl.isBlank()) {
-                _form.value = f.copy(errorMessage = "Pick a vehicle and configure API URL first")
+                _form.value = f.copy(
+                    submitting = false,
+                    errorMessage = "Pick a vehicle and configure API URL first",
+                )
                 return@launch
             }
 
@@ -296,10 +308,6 @@ class FuelAddViewModel @Inject constructor(
             if (freshGps != null) {
                 _form.value = _form.value.copy(gps = freshGps)
             }
-            // After a successful submit we want the form to come back fresh
-            // for the next visit, but keep the last-odo hint and station
-            // suggestions populated.
-            _form.value = f.copy(submitting = true, errorMessage = null)
             try {
                 val response = api.postFillup(request)
                 historyStore.add(
@@ -311,9 +319,25 @@ class FuelAddViewModel @Inject constructor(
                     ),
                 )
                 allHistory = historyStore.all()
-                _form.value = f.copy(submitting = false, submittedId = response.id)
+                // Reset the form so the user knows the fillup landed and
+                // can immediately enter a new one. Preserve metadata that
+                // would still apply to the next entry: vehicle picker,
+                // gas type, last-odo hint, station suggestions.
+                _form.value = FuelFormState(
+                    submitting = false,
+                    submittedId = response.id,
+                    vehicles = f.vehicles,
+                    selectedVehicleSlug = f.selectedVehicleSlug,
+                    fuelType = f.fuelType,
+                    lastOdometer = f.odometer.toDoubleOrNull() ?: f.lastOdometer,
+                    stationSuggestions = f.stationSuggestions,
+                    gps = f.gps,
+                )
             } catch (e: Exception) {
-                _form.value = f.copy(submitting = false, errorMessage = e.message ?: "Submit failed")
+                _form.value = f.copy(
+                    submitting = false,
+                    errorMessage = e.message ?: "Submit failed",
+                )
             }
         }
     }

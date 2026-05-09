@@ -794,6 +794,7 @@ const rangeEstimate = computed<{
       :station-suggestions="stationSuggestions"
       :last-fillup-odo="fillupsQ.data.value?.items?.[0]?.odo ?? null"
       :last-fillup-date="fillupsQ.data.value?.items?.[0]?.fillup_date ?? null"
+      :all-vehicles="vehicles.vehicles"
       @close="showModal = false"
       @saved="onSaved"
     />
