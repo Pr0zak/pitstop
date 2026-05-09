@@ -61,6 +61,14 @@ fun StatusScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // Hero — the eye lands here first. The card cluster below
+            // fills in detail; this just answers "is the bridge OK?"
+            com.pitstop.ui.components.HeroStatusBanner(
+                phase = ui.status.phase,
+                brokerConnected = ui.status.brokerConnected,
+                vehicleName = ui.status.deviceName,
+            )
+
             ui.update?.takeIf { it.isNewer }?.let { info ->
                 UpdateAvailableCard(
                     info = info,
