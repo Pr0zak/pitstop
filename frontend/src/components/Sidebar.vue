@@ -96,7 +96,10 @@ const widthVar = computed(() =>
   <aside class="sidebar" :class="{ collapsed }" :style="{ width: widthVar }">
     <RouterLink to="/logos" class="brand" title="Pick a logo">
       <div class="logo">
-        <PitstopLogo :name="logoName" :size="22" color="#ffffff" accent="#ffe9a8" />
+        <!-- White cool body so the mark reads on the dark plate; redline
+             stays warm coral so it pops the same way it does in the live
+             gauge cluster. Mirrors the design's PitstopLauncher tile. -->
+        <PitstopLogo :name="logoName" :size="22" color="#e7e9ee" accent="#ff5b3a" />
       </div>
       <span v-if="!collapsed" class="brand-name">pitstop</span>
     </RouterLink>
@@ -122,8 +125,8 @@ const widthVar = computed(() =>
 
 <style scoped>
 .sidebar {
-  background: var(--c-surface);
-  border-right: 1px solid var(--c-border-soft);
+  background: var(--c-bg1);
+  border-right: 1px solid var(--c-line0);
   display: flex;
   flex-direction: column;
   position: fixed;
@@ -139,26 +142,30 @@ const widthVar = computed(() =>
   gap: 0.6rem;
   padding: 0 1rem;
   height: var(--topbar-h);
-  border-bottom: 1px solid var(--c-border-soft);
+  border-bottom: 1px solid var(--c-line0);
+  text-decoration: none;
+}
+.brand:hover {
+  text-decoration: none;
 }
 .logo {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
-  background: var(--c-accent);
-  color: white;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: linear-gradient(155deg, var(--c-bg3) 0%, var(--c-bg) 80%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 0.85rem;
-  letter-spacing: 0.02em;
   flex-shrink: 0;
 }
 .brand-name {
   font-weight: 600;
   font-size: 1rem;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.018em;
+  color: var(--c-ink0);
 }
 nav {
   display: flex;
@@ -174,20 +181,36 @@ nav {
   gap: 0.7rem;
   padding: 0.55rem 0.7rem;
   border-radius: var(--r-sm);
-  color: var(--c-muted);
+  color: var(--c-ink2);
   text-decoration: none;
   font-size: 0.9rem;
   white-space: nowrap;
   overflow: hidden;
+  position: relative;
+  transition: background 100ms, color 100ms;
 }
 .nav-item:hover {
-  background: var(--c-surface-2);
-  color: var(--c-text);
+  background: var(--c-bg3);
+  color: var(--c-ink0);
   text-decoration: none;
 }
 .nav-item.active {
-  background: var(--c-accent-soft);
-  color: var(--c-accent);
+  background: var(--c-bg3);
+  color: var(--c-ink0);
+}
+/* Coral redline rail on the active item — visual echo of the gauge
+   cluster's redline segment. Sits at the leading edge instead of the
+   pill background so the row stays calm but you can still scan which
+   page is open at a glance. */
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--c-accent);
+  border-radius: 1px;
 }
 .collapsed .nav-item {
   justify-content: center;

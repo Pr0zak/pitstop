@@ -39,6 +39,8 @@ import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.service.BridgePhase
+import com.pitstop.ui.components.PillState
+import com.pitstop.ui.components.StatusPill
 import kotlin.math.max
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -165,20 +167,22 @@ private fun ServiceStateCard(
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
-    val (statusText, statusColor) = when (phase) {
-        BridgePhase.Idle -> "Idle" to MaterialTheme.colorScheme.onSurfaceVariant
-        BridgePhase.Scanning -> "Scanning" to MaterialTheme.colorScheme.tertiary
-        BridgePhase.Connecting -> "Connecting" to MaterialTheme.colorScheme.tertiary
-        BridgePhase.Connected -> "Running" to MaterialTheme.colorScheme.primary
-        BridgePhase.Disconnected -> "Reconnecting" to MaterialTheme.colorScheme.error
-        BridgePhase.Error -> "Error" to MaterialTheme.colorScheme.error
+    // Map bridge phase → design pill state. "Connected" is the only
+    // healthy state from the user's POV; scanning + connecting both
+    // count as in-progress (pulsing); disconnected + error read as
+    // hard offline since the bridge isn't producing telemetry.
+    val (statusText, pillState) = when (phase) {
+        BridgePhase.Idle -> "Idle" to PillState.Neutral
+        BridgePhase.Scanning -> "Scanning" to PillState.Connecting
+        BridgePhase.Connecting -> "Connecting" to PillState.Connecting
+        BridgePhase.Connected -> "Running" to PillState.Healthy
+        BridgePhase.Disconnected -> "Reconnecting" to PillState.Degraded
+        BridgePhase.Error -> "Error" to PillState.Offline
     }
     Card {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = statusColor, shape = CircleShape, modifier = Modifier.size(10.dp)) {}
-                Spacer(Modifier.size(8.dp))
-                Text(statusText, style = MaterialTheme.typography.titleMedium)
+                StatusPill(state = pillState, label = statusText)
             }
             error?.let {
                 Spacer(Modifier.height(4.dp))
@@ -217,16 +221,9 @@ private fun BrokerCard(
     Card {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    color = if (connected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outlineVariant,
-                    shape = CircleShape,
-                    modifier = Modifier.size(10.dp),
-                ) {}
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    if (connected) "Broker connected" else "Broker offline",
-                    style = MaterialTheme.typography.titleMedium,
+                StatusPill(
+                    state = if (connected) PillState.Healthy else PillState.Offline,
+                    label = if (connected) "Broker connected" else "Broker offline",
                 )
             }
             Spacer(Modifier.height(4.dp))
