@@ -176,14 +176,7 @@ async def compute_trip_stats(
     #   2) Vehicle-speed integration (kph * dt) as a fallback when no GPS.
     distance_km = await conn.fetchval(
         """
-        SELECT COALESCE(SUM(
-            2 * 6371.0 * asin(sqrt(
-                pow(sin(radians(lat - lag_lat) / 2), 2) +
-                cos(radians(lag_lat)) * cos(radians(lat)) *
-                pow(sin(radians(lon - lag_lon) / 2), 2)
-            ))
-        ), 0)
-        FROM (
+        WITH pairs AS (
             SELECT
                 lat, lon,
                 LAG(lat) OVER (ORDER BY time) AS lag_lat,
@@ -193,8 +186,25 @@ async def compute_trip_stats(
             FROM gps_points
             WHERE vehicle_id = $1
               AND time >= $2 AND time <= $3
-        ) g
-        WHERE lag_lat IS NOT NULL AND dt IS NOT NULL AND dt < 60
+        ),
+        steps AS (
+            SELECT
+                dt,
+                2 * 6371.0 * asin(sqrt(
+                    pow(sin(radians(lat - lag_lat) / 2), 2) +
+                    cos(radians(lag_lat)) * cos(radians(lat)) *
+                    pow(sin(radians(lon - lag_lon) / 2), 2)
+                )) AS step_km
+            FROM pairs
+            WHERE lag_lat IS NOT NULL AND dt IS NOT NULL AND dt < 60
+        )
+        -- Drop pairs that imply > 250 km/h apparent velocity. Those are
+        -- network-provider noise spikes (alternating real / stale
+        -- coords) that exploded historical trip distances. Real
+        -- driving never produces a single step over the threshold.
+        SELECT COALESCE(SUM(step_km), 0)
+        FROM steps
+        WHERE step_km / NULLIF(dt, 0) * 3600 < 250
         """,
         vehicle_id,
         started_at,

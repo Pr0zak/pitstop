@@ -849,6 +849,8 @@ class PitstopBridgeService : Service() {
         // shows the current location even when parked.
         stateBus.publishMetric("gps_lat", latR)
         stateBus.publishMetric("gps_lon", lonR)
+        if (loc.hasSpeed()) stateBus.publishMetric("gps_speed", loc.speed.toDouble())
+        if (loc.hasAltitude()) stateBus.publishMetric("gps_alt", loc.altitude)
         // Don't ship to broker while parked. GPS at home produces a stuck
         // point at 5 sec cadence (~17k rows/day per vehicle) of zero
         // analytical value. When engine is on we want every fix.

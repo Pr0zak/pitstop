@@ -453,3 +453,33 @@ async def purge_logs(
         "level": level,
         "rows_deleted": int(affected or 0),
     }
+
+
+@router.post(
+    "/trips/reprocess",
+    dependencies=[Depends(require_ingest_token)],
+)
+async def reprocess_trips(
+    request: Any = None,  # FastAPI populates via Request injection
+    older_than_hours: int = Query(default=24, ge=1, le=24 * 365 * 5),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Re-derive trips for the last N hours using the post-processor.
+
+    Idempotent — uses deterministic UUIDs keyed on (vehicle_id,
+    started_at), so running this won't create duplicates. User-set
+    fields (category, notes) on the trip rows are preserved.
+    """
+    from ..config import settings as default_settings
+    from ..workers import trip_deriver
+
+    since = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+    summary = await trip_deriver.derive_window(
+        pool, default_settings, since=since
+    )
+    return {
+        "since_iso": since.isoformat(),
+        "older_than_hours": older_than_hours,
+        "trips_touched_per_vehicle": summary,
+        "total_trips_touched": sum(summary.values()),
+    }

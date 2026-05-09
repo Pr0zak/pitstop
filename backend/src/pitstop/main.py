@@ -35,6 +35,7 @@ from .workers.bus import bus
 from .workers.ha_mirror import HaMirror
 from .workers.ingest import MqttIngest
 from .workers.trip_detector import TripDetector
+from .workers import trip_deriver
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 log = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ async def lifespan(app: FastAPI):
     log_drain_task: asyncio.Task | None = None
     retention_task: asyncio.Task | None = None
     eia_task: asyncio.Task | None = None
+    deriver_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
@@ -123,11 +125,19 @@ async def lifespan(app: FastAPI):
             run_db_log_drainer(db_log_handler, pool), name="db-log-drainer"
         )
         ingest = MqttIngest(pool=pool, bus_=bus, config=settings)
-        trip_detector = TripDetector(pool=pool, bus_=bus, config=settings)
+        # Streaming TripDetector retired in favour of the periodic
+        # trip_deriver (post-processed batch derivation; Task #81).
+        # We still set up the in-memory bus subscription via TripDetector
+        # = None so the ingest worker can keep publishing engine_events
+        # without errors; the bus is consumed only by HaMirror now.
+        trip_detector = None
         ha_mirror = HaMirror(pool=pool, bus_=bus, config=settings)
         ingest_task = asyncio.create_task(ingest.run(), name="mqtt-ingest")
-        trip_task = asyncio.create_task(trip_detector.run(), name="trip-detector")
+        trip_task = None
         ha_task = asyncio.create_task(ha_mirror.run(), name="ha-mirror")
+        deriver_task = asyncio.create_task(
+            trip_deriver.run(pool, settings), name="trip-deriver"
+        )
         # Retention worker — auto-purges pid_readings + client_logs when the
         # singleton settings row carries non-null retention thresholds.
         from .workers import retention as retention_worker  # noqa: E402
@@ -151,7 +161,7 @@ async def lifespan(app: FastAPI):
             ha_mirror.stop()
         for task in (
             ingest_task, trip_task, ha_task, log_drain_task,
-            retention_task, eia_task,
+            retention_task, eia_task, deriver_task,
         ):
             if task is None:
                 continue

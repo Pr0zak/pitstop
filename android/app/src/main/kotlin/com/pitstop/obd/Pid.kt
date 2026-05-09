@@ -90,10 +90,59 @@ object Pids {
         parser = { bytes -> byte(bytes, 0)?.let { it - 40.0 } },
     )
 
+    val EngineLoad = Pid(
+        name = "engine_load",
+        mode = 0x01,
+        pid = 0x04,
+        periodMs = 1_000,
+        parser = { bytes -> byte(bytes, 0)?.let { it * 100.0 / 255.0 } },
+    )
+
+    val ManifoldPressure = Pid(
+        name = "manifold_pressure",
+        mode = 0x01,
+        pid = 0x0B,
+        periodMs = 1_000,
+        parser = { bytes -> byte(bytes, 0)?.toDouble() },  // kPa absolute
+    )
+
+    val MafAirFlow = Pid(
+        name = "maf_air_flow",
+        mode = 0x01,
+        pid = 0x10,
+        periodMs = 1_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) / 100.0  // g/s
+        },
+    )
+
+    val RunTimeSinceStart = Pid(
+        name = "run_time_since_start",
+        mode = 0x01,
+        pid = 0x1F,
+        periodMs = 5_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b).toDouble()  // seconds
+        },
+    )
+
+    private fun fuelTrim(b: ByteArray): Double? =
+        byte(b, 0)?.let { (it - 128) * 100.0 / 128.0 }
+
+    val StftB1 = Pid(name = "stft_b1", mode = 0x01, pid = 0x06, periodMs = 2_000, parser = ::fuelTrim)
+    val LtftB1 = Pid(name = "ltft_b1", mode = 0x01, pid = 0x07, periodMs = 5_000, parser = ::fuelTrim)
+    val StftB2 = Pid(name = "stft_b2", mode = 0x01, pid = 0x08, periodMs = 2_000, parser = ::fuelTrim)
+    val LtftB2 = Pid(name = "ltft_b2", mode = 0x01, pid = 0x09, periodMs = 5_000, parser = ::fuelTrim)
+
     /**
      * Default poll set. ATF temp (Honda Mode 22 0x2201) is intentionally OUT — that
      * is the WiCAN device's job (driveway publish over wifi). The phone bridge focuses
-     * on the moving-vehicle path: live engine state + GPS.
+     * on the moving-vehicle path: live engine state + GPS + the standard Mode 01 PIDs
+     * the Live view expects to see populated.
      */
     val DEFAULT = listOf(
         EngineRpm,
@@ -103,5 +152,10 @@ object Pids {
         ControlModuleVoltage,
         IntakeAirTemp,
         FuelLevel,
+        EngineLoad,
+        ManifoldPressure,
+        MafAirFlow,
+        RunTimeSinceStart,
+        StftB1, LtftB1, StftB2, LtftB2,
     )
 }
