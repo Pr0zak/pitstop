@@ -108,32 +108,26 @@ fun FuelAddScreen(
 
     Scaffold(
         topBar = {
+            // Brand-only TopAppBar matching the rest of the primary tabs
+            // (Home, Live, Settings). Save lives in the actions slot;
+            // there's no back arrow because there's no back stack on a
+            // primary pager tab — the bottom NavigationBar + horizontal
+            // swipe handle navigation. Removed the previous discard
+            // icon: it wiped the loaded vehicle list as a side effect
+            // and confused the user.
             CenterAlignedTopAppBar(
                 title = {
-                    Text(
-                        "Refueling",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                },
-                navigationIcon = {
-                    // Reset/clear the form back to defaults — same hand
-                    // gesture as Fuelio's back-arrow but framed as "discard
-                    // this draft" since there's no real back stack with the
-                    // pager-based navigation.
-                    IconButton(onClick = { viewModel.update { FuelFormState() } }) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Discard",
+                    androidx.compose.foundation.layout.Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "pitstop",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
                 },
                 actions = {
-                    // "Save" text button — replaces the bare check icon
-                    // that was unrecognisable as a save affordance. Same
-                    // action as the bottom-of-form Save fillup button;
-                    // having it up here too means the user can save
-                    // without scrolling to the bottom (handy when the
-                    // soft keyboard covers the bottom button).
                     androidx.compose.material3.TextButton(
                         onClick = { viewModel.submit() },
                         enabled = !form.submitting,
