@@ -1,14 +1,37 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from "vue";
+import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { ChevronDown, Car } from "lucide-vue-next";
 import { useVehiclesStore } from "@/stores/vehicles";
 
 const vehicles = useVehiclesStore();
 const open = ref(false);
+const root = ref<HTMLElement | null>(null);
 
 onMounted(() => {
   void vehicles.ensureLoaded();
+  document.addEventListener("click", onDocClick, true);
 });
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onDocClick, true);
+});
+
+/**
+ * Close the dropdown when the click lands outside the picker root. Using
+ * a capture-phase document listener instead of a body-teleported mask div
+ * — the mask was covering the dropdown's option buttons (different
+ * stacking contexts) so taps on a vehicle never reached the option's
+ * click handler. This handler fires *before* the bubbling target click,
+ * but checks `root.contains(target)` so clicks on the dropdown options
+ * still work.
+ */
+function onDocClick(e: MouseEvent) {
+  if (!open.value) return;
+  const target = e.target as Node | null;
+  if (target && root.value && !root.value.contains(target)) {
+    open.value = false;
+  }
+}
 
 const selected = computed(() => vehicles.selectedVehicle);
 const showPicker = computed(() => vehicles.vehicles.length > 1);
@@ -22,8 +45,8 @@ function pick(id: string) {
 <template>
   <div
     v-if="vehicles.vehicles.length > 0"
+    ref="root"
     class="vehicle-picker"
-    @click.stop
     @keydown.esc="open = false"
   >
     <button
@@ -59,10 +82,6 @@ function pick(id: string) {
   <div v-else class="vehicle-picker">
     <span class="muted">No vehicles</span>
   </div>
-  <!-- click outside listener -->
-  <Teleport to="body">
-    <div v-if="open" class="picker-mask" @click="open = false" />
-  </Teleport>
 </template>
 
 <style scoped>
@@ -101,7 +120,10 @@ function pick(id: string) {
   border: 1px solid var(--c-border);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-soft);
-  z-index: 50;
+  /* High enough to clear any sticky-positioned chrome above the picker
+     (TopBar) without competing with toast/snackbar layers (which sit
+     much higher). */
+  z-index: 100;
   padding: 0.3rem;
   display: flex;
   flex-direction: column;
@@ -129,10 +151,5 @@ function pick(id: string) {
 }
 .opt-sub {
   font-size: 0.78rem;
-}
-.picker-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
 }
 </style>
