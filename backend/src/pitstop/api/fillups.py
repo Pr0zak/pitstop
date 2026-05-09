@@ -79,8 +79,18 @@ def compute_recomputed_mpg(rows: list[dict[str, Any]]) -> dict[UUID, float | Non
     pending_volume: float = 0.0
     for row in ordered:
         is_full = bool(row["is_full"])
+        is_missed = bool(row.get("is_missed", False))
         odo = float(row["odo"])
         vol = float(row["fuel_volume"])
+        if is_missed:
+            # The user skipped recording the previous fillup, so the
+            # distance-since-last-full is real but the volume-since-last-
+            # full is missing. We can't compute a valid MPG here. Reset
+            # the chain so the *next* fill has a clean baseline.
+            out[row["id"]] = None
+            last_full_odo = odo
+            pending_volume = 0.0
+            continue
         if not is_full:
             # Partial: roll volume forward; no MPG produced.
             pending_volume += vol
@@ -114,7 +124,7 @@ async def _attach_recomputed_mpg(
     async with pool.acquire() as conn:
         for vid in by_vehicle:
             chain = await conn.fetch(
-                "SELECT id, fillup_date, odo, fuel_volume, is_full "
+                "SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed "
                 "FROM fillups WHERE vehicle_id = $1 ORDER BY fillup_date ASC",
                 vid,
             )
