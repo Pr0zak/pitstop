@@ -348,6 +348,46 @@ class MqttIngest:
         # Otherwise plain text.
         return None, s
 
+    @staticmethod
+    def _parse_v2_scalar(payload: str, default_when: datetime) -> tuple[float, datetime] | None:
+        """Recognise the bridge payload v2 shape: ``{"v": <number>, "t": <ms>}``.
+
+        Phone bridge wraps every per-metric value in this envelope so the
+        original capture timestamp survives an offline-buffer drain. ``t``
+        is unix milliseconds (System.currentTimeMillis on the phone).
+
+        Returns ``None`` if the payload isn't this shape (caller falls back
+        to the legacy scalar/AutoPID paths). Returns ``(value, when)`` on
+        match — when ``t`` is missing we use ``default_when`` so partial v2
+        payloads (e.g. live-stream paths that haven't been migrated yet)
+        still work.
+        """
+        s = payload.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return None
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        # v2 has at most {"v","t"}. WiCAN's AutoPID payloads have many keys.
+        if "v" not in obj:
+            return None
+        if not set(obj.keys()).issubset({"v", "t"}):
+            return None
+        v = obj["v"]
+        if not isinstance(v, (int, float, bool)):
+            return None
+        when = default_when
+        t_ms = obj.get("t")
+        if isinstance(t_ms, (int, float)):
+            try:
+                when = datetime.fromtimestamp(float(t_ms) / 1000.0, tz=UTC)
+            except (OverflowError, OSError, ValueError):
+                pass  # fall back to default_when
+        return float(v), when
+
     def _fanout_json_payload(
         self,
         payload: str,
@@ -378,6 +418,10 @@ class MqttIngest:
         except json.JSONDecodeError:
             return None
         if not isinstance(obj, dict):
+            return None
+        # Bridge v2 envelope ({"v":..,"t":..}) is handled by _parse_v2_scalar.
+        # If we see a v2 shape here, decline and let the caller route it.
+        if "v" in obj and set(obj.keys()).issubset({"v", "t"}):
             return None
         out: list[_PendingReading] = []
         for k, v in obj.items():
@@ -439,30 +483,55 @@ class MqttIngest:
         vehicle_id, profile_pids = resolved
         now = datetime.now(tz=UTC)
 
-        # WiCAN AutoPID publishes one consolidated JSON object per cycle to
-        # one topic (e.g. {"engine_rpm":1600,"vehicle_speed":42,...} to
-        # wican/<slug>/pid). When we receive a JSON object payload, fan out
-        # each top-level key as its own reading. Per-metric topics with
-        # scalar payloads still flow through the legacy path below.
-        readings = self._fanout_json_payload(
-            payload, profile_pids, vehicle_id, parsed.source, now
-        )
-        if readings is None:
-            value_num, value_text = self._parse_payload(
-                parsed.metric, payload, profile_pids, vehicle_id
-            )
-            if value_num is None and value_text is None:
-                return  # blank payload
+        # Bridge v2 dedicated topics — these don't land in pid_readings;
+        # they have their own tables so /trips can render maps and trip
+        # boundaries cleanly.
+        if parsed.source == "bridge" and parsed.metric == "location":
+            await self._handle_location(payload, vehicle_id, now)
+            return
+        if parsed.source == "bridge" and parsed.metric == "engine_state":
+            await self._handle_engine_state(payload, vehicle_id, now)
+            return
+
+        # Bridge v2 envelope: {"v": <num>, "t": <unix_ms>}. Honors the
+        # original capture time so an offline-buffer drain doesn't collapse
+        # an hour of driving into a 3-minute ingest window.
+        v2 = self._parse_v2_scalar(payload, now)
+        if v2 is not None:
+            value_num, when = v2
             readings = [
                 _PendingReading(
                     vehicle_id=vehicle_id,
-                    time=now,
+                    time=when,
                     metric=parsed.metric,
                     value_num=value_num,
-                    value_text=value_text,
+                    value_text=None,
                     source=parsed.source,
                 )
             ]
+        else:
+            # Legacy AutoPID consolidated-JSON path (WiCAN) or scalar
+            # payload (bridge/<slug>/<metric> bare value, pre-v2 phone
+            # builds).
+            readings = self._fanout_json_payload(
+                payload, profile_pids, vehicle_id, parsed.source, now
+            )
+            if readings is None:
+                value_num, value_text = self._parse_payload(
+                    parsed.metric, payload, profile_pids, vehicle_id
+                )
+                if value_num is None and value_text is None:
+                    return  # blank payload
+                readings = [
+                    _PendingReading(
+                        vehicle_id=vehicle_id,
+                        time=now,
+                        metric=parsed.metric,
+                        value_num=value_num,
+                        value_text=value_text,
+                        source=parsed.source,
+                    )
+                ]
         if not readings:
             return
 
@@ -482,6 +551,103 @@ class MqttIngest:
                     source=reading.source,
                 )
             )
+
+    async def _handle_location(
+        self, payload: str, vehicle_id: UUID, default_when: datetime
+    ) -> None:
+        """Parse {"t","lat","lon","alt","speed","heading","acc"} and insert
+        into gps_points. Required keys: lat, lon. All other fields optional.
+        """
+        s = payload.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(obj, dict):
+            return
+        try:
+            lat = float(obj["lat"])
+            lon = float(obj["lon"])
+        except (KeyError, TypeError, ValueError):
+            return
+        when = default_when
+        t_ms = obj.get("t")
+        if isinstance(t_ms, (int, float)):
+            try:
+                when = datetime.fromtimestamp(float(t_ms) / 1000.0, tz=UTC)
+            except (OverflowError, OSError, ValueError):
+                pass
+
+        def _opt_float(key: str) -> float | None:
+            v = obj.get(key)
+            if isinstance(v, (int, float)):
+                return float(v)
+            return None
+
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO gps_points
+                        (time, vehicle_id, lat, lon, alt_m,
+                         speed_mps, heading_deg, accuracy_m, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'bridge')
+                    """,
+                    when,
+                    vehicle_id,
+                    lat,
+                    lon,
+                    _opt_float("alt"),
+                    _opt_float("speed"),
+                    _opt_float("heading"),
+                    _opt_float("acc"),
+                )
+        except (asyncpg.PostgresError, OSError) as exc:
+            log.warning("gps_points insert failed: %s", exc)
+
+    async def _handle_engine_state(
+        self, payload: str, vehicle_id: UUID, default_when: datetime
+    ) -> None:
+        """Parse {"t","state":"on"|"off"} and insert into engine_events.
+
+        Trip detector (Pass 3) uses these as authoritative trip boundaries
+        when present; legacy silence-based detection still runs for
+        vehicles that don't publish the new event.
+        """
+        s = payload.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(obj, dict):
+            return
+        state = obj.get("state")
+        if state not in ("on", "off"):
+            return
+        when = default_when
+        t_ms = obj.get("t")
+        if isinstance(t_ms, (int, float)):
+            try:
+                when = datetime.fromtimestamp(float(t_ms) / 1000.0, tz=UTC)
+            except (OverflowError, OSError, ValueError):
+                pass
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO engine_events (time, vehicle_id, state, source)
+                    VALUES ($1, $2, $3, 'bridge')
+                    """,
+                    when,
+                    vehicle_id,
+                    state,
+                )
+        except (asyncpg.PostgresError, OSError) as exc:
+            log.warning("engine_events insert failed: %s", exc)
 
     async def _flush(self) -> None:
         async with self._batch_lock:
