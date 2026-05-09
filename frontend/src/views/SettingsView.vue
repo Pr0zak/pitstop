@@ -4,10 +4,12 @@ import { useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useSettingsStore } from "@/stores/settings";
 import { useUnitsStore, type UnitSystem } from "@/stores/units";
-import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon } from "lucide-vue-next";
+import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2 } from "lucide-vue-next";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
 import { parseLatLon, roundCoords } from "@/utils/parseLatLon";
 import { apiQuery } from "@/api";
+import * as api from "@/api/endpoints";
+import type { StorageStats } from "@/api/endpoints";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -57,6 +59,7 @@ onMounted(async () => {
       homeLon.value = s.home?.lon ?? null;
       diskAlertPct.value = s.disk_alert_pct ?? null;
     }
+    await loadStorage();
   }
 });
 
@@ -192,6 +195,86 @@ function onPicked(lat: number, lon: number) {
   homeLat.value = lat;
   homeLon.value = lon;
   showPicker.value = false;
+}
+
+// ── Storage / data retention ────────────────────────────────────────
+//
+// Backed by /admin/storage (read) + /admin/purge/readings (mutating).
+// Purge is two-step: first call returns the projected delete count, the
+// user confirms, second call commits. Keeps a misclick from dropping a
+// year of readings.
+
+const storageStats = ref<StorageStats | null>(null);
+const storageLoading = ref(false);
+const storageError = ref<string | null>(null);
+const purgeAgeDays = ref<number>(90);
+const purgePreview = ref<{ rows: number; cutoff: string } | null>(null);
+const purgeBusy = ref(false);
+const purgeMessage = ref<string | null>(null);
+
+async function loadStorage() {
+  if (!auth.hasQueryToken) return;
+  storageLoading.value = true;
+  storageError.value = null;
+  try {
+    storageStats.value = await api.getStorageStats();
+  } catch (e: unknown) {
+    storageError.value = e instanceof Error ? e.message : "load failed";
+  } finally {
+    storageLoading.value = false;
+  }
+}
+
+function humanBytes(b: number | null | undefined): string {
+  if (b == null || b === 0) return "0 B";
+  const u = ["B", "KB", "MB", "GB"];
+  let v = Math.abs(b);
+  let i = 0;
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
+}
+
+async function previewPurge() {
+  if (purgeBusy.value) return;
+  purgeBusy.value = true;
+  purgeMessage.value = null;
+  try {
+    const r = await api.purgeReadings(purgeAgeDays.value, false);
+    purgePreview.value = {
+      rows: r.rows_to_delete ?? 0,
+      cutoff: r.cutoff_iso,
+    };
+  } catch (e: unknown) {
+    purgeMessage.value = e instanceof Error ? e.message : "preview failed";
+  } finally {
+    purgeBusy.value = false;
+  }
+}
+
+async function commitPurge() {
+  if (purgeBusy.value || !purgePreview.value) return;
+  if (
+    !window.confirm(
+      `Delete ${purgePreview.value.rows.toLocaleString()} reading(s) older than ${purgeAgeDays.value} days? This cannot be undone.`,
+    )
+  ) {
+    return;
+  }
+  purgeBusy.value = true;
+  purgeMessage.value = null;
+  try {
+    const r = await api.purgeReadings(purgeAgeDays.value, true);
+    purgeMessage.value = `Deleted ${(r.rows_deleted ?? 0).toLocaleString()} readings.`;
+    purgePreview.value = null;
+    await loadStorage();
+  } catch (e: unknown) {
+    purgeMessage.value = e instanceof Error ? e.message : "purge failed";
+  } finally {
+    purgeBusy.value = false;
+  }
 }
 
 function geolocate() {
@@ -423,6 +506,98 @@ function geolocate() {
       <span v-if="saveStatus === 'saved'" class="badge success">Saved</span>
       <span v-if="saveStatus === 'error'" class="badge danger">{{ saveError }}</span>
     </div>
+
+    <!-- Storage / data retention -->
+    <section class="card">
+      <h3>
+        <HardDrive :size="14" /> Storage
+        <button
+          type="button"
+          class="ghost"
+          style="margin-left: auto; font-size: 0.78rem"
+          @click="loadStorage"
+          :disabled="storageLoading"
+        >
+          <RefreshCw :size="12" /> {{ storageLoading ? "…" : "Refresh" }}
+        </button>
+      </h3>
+      <p class="muted">
+        How big is the database and how old is the oldest data? Use the
+        Purge action below to drop OBD readings beyond a chosen age — the
+        UI shows a preview before committing.
+      </p>
+
+      <div v-if="storageError" class="banner warn">{{ storageError }}</div>
+
+      <table v-if="storageStats" class="data" style="margin-top: 0.6rem">
+        <thead>
+          <tr>
+            <th>Table</th>
+            <th class="num">Rows</th>
+            <th class="num">Size</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="t in storageStats.tables" :key="t.table">
+            <td>
+              <code>{{ t.table }}</code>
+              <span v-if="t.is_hypertable" class="badge" style="margin-left: 0.4rem">
+                hypertable
+              </span>
+            </td>
+            <td class="num">{{ t.rows != null ? t.rows.toLocaleString() : "—" }}</td>
+            <td class="num">{{ humanBytes(t.size_bytes) }}</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>Total DB size</strong></td>
+            <td></td>
+            <td class="num"><strong>{{ humanBytes(storageStats.total_size_bytes) }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <p
+        v-if="storageStats?.oldest_reading_at"
+        class="muted small"
+        style="margin-top: 0.4rem"
+      >
+        Oldest OBD reading: <code>{{ storageStats.oldest_reading_at.slice(0, 19).replace("T", " ") }}</code>
+      </p>
+
+      <div class="purge">
+        <h4>Purge OBD readings</h4>
+        <div class="purge-row">
+          <label>
+            Older than
+            <input
+              type="number"
+              min="1"
+              max="3650"
+              v-model.number="purgeAgeDays"
+            />
+            days
+          </label>
+          <button type="button" @click="previewPurge" :disabled="purgeBusy">
+            Preview
+          </button>
+          <button
+            type="button"
+            class="danger"
+            @click="commitPurge"
+            :disabled="purgeBusy || !purgePreview"
+          >
+            <Trash2 :size="14" /> Commit purge
+          </button>
+        </div>
+        <p v-if="purgePreview" class="muted small">
+          Would delete <strong>{{ purgePreview.rows.toLocaleString() }}</strong> reading(s)
+          before <code>{{ purgePreview.cutoff.slice(0, 19).replace("T", " ") }}</code>.
+        </p>
+        <p v-if="purgeMessage" class="muted small">{{ purgeMessage }}</p>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -487,6 +662,26 @@ label.cb {
 }
 small {
   font-size: 0.75rem;
+}
+.purge {
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--c-line0);
+}
+.purge h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.purge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.purge-row input[type="number"] {
+  width: 80px;
+  text-align: right;
 }
 .seg {
   display: flex;

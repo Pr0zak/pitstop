@@ -274,6 +274,52 @@ export async function deleteLogsOlderThan(days: number): Promise<void> {
   await apiIngest.delete("/logs/older-than", { params: { days } });
 }
 
+// ─── admin: storage stats + retention purges ──────────────────────────
+
+export interface StorageTableStats {
+  table: string;
+  rows: number | null;
+  size_bytes: number;
+  is_hypertable: boolean;
+}
+export interface StorageStats {
+  total_size_bytes: number;
+  tables: StorageTableStats[];
+  oldest_reading_at: string | null;
+}
+export interface PurgePreview {
+  preview: boolean;
+  older_than_days: number;
+  cutoff_iso: string;
+  rows_to_delete?: number;
+  rows_deleted?: number;
+}
+
+export async function getStorageStats(): Promise<StorageStats> {
+  const r = await apiQuery.get<StorageStats>("/admin/storage");
+  return r.data;
+}
+
+export async function purgeReadings(
+  olderThanDays: number,
+  confirm: boolean,
+): Promise<PurgePreview> {
+  const r = await apiIngest.post<PurgePreview>(
+    `/admin/purge/readings?older_than_days=${olderThanDays}&confirm=${confirm}`,
+  );
+  return r.data;
+}
+
+export async function purgeLogs(
+  olderThanDays: number,
+  confirm: boolean,
+): Promise<PurgePreview> {
+  const r = await apiIngest.post<PurgePreview>(
+    `/admin/purge/logs?older_than_days=${olderThanDays}&confirm=${confirm}`,
+  );
+  return r.data;
+}
+
 // ─── imports ──────────────────────────────────────────────────────────
 
 export async function importFuelio(

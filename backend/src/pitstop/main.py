@@ -11,6 +11,7 @@ import asyncpg
 from fastapi import FastAPI
 
 from .api import (
+    admin,
     analytics,
     api_phone,
     dtcs,
@@ -160,3 +161,5 @@ app.include_router(maintenance.router)
 app.include_router(live_ws.router)
 app.include_router(utils_api.router)
 app.include_router(logs_api.router)
+app.include_router(api_phone.router)
+app.include_router(admin.router)
