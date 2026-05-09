@@ -174,25 +174,25 @@ class WiCanBleManager(
         private const val TAG = "WiCanBleManager"
 
         private val CANDIDATE_PROFILES = listOf(
-            // WiCAN-PRO v4.49 (current firmware) primary BLE channel: a
-            // Microchip "transparent UART" SPP-like service. Confirmed
-            // against meatpiHQ/wican-fw main/ble.c lines 176-192.
+            // WiCAN-PRO v4.49 BLE channel: 0xFFF0 service.
+            // Confirmed against meatpiHQ/wican-fw main/ble.c (line 1090
+            // is where fff0_attr_db gets registered) AND from a runtime
+            // service-discovery dump from the device itself:
             //
-            // Char "Read/Write" (49535343-6daa-...) is config/status only.
-            // Char "Write+Notify" (49535343-aca3-...) is the bidirectional
-            // UART data channel: we write OBD commands TO it, and the device
-            // streams responses back as notifications FROM the same char.
-            UartProfile(
-                serviceUuid = UUID.fromString("49535343-FE7D-4AE5-8FA9-9FAFD205E455"),
-                rxUuid = UUID.fromString("49535343-ACA3-481C-91EC-D85E28A60318"),
-                txUuid = UUID.fromString("49535343-ACA3-481C-91EC-D85E28A60318"),
-            ),
-            // WiCAN's secondary FFF0 service (also exposed by the same firmware,
-            // useful as a fallback if the SPP service isn't advertised).
+            //   0000fff0-..  [
+            //     0000fff1-../0x30 (NOTIFY|INDICATE) — device→phone
+            //     0000fff2-../0x0c (WRITE|WRITE_NO_RESPONSE) — phone→device
+            //     ...CMD_IN/OUT custom UUIDs (CLI service)
+            //   ]
+            //
+            // Naming convention: rxUuid is from the *device's* perspective —
+            // it's where the device receives writes from us, so phone writes
+            // here (must have WRITE property). txUuid is the char the device
+            // transmits on, so phone notifies here (must have NOTIFY).
             UartProfile(
                 serviceUuid = UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB"),
-                rxUuid = UUID.fromString("0000FFF1-0000-1000-8000-00805F9B34FB"),  // notify
-                txUuid = UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB"),  // write
+                rxUuid = UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB"),  // WRITE
+                txUuid = UUID.fromString("0000FFF1-0000-1000-8000-00805F9B34FB"),  // NOTIFY
             ),
             // Nordic UART (NUS) — older / community wican-fw builds may expose this.
             UartProfile(
@@ -200,7 +200,7 @@ class WiCanBleManager(
                 rxUuid = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
                 txUuid = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
             ),
-            // 0xFFE0 HM-10 style — kept as a long-shot fallback for clones.
+            // 0xFFE0 HM-10 style — long-shot fallback for clones.
             UartProfile(
                 serviceUuid = UUID.fromString("0000FFE0-0000-1000-8000-00805F9B34FB"),
                 rxUuid = UUID.fromString("0000FFE1-0000-1000-8000-00805F9B34FB"),
