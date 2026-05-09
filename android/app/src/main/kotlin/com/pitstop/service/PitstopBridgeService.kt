@@ -75,9 +75,25 @@ class PitstopBridgeService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         startForegroundWithNotification()
+        // Hold a partial wake lock so the CPU stays awake for BLE callbacks
+        // and 1 Hz MQTT publishes during long screen-off drives. Without
+        // this, Doze mode can drop BLE notifications and stretch our
+        // publish cadence to the maintenance window cap. The foreground
+        // service alone keeps the *service* alive but doesn't block CPU
+        // throttling.
+        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        wakeLock = pm.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "pitstop:bridge",
+        ).apply {
+            setReferenceCounted(false)
+            acquire(/* timeout = */ 12L * 60L * 60L * 1000L)  // 12 h sanity cap
+        }
         // Start log shipping as soon as the service exists so initial connect failures
         // (eg. broker unreachable) reach the depot.
         logShipper.start()
@@ -107,6 +123,8 @@ class PitstopBridgeService : Service() {
         // Final flush: don't wait — the shipper job dies with the singleton scope only
         // when the process dies. Stopping it lets the buffer accrue until the next start.
         logShipper.stop()
+        runCatching { wakeLock?.release() }
+        wakeLock = null
         super.onDestroy()
     }
 

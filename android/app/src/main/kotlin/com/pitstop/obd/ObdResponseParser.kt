@@ -28,30 +28,42 @@ object ObdResponseParser {
     }
 
     fun parse(raw: ByteArray): Frame? {
-        // Strategy: try ASCII first; if that fails, try raw CAN single-frame.
-        val text = raw.toString(Charsets.US_ASCII).trim()
+        // Strategy: try ASCII first (covers ELM327 + WiCAN's 29-bit echo); if
+        // that fails, try raw CAN single-frame.
+        val text = raw.toString(Charsets.US_ASCII)
         parseAscii(text)?.let { return it }
         return parseRawCanFrame(raw)
     }
 
     private fun parseAscii(text: String): Frame? {
-        // Strip the ELM ">" prompt, line endings, "SEARCHING…", "NO DATA", etc.
-        val cleaned = text
+        // Multi-ECU responses arrive on separate \r-delimited lines (Honda
+        // Pilot replies from both engine ECUs at 7E0/7E1). Try each line; the
+        // first successful parse wins. Anything unparseable falls through.
+        val lines = text
             .replace(">", " ")
-            .replace("\r", " ")
-            .replace("\n", " ")
-            .trim()
-        if (cleaned.isEmpty()) return null
-        if (cleaned.startsWith("NO DATA", ignoreCase = true)) return null
-        if (cleaned.startsWith("SEARCHING", ignoreCase = true)) return null
-        if (cleaned.startsWith("?")) return null
-        if (cleaned.startsWith("STOPPED", ignoreCase = true)) return null
+            .split('\r', '\n')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        for (line in lines) {
+            parseAsciiLine(line)?.let { return it }
+        }
+        return null
+    }
+
+    private fun parseAsciiLine(line: String): Frame? {
+        if (line.startsWith("NO DATA", ignoreCase = true)) return null
+        if (line.startsWith("SEARCHING", ignoreCase = true)) return null
+        if (line.startsWith("?")) return null
+        if (line.startsWith("STOPPED", ignoreCase = true)) return null
+        if (line.startsWith("BUS INIT", ignoreCase = true)) return null
+        if (line.startsWith("UNABLE", ignoreCase = true)) return null
+        if (line.startsWith("CAN ERROR", ignoreCase = true)) return null
 
         // Tokens are 2-char hex pairs. Some firmwares emit them with no spaces; handle both.
-        val tokens = if (cleaned.contains(" ")) {
-            cleaned.split(Regex("\\s+"))
+        val tokens = if (line.contains(" ")) {
+            line.split(Regex("\\s+"))
         } else {
-            cleaned.chunked(2)
+            line.chunked(2)
         }
         val bytes = tokens
             .filter { it.length == 2 && it.all { c -> c.isDigit() || c.lowercaseChar() in 'a'..'f' } }
@@ -59,12 +71,42 @@ object ObdResponseParser {
             .toByteArray()
         if (bytes.size < 2) return null
 
-        val modeByte = bytes[0].toInt() and 0xFF
+        // Modern Hondas use 29-bit CAN with extended-address ELM responses:
+        //   18 DA F1 <src-ecu> <isotp-len> 41 <pid> <data...>
+        //   ^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^
+        //    CAN ID (4 bytes)  ISO-TP len  Mode 01 response payload
+        // Strip the 5-byte prefix when present.
+        val payload = stripExtendedHeader(bytes) ?: bytes
+
+        if (payload.size < 2) return null
+        val modeByte = payload[0].toInt() and 0xFF
         if (modeByte and 0x40 == 0) return null // expect a response (mode | 0x40)
         val mode = modeByte and 0x3F
-        val pid = bytes[1].toInt() and 0xFF
-        val data = bytes.copyOfRange(2, bytes.size)
+        val pid = payload[1].toInt() and 0xFF
+        val data = payload.copyOfRange(2, payload.size)
         return Frame(mode = mode, pid = pid, data = data)
+    }
+
+    /** Detect and strip a 29-bit ELM CAN response header. */
+    private fun stripExtendedHeader(bytes: ByteArray): ByteArray? {
+        if (bytes.size < 7) return null
+        val b0 = bytes[0].toInt() and 0xFF
+        val b1 = bytes[1].toInt() and 0xFF
+        val b2 = bytes[2].toInt() and 0xFF
+        // Honda 29-bit extended response: 18 DA F1 <ecu>
+        if (b0 != 0x18 || b1 != 0xDA || b2 != 0xF1) return null
+        // bytes[3] = source ECU
+        // bytes[4] = ISO-TP single-frame PCI: high nibble must be 0 (single frame)
+        val pci = bytes[4].toInt() and 0xFF
+        if (pci and 0xF0 != 0) return null  // multi-frame; not yet handled
+        val length = pci and 0x0F
+        if (length < 2) return null
+        // bytes[5] should be a Mode 01 response (0x40-prefixed).
+        val modeByte = bytes[5].toInt() and 0xFF
+        if (modeByte and 0x40 == 0) return null
+        // Return just the response payload bytes, capped at the declared length.
+        val end = (5 + length).coerceAtMost(bytes.size)
+        return bytes.copyOfRange(5, end)
     }
 
     private fun parseRawCanFrame(raw: ByteArray): Frame? {
