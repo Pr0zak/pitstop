@@ -38,6 +38,10 @@ photos/
 *.keystore
 keystore.properties
 google-services.json
+# Allow the committed Android debug keystore. Debug-only, password
+# 'android' — exists so all CI builds share a fingerprint and Android
+# accepts in-place upgrades.
+!android/keystores/debug.keystore
 
 # Android Gradle build artifacts
 android/.gradle/
