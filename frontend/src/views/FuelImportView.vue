@@ -265,16 +265,27 @@ const previewJson = computed(() =>
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.6rem;
-  padding: 2rem;
-  border: 2px dashed var(--c-border);
+  gap: 0.7rem;
+  padding: 2.4rem 2rem;
+  border: 1px dashed var(--c-line2);
   border-radius: var(--r-md);
-  color: var(--c-muted);
+  background: var(--c-bg1);
+  color: var(--c-ink2);
   text-align: center;
+  transition: border-color 120ms, background 120ms;
+}
+.dropzone:hover {
+  border-color: var(--c-line2);
+  background: var(--c-bg2);
 }
 .dropzone.active {
   border-color: var(--c-accent);
   background: var(--c-accent-soft);
+  color: var(--c-ink0);
+}
+.dropzone p {
+  margin: 0;
+  font-size: 0.9rem;
 }
 .attach-row {
   margin-top: 0.7rem;
@@ -312,13 +323,20 @@ const previewJson = computed(() =>
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.4rem 0.6rem;
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-border-soft);
+  padding: 0.45rem 0.7rem;
+  background: var(--c-bg2);
+  border: 1px solid var(--c-line0);
   border-radius: var(--r-sm);
+  font-size: 0.88rem;
 }
 .files .name {
   flex: 1;
+  color: var(--c-ink0);
+}
+.files .small {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
 }
 .actions {
   display: flex;

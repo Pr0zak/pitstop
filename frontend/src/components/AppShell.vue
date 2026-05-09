@@ -53,4 +53,19 @@ onMounted(async () => {
   flex: 1;
   min-width: 0;
 }
+
+/* Web-mobile (≤ 700 px) — narrow viewports get the icons-only sidebar
+   automatically so the content has full breathing room. The user can
+   still expand it manually on tablet sizes. The design's full bottom-
+   tab-bar layout is a follow-up; this is the no-code-shape change
+   that gets the live cluster + tables + cards usable at 390 wide
+   without breaking the desktop layout. */
+@media (max-width: 700px) {
+  .main {
+    margin-left: var(--sidebar-w-collapsed);
+  }
+  .content {
+    padding: 1rem 0.85rem;
+  }
+}
 </style>

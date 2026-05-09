@@ -461,32 +461,51 @@ const empty = computed(() => !loading.value && entries.value.length === 0);
   overflow: hidden;
 }
 table.logs {
+  /* Terminal-style chrome: dense rows, mono everywhere, hairline
+     dividers tighter than the standard data table. The card wrapping
+     this table loses its inner padding (set above via .card class
+     reset) so the log stream goes edge-to-edge — feels like a real
+     log tail rather than a presentation table. */
   table-layout: fixed;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
+}
+table.logs th,
+table.logs td {
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--c-line0);
 }
 table.logs th.ts,
 table.logs td.ts {
-  width: 130px;
+  width: 138px;
   white-space: nowrap;
+  color: var(--c-ink3);
 }
 table.logs th.src,
 table.logs td.src {
   width: 110px;
+  color: var(--c-ink2);
 }
 table.logs th.lvl,
 table.logs td.lvl {
   width: 90px;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
 }
 table.logs td.msg {
   word-break: break-word;
+  color: var(--c-ink1);
 }
 .msg-text {
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.85rem;
+  font-family: inherit;
+  font-size: inherit;
 }
 .ctx-row td {
-  background: var(--c-surface-2);
+  background: var(--c-bg);
   padding: 0;
+  border-bottom: 1px solid var(--c-line1);
 }
 .ctx {
   margin: 0;

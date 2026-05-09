@@ -136,6 +136,23 @@ const widthVar = computed(() =>
   z-index: 20;
   transition: width 0.15s ease;
 }
+/* On narrow viewports the AppShell forces an icons-only layout via
+   margin-left override; the sidebar matches by clamping its width and
+   centering the icons regardless of the user-saved collapsed flag. */
+@media (max-width: 700px) {
+  .sidebar {
+    width: var(--sidebar-w-collapsed) !important;
+  }
+  .sidebar .label,
+  .sidebar .brand-name,
+  .sidebar .collapse {
+    display: none !important;
+  }
+  .sidebar .nav-item {
+    justify-content: center;
+    padding: 0.55rem 0;
+  }
+}
 .brand {
   display: flex;
   align-items: center;
