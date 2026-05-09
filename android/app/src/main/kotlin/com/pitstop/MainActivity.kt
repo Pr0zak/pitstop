@@ -154,8 +154,6 @@ private fun PitstopRoot() {
             composable(Routes.HOME) {
                 StatusScreen(
                     onOpenConfig = { nav.navigate(Routes.CONFIG) },
-                    onOpenLive = { nav.navigate(Routes.LIVE) },
-                    onOpenFuel = { nav.navigate(Routes.FUEL) },
                 )
             }
             composable(Routes.LIVE) {

@@ -13,10 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,8 +45,6 @@ import kotlin.math.max
 @Composable
 fun StatusScreen(
     onOpenConfig: () -> Unit,
-    onOpenLive: () -> Unit,
-    onOpenFuel: () -> Unit,
     viewModel: StatusViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
@@ -118,24 +114,10 @@ fun StatusScreen(
                 lastResult = ui.logsLastResult,
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = onOpenLive,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(Icons.Filled.Speed, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Live")
-                }
-                OutlinedButton(
-                    onClick = onOpenFuel,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(Icons.Filled.LocalGasStation, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Fuel")
-                }
-            }
+            // The dedicated Live/Fuel buttons that used to live here moved
+            // into the bottom NavigationBar (MainActivity.PitstopBottomBar).
+            // We keep the deep-link-to-browser action because it's a flow
+            // out of the app, not an intra-app navigation.
 
             ui.deepLinkUrl?.let { url ->
                 OutlinedButton(
