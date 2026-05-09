@@ -107,6 +107,14 @@ function num(key: string): number | null {
         </div>
       </section>
 
+      <!-- Brand tape: a thin redline accent under the metric grid that
+           visually echoes the gauge cluster you'd see on the Live page.
+           Subtle on its own but ties the page to the rest of the system. -->
+      <div class="brand-tape" aria-hidden="true">
+        <span class="tape-track" />
+        <span class="tape-redline" />
+      </div>
+
       <div class="row-grid">
         <section class="card">
           <h3>
@@ -199,9 +207,36 @@ function num(key: string): number | null {
   gap: 0.8rem;
 }
 .metric .big {
-  font-size: 1.6rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 2rem;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 1.0;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-ink0);
+}
+.metric h3 {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--c-ink3);
+}
+.brand-tape {
+  position: relative;
+  height: 2px;
+  margin: 0.2rem 0 0.4rem 0;
+  border-radius: 1px;
+  overflow: hidden;
+}
+.tape-track {
+  position: absolute; left: 0; top: 0; bottom: 0; right: 26%;
+  background: var(--c-line0);
+}
+.tape-redline {
+  position: absolute; left: 74%; top: 0; bottom: 0; right: 0;
+  background: linear-gradient(90deg, transparent 0%, var(--c-accent) 35%);
+  border-radius: 1px;
 }
 .row-grid {
   display: grid;
@@ -218,9 +253,14 @@ function num(key: string): number | null {
 .recent li {
   display: flex;
   justify-content: space-between;
-  padding: 0.45rem 0;
-  border-bottom: 1px solid var(--c-border-soft);
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--c-line0);
   font-size: 0.9rem;
+}
+.recent li .muted {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
 }
 .recent li:last-child {
   border-bottom: none;
