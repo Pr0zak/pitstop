@@ -210,12 +210,14 @@ class PitstopBridgeService : Service() {
         val s = stateBus.status.value
         if (s.engineState != EngineState.On) {
             logBuffer.info("engine on")
+            val tMs = System.currentTimeMillis()
             stateBus.update {
                 it.copy(
                     engineState = EngineState.On,
-                    engineStateChangedAtMs = System.currentTimeMillis(),
+                    engineStateChangedAtMs = tMs,
                 )
             }
+            publishEngineState("on", tMs)
         }
     }
 
@@ -225,13 +227,24 @@ class PitstopBridgeService : Service() {
         val s = stateBus.status.value
         if (s.engineState != EngineState.Off) {
             logBuffer.info("engine off (wican reports stopped)")
+            val tMs = System.currentTimeMillis()
             stateBus.update {
                 it.copy(
                     engineState = EngineState.Off,
-                    engineStateChangedAtMs = System.currentTimeMillis(),
+                    engineStateChangedAtMs = tMs,
                 )
             }
+            publishEngineState("off", tMs)
         }
+    }
+
+    private fun publishEngineState(state: String, tMs: Long) {
+        val slug = vehicleSlug
+        if (slug.isBlank()) return
+        publishJson(
+            "bridge/$slug/engine_state",
+            "{\"t\":$tMs,\"state\":\"$state\"}",
+        )
     }
 
     private suspend fun trackBrokerLiveness() {
@@ -489,7 +502,7 @@ class PitstopBridgeService : Service() {
 
         stateBus.publishMetric(pid.name, value)
         val topic = "bridge/${vehicleSlug}/${pid.name}"
-        publishOrBuffer(topic, formatValue(value))
+        publishOrBuffer(topic, v2Envelope(value))
     }
 
     /**
@@ -538,6 +551,31 @@ class PitstopBridgeService : Service() {
         // accepts both forms.
         return if (kotlin.math.abs(v - v.toLong()) < 1e-9) v.toLong().toString()
         else "%.3f".format(v)
+    }
+
+    /**
+     * Bridge payload v2 envelope: ``{"v":<num>,"t":<unix_ms>}``. Backend
+     * uses ``t`` as the row's capture time so an offline-buffer drain
+     * doesn't collapse an hour of driving into the ingest window.
+     * The bare-number form still works server-side for one release.
+     */
+    private fun v2Envelope(v: Double): String {
+        val t = System.currentTimeMillis()
+        return "{\"v\":${formatValue(v)},\"t\":$t}"
+    }
+
+    private fun v2EnvelopeStr(s: String): String {
+        // Same envelope but for already-formatted numeric strings.
+        val t = System.currentTimeMillis()
+        return "{\"v\":$s,\"t\":$t}"
+    }
+
+    /**
+     * Publish a JSON object payload directly (no v-envelope) to the given
+     * topic. Used for the dedicated /location and /engine_state topics.
+     */
+    private fun publishJson(topic: String, json: String) {
+        publishOrBuffer(topic, json)
     }
 
     // -------- GPS publishing (Task #40) --------
@@ -717,9 +755,9 @@ class PitstopBridgeService : Service() {
             // samples that just bloat the DB.
             val mag = kotlin.math.sqrt((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).toDouble())
             if (publishToBroker && mag >= imuAccelNoiseMs2) {
-                publishOrBuffer("bridge/$slug/accel_x", "%.3f".format(a[0]))
-                publishOrBuffer("bridge/$slug/accel_y", "%.3f".format(a[1]))
-                publishOrBuffer("bridge/$slug/accel_z", "%.3f".format(a[2]))
+                publishOrBuffer("bridge/$slug/accel_x", v2EnvelopeStr("%.3f".format(a[0])))
+                publishOrBuffer("bridge/$slug/accel_y", v2EnvelopeStr("%.3f".format(a[1])))
+                publishOrBuffer("bridge/$slug/accel_z", v2EnvelopeStr("%.3f".format(a[2])))
             }
         }
         lastGyro?.let { g ->
@@ -728,9 +766,9 @@ class PitstopBridgeService : Service() {
             stateBus.publishMetric("gyro_z", g[2].toDouble())
             val mag = kotlin.math.sqrt((g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).toDouble())
             if (publishToBroker && mag >= imuGyroNoiseRadS) {
-                publishOrBuffer("bridge/$slug/gyro_x", "%.3f".format(g[0]))
-                publishOrBuffer("bridge/$slug/gyro_y", "%.3f".format(g[1]))
-                publishOrBuffer("bridge/$slug/gyro_z", "%.3f".format(g[2]))
+                publishOrBuffer("bridge/$slug/gyro_x", v2EnvelopeStr("%.3f".format(g[0])))
+                publishOrBuffer("bridge/$slug/gyro_y", v2EnvelopeStr("%.3f".format(g[1])))
+                publishOrBuffer("bridge/$slug/gyro_z", v2EnvelopeStr("%.3f".format(g[2])))
             }
         }
     }
@@ -752,10 +790,21 @@ class PitstopBridgeService : Service() {
         // point at 5 sec cadence (~17k rows/day per vehicle) of zero
         // analytical value. When engine is on we want every fix.
         if (stateBus.status.value.engineState != EngineState.On) return
-        publishOrBuffer("bridge/$slug/gps_lat", latR.toString())
-        publishOrBuffer("bridge/$slug/gps_lon", lonR.toString())
-        if (loc.hasSpeed()) publishOrBuffer("bridge/$slug/gps_speed", "%.2f".format(loc.speed))
-        if (loc.hasAltitude()) publishOrBuffer("bridge/$slug/gps_alt", "%.1f".format(loc.altitude))
+
+        // Bridge payload v2: one /location row carries the whole fix
+        // (lat/lon/alt/speed/heading/accuracy) with the original capture
+        // time. Backend writes to the gps_points hypertable so trip
+        // detail can render a route polyline.
+        val sb = StringBuilder()
+        sb.append("{\"t\":").append(loc.time.coerceAtLeast(0L))
+        sb.append(",\"lat\":").append("%.5f".format(latR))
+        sb.append(",\"lon\":").append("%.5f".format(lonR))
+        if (loc.hasAltitude()) sb.append(",\"alt\":").append("%.1f".format(loc.altitude))
+        if (loc.hasSpeed()) sb.append(",\"speed\":").append("%.2f".format(loc.speed))
+        if (loc.hasBearing()) sb.append(",\"heading\":").append("%.1f".format(loc.bearing))
+        if (loc.hasAccuracy()) sb.append(",\"acc\":").append("%.1f".format(loc.accuracy))
+        sb.append("}")
+        publishJson("bridge/$slug/location", sb.toString())
     }
 
     private fun stopBridge() {
