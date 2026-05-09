@@ -23,9 +23,25 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        // Stable, repo-committed debug keystore so APKs from successive
+        // CI runs (and local dev builds) all share the same fingerprint
+        // and Android accepts in-place upgrades. Without this, every CI
+        // runner generates its own debug.keystore and Android refuses
+        // to upgrade across signers ("app not installed"). Debug-only —
+        // no real secret value.
+        getByName("debug") {
+            storeFile = rootProject.file("keystores/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             // Phase B: leave minification off for now; Phase C release pipeline can flip this.
