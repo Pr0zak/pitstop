@@ -35,6 +35,7 @@ class SettingsRepository @Inject constructor(
         val deviceId: Preferences.Key<String> = stringPreferencesKey("device_id")
         val aaTilesHome: Preferences.Key<String> = stringPreferencesKey("aa_tiles_home")
         val aaTilesDiag: Preferences.Key<String> = stringPreferencesKey("aa_tiles_diag")
+        val unitSystem: Preferences.Key<String> = stringPreferencesKey("unit_system")
     }
 
     /**
@@ -76,6 +77,9 @@ class SettingsRepository @Inject constructor(
                 ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
             aaTilesDiag = prefs[Keys.aaTilesDiag]?.split(",")
                 ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+            unitSystem = prefs[Keys.unitSystem]?.takeIf {
+                it == "imperial" || it == "metric"
+            } ?: "imperial",
         )
     }
 
@@ -106,6 +110,7 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.verboseLogging] = settings.verboseLogging
             prefs[Keys.aaTilesHome] = settings.aaTilesHome.joinToString(",")
             prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
+            prefs[Keys.unitSystem] = settings.unitSystem
         }
         if (mqttPassword != null) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
         if (ingestToken != null) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)

@@ -61,6 +61,7 @@ fun LiveScreen(
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
     val bridgeStatus by viewModel.status.collectAsStateWithLifecycle()
     val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
+    val unitSystem by viewModel.unitSystem.collectAsStateWithLifecycle()
 
     val view = LocalView.current
     DisposableEffect(view) {
@@ -119,12 +120,13 @@ fun LiveScreen(
 
             // ── Hero gauges: Speed + RPM ──────────────────────────────
             val rpm = displayValues.value["engine_rpm"] ?: metrics["engine_rpm"]?.value
-            val speed = displayValues.value["vehicle_speed"] ?: metrics["vehicle_speed"]?.value
+            val speedKph = displayValues.value["vehicle_speed"] ?: metrics["vehicle_speed"]?.value
+            val isImperial = unitSystem == "imperial"
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 BigGauge(
                     label = "Speed",
-                    value = speed?.let { it * 0.621371 },
-                    unit = "mph",
+                    value = speedKph?.let { if (isImperial) it * 0.621371 else it },
+                    unit = if (isImperial) "mph" else "km/h",
                     digits = 0,
                     modifier = Modifier.weight(1f),
                 )
@@ -138,15 +140,38 @@ fun LiveScreen(
             }
 
             // ── Engine ────────────────────────────────────────────────
+            // Temperature + pressure tiles use unit-aware formatters
+            // (com.pitstop.util.UnitFormat). Engine load + throttle
+            // are unitless % so they pass through.
             LiveSection(
                 title = "Engine",
                 tiles = listOf(
-                    TileSpec("Coolant", "coolant_temp", "°C", 0),
-                    TileSpec("Intake", "intake_air_temp", "°C", 0),
+                    TileSpec(
+                        "Coolant", "coolant_temp",
+                        unit = if (isImperial) "°F" else "°C", digits = 0,
+                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
+                            .substringBefore(" ") },
+                    ),
+                    TileSpec(
+                        "Intake", "intake_air_temp",
+                        unit = if (isImperial) "°F" else "°C", digits = 0,
+                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
+                            .substringBefore(" ") },
+                    ),
                     TileSpec("Engine load", "engine_load", "%", 0),
                     TileSpec("Throttle", "throttle_position", "%", 0),
-                    TileSpec("MAF", "maf_air_flow", "g/s", 1),
-                    TileSpec("MAP", "manifold_pressure", "kPa", 0),
+                    TileSpec(
+                        "MAF", "maf_air_flow",
+                        unit = if (isImperial) "lb/min" else "g/s", digits = 1,
+                        formatter = { v -> com.pitstop.util.UnitFormat.mafGramsPerSec(v, unitSystem, 1)
+                            .substringBefore(" ") },
+                    ),
+                    TileSpec(
+                        "MAP", "manifold_pressure",
+                        unit = if (isImperial) "psi" else "kPa", digits = 0,
+                        formatter = { v -> com.pitstop.util.UnitFormat.pressureKpa(v, unitSystem, 0)
+                            .substringBefore(" ") },
+                    ),
                 ),
                 metrics = metrics,
             )

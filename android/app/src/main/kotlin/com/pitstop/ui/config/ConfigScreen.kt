@@ -100,6 +100,11 @@ fun ConfigScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
+            DisplaySection(
+                unitSystem = form.unitSystem,
+                onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
+            )
+
             BridgeServiceSection(
                 phase = bridge.phase,
                 deviceName = bridge.deviceName,
@@ -414,6 +419,37 @@ private fun LogsSection(
 }
 
 // ── App ────────────────────────────────────────────────────────────
+
+/**
+ * Display units toggle. Imperial / Metric segment row matching the web's
+ * Settings → Display affordance. Mirrors the value into SettingsRepository
+ * and the LiveScreen formatters re-render on next frame because they
+ * read the same settings flow.
+ */
+@Composable
+private fun DisplaySection(
+    unitSystem: String,
+    onChange: (String) -> Unit,
+) {
+    SettingsSection(
+        title = "Display",
+        description = "Imperial converts °C → °F, kPa → psi, g/s → lb/min, m → ft. Metric leaves canonical OBD units as-is.",
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            UnitChip(label = "Imperial", selected = unitSystem == "imperial", onClick = { onChange("imperial") })
+            UnitChip(label = "Metric", selected = unitSystem == "metric", onClick = { onChange("metric") })
+        }
+    }
+}
+
+@Composable
+private fun UnitChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    androidx.compose.material3.FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+    )
+}
 
 /**
  * Android Auto tile customisation. Two ordered groups of 6 metric keys

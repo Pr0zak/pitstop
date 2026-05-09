@@ -40,6 +40,7 @@ data class ConfigFormState(
     val verboseLogging: Boolean = false,
     val aaTilesHome: List<String> = emptyList(),
     val aaTilesDiag: List<String> = emptyList(),
+    val unitSystem: String = "imperial",
     val saved: Boolean = false,
 )
 
@@ -112,6 +113,7 @@ class ConfigViewModel @Inject constructor(
                     .ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_HOME },
                 aaTilesDiag = secrets.settings.aaTilesDiag
                     .ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_DIAG },
+                unitSystem = secrets.settings.unitSystem,
                 bleDeviceMac = secrets.settings.bleDeviceMac,
                 bleDeviceName = secrets.settings.bleDeviceName,
                 verboseLogging = secrets.settings.verboseLogging,
@@ -176,6 +178,7 @@ class ConfigViewModel @Inject constructor(
                     verboseLogging = f.verboseLogging,
                     aaTilesHome = f.aaTilesHome,
                     aaTilesDiag = f.aaTilesDiag,
+                    unitSystem = f.unitSystem,
                 ),
                 mqttPassword = f.mqttPassword,
                 ingestToken = f.ingestToken,

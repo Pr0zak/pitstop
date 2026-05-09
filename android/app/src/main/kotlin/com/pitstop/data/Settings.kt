@@ -27,6 +27,12 @@ data class Settings(
      * Same fallback shape as aaTilesHome.
      */
     val aaTilesDiag: List<String> = emptyList(),
+    /**
+     * Display unit system. "imperial" → °F, mph, mi, gal, psi.
+     * "metric" → °C, km/h, km, l, kPa. Default imperial since the
+     * user's vehicles + fillups are all stored in US units.
+     */
+    val unitSystem: String = "imperial",
 )
 
 data class SettingsWithSecrets(

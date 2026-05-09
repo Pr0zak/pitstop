@@ -10,6 +10,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -17,12 +19,18 @@ import javax.inject.Inject
 class LiveViewModel @Inject constructor(
     stateBus: BridgeStateBus,
     private val mqttPublisher: MqttPublisher,
+    settingsRepository: com.pitstop.data.SettingsRepository,
 ) : ViewModel() {
 
     val latestByMetric: StateFlow<Map<String, MetricSample>> = stateBus.latestByMetric
 
     /** Bridge phase — drives the BLE-link pill at the top of LiveScreen. */
     val status: StateFlow<BridgeStatus> = stateBus.status
+
+    /** Imperial / metric preference. */
+    val unitSystem: StateFlow<String> = settingsRepository.settings
+        .map { it.unitSystem }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, "imperial")
 
     /** Live MQTT broker connection state. Polled every 1 s; cheap. */
     private val _brokerConnected = MutableStateFlow(false)
