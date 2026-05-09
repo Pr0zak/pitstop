@@ -111,34 +111,10 @@ fun StatusScreen(
                 )
             }
 
-            ServiceStateCard(
-                phase = ui.status.phase,
-                deviceName = ui.status.deviceName,
-                deviceMac = ui.status.deviceMac,
-                error = ui.status.errorMessage,
-                lastFrameMs = ui.status.lastFrameAtMs,
-                metricsActive = ui.status.metricsActive,
-                onStart = { viewModel.startService() },
-                onStop = { viewModel.stopService() },
-            )
-
-            BrokerCard(
-                brokerInfo = ui.brokerInfo,
-                connected = ui.status.brokerConnected,
-                totalPublished = ui.totalPublished,
-                offlineBufferBytes = ui.status.offlineBufferBytes,
-            )
-
-            LogsRow(
-                buffered = ui.logsBuffered,
-                lastFlushMs = ui.logsLastFlushMs,
-                lastResult = ui.logsLastResult,
-            )
-
-            // The dedicated Live/Fuel buttons that used to live here moved
-            // into the bottom NavigationBar (MainActivity.PitstopBottomBar).
-            // We keep the deep-link-to-browser action because it's a flow
-            // out of the app, not an intra-app navigation.
+            // Bridge / broker / log details moved to the Settings tab —
+            // Home is now the dashboard surface only. The hero banner up
+            // top + fuel hero cards answer "is the bridge OK?" + "what's
+            // happening with my fuel?" The configure flow lives elsewhere.
 
             ui.deepLinkUrl?.let { url ->
                 OutlinedButton(

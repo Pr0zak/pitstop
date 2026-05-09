@@ -35,12 +35,15 @@ import kotlin.math.sin
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PitstopTopAppBar(
-    title: String? = null,
+    @Suppress("UNUSED_PARAMETER") title: String? = null,
     scrollBehavior: TopAppBarScrollBehavior? = null,
 ) {
-    // Settings lives in the bottom NavigationBar as a 4th destination
-    // — every screen's TopAppBar is now just brand chrome (mark +
-    // wordmark, optionally a screen title) with no actions slot.
+    // Per Material 3 guidance: when bottom NavigationBar already labels
+    // the active destination, the TopAppBar's screen title is redundant.
+    // We drop the per-screen title entirely and show only the brand
+    // chrome (mark + "pitstop" wordmark). The `title` param is kept on
+    // the function signature for source-compat with existing call sites
+    // but ignored in the render — easier than touching every caller.
     CenterAlignedTopAppBar(
         title = {
             androidx.compose.foundation.layout.Row(
@@ -49,7 +52,7 @@ fun PitstopTopAppBar(
                 BrandMark(sizeDp = 22)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = title ?: "pitstop",
+                    text = "pitstop",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )

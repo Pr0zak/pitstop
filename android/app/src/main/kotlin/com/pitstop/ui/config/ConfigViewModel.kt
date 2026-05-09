@@ -1,6 +1,8 @@
 package com.pitstop.ui.config
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.ble.BleScanner
 import com.pitstop.ble.ScannedDevice
@@ -8,6 +10,9 @@ import com.pitstop.data.Settings
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.LogShipper
+import com.pitstop.mqtt.MqttPublisher
+import com.pitstop.service.BridgeStateBus
+import com.pitstop.service.BridgeStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -45,16 +50,37 @@ sealed interface ConfigToast {
 
 @HiltViewModel
 class ConfigViewModel @Inject constructor(
+    application: Application,
     private val settingsRepository: SettingsRepository,
     private val scanner: BleScanner,
     private val logBuffer: LogBuffer,
     private val logShipper: LogShipper,
-) : ViewModel() {
+    stateBus: BridgeStateBus,
+    private val mqttPublisher: MqttPublisher,
+) : AndroidViewModel(application) {
 
     /** Live "buffered: N" count for the toggle's helper line. */
     val bufferedCount: StateFlow<Int> = logBuffer.bufferedCount
 
     val lastFlushAtMs: StateFlow<Long?> = logShipper.lastFlushAtMs
+
+    /** Live bridge state for the Bridge service section. */
+    val bridgeStatus: StateFlow<BridgeStatus> = stateBus.status
+
+    /** Live MQTT broker connection state. Polled from MqttPublisher;
+     *  exposed as a StateFlow so the UI re-renders without per-tick work. */
+    private val _brokerConnected = MutableStateFlow(false)
+    val brokerConnected: StateFlow<Boolean> = _brokerConnected.asStateFlow()
+
+    val totalPublished: StateFlow<Long> = MutableStateFlow(0L).also { sf ->
+        viewModelScope.launch {
+            while (true) {
+                sf.value = mqttPublisher.totalPublished
+                _brokerConnected.value = mqttPublisher.isConnected()
+                kotlinx.coroutines.delay(1_000L)
+            }
+        }
+    }
 
     private val _toast = MutableSharedFlow<ConfigToast>(extraBufferCapacity = 4)
     val toast = _toast.asSharedFlow()
@@ -149,6 +175,24 @@ class ConfigViewModel @Inject constructor(
             )
             _form.value = _form.value.copy(saved = true)
         }
+    }
+
+    /**
+     * Start the foreground bridge service. Mirrors StatusViewModel.startService
+     * — kept here so the redesigned Settings → Bridge service section can
+     * own start/stop without a ViewModel hop.
+     */
+    fun startBridge() {
+        val ctx = getApplication<Application>()
+        ContextCompat.startForegroundService(
+            ctx,
+            com.pitstop.service.PitstopBridgeService.startIntent(ctx),
+        )
+    }
+
+    fun stopBridge() {
+        val ctx = getApplication<Application>()
+        ctx.startService(com.pitstop.service.PitstopBridgeService.stopIntent(ctx))
     }
 
     override fun onCleared() {
