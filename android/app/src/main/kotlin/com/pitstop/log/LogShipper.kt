@@ -223,12 +223,24 @@ class LogShipper @Inject constructor(
     }
 }
 
-private fun LogBuffer.LogEntry.toDto(deviceId: String): LogEntryDto =
-    LogEntryDto(
+private fun LogBuffer.LogEntry.toDto(deviceId: String): LogEntryDto {
+    // Stamp every entry with the app version so the depot can attribute lines
+    // to a specific build — useful when a behavioural bug only shows up after
+    // an upgrade. JsonObject is immutable; build a new one with the existing
+    // context entries plus the version fields.
+    val versioned = kotlinx.serialization.json.JsonObject(
+        buildMap<String, kotlinx.serialization.json.JsonElement> {
+            (this@toDto.context ?: kotlinx.serialization.json.JsonObject(emptyMap())).forEach { (k, v) -> put(k, v) }
+            put("app_version", kotlinx.serialization.json.JsonPrimitive(com.pitstop.BuildConfig.VERSION_NAME))
+            put("app_version_code", kotlinx.serialization.json.JsonPrimitive(com.pitstop.BuildConfig.VERSION_CODE))
+        }
+    )
+    return LogEntryDto(
         ts = DateTimeFormatter.ISO_INSTANT.format(clientTs),
         source = "phone",
         level = level.wire,
         message = message,
         deviceId = deviceId,
-        context = context,
+        context = versioned,
     )
+}
