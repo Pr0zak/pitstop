@@ -40,7 +40,7 @@ CYCLE_INTERVAL_SECONDS = 24 * 3_600
 EIA_XLS_URL = "https://www.eia.gov/dnav/pet/xls/PET_PRI_GND_DCUS_NUS_W.xls"
 
 
-def _parse_workbook(blob: bytes) -> list[tuple[str, str, Decimal]]:
+def _parse_workbook(blob: bytes) -> list[tuple[str, "datetime.date", Decimal]]:
     """Return list of (region_code, week_iso, price) tuples for the
     U.S. Regular All Formulations weekly series.
 
@@ -53,7 +53,7 @@ def _parse_workbook(blob: bytes) -> list[tuple[str, str, Decimal]]:
     Grades" in the header and treat the U.S. column. Regional splits
     live in Data 2 / 3 / etc; future iteration can ingest those.
     """
-    out: list[tuple[str, str, Decimal]] = []
+    out: list[tuple[str, "datetime.date", Decimal]] = []
     cutoff = datetime.now(timezone.utc) - timedelta(weeks=104)
     try:
         book = xlrd.open_workbook(file_contents=blob)
@@ -129,7 +129,7 @@ def _parse_workbook(blob: bytes) -> list[tuple[str, str, Decimal]]:
             price = Decimal(str(cell)).quantize(Decimal("0.0001"))
         except Exception:  # noqa: BLE001
             continue
-        out.append(("us", dt.strftime("%Y-%m-%d"), price))
+        out.append(("us", dt.date(), price))
 
     return out
 
@@ -149,7 +149,7 @@ async def _fetch_and_store(pool: asyncpg.Pool) -> int:
                 """
                 INSERT INTO fuel_market_weekly
                     (region, week_of, grade, price_usd_per_gal)
-                VALUES ($1, $2::date, 'regular', $3)
+                VALUES ($1, $2, 'regular', $3)
                 ON CONFLICT (region, week_of, grade) DO UPDATE
                     SET price_usd_per_gal = EXCLUDED.price_usd_per_gal,
                         fetched_at = now()
