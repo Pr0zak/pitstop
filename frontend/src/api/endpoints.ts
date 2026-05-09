@@ -262,6 +262,25 @@ export async function stationPrices(
   });
   return r.data;
 }
+export interface EiaWeeklyPoint {
+  week_of: string;
+  price: number;
+}
+export interface EiaWeekly {
+  region: string;
+  points: EiaWeeklyPoint[];
+}
+
+export async function eiaWeekly(
+  region = "midwest",
+  weeks = 52,
+): Promise<EiaWeekly> {
+  const r = await apiQuery.get<EiaWeekly>("/analytics/eia-weekly", {
+    params: { region, weeks },
+  });
+  return r.data;
+}
+
 export async function mpgOverlay(
   vehicleId: string,
   from?: string,

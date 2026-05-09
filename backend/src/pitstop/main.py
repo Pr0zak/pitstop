@@ -89,6 +89,7 @@ async def lifespan(app: FastAPI):
     ha_task: asyncio.Task | None = None
     log_drain_task: asyncio.Task | None = None
     retention_task: asyncio.Task | None = None
+    eia_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
@@ -133,6 +134,12 @@ async def lifespan(app: FastAPI):
         retention_task = asyncio.create_task(
             retention_worker.run(pool), name="retention-worker"
         )
+        # EIA fetcher — pulls weekly retail-gasoline averages from
+        # eia.gov so the Overview hero card can show "vs region avg".
+        from .workers import eia_fetcher  # noqa: E402
+        eia_task = asyncio.create_task(
+            eia_fetcher.run(pool), name="eia-fetcher"
+        )
         yield
     finally:
         log.info("pitstop backend stopping")
@@ -142,7 +149,10 @@ async def lifespan(app: FastAPI):
             trip_detector.stop()
         if ha_mirror is not None:
             ha_mirror.stop()
-        for task in (ingest_task, trip_task, ha_task, log_drain_task, retention_task):
+        for task in (
+            ingest_task, trip_task, ha_task, log_drain_task,
+            retention_task, eia_task,
+        ):
             if task is None:
                 continue
             task.cancel()

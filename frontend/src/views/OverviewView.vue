@@ -55,6 +55,16 @@ const mpgTrendQ = useAsync(
   [vehicleId],
 );
 
+// EIA weekly retail-gasoline averages — feeds the "vs region avg"
+// sub-line on the Gas price hero. Region is hard-coded to "midwest"
+// for the user's KC-area driving; future iteration could pick
+// per-vehicle or per-home-coord. Falls back gracefully to no
+// comparison line if the worker hasn't fetched yet.
+const eiaQ = useAsync(
+  () => api.eiaWeekly("midwest", 13),
+  [],
+);
+
 // ── Hero card derivations ─────────────────────────────────────────────
 //
 // All four numbers fall out of two queries (30 most-recent fillups +
@@ -126,6 +136,17 @@ const heroData = computed(() => {
       ? Math.max(0, liveOdoKm * 0.621371 - latest.odo)
       : null;
 
+  // EIA region-avg comparison. Pulls the most-recent week's $/gal for
+  // the configured region; computes a % delta vs the user's latest
+  // pump price. Null when EIA data isn't available yet.
+  const eiaPoints = eiaQ.data.value?.points ?? [];
+  const eiaLatest = eiaPoints[0]?.price ?? null;
+  const ppgVsRegion =
+    latestPpg != null && eiaLatest != null && eiaLatest > 0
+      ? ((latestPpg - eiaLatest) / eiaLatest) * 100
+      : null;
+  const eiaRegionLabel = eiaQ.data.value?.region ?? "midwest";
+
   return {
     mpg90,
     latestPpg,
@@ -134,6 +155,9 @@ const heroData = computed(() => {
     monthCount,
     milesSinceFill,
     hasLatest: !!latest,
+    eiaLatest,
+    ppgVsRegion,
+    eiaRegionLabel,
   };
 });
 const dtcsQ = useAsync(
@@ -213,6 +237,15 @@ function num(key: string): number | null {
           >
             <span>{{ heroData.ppgDelta > 0 ? '▲' : heroData.ppgDelta < 0 ? '▼' : '·' }}</span>
             {{ Math.abs(heroData.ppgDelta).toFixed(1) }}% vs 30-day avg
+          </div>
+          <div
+            v-if="heroData.ppgVsRegion != null"
+            class="hero-sub"
+            :class="{ up: heroData.ppgVsRegion > 0, down: heroData.ppgVsRegion < 0 }"
+          >
+            <span>{{ heroData.ppgVsRegion > 0 ? '▲' : heroData.ppgVsRegion < 0 ? '▼' : '·' }}</span>
+            {{ Math.abs(heroData.ppgVsRegion).toFixed(1) }}% vs {{ heroData.eiaRegionLabel }} avg
+            <span class="muted small"> · ${{ heroData.eiaLatest!.toFixed(3) }}/gal</span>
           </div>
         </div>
         <div class="card hero">

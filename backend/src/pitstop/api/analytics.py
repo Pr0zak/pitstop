@@ -386,6 +386,46 @@ async def station_prices(
     return sorted(out, key=lambda x: x["latest_date"], reverse=True)
 
 
+@router.get(
+    "/eia-weekly",
+    dependencies=[Depends(require_query_token)],
+)
+async def eia_weekly(
+    region: str = Query(default="us"),
+    weeks: int = Query(default=52, ge=1, le=520),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """EIA weekly retail-gasoline averages for a region.
+
+    Returns the last `weeks` Mondays of regular-grade $/gal pulled by
+    workers/eia_fetcher. Region codes: us, east_coast, new_england,
+    central_atlantic, lower_atlantic, midwest, gulf_coast, rocky_mtn,
+    west_coast, california.
+
+    Used by the frontend Overview hero card for "vs region avg" delta
+    and (optionally) overlaid on the $/gal trend chart.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT week_of, price_usd_per_gal
+              FROM fuel_market_weekly
+             WHERE region = $1 AND grade = 'regular'
+             ORDER BY week_of DESC
+             LIMIT $2
+            """,
+            region,
+            weeks,
+        )
+    return {
+        "region": region,
+        "points": [
+            {"week_of": r["week_of"].isoformat(), "price": float(r["price_usd_per_gal"])}
+            for r in rows
+        ],
+    }
+
+
 @router.get("/mpg-overlay", dependencies=[Depends(require_query_token)])
 async def mpg_overlay(
     vehicle_id: UUID = Query(...),
