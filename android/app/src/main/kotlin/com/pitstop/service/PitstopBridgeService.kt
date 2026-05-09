@@ -35,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -60,6 +61,7 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var stateBus: BridgeStateBus
     @Inject lateinit var logBuffer: LogBuffer
     @Inject lateinit var logShipper: LogShipper
+    @Inject lateinit var presence: com.pitstop.presence.PresenceTracker
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bleManager: WiCanBleManager? = null
@@ -98,6 +100,15 @@ class PitstopBridgeService : Service() {
         // Start log shipping as soon as the service exists so initial connect failures
         // (eg. broker unreachable) reach the depot.
         logShipper.start()
+        // Begin observing AA + car-Bluetooth presence; the BLE retry
+        // path reads presence.inCar.value to pace its backoff.
+        presence.start()
+        // Mirror presence into the state bus + UI pills.
+        scope.launch {
+            presence.inCar.collect { v ->
+                stateBus.update { it.copy(inCar = v) }
+            }
+        }
         logBuffer.info("bridge service created")
     }
 
@@ -121,6 +132,7 @@ class PitstopBridgeService : Service() {
         bleManager?.disconnectDevice()
         bleManager = null
         mqttPublisher.disconnect()
+        presence.stop()
         // Final flush: don't wait — the shipper job dies with the singleton scope only
         // when the process dies. Stopping it lets the buffer accrue until the next start.
         logShipper.stop()
@@ -372,8 +384,24 @@ class PitstopBridgeService : Service() {
                 bleManager?.disconnectDevice()
             }
 
-            val backoffSec = (1 shl reconnectAttempt.coerceAtMost(5)).coerceAtMost(30)
+            val baseSec = (1 shl reconnectAttempt.coerceAtMost(5)).coerceAtMost(30)
             reconnectAttempt += 1
+            // Adaptive backoff (Task #77):
+            //   - in car (AA up or paired-car BT connected) → aggressive
+            //     5s cap. WiCAN is near, may be waking from sleep, we
+            //     want the first frame ASAP so the trip opens correctly.
+            //   - parked (engine off & ≥3 attempts with zero frames) →
+            //     stretch cap to 5 min. WiCAN sleeps after voltage drops;
+            //     hammering BLE while it's asleep just burns battery and
+            //     doesn't wake it (wake is voltage-based, not CAN-based).
+            //   - else → existing exponential 1→30s.
+            val priorEngine = stateBus.status.value.engineState
+            val inCar = stateBus.status.value.inCar
+            val backoffSec = when {
+                inCar -> baseSec.coerceAtMost(5)
+                priorEngine == EngineState.Off && reconnectAttempt >= 3 -> 300
+                else -> baseSec
+            }
             // After 4 consecutive misses (~30s+), tell the log shipper we're in a long
             // disconnect — it'll halve its flush rate to save battery.
             if (reconnectAttempt >= 4) {
@@ -385,19 +413,20 @@ class PitstopBridgeService : Service() {
             // reset the STOPPED counter so the next session re-evaluates from
             // scratch instead of inheriting stale "Off" from a prior trip.
             stoppedRunLength = 0
-            val priorEngine = stateBus.status.value.engineState
             logBuffer.info(
                 "ble reconnect scheduled",
                 mapOf(
                     "attempt" to reconnectAttempt,
                     "backoff_s" to backoffSec,
                     "engine_was" to priorEngine.name.lowercase(),
+                    "in_car" to inCar,
                 ),
             )
-            val msg = if (priorEngine == EngineState.Off) {
-                "WiCAN asleep — will wake on engine start"
-            } else {
-                "Disconnected — retrying in ${backoffSec}s"
+            val msg = when {
+                inCar -> "Looking for OBD — phone is in the car"
+                priorEngine == EngineState.Off ->
+                    "WiCAN asleep — will wake on engine start"
+                else -> "Disconnected — retrying in ${backoffSec}s"
             }
             updateNotification(msg)
             stateBus.update {
@@ -406,7 +435,12 @@ class PitstopBridgeService : Service() {
                     engineState = EngineState.Unknown,
                 )
             }
-            delay(backoffSec * 1_000L)
+            // Wake early if presence flips to true mid-sleep — entering
+            // the car is the strongest signal that a new BLE attempt is
+            // worthwhile right now.
+            kotlinx.coroutines.withTimeoutOrNull(backoffSec * 1_000L) {
+                presence.inCar.first { it }
+            }
         }
     }
 

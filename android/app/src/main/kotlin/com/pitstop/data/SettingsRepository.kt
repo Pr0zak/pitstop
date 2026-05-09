@@ -36,6 +36,7 @@ class SettingsRepository @Inject constructor(
         val aaTilesHome: Preferences.Key<String> = stringPreferencesKey("aa_tiles_home")
         val aaTilesDiag: Preferences.Key<String> = stringPreferencesKey("aa_tiles_diag")
         val unitSystem: Preferences.Key<String> = stringPreferencesKey("unit_system")
+        val pairedCarBtMac: Preferences.Key<String> = stringPreferencesKey("paired_car_bt_mac")
     }
 
     /**
@@ -80,6 +81,7 @@ class SettingsRepository @Inject constructor(
             unitSystem = prefs[Keys.unitSystem]?.takeIf {
                 it == "imperial" || it == "metric"
             } ?: "imperial",
+            pairedCarBtMac = prefs[Keys.pairedCarBtMac]?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -111,6 +113,8 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.aaTilesHome] = settings.aaTilesHome.joinToString(",")
             prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
             prefs[Keys.unitSystem] = settings.unitSystem
+            settings.pairedCarBtMac?.let { prefs[Keys.pairedCarBtMac] = it }
+                ?: prefs.remove(Keys.pairedCarBtMac)
         }
         // Treat blank as "leave alone" rather than "clear" — otherwise a
         // save fired before the form's init coroutine has populated the

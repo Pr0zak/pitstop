@@ -33,6 +33,14 @@ data class Settings(
      * user's vehicles + fillups are all stored in US units.
      */
     val unitSystem: String = "imperial",
+    /**
+     * Bluetooth MAC of the user's car (HFP / A2DP profile). When set,
+     * the bridge treats "phone connected to this device" as a strong
+     * "user is in the car" signal alongside Android Auto. Used by the
+     * adaptive BLE backoff (Task #77). Null = not configured; bridge
+     * falls back to AA + engine_state alone.
+     */
+    val pairedCarBtMac: String? = null,
 )
 
 data class SettingsWithSecrets(

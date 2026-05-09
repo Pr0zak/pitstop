@@ -125,6 +125,13 @@ fun LiveScreen(
                         "Engine ?" to PillState.Neutral
                 }
                 StatusPill(state = enginePill, label = engineLabel, compact = true)
+                if (bridgeStatus.inCar) {
+                    StatusPill(
+                        state = PillState.Healthy,
+                        label = "In car",
+                        compact = true,
+                    )
+                }
             }
 
             // ── Hero gauges: Speed + RPM ──────────────────────────────

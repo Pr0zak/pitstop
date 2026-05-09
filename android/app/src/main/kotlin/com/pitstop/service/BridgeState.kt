@@ -37,6 +37,14 @@ data class BridgeStatus(
     /** When the engine state was last positively asserted (ms epoch). */
     val engineStateChangedAtMs: Long? = null,
     /**
+     * Phone-side "user is in the car" signal — combined Android Auto
+     * projection state + the user's paired-car HFP Bluetooth profile
+     * connection. Used by the adaptive BLE retry strategy and surfaced
+     * as a Live-screen pill so the user can see why the bridge thinks
+     * (or doesn't think) they're driving.
+     */
+    val inCar: Boolean = false,
+    /**
      * Bytes currently sitting in the on-disk [com.pitstop.mqtt.OfflineBuffer]
      * waiting to drain. Drives the "X queued" pill in the Live view so the
      * user can see the bridge is keeping data even with no cellular.
