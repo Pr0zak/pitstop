@@ -1,15 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Pitstop launcher foreground: arc-ticks-redline logo on Android's
-  108×108 dp adaptive-icon canvas. Real safe zone is the centre 66×66 dp
-  but typical Android launcher masks crop ~26 dp off each edge so we draw
-  the arc inside the centre region. Background is the flat dark
-  surface defined in @color/ic_launcher_background (matches the frontend
-  --c-bg, #101216).
+  108x108 dp adaptive-icon canvas. Safe zone is the centre 66x66 dp.
+  Background is the flat dark surface in @color/ic_launcher_background
+  (matches the frontend c-bg token, hex 101216).
 
-  Source: frontend/public/favicon.svg (viewBox 0 0 64 64). Translated to
-  108×108 via translate(22, 22) + scale(1.0625) so the 64-unit arc lands
-  centred within the safe zone.
+  Source: frontend/public/favicon.svg (viewBox 0 0 64 64). Translated
+  to 108x108 via translate(22, 22) + scale(1.0625).
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
