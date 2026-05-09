@@ -137,6 +137,10 @@ class PitstopBridgeService : Service() {
             // service after a phone reboot. Cleared in stopBridge() when the
             // user explicitly stops.
             runCatching { settingsRepository.setBridgeAutoStart(true) }
+
+            // GPS: parallel to the BLE/MQTT path. If permission is missing
+            // we log + skip; the bridge still publishes OBD telemetry.
+            startGpsUpdates()
             val secrets = settingsRepository.current()
             val s = secrets.settings
             vehicleSlug = s.vehicleSlug.ifBlank { "vehicle" }
@@ -399,6 +403,94 @@ class PitstopBridgeService : Service() {
         else "%.3f".format(v)
     }
 
+    // -------- GPS publishing (Task #40) --------
+    //
+    // Subscribes to the platform LocationManager (no Play Services dep) for
+    // GPS + NETWORK fixes at ~5 s cadence and republishes them as
+    //   bridge/<slug>/gps_lat
+    //   bridge/<slug>/gps_lon
+    //   bridge/<slug>/gps_speed   (m/s; backend / UI may convert)
+    //   bridge/<slug>/gps_alt     (metres)
+    // Also writes them through the BridgeStateBus so the on-phone Live view
+    // can render the same numbers as the web.
+    //
+    // Requires ACCESS_FINE_LOCATION (already declared). The runtime grant
+    // happens in MainActivity's permission flow; if not granted by the
+    // time the bridge starts, we log a warn and skip GPS — the rest of
+    // the bridge keeps working without it.
+
+    private var gpsListener: android.location.LocationListener? = null
+
+    @SuppressLint("MissingPermission")
+    private fun startGpsUpdates() {
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            logBuffer.warn("gps: ACCESS_FINE_LOCATION not granted — skipping GPS publishing")
+            return
+        }
+        val lm = getSystemService(LOCATION_SERVICE) as? android.location.LocationManager
+        if (lm == null) {
+            logBuffer.warn("gps: LocationManager unavailable on this device")
+            return
+        }
+        val listener = android.location.LocationListener { loc ->
+            handleLocationFix(loc)
+        }
+        gpsListener = listener
+        runCatching {
+            lm.requestLocationUpdates(
+                android.location.LocationManager.GPS_PROVIDER,
+                /* minTimeMs = */ 5_000L,
+                /* minDistanceM = */ 0f,
+                listener,
+            )
+            // Network provider fills gaps when GPS is cold (start of trip,
+            // garage, urban canyons). Both feed the same listener; whichever
+            // produces the freshest fix wins.
+            if (lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    android.location.LocationManager.NETWORK_PROVIDER,
+                    5_000L,
+                    0f,
+                    listener,
+                )
+            }
+            logBuffer.info("gps: updates requested at 5 s cadence")
+        }.onFailure { exc ->
+            logBuffer.warn(
+                "gps: requestLocationUpdates failed",
+                mapOf("err" to (exc.message ?: exc.javaClass.simpleName)),
+            )
+        }
+    }
+
+    private fun stopGpsUpdates() {
+        val listener = gpsListener ?: return
+        gpsListener = null
+        val lm = getSystemService(LOCATION_SERVICE) as? android.location.LocationManager
+        runCatching { lm?.removeUpdates(listener) }
+    }
+
+    private fun handleLocationFix(loc: android.location.Location) {
+        val slug = vehicleSlug
+        if (slug.isBlank()) return
+        val lat = loc.latitude
+        val lon = loc.longitude
+        // Round to 5 decimals (~1.1 m). Avoids an overly precise dump in
+        // logs and over the wire while preserving driving accuracy.
+        val latR = (lat * 1e5).toLong() / 1e5
+        val lonR = (lon * 1e5).toLong() / 1e5
+        mqttPublisher.publish("bridge/$slug/gps_lat", latR.toString())
+        mqttPublisher.publish("bridge/$slug/gps_lon", lonR.toString())
+        if (loc.hasSpeed()) mqttPublisher.publish("bridge/$slug/gps_speed", "%.2f".format(loc.speed))
+        if (loc.hasAltitude()) mqttPublisher.publish("bridge/$slug/gps_alt", "%.1f".format(loc.altitude))
+        stateBus.publishMetric("gps_lat", latR)
+        stateBus.publishMetric("gps_lon", lonR)
+    }
+
     private fun stopBridge() {
         logBuffer.info("bridge stop requested")
         // Clear the auto-start-on-boot flag — explicit stop means the user
@@ -407,6 +499,7 @@ class PitstopBridgeService : Service() {
         scope.launch {
             runCatching { settingsRepository.setBridgeAutoStart(false) }
         }
+        stopGpsUpdates()
         pollJob?.cancel()
         pollJob = null
         bleManager?.disconnectDevice()
