@@ -299,6 +299,10 @@ class SettingsOut(BaseModel):
     # the manual /admin/purge endpoints still work either way.
     retention_readings_days: int | None = None
     retention_logs_days: int | None = None
+    # Aggressive cutoff for level='debug' rows specifically — debug
+    # dominates client_logs volume so we age it out faster than
+    # warn/info/error (which follow retention_logs_days).
+    retention_logs_debug_days: int | None = None
 
 
 class SettingsUpdate(BaseModel):
@@ -309,6 +313,7 @@ class SettingsUpdate(BaseModel):
     disk_alert_pct: int | None = None
     retention_readings_days: int | None = None
     retention_logs_days: int | None = None
+    retention_logs_debug_days: int | None = None
 
 
 # Forward-compat: AnalyticsWindow is referenced by Task #16 endpoints.

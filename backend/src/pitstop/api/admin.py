@@ -404,32 +404,52 @@ async def cleanup_sliver_trips(
     dependencies=[Depends(require_ingest_token)],
 )
 async def purge_logs(
-    older_than_days: int | None = Query(default=None, ge=1, le=3650),
+    older_than_days: int | None = Query(default=None, ge=0, le=3650),
+    older_than_hours: int | None = Query(default=None, ge=0, le=24 * 365),
+    level: str | None = Query(default=None, description="optional level filter (debug/info/warn/error)"),
     confirm: bool = Query(default=False),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, Any]:
-    """Drop client_logs older than N days. Same two-step preview/confirm shape."""
-    if older_than_days is None:
-        raise HTTPException(status_code=400, detail="older_than_days is required")
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    """Drop client_logs older than N days *or* N hours, optionally filtered
+    by level. Same two-step preview/confirm shape. Hour granularity lets the
+    UI clear today's debug spam without waiting a full 24 hours."""
+    if older_than_days is None and older_than_hours is None:
+        raise HTTPException(
+            status_code=400,
+            detail="older_than_days or older_than_hours is required",
+        )
+    if older_than_hours is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+    else:
+        assert older_than_days is not None
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+
+    where = ["ts < $1"]
+    args: list[Any] = [cutoff]
+    if level:
+        if level not in ("debug", "info", "warn", "error"):
+            raise HTTPException(status_code=400, detail="bad level")
+        args.append(level)
+        where.append(f"level = ${len(args)}")
+    clause = " AND ".join(where)
 
     async with pool.acquire() as conn:
         affected = await conn.fetchval(
-            "SELECT count(*) FROM client_logs WHERE ts < $1",
-            cutoff,
+            f"SELECT count(*) FROM client_logs WHERE {clause}",
+            *args,
         )
         if not confirm:
             return {
                 "preview": True,
-                "older_than_days": older_than_days,
                 "cutoff_iso": cutoff.isoformat(),
+                "level": level,
                 "rows_to_delete": int(affected or 0),
             }
-        await conn.execute("DELETE FROM client_logs WHERE ts < $1", cutoff)
+        await conn.execute(f"DELETE FROM client_logs WHERE {clause}", *args)
 
     return {
         "preview": False,
-        "older_than_days": older_than_days,
         "cutoff_iso": cutoff.isoformat(),
+        "level": level,
         "rows_deleted": int(affected or 0),
     }

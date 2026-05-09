@@ -31,6 +31,7 @@ const homeLon = ref<number | null>(null);
 const diskAlertPct = ref<number | null>(null);
 const retentionReadingsDays = ref<number | null>(null);
 const retentionLogsDays = ref<number | null>(null);
+const retentionLogsDebugDays = ref<number | null>(null);
 
 const units = useUnitsStore();
 function setUnits(u: UnitSystem) {
@@ -62,6 +63,7 @@ onMounted(async () => {
       diskAlertPct.value = s.disk_alert_pct ?? null;
       retentionReadingsDays.value = s.retention_readings_days ?? null;
       retentionLogsDays.value = s.retention_logs_days ?? null;
+      retentionLogsDebugDays.value = s.retention_logs_debug_days ?? null;
     }
     await loadStorage();
     await loadDevices();
@@ -104,6 +106,7 @@ async function saveAll() {
       disk_alert_pct: number | null;
       retention_readings_days: number | null;
       retention_logs_days: number | null;
+      retention_logs_debug_days: number | null;
     } = {
       ha: {
         enabled: haEnabled.value,
@@ -114,6 +117,7 @@ async function saveAll() {
       disk_alert_pct: diskAlertPct.value,
       retention_readings_days: retentionReadingsDays.value,
       retention_logs_days: retentionLogsDays.value,
+      retention_logs_debug_days: retentionLogsDebugDays.value,
     };
     if (haToken.value) {
       payload.ha.token = haToken.value;
@@ -736,7 +740,21 @@ function geolocate() {
         </div>
         <div class="purge-row" style="margin-top: 0.4rem">
           <label>
-            Drop logs older than
+            Drop debug logs older than
+            <input
+              type="number"
+              min="0"
+              max="3650"
+              v-model.number="retentionLogsDebugDays"
+              placeholder="off"
+            />
+            days
+          </label>
+          <span class="muted small">Debug dominates volume — keep this short.</span>
+        </div>
+        <div class="purge-row" style="margin-top: 0.4rem">
+          <label>
+            Drop other logs (warn/info/error) older than
             <input
               type="number"
               min="0"

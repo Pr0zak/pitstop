@@ -40,6 +40,7 @@ def _row_to_settings(row: asyncpg.Record) -> dict[str, Any]:
         "disk_alert_pct": row["disk_alert_pct"],
         "retention_readings_days": row["retention_readings_days"],
         "retention_logs_days": row["retention_logs_days"],
+        "retention_logs_debug_days": row["retention_logs_debug_days"],
     }
 
 
@@ -47,7 +48,8 @@ async def _fetch_settings(conn: asyncpg.Connection) -> dict[str, Any]:
     row = await conn.fetchrow(
         "SELECT ha_enabled, ha_url, ha_token, ha_discovery_prefix, "
         "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct, "
-        "       retention_readings_days, retention_logs_days "
+        "       retention_readings_days, retention_logs_days, "
+        "       retention_logs_debug_days "
         "FROM settings WHERE id = 1"
     )
     if row is None:
@@ -55,7 +57,9 @@ async def _fetch_settings(conn: asyncpg.Connection) -> dict[str, Any]:
         await conn.execute("INSERT INTO settings (id) VALUES (1)")
         row = await conn.fetchrow(
             "SELECT ha_enabled, ha_url, ha_token, ha_discovery_prefix, "
-            "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct "
+            "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct, "
+            "       retention_readings_days, retention_logs_days, "
+            "       retention_logs_debug_days "
             "FROM settings WHERE id = 1"
         )
     assert row is not None
@@ -129,6 +133,10 @@ async def patch_settings(
         v = update_fields["retention_logs_days"]
         args.append(v)
         set_parts.append(f"retention_logs_days = ${len(args)}")
+    if "retention_logs_debug_days" in update_fields:
+        v = update_fields["retention_logs_debug_days"]
+        args.append(v)
+        set_parts.append(f"retention_logs_debug_days = ${len(args)}")
 
     async with pool.acquire() as conn:
         if set_parts:

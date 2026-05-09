@@ -46,37 +46,66 @@ async def _purge_readings(conn: asyncpg.Connection, days: int) -> int:
     return int(affected)
 
 
-async def _purge_logs(conn: asyncpg.Connection, days: int) -> int:
+async def _purge_logs(
+    conn: asyncpg.Connection,
+    days: int,
+    *,
+    debug_only: bool = False,
+    skip_debug: bool = False,
+) -> int:
+    """Delete client_logs older than `days`.
+
+    debug_only → only level='debug'. skip_debug → everything except debug.
+    Mutually exclusive in practice; both False = unfiltered.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    where = ["ts < $1"]
+    if debug_only:
+        where.append("level = 'debug'")
+    if skip_debug:
+        where.append("level <> 'debug'")
+    clause = " AND ".join(where)
     affected = await conn.fetchval(
-        "SELECT count(*) FROM client_logs WHERE ts < $1",
+        f"SELECT count(*) FROM client_logs WHERE {clause}",
         cutoff,
     )
     if affected == 0:
         return 0
-    await conn.execute("DELETE FROM client_logs WHERE ts < $1", cutoff)
+    await conn.execute(f"DELETE FROM client_logs WHERE {clause}", cutoff)
     return int(affected)
 
 
 async def _cycle(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT retention_readings_days, retention_logs_days "
+            "SELECT retention_readings_days, retention_logs_days, "
+            "retention_logs_debug_days "
             "FROM settings WHERE id = 1"
         )
         if row is None:
             return
         readings_days = row["retention_readings_days"]
         logs_days = row["retention_logs_days"]
+        logs_debug_days = row["retention_logs_debug_days"]
 
         if readings_days is not None and readings_days > 0:
             n = await _purge_readings(conn, int(readings_days))
             if n:
                 log.info("retention: purged %s readings older than %s days", n, readings_days)
-        if logs_days is not None and logs_days > 0:
-            n = await _purge_logs(conn, int(logs_days))
+        # Tiered log retention: debug rows expire fast (they dominate
+        # volume); warn/info/error follow the user's broader threshold.
+        if logs_debug_days is not None and logs_debug_days > 0:
+            n = await _purge_logs(conn, int(logs_debug_days), debug_only=True)
             if n:
-                log.info("retention: purged %s logs older than %s days", n, logs_days)
+                log.info("retention: purged %s debug logs older than %s days", n, logs_debug_days)
+        if logs_days is not None and logs_days > 0:
+            n = await _purge_logs(conn, int(logs_days), skip_debug=True)
+            if n:
+                log.info(
+                    "retention: purged %s non-debug logs older than %s days",
+                    n,
+                    logs_days,
+                )
 
 
 async def run(pool: asyncpg.Pool) -> None:
