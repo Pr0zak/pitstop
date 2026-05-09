@@ -45,6 +45,22 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!--
+      Android 11+ package visibility (Android 14 enforces it harder). The AA
+      host enumerates apps that match the CarAppService action, but the
+      reverse direction — pitstop's own checks against the AA host — needs
+      these <queries> entries or Android filters them out. Sideloaded
+      CarApp Library apps that omit this often appear in the AA dev
+      "Unknown sources" list yet stay hidden from "Customise launcher".
+    -->
+    <queries>
+        <intent>
+            <action android:name="androidx.car.app.CarAppService" />
+        </intent>
+        <package android:name="com.google.android.projection.gearhead" />
+        <package android:name="com.google.android.projection.gearhead.car" />
+    </queries>
+
     <application
         android:name=".PitstopApp"
         android:allowBackup="false"
@@ -83,7 +99,9 @@
         -->
         <service
             android:name=".car.PitstopCarAppService"
-            android:exported="true">
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
                 <category android:name="androidx.car.app.category.IOT" />
