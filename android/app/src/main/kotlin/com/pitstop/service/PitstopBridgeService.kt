@@ -133,6 +133,10 @@ class PitstopBridgeService : Service() {
     @SuppressLint("MissingPermission")
     private fun startBridge() {
         pollJob = scope.launch {
+            // Mark "user wants this running" so BootReceiver auto-starts the
+            // service after a phone reboot. Cleared in stopBridge() when the
+            // user explicitly stops.
+            runCatching { settingsRepository.setBridgeAutoStart(true) }
             val secrets = settingsRepository.current()
             val s = secrets.settings
             vehicleSlug = s.vehicleSlug.ifBlank { "vehicle" }
@@ -397,6 +401,12 @@ class PitstopBridgeService : Service() {
 
     private fun stopBridge() {
         logBuffer.info("bridge stop requested")
+        // Clear the auto-start-on-boot flag — explicit stop means the user
+        // wants the bridge OFF, including across reboots, until they tap
+        // Start again.
+        scope.launch {
+            runCatching { settingsRepository.setBridgeAutoStart(false) }
+        }
         pollJob?.cancel()
         pollJob = null
         bleManager?.disconnectDevice()

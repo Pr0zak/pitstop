@@ -31,6 +31,7 @@ class SettingsRepository @Inject constructor(
         val bleName: Preferences.Key<String> = stringPreferencesKey("ble_device_name")
         val publishHz: Preferences.Key<Float> = floatPreferencesKey("publish_hz")
         val verboseLogging: Preferences.Key<Boolean> = booleanPreferencesKey("verbose_logging")
+        val bridgeAutoStart: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_auto_start")
         val deviceId: Preferences.Key<String> = stringPreferencesKey("device_id")
     }
 
@@ -45,6 +46,18 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setDeviceId(id: String) {
         context.dataStore.edit { it[Keys.deviceId] = id }
+    }
+
+    /**
+     * Has the user started the bridge service at least once and not since
+     * stopped it? Drives BootReceiver — only auto-start the foreground
+     * service after a phone reboot if the user had it running before.
+     */
+    suspend fun bridgeAutoStart(): Boolean =
+        context.dataStore.data.first()[Keys.bridgeAutoStart] ?: false
+
+    suspend fun setBridgeAutoStart(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.bridgeAutoStart] = enabled }
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { prefs ->
