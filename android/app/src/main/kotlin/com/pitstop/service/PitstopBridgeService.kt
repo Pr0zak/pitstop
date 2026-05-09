@@ -680,24 +680,48 @@ class PitstopBridgeService : Service() {
         lastGyro = null
     }
 
+    // IMU motion floor — below these magnitudes the values are sensor
+    // noise on a phone sitting on a desk or in a parked car. We always
+    // mirror the sample to BridgeStateBus (so on-phone Live view still
+    // shows zeros) but don't bother publishing to MQTT.
+    private val imuAccelNoiseMs2 = 0.15f      // ~1.5% of g
+    private val imuGyroNoiseRadS = 0.05f      // ~3°/s
+
     private fun publishImuFrame() {
         val slug = vehicleSlug
         if (slug.isBlank()) return
+
+        // Gate the firehose: only ship to the broker when the engine is
+        // actually running. While parked at home / WiCAN asleep / out of
+        // the car this saves ~30 useless rows/sec going into pid_readings.
+        // We still update the local state bus so the phone Live view
+        // continues to show whatever the sensors are reading.
+        val publishToBroker = stateBus.status.value.engineState == EngineState.On
+
         lastAccel?.let { a ->
-            publishOrBuffer("bridge/$slug/accel_x", "%.3f".format(a[0]))
-            publishOrBuffer("bridge/$slug/accel_y", "%.3f".format(a[1]))
-            publishOrBuffer("bridge/$slug/accel_z", "%.3f".format(a[2]))
             stateBus.publishMetric("accel_x", a[0].toDouble())
             stateBus.publishMetric("accel_y", a[1].toDouble())
             stateBus.publishMetric("accel_z", a[2].toDouble())
+            // Skip publishing if the phone is essentially still — even
+            // during a drive, idling at a red light produces all-zero
+            // samples that just bloat the DB.
+            val mag = kotlin.math.sqrt((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).toDouble())
+            if (publishToBroker && mag >= imuAccelNoiseMs2) {
+                publishOrBuffer("bridge/$slug/accel_x", "%.3f".format(a[0]))
+                publishOrBuffer("bridge/$slug/accel_y", "%.3f".format(a[1]))
+                publishOrBuffer("bridge/$slug/accel_z", "%.3f".format(a[2]))
+            }
         }
         lastGyro?.let { g ->
-            publishOrBuffer("bridge/$slug/gyro_x", "%.3f".format(g[0]))
-            publishOrBuffer("bridge/$slug/gyro_y", "%.3f".format(g[1]))
-            publishOrBuffer("bridge/$slug/gyro_z", "%.3f".format(g[2]))
             stateBus.publishMetric("gyro_x", g[0].toDouble())
             stateBus.publishMetric("gyro_y", g[1].toDouble())
             stateBus.publishMetric("gyro_z", g[2].toDouble())
+            val mag = kotlin.math.sqrt((g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).toDouble())
+            if (publishToBroker && mag >= imuGyroNoiseRadS) {
+                publishOrBuffer("bridge/$slug/gyro_x", "%.3f".format(g[0]))
+                publishOrBuffer("bridge/$slug/gyro_y", "%.3f".format(g[1]))
+                publishOrBuffer("bridge/$slug/gyro_z", "%.3f".format(g[2]))
+            }
         }
     }
 
@@ -710,12 +734,18 @@ class PitstopBridgeService : Service() {
         // logs and over the wire while preserving driving accuracy.
         val latR = (lat * 1e5).toLong() / 1e5
         val lonR = (lon * 1e5).toLong() / 1e5
+        // Always mirror to the local state bus — phone Live position card
+        // shows the current location even when parked.
+        stateBus.publishMetric("gps_lat", latR)
+        stateBus.publishMetric("gps_lon", lonR)
+        // Don't ship to broker while parked. GPS at home produces a stuck
+        // point at 5 sec cadence (~17k rows/day per vehicle) of zero
+        // analytical value. When engine is on we want every fix.
+        if (stateBus.status.value.engineState != EngineState.On) return
         publishOrBuffer("bridge/$slug/gps_lat", latR.toString())
         publishOrBuffer("bridge/$slug/gps_lon", lonR.toString())
         if (loc.hasSpeed()) publishOrBuffer("bridge/$slug/gps_speed", "%.2f".format(loc.speed))
         if (loc.hasAltitude()) publishOrBuffer("bridge/$slug/gps_alt", "%.1f".format(loc.altitude))
-        stateBus.publishMetric("gps_lat", latR)
-        stateBus.publishMetric("gps_lon", lonR)
     }
 
     private fun stopBridge() {
