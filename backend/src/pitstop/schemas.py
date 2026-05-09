@@ -476,7 +476,14 @@ LogLevel = Literal["debug", "info", "warn", "error"]
 class ClientLogEntry(BaseModel):
     """One inbound log line from a client. ``ts`` is optional — when present
     we store it as ``client_ts`` and let the server stamp ``ts`` itself so
-    the tail view sees server-arrival order."""
+    the tail view sees server-arrival order.
+
+    Lenient validators on ``ts`` and ``vehicle_id`` coerce empty strings
+    (which the Android Retrofit/kotlinx-serialization layer can produce
+    when a field is "optional" but serialised regardless) to ``None``,
+    so the client doesn't have to mint a real UUID just to hit the
+    endpoint.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -486,10 +493,14 @@ class ClientLogEntry(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     vehicle_id: UUID | None = None
     device_id: str | None = Field(default=None, max_length=128)
-    # Allow null on the wire (the Android client serialises an absent context
-    # as `"context": null` rather than omitting the key). Normalise to {}
-    # before insert so the DB column stays JSONB-shaped.
     context: dict[str, Any] | None = None
+
+    @field_validator("ts", "vehicle_id", "device_id", mode="before")
+    @classmethod
+    def _empty_string_is_none(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
     def context_or_empty(self) -> dict[str, Any]:
         return self.context if self.context is not None else {}
