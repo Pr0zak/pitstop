@@ -577,12 +577,21 @@ class PitstopBridgeService : Service() {
             handleLocationFix(loc)
         }
         gpsListener = listener
+        // requestLocationUpdates needs a Looper-bearing thread to deliver
+        // callbacks. The bridge service starts these from a coroutine on
+        // Dispatchers.IO, which has no Looper, and the 4-arg overload
+        // calls Looper.myLooper() under the hood — that throws "Can't
+        // create handler ... that has not called Looper.prepare()" and we
+        // silently lose GPS for the entire bridge session. Pass main
+        // looper explicitly via the 5-arg overload.
+        val mainLooper = android.os.Looper.getMainLooper()
         runCatching {
             lm.requestLocationUpdates(
                 android.location.LocationManager.GPS_PROVIDER,
                 /* minTimeMs = */ 5_000L,
                 /* minDistanceM = */ 0f,
                 listener,
+                mainLooper,
             )
             // Network provider fills gaps when GPS is cold (start of trip,
             // garage, urban canyons). Both feed the same listener; whichever
@@ -593,6 +602,7 @@ class PitstopBridgeService : Service() {
                     5_000L,
                     0f,
                     listener,
+                    mainLooper,
                 )
             }
             logBuffer.info("gps: updates requested at 5 s cadence")
