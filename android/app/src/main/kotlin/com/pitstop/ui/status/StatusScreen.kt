@@ -95,6 +95,7 @@ fun StatusScreen(
                 brokerInfo = ui.brokerInfo,
                 connected = ui.status.brokerConnected,
                 totalPublished = ui.totalPublished,
+                offlineBufferBytes = ui.status.offlineBufferBytes,
             )
 
             LogsRow(
@@ -199,6 +200,7 @@ private fun BrokerCard(
     brokerInfo: String?,
     connected: Boolean,
     totalPublished: Long,
+    offlineBufferBytes: Long,
 ) {
     Card {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -226,8 +228,21 @@ private fun BrokerCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (offlineBufferBytes > 0) {
+                Text(
+                    "Offline buffer: ${humanBytes(offlineBufferBytes)} queued",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
         }
     }
+}
+
+private fun humanBytes(b: Long): String = when {
+    b < 1024 -> "$b B"
+    b < 1024 * 1024 -> "%.1f KB".format(b / 1024.0)
+    else -> "%.2f MB".format(b / 1024.0 / 1024.0)
 }
 
 @Composable

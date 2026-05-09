@@ -21,6 +21,12 @@ data class BridgeStatus(
     val totalPublished: Long = 0,
     val lastFrameAtMs: Long? = null,
     val metricsActive: Int = 0,
+    /**
+     * Bytes currently sitting in the on-disk [com.pitstop.mqtt.OfflineBuffer]
+     * waiting to drain. Drives the "X queued" pill in the Live view so the
+     * user can see the bridge is keeping data even with no cellular.
+     */
+    val offlineBufferBytes: Long = 0L,
 )
 
 data class MetricSample(

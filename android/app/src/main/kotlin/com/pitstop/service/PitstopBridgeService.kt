@@ -56,6 +56,7 @@ class PitstopBridgeService : Service() {
 
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var mqttPublisher: MqttPublisher
+    @Inject lateinit var offlineBuffer: com.pitstop.mqtt.OfflineBuffer
     @Inject lateinit var stateBus: BridgeStateBus
     @Inject lateinit var logBuffer: LogBuffer
     @Inject lateinit var logShipper: LogShipper
@@ -170,6 +171,9 @@ class PitstopBridgeService : Service() {
             // (eg. heartbeat) and the moment BLE comes up we don't want to wait on a
             // TCP handshake.
             launch { connectMqttWithRetry(s.brokerUrl, s.mqttUser, secrets.mqttPassword) }
+            // Drain backlog whenever the broker is reachable. Runs forever
+            // until the bridge is stopped.
+            launch { runOfflineDrainLoop() }
 
             val mac = s.bleDeviceMac
             if (mac.isNullOrBlank()) {
@@ -395,7 +399,48 @@ class PitstopBridgeService : Service() {
 
         stateBus.publishMetric(pid.name, value)
         val topic = "bridge/${vehicleSlug}/${pid.name}"
-        mqttPublisher.publish(topic, formatValue(value))
+        publishOrBuffer(topic, formatValue(value))
+    }
+
+    /**
+     * Try a live publish; on failure (no connection) push to the on-disk
+     * [OfflineBuffer]. Return immediately — the buffer write is async so
+     * we don't block sensor callbacks. Designed to be called from any
+     * publish site (OBD parser, GPS handler, IMU tick).
+     */
+    private fun publishOrBuffer(topic: String, payload: String) {
+        if (mqttPublisher.publish(topic, payload)) return
+        scope.launch { offlineBuffer.enqueue(topic, payload) }
+    }
+
+    /**
+     * Background drain loop. Runs every 5 s; whenever MQTT is up and the
+     * disk buffer has bytes, it tries to publish what it has. The drain
+     * itself is bounded by [OfflineBuffer.drain] (one pass, stops on
+     * first failure) so we never starve the live BLE/IMU/GPS publish
+     * stream behind a multi-MB backlog.
+     */
+    private suspend fun runOfflineDrainLoop() {
+        while (scope.isActive) {
+            delay(5_000L)
+            val pending = runCatching { offlineBuffer.byteCount() }.getOrDefault(0L)
+            if (pending == 0L) {
+                stateBus.update { it.copy(offlineBufferBytes = 0L) }
+                continue
+            }
+            stateBus.update { it.copy(offlineBufferBytes = pending) }
+            if (!mqttPublisher.isConnected()) continue
+            val result = runCatching {
+                offlineBuffer.drain { topic, payload -> mqttPublisher.publish(topic, payload) }
+            }.getOrNull() ?: continue
+            if (result.drained > 0) {
+                logBuffer.info(
+                    "offline buffer drain",
+                    mapOf("drained" to result.drained, "remaining_bytes" to result.remainingBytes),
+                )
+            }
+            stateBus.update { it.copy(offlineBufferBytes = result.remainingBytes) }
+        }
     }
 
     private fun formatValue(v: Double): String {
@@ -549,17 +594,17 @@ class PitstopBridgeService : Service() {
         val slug = vehicleSlug
         if (slug.isBlank()) return
         lastAccel?.let { a ->
-            mqttPublisher.publish("bridge/$slug/accel_x", "%.3f".format(a[0]))
-            mqttPublisher.publish("bridge/$slug/accel_y", "%.3f".format(a[1]))
-            mqttPublisher.publish("bridge/$slug/accel_z", "%.3f".format(a[2]))
+            publishOrBuffer("bridge/$slug/accel_x", "%.3f".format(a[0]))
+            publishOrBuffer("bridge/$slug/accel_y", "%.3f".format(a[1]))
+            publishOrBuffer("bridge/$slug/accel_z", "%.3f".format(a[2]))
             stateBus.publishMetric("accel_x", a[0].toDouble())
             stateBus.publishMetric("accel_y", a[1].toDouble())
             stateBus.publishMetric("accel_z", a[2].toDouble())
         }
         lastGyro?.let { g ->
-            mqttPublisher.publish("bridge/$slug/gyro_x", "%.3f".format(g[0]))
-            mqttPublisher.publish("bridge/$slug/gyro_y", "%.3f".format(g[1]))
-            mqttPublisher.publish("bridge/$slug/gyro_z", "%.3f".format(g[2]))
+            publishOrBuffer("bridge/$slug/gyro_x", "%.3f".format(g[0]))
+            publishOrBuffer("bridge/$slug/gyro_y", "%.3f".format(g[1]))
+            publishOrBuffer("bridge/$slug/gyro_z", "%.3f".format(g[2]))
             stateBus.publishMetric("gyro_x", g[0].toDouble())
             stateBus.publishMetric("gyro_y", g[1].toDouble())
             stateBus.publishMetric("gyro_z", g[2].toDouble())
@@ -575,10 +620,10 @@ class PitstopBridgeService : Service() {
         // logs and over the wire while preserving driving accuracy.
         val latR = (lat * 1e5).toLong() / 1e5
         val lonR = (lon * 1e5).toLong() / 1e5
-        mqttPublisher.publish("bridge/$slug/gps_lat", latR.toString())
-        mqttPublisher.publish("bridge/$slug/gps_lon", lonR.toString())
-        if (loc.hasSpeed()) mqttPublisher.publish("bridge/$slug/gps_speed", "%.2f".format(loc.speed))
-        if (loc.hasAltitude()) mqttPublisher.publish("bridge/$slug/gps_alt", "%.1f".format(loc.altitude))
+        publishOrBuffer("bridge/$slug/gps_lat", latR.toString())
+        publishOrBuffer("bridge/$slug/gps_lon", lonR.toString())
+        if (loc.hasSpeed()) publishOrBuffer("bridge/$slug/gps_speed", "%.2f".format(loc.speed))
+        if (loc.hasAltitude()) publishOrBuffer("bridge/$slug/gps_alt", "%.1f".format(loc.altitude))
         stateBus.publishMetric("gps_lat", latR)
         stateBus.publishMetric("gps_lon", lonR)
     }

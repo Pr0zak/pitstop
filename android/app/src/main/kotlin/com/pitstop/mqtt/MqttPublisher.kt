@@ -91,9 +91,14 @@ class MqttPublisher @Inject constructor(
         }
     }
 
-    fun publish(topic: String, payload: String) {
-        val c = client ?: return
-        if (!c.state.isConnected) return
+    /**
+     * Returns true iff the message was handed off to the MQTT client
+     * (i.e. there was a live connection). Callers (the bridge service)
+     * use the false case to fall back to [OfflineBuffer].
+     */
+    fun publish(topic: String, payload: String): Boolean {
+        val c = client ?: return false
+        if (!c.state.isConnected) return false
         c.publishWith()
             .topic(topic)
             .qos(MqttQos.AT_MOST_ONCE)
@@ -115,6 +120,7 @@ class MqttPublisher @Inject constructor(
                     )
                 }
             }
+        return true
     }
 
     fun disconnect() {
