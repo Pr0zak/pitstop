@@ -138,6 +138,10 @@ dependencies {
     // GPS
     implementation(libs.play.services.location)
 
+    // Android Auto (AndroidX Car App library)
+    implementation(libs.androidx.car.app)
+    implementation(libs.androidx.car.app.projected)
+
     // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext)

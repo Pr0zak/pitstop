@@ -66,6 +66,30 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice|location" />
 
+        <!--
+          Android Auto / AAOS entry point. The CarAppService action filter
+          and the IOT category register the app in the head-unit launcher
+          (vs. NAVIGATION / COMMUNICATION categories which require special
+          OEM treatment). The metadata pair declares the templated app desc
+          and the minimum Car App API level — 1 covers all production
+          AAP / AAOS hosts as of 2025.
+        -->
+        <service
+            android:name=".car.PitstopCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.IOT" />
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
         <receiver
             android:name=".service.BootReceiver"
             android:exported="true"

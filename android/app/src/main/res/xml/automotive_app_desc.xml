@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tells Android Auto / AAOS which template categories the app uses.
+  Pitstop is "io" (Internet-of-Things style data display) — we surface
+  live vehicle metrics, not navigation or media.
+-->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>
