@@ -22,7 +22,8 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import ValidationError
 
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
@@ -77,7 +78,7 @@ def _row_to_log(row: asyncpg.Record) -> dict[str, Any]:
     dependencies=[Depends(require_ingest_token)],
 )
 async def ingest_logs(
-    body: ClientLogIngest,
+    request: Request,
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, int]:
     """Insert a batch of log entries.
@@ -85,7 +86,38 @@ async def ingest_logs(
     Server stamps ``ts = now()`` so the tail ordering reflects arrival
     order; the client's own timestamp is preserved verbatim in
     ``client_ts``. Up to 500 entries; >500 → 413.
+
+    Body is parsed manually rather than via FastAPI's automatic
+    Pydantic binding so a malformed batch from a buggy client surfaces
+    a 200 + warning in the depot (so we can see it via /debug)
+    rather than a black-box 422 the client can't show us. Strict
+    validation moved to the model_validate call below.
     """
+    try:
+        raw = await request.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.warning("logs ingest non-JSON body: %s", exc)
+        return {"accepted": 0}
+
+    try:
+        body = ClientLogIngest.model_validate(raw)
+    except ValidationError as exc:
+        # Log the raw body shape so we can see what the client really sent.
+        # Truncate so we don't write a megabyte to the depot for a runaway
+        # bad-batch.
+        body_repr = json.dumps(raw)[:2000] if raw is not None else "(none)"
+        errs = [
+            {"loc": list(e.get("loc") or []), "msg": e.get("msg"), "type": e.get("type")}
+            for e in exc.errors()[:10]
+        ]
+        log.warning(
+            "logs ingest validation failed (%d errors); errs=%s body=%s",
+            len(exc.errors()),
+            errs,
+            body_repr,
+        )
+        return {"accepted": 0}
+
     if len(body.entries) > _MAX_BATCH:
         raise HTTPException(
             status_code=413,
