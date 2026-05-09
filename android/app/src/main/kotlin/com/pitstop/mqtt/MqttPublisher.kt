@@ -36,6 +36,13 @@ class MqttPublisher @Inject constructor(
     private val publishCount = AtomicLong(0)
     private val lastPublishMs = AtomicLong(0)
 
+    // Topic-filter → callback registry. Used by [subscribe] to hold
+    // listeners that survive reconnects: each call to `connect()`
+    // re-applies them to the fresh HiveMQ client.
+    private data class Subscription(val topicFilter: String, val callback: (String, ByteArray) -> Unit)
+    private val subscriptions = mutableListOf<Subscription>()
+    private val subscriptionsLock = Any()
+
     val totalPublished: Long get() = publishCount.get()
     val lastPublishAtMillis: Long get() = lastPublishMs.get()
 
@@ -73,6 +80,13 @@ class MqttPublisher @Inject constructor(
             }
             .addConnectedListener {
                 logBuffer.info("mqtt connected", mapOf("host" to host, "port" to port))
+                // Re-apply any registered subscriptions whenever the
+                // client (re)connects. HiveMQ's auto-reconnect resubs
+                // active subs but if a subscription was registered
+                // BEFORE the first connect, this is the path that
+                // applies it on first connect; on auto-reconnect the
+                // duplicate subscribe is a no-op server-side.
+                applySubscriptionsLocked()
             }
 
         if (ssl) builder.sslWithDefaultConfig()
@@ -108,6 +122,65 @@ class MqttPublisher @Inject constructor(
                 }
             cont.invokeOnCancellation { c.disconnect() }
         }
+    }
+
+    /**
+     * Register a topic-filter subscription that survives reconnects.
+     * Idempotent on the same `(topicFilter, callback)` reference; calling
+     * twice with the same filter installs two callbacks (rare). The
+     * callback fires on the HiveMQ flow thread — keep it cheap, push
+     * heavy work to a coroutine on the caller's scope.
+     */
+    fun subscribe(topicFilter: String, callback: (topic: String, payload: ByteArray) -> Unit) {
+        synchronized(subscriptionsLock) {
+            subscriptions.add(Subscription(topicFilter, callback))
+        }
+        // Apply now if already connected; the connected-listener picks
+        // it up on the next reconnect otherwise.
+        val c = client
+        if (c?.state?.isConnected == true) applyOneSubscription(c, topicFilter, callback)
+    }
+
+    private fun applySubscriptionsLocked() {
+        val c = client ?: return
+        val snapshot = synchronized(subscriptionsLock) { subscriptions.toList() }
+        for (s in snapshot) applyOneSubscription(c, s.topicFilter, s.callback)
+    }
+
+    private fun applyOneSubscription(
+        c: Mqtt3AsyncClient,
+        topicFilter: String,
+        callback: (String, ByteArray) -> Unit,
+    ) {
+        c.subscribeWith()
+            .topicFilter(topicFilter)
+            .qos(MqttQos.AT_MOST_ONCE)
+            .callback { msg ->
+                runCatching {
+                    val topic = msg.topic.toString()
+                    val payload = msg.payloadAsBytes ?: ByteArray(0)
+                    callback(topic, payload)
+                }.onFailure { exc ->
+                    logBuffer.warn(
+                        "mqtt subscribe callback threw",
+                        mapOf("topic_filter" to topicFilter, "err" to (exc.message ?: exc::class.java.simpleName)),
+                    )
+                }
+            }
+            .send()
+            .whenComplete { ack, t ->
+                if (t == null) {
+                    logBuffer.info(
+                        "mqtt subscribed",
+                        mapOf("filter" to topicFilter, "qos" to (ack?.returnCodes?.firstOrNull()?.code ?: -1)),
+                    )
+                } else {
+                    logBuffer.warn(
+                        "mqtt subscribe failed",
+                        mapOf("filter" to topicFilter, "err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+            }
     }
 
     /**

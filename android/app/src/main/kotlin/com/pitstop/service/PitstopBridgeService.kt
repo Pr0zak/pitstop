@@ -62,6 +62,7 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var logBuffer: LogBuffer
     @Inject lateinit var logShipper: LogShipper
     @Inject lateinit var presence: com.pitstop.presence.PresenceTracker
+    @Inject lateinit var wicanSubscriber: com.pitstop.mqtt.WiCanSubscriber
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bleManager: WiCanBleManager? = null
@@ -103,6 +104,11 @@ class PitstopBridgeService : Service() {
         // Begin observing AA + car-Bluetooth presence; the BLE retry
         // path reads presence.inCar.value to pace its backoff.
         presence.start()
+        // Subscribe to WiCAN's AutoPID broker topic so the Live screen
+        // sees ATF temp / fuel rate / oxygen trims / Honda PIDs without
+        // re-polling them via BLE. Subscription survives MQTT
+        // reconnects via the publisher's registry.
+        wicanSubscriber.start()
         // Mirror presence into the state bus + UI pills.
         scope.launch {
             presence.inCar.collect { v ->
@@ -133,6 +139,7 @@ class PitstopBridgeService : Service() {
         bleManager = null
         mqttPublisher.disconnect()
         presence.stop()
+        wicanSubscriber.stop()
         // Final flush: don't wait — the shipper job dies with the singleton scope only
         // when the process dies. Stopping it lets the buffer accrue until the next start.
         logShipper.stop()
