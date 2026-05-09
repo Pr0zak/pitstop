@@ -42,22 +42,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FuelAddScreen(
-    onBack: () -> Unit,
-    onOpenConfig: () -> Unit = {},
     viewModel: FuelAddViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Add fillup") },
-                actions = {
-                    IconButton(onClick = onOpenConfig) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                },
-            )
+            com.pitstop.ui.components.PitstopTopAppBar(title = "Add fillup")
         },
     ) { padding ->
         Column(

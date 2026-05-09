@@ -44,7 +44,6 @@ import kotlin.math.max
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(
-    onOpenConfig: () -> Unit,
     viewModel: StatusViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
@@ -52,23 +51,7 @@ fun StatusScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Pitstop")
-                        Text(
-                            "v${com.pitstop.BuildConfig.VERSION_NAME}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onOpenConfig) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                },
-            )
+            com.pitstop.ui.components.PitstopTopAppBar(title = "Home")
         },
     ) { padding ->
         Column(

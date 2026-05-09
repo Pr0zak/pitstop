@@ -51,7 +51,6 @@ import kotlin.math.max
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConfigScreen(
-    onBack: () -> Unit,
     viewModel: ConfigViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
@@ -74,14 +73,7 @@ fun ConfigScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Configuration") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-            )
+            com.pitstop.ui.components.PitstopTopAppBar(title = "Settings")
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->

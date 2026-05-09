@@ -42,8 +42,6 @@ import kotlin.math.min
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveScreen(
-    onBack: () -> Unit,
-    onOpenConfig: () -> Unit = {},
     viewModel: LiveViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
@@ -86,14 +84,7 @@ fun LiveScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Live") },
-                actions = {
-                    IconButton(onClick = onOpenConfig) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                },
-            )
+            com.pitstop.ui.components.PitstopTopAppBar(title = "Live")
         },
     ) { padding ->
         Column(
