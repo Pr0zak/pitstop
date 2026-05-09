@@ -208,6 +208,64 @@ async def purge_readings(
 
 
 @router.post(
+    "/cleanup/sliver-trips",
+    dependencies=[Depends(require_ingest_token)],
+)
+async def cleanup_sliver_trips(
+    min_km: float = Query(default=0.5, ge=0.0, le=10.0),
+    confirm: bool = Query(default=False),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """One-shot cleanup of zero-distance / sliver trips.
+
+    The trip detector started rejecting these at v0.1.31 (#49) but
+    legacy rows from before that fix linger in the trips table — they
+    pollute the trips list and the fleet dashboard's distance averages.
+    Same preview/confirm shape as /purge/readings so the user can see
+    what's about to disappear before it's gone.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, started_at, distance_km, duration_s
+              FROM trips
+             WHERE distance_km IS NULL OR distance_km < $1
+             ORDER BY started_at ASC
+            """,
+            min_km,
+        )
+        if not confirm:
+            return {
+                "preview": True,
+                "min_km": min_km,
+                "rows_to_delete": len(rows),
+                "samples": [
+                    {
+                        "id": str(r["id"]),
+                        "started_at": r["started_at"].isoformat(),
+                        "distance_km": float(r["distance_km"] or 0),
+                        "duration_s": int(r["duration_s"] or 0),
+                    }
+                    for r in rows[:5]
+                ],
+            }
+        deleted = await conn.fetchval(
+            """
+            WITH d AS (
+                DELETE FROM trips
+                 WHERE distance_km IS NULL OR distance_km < $1
+                 RETURNING 1
+            )
+            SELECT count(*) FROM d
+            """,
+            min_km,
+        )
+
+    log.info("admin sliver-trip cleanup deleted=%s min_km=%s", deleted, min_km)
+    return {"preview": False, "min_km": min_km, "rows_deleted": int(deleted or 0)}
+
+
+@router.post(
     "/purge/logs",
     dependencies=[Depends(require_ingest_token)],
 )

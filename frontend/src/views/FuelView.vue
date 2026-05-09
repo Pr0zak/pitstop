@@ -547,8 +547,29 @@ const rangeEstimate = computed<{
                 </td>
                 <td>{{ f.station_id ?? "—" }}</td>
                 <td>
-                  <strong>{{ fmtMpg(f.mpg) }}</strong>
-                  <span v-if="f.mpg_reported != null" class="muted small">
+                  <!--
+                    MPG cell: prefer the API's recomputed value (handles
+                    chain rule across partial/missed fillups). When that
+                    is null (first row of a chain, partial preceded by a
+                    missed, exclude_distance set, etc.), fall back to
+                    the user-reported value Fuelio carried in the CSV
+                    so the user always sees a number when one exists.
+                    Fallback is rendered italic + muted so the user can
+                    tell which source the cell is from.
+                  -->
+                  <strong v-if="f.mpg != null">{{ fmtMpg(f.mpg) }}</strong>
+                  <span
+                    v-else-if="f.mpg_reported != null && f.mpg_reported > 0"
+                    class="mpg-fallback"
+                    title="Recomputed value unavailable; showing the value Fuelio recorded"
+                  >
+                    {{ fmtMpg(f.mpg_reported) }}
+                  </span>
+                  <span v-else class="muted">—</span>
+                  <span
+                    v-if="f.mpg != null && f.mpg_reported != null && f.mpg_reported > 0"
+                    class="muted small"
+                  >
                     ({{ fmtNumber(f.mpg_reported, { digits: 1 }) }})
                   </span>
                 </td>
@@ -777,6 +798,10 @@ const rangeEstimate = computed<{
 }
 .sortable:hover {
   color: var(--c-text);
+}
+.mpg-fallback {
+  font-style: italic;
+  color: var(--c-ink2);
 }
 .row-actions {
   display: flex;
