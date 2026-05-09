@@ -108,6 +108,12 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
+            <!-- Self-update triggers MY_PACKAGE_REPLACED; we relaunch the
+                 foreground bridge so updates don't silently stop it. -->
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <data android:scheme="package" />
+            </intent-filter>
         </receiver>
 
         <provider

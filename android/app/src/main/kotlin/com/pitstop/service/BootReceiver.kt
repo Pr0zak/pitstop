@@ -34,13 +34,22 @@ class BootReceiver : BroadcastReceiver() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
-            intent.action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
-            intent.action != "android.intent.action.QUICKBOOT_POWERON" &&
-            intent.action != "com.htc.intent.action.QUICKBOOT_POWERON"
-        ) {
-            return
-        }
+        // Triggers we accept:
+        //  - BOOT_COMPLETED / LOCKED_BOOT_COMPLETED + OEM quickboot variants:
+        //    user power-cycled the phone.
+        //  - MY_PACKAGE_REPLACED: in-place APK upgrade — Android kills the
+        //    process and DOES NOT auto-restart foreground services. Without
+        //    this, every Pitstop self-update silently stops the bridge until
+        //    the user re-opens the app. We re-launch the bridge here so the
+        //    update flow is truly background.
+        val action = intent.action
+        val isBoot = action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.htc.intent.action.QUICKBOOT_POWERON"
+        val isPackageReplaced = action == Intent.ACTION_MY_PACKAGE_REPLACED
+        if (!isBoot && !isPackageReplaced) return
+
         // Receivers can run for ~10 s before the OS kills them. Hop into a
         // coroutine, check the persisted flag, and start the foreground
         // service if the user wants it auto-running.
@@ -48,13 +57,14 @@ class BootReceiver : BroadcastReceiver() {
         scope.launch {
             try {
                 if (settings.bridgeAutoStart()) {
-                    Log.i(TAG, "auto-starting pitstop bridge after boot")
+                    val why = if (isPackageReplaced) "after self-update" else "after boot"
+                    Log.i(TAG, "auto-starting pitstop bridge $why")
                     ContextCompat.startForegroundService(
                         context,
                         PitstopBridgeService.startIntent(context),
                     )
                 } else {
-                    Log.i(TAG, "boot received; bridge auto-start disabled, skipping")
+                    Log.i(TAG, "trigger=${action}; bridge auto-start disabled, skipping")
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "BootReceiver failure", t)
