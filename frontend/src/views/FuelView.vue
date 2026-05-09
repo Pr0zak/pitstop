@@ -66,6 +66,17 @@ const overlayQ = useAsync(
   [vehicleId, tab],
 );
 
+// Pull a wider window of fillups when the stats tab opens so the new
+// $/gal trend and the fillup-frequency histogram have enough history
+// to be meaningful even when the main fillups table is paginated.
+const statsFillupsQ = useAsync(
+  () =>
+    vehicleId.value && tab.value === "stats"
+      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 200 })
+      : Promise.resolve({ items: [], total: 0 }),
+  [vehicleId, tab],
+);
+
 watch([vehicleId], () => {
   offset.value = 0;
 });
@@ -262,6 +273,187 @@ const summary = computed(() => {
     totalMiles,
   };
 });
+
+// ── New stats panels (#46): $/gal trend, fillup-frequency histogram,
+//    tank-fill volume distribution, range-to-empty estimator. All four
+//    derive client-side from the wide-window fillups query — no new
+//    backend endpoints. Empty-data graceful: each computed returns
+//    null when there isn't enough history for the chart to be useful.
+
+// $/gal time series — line chart of price_per_unit by fillup date.
+const ppgChart = computed(() => {
+  const items = (statsFillupsQ.data.value?.items ?? [])
+    .filter((f): f is Fillup & { price_per_unit: number; fillup_date: string } =>
+      typeof f.price_per_unit === "number" && f.price_per_unit > 0 && !!f.fillup_date,
+    )
+    .sort(
+      (a, b) =>
+        (Date.parse(a.fillup_date) || 0) - (Date.parse(b.fillup_date) || 0),
+    );
+  if (items.length < 2) return null;
+  const t = items.map((f) => Math.round((Date.parse(f.fillup_date) || 0) / 1000));
+  const y = items.map((f) => f.price_per_unit);
+  const aligned: uPlot.AlignedData = [t, y];
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 200,
+    scales: { x: { time: true } },
+    axes: [
+      { stroke: "var(--c-muted)" },
+      { stroke: "var(--c-muted)", label: "$/gal" },
+    ],
+    series: [{}, { label: "$/gal", stroke: "var(--c-accent)", width: 1.5 }],
+  };
+  return { aligned, opts };
+});
+
+// Days-between-fillups histogram. Bins: 0-3, 4-7, 8-14, 15-21, 22-30, 31+
+const frequencyChart = computed(() => {
+  const items = (statsFillupsQ.data.value?.items ?? [])
+    .filter((f) => !!f.fillup_date)
+    .sort(
+      (a, b) =>
+        (Date.parse(a.fillup_date!) || 0) - (Date.parse(b.fillup_date!) || 0),
+    );
+  if (items.length < 2) return null;
+
+  const bins = [0, 0, 0, 0, 0, 0]; // 0-3, 4-7, 8-14, 15-21, 22-30, 31+
+  for (let i = 1; i < items.length; i++) {
+    const a = Date.parse(items[i - 1].fillup_date!) || 0;
+    const b = Date.parse(items[i].fillup_date!) || 0;
+    const days = Math.max(0, Math.round((b - a) / 86_400_000));
+    const bucket =
+      days <= 3 ? 0 :
+      days <= 7 ? 1 :
+      days <= 14 ? 2 :
+      days <= 21 ? 3 :
+      days <= 30 ? 4 : 5;
+    bins[bucket]++;
+  }
+  // uPlot bar chart needs paired series; we hand-make it as a step plot.
+  const labels = ["0-3d", "4-7d", "8-14d", "15-21d", "22-30d", "31+d"];
+  const x = bins.map((_, i) => i);
+  const aligned: uPlot.AlignedData = [x, bins];
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 200,
+    scales: { x: { time: false } },
+    axes: [
+      {
+        stroke: "var(--c-muted)",
+        values: (_u, vals) => vals.map((v) => labels[v as number] ?? ""),
+      },
+      { stroke: "var(--c-muted)", label: "fillups" },
+    ],
+    series: [
+      {},
+      {
+        label: "Fillups",
+        stroke: "var(--c-accent)",
+        width: 0,
+        fill: "rgba(255,91,58,0.55)",
+        paths: (_u, _seriesIdx, idx0, idx1) => {
+          const path = new Path2D();
+          // We render the bar shape ourselves via uPlot's clip; this
+          // is a compact approximation good enough for the histogram.
+          for (let i = idx0; i <= idx1; i++) {
+            const xv = _u.valToPos(i, "x", true);
+            const yv = _u.valToPos(bins[i], "y", true);
+            const yz = _u.valToPos(0, "y", true);
+            const w = 38;
+            path.rect(xv - w / 2, yv, w, yz - yv);
+          }
+          return { stroke: path, fill: path };
+        },
+      },
+    ],
+  };
+  return { aligned, opts };
+});
+
+// Tank-fill volume distribution histogram. Bins are 5L wide.
+const volumeDistChart = computed(() => {
+  const items = (statsFillupsQ.data.value?.items ?? [])
+    .map((f) => f.fuel_volume)
+    .filter((v): v is number => typeof v === "number" && v > 0);
+  if (items.length < 4) return null;
+
+  // Auto-pick bin width from data range.
+  const max = Math.max(...items);
+  const min = Math.min(...items);
+  const span = max - min;
+  const binW = span > 30 ? 5 : span > 10 ? 2 : 1;
+  const bins: Map<number, number> = new Map();
+  for (const v of items) {
+    const b = Math.floor(v / binW) * binW;
+    bins.set(b, (bins.get(b) ?? 0) + 1);
+  }
+  const sorted = [...bins.entries()].sort((a, b) => a[0] - b[0]);
+  const x = sorted.map(([k]) => k);
+  const y = sorted.map(([, v]) => v);
+  const aligned: uPlot.AlignedData = [x, y];
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 200,
+    scales: { x: { time: false } },
+    axes: [
+      { stroke: "var(--c-muted)", label: "Volume (gal)" },
+      { stroke: "var(--c-muted)", label: "fillups" },
+    ],
+    series: [
+      {},
+      {
+        label: "Fillups",
+        stroke: "var(--c-accent)",
+        width: 0,
+        fill: "rgba(255,91,58,0.55)",
+        paths: (_u, _seriesIdx, idx0, idx1) => {
+          const path = new Path2D();
+          for (let i = idx0; i <= idx1; i++) {
+            const xv = _u.valToPos(x[i], "x", true);
+            const yv = _u.valToPos(y[i], "y", true);
+            const yz = _u.valToPos(0, "y", true);
+            const w = 24;
+            path.rect(xv - w / 2, yv, w, yz - yv);
+          }
+          return { stroke: path, fill: path };
+        },
+      },
+    ],
+  };
+  return { aligned, opts };
+});
+
+// Range-to-empty estimator. Needs current OBD fuel level (0..100) +
+// vehicle.tank1_capacity (litres) + rolling MPG from existing data.
+const rangeEstimate = computed<{
+  miles: number | null;
+  fuelLevel: number | null;
+  rollingMpg: number | null;
+} | null>(() => {
+  const veh = vehicles.selectedVehicle;
+  if (!veh) return null;
+  const tankL = veh.tank1_capacity;
+  if (!tankL || tankL <= 0) return null;
+  const latest = (veh.latest ?? {}) as Record<string, unknown>;
+  const lvlRaw = latest["fuel_level"];
+  const fuelLevel =
+    typeof lvlRaw === "number"
+      ? lvlRaw
+      : typeof lvlRaw === "string"
+        ? Number(lvlRaw) || null
+        : null;
+  if (fuelLevel == null) return { miles: null, fuelLevel: null, rollingMpg: summary.value.avgMpg };
+  // MPG over last 6 fillups
+  const mpg = summary.value.avgMpg;
+  if (mpg == null || mpg <= 0) {
+    return { miles: null, fuelLevel, rollingMpg: null };
+  }
+  const tankGal = tankL * 0.264172;
+  const remainingGal = tankGal * (fuelLevel / 100);
+  const miles = remainingGal * mpg;
+  return { miles, fuelLevel, rollingMpg: mpg };
+});
 </script>
 
 <template>
@@ -448,6 +640,55 @@ const summary = computed(() => {
               No OBD data yet — drive with the WiCAN connected to populate this chart.
             </div>
             <UPlotChart v-else :data="overlayChart.aligned" :options="overlayChart.opts" />
+          </div>
+
+          <!-- Range-to-empty KPI: depends on tank1_capacity + live fuel
+               level. When either is missing, surfaces a hint. -->
+          <div class="card kpi">
+            <h3>Range to empty</h3>
+            <div v-if="!rangeEstimate" class="muted small">
+              Set tank capacity on the vehicle first.
+            </div>
+            <template v-else-if="rangeEstimate.miles != null">
+              <div class="big">{{ rangeEstimate.miles.toFixed(0) }} mi</div>
+              <div class="muted small">
+                {{ rangeEstimate.fuelLevel?.toFixed(0) }}% fuel ·
+                {{ rangeEstimate.rollingMpg?.toFixed(1) }} mpg avg
+              </div>
+            </template>
+            <template v-else>
+              <div class="big">—</div>
+              <div class="muted small">
+                {{ rangeEstimate.fuelLevel == null
+                  ? 'No live fuel reading yet'
+                  : 'Need more fillups for MPG estimate' }}
+              </div>
+            </template>
+          </div>
+
+          <div class="card chart-card">
+            <h3>$/gallon trend</h3>
+            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
+            <div v-else-if="!ppgChart" class="muted">No price data.</div>
+            <UPlotChart v-else :data="ppgChart.aligned" :options="ppgChart.opts" />
+          </div>
+
+          <div class="card chart-card">
+            <h3>Fillup frequency</h3>
+            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
+            <div v-else-if="!frequencyChart" class="muted">
+              Need at least 2 fillups for a frequency histogram.
+            </div>
+            <UPlotChart v-else :data="frequencyChart.aligned" :options="frequencyChart.opts" />
+          </div>
+
+          <div class="card chart-card">
+            <h3>Volume per fill</h3>
+            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
+            <div v-else-if="!volumeDistChart" class="muted">
+              Need at least 4 fillups for a distribution.
+            </div>
+            <UPlotChart v-else :data="volumeDistChart.aligned" :options="volumeDistChart.opts" />
           </div>
         </div>
       </template>
