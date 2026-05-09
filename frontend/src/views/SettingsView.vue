@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useSettingsStore } from "@/stores/settings";
+import { useUnitsStore, type UnitSystem } from "@/stores/units";
 import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon } from "lucide-vue-next";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
 import { parseLatLon, roundCoords } from "@/utils/parseLatLon";
@@ -26,6 +27,11 @@ const haTestMsg = ref<string | null>(null);
 const homeLat = ref<number | null>(null);
 const homeLon = ref<number | null>(null);
 const diskAlertPct = ref<number | null>(null);
+
+const units = useUnitsStore();
+function setUnits(u: UnitSystem) {
+  units.setPreference(u);
+}
 
 const saveStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
 const saveError = ref<string | null>(null);
@@ -363,6 +369,39 @@ function geolocate() {
     </section>
 
     <section class="card">
+      <h3>Display units</h3>
+      <p class="muted">
+        How values are rendered in the UI. <strong>Auto</strong> uses the
+        selected vehicle's stored Fuelio unit codes (miles+gallons for the
+        Pilot's import). DB storage is unchanged — this is a render-only
+        toggle. Persisted in your browser.
+      </p>
+      <div class="seg">
+        <button
+          type="button"
+          :class="{ active: units.preference === 'auto' }"
+          @click="setUnits('auto')"
+        >
+          Auto <small class="muted">(currently {{ units.resolved }})</small>
+        </button>
+        <button
+          type="button"
+          :class="{ active: units.preference === 'metric' }"
+          @click="setUnits('metric')"
+        >
+          Metric <small class="muted">km / l / °C</small>
+        </button>
+        <button
+          type="button"
+          :class="{ active: units.preference === 'imperial' }"
+          @click="setUnits('imperial')"
+        >
+          Imperial <small class="muted">mi / gal / °F</small>
+        </button>
+      </div>
+    </section>
+
+    <section class="card">
       <h3>Monitoring</h3>
       <label>
         Disk alert threshold (%)
@@ -448,6 +487,23 @@ label.cb {
 }
 small {
   font-size: 0.75rem;
+}
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+.seg button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.5rem 0.8rem;
+}
+.seg button.active {
+  border-color: var(--c-accent);
+  background: var(--c-accent-soft);
+  color: var(--c-accent);
 }
 .share-row {
   margin-top: 0.7rem;

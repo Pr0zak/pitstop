@@ -4,7 +4,13 @@ import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
 import { useLive } from "@/composables/useLive";
 import ArcGauge from "@/components/charts/ArcGauge.vue";
-import { fmtTemp, fmtPct } from "@/composables/useFormat";
+import {
+  fmtPct,
+  fmtTempC,
+  fmtSpeedKph,
+  fmtFuelRateLh,
+} from "@/composables/useFormat";
+import { useUnitsStore } from "@/stores/units";
 
 const vehicles = useVehiclesStore();
 const auth = useAuthStore();
@@ -18,6 +24,8 @@ watch(
 );
 
 const { metrics, status } = useLive(vehicleIdRef);
+const units = useUnitsStore();
+const useImperial = computed(() => units.resolved === "imperial");
 
 function num(key: string): number | null {
   const v = metrics.value?.[key]?.value;
@@ -85,15 +93,17 @@ const distSinceClear = computed(() => num("distance_since_code_clear"));
 
 // === Derived widgets =====================================================
 
-// Instant MPG = (mph * 3785.41 / fuel_rate_l_h * gal_per_l_factor)
-// fuel_rate from PID 9D is l/h. Convert speed mph→kph→km/h, then:
-//   km/h ÷ (l/h) = km/l → ×2.35215 = mpg (US)
-const instantMpg = computed<number | null>(() => {
+// Instant economy. fuel_rate from PID 9D is l/h, speed is km/h (WiCAN).
+//   metric  : l/100km   = (l/h) ÷ (km/h) × 100
+//   imperial: mpg (US)  = (km/h ÷ l/h) × 2.35215
+const instantEconomy = computed<{ value: number | null; unit: string }>(() => {
   const s = speed.value; // km/h per WiCAN convention
   const fr = fuelRate.value; // l/h
-  if (s == null || fr == null || fr <= 0.05) return null;
-  const kml = s / fr;
-  return kml * 2.35215;
+  if (s == null || fr == null || fr <= 0.05 || s < 1) {
+    return { value: null, unit: useImperial.value ? "mpg" : "l/100km" };
+  }
+  if (useImperial.value) return { value: (s / fr) * 2.35215, unit: "mpg" };
+  return { value: (fr / s) * 100, unit: "l/100km" };
 });
 
 // Computed instant lb-ft from torque % and reference torque (Honda Mode 01)
@@ -112,8 +122,14 @@ function fmtNum(v: number | null, digits = 1): string {
 function fmtInt(v: number | null): string {
   return v == null ? "—" : Math.round(v).toLocaleString();
 }
-function fmtSpeedMph(kph: number | null): string {
-  return kph == null ? "—" : (kph * 0.62137).toFixed(0);
+function fmtSpeedAlt(kph: number | null): string {
+  // Always show the *other* unit from what the gauge displays, so the
+  // user gets both at a glance. The hero gauge label is whatever the
+  // current resolved system shows.
+  if (kph == null) return "—";
+  return useImperial.value
+    ? kph.toFixed(0) // gauge is mph → tile shows kph
+    : (kph * 0.62137).toFixed(0); // gauge is kph → tile shows mph
 }
 function fmtRunTime(seconds: number | null): string {
   if (seconds == null) return "—";
@@ -165,11 +181,11 @@ function trimClass(v: number | null): string {
           :size="240"
         />
         <ArcGauge
-          :value="speed"
-          :max="200"
-          :warn-at="120"
+          :value="useImperial ? (speed != null ? speed * 0.62137 : null) : speed"
+          :max="useImperial ? 120 : 200"
+          :warn-at="useImperial ? 75 : 120"
           label="Speed"
-          unit="km/h"
+          :unit="useImperial ? 'mph' : 'km/h'"
           :size="240"
         />
       </section>
@@ -180,11 +196,11 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Coolant</h3>
-            <div class="big">{{ fmtTemp(coolant) }}</div>
+            <div class="big">{{ fmtTempC(coolant) }}</div>
           </div>
           <div class="card tile">
             <h3>Oil temp</h3>
-            <div class="big">{{ fmtTemp(oilTemp) }}</div>
+            <div class="big">{{ fmtTempC(oilTemp) }}</div>
           </div>
           <div class="card tile">
             <h3>ATF temp</h3>
@@ -233,8 +249,11 @@ function trimClass(v: number | null): string {
             </div>
           </div>
           <div class="card tile">
-            <h3>Speed (mph)</h3>
-            <div class="big">{{ fmtSpeedMph(speed) }} <span class="unit">mph</span></div>
+            <h3>{{ useImperial ? "Speed (km/h)" : "Speed (mph)" }}</h3>
+            <div class="big">
+              {{ fmtSpeedAlt(speed) }}
+              <span class="unit">{{ useImperial ? "km/h" : "mph" }}</span>
+            </div>
           </div>
         </div>
       </section>
@@ -245,16 +264,14 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Fuel rate</h3>
-            <div class="big">
-              {{ fuelRate != null ? fuelRate.toFixed(2) + " l/h" : "—" }}
-            </div>
+            <div class="big">{{ fmtFuelRateLh(fuelRate) }}</div>
           </div>
           <div class="card tile highlight">
-            <h3>Instant MPG</h3>
+            <h3>{{ useImperial ? "Instant MPG" : "Instant l/100km" }}</h3>
             <div class="big">
-              {{ instantMpg != null ? instantMpg.toFixed(1) : "—" }}
+              {{ instantEconomy.value != null ? instantEconomy.value.toFixed(1) : "—" }}
             </div>
-            <div class="muted small">computed (mph ÷ gph)</div>
+            <div class="muted small">{{ instantEconomy.unit }} (computed)</div>
           </div>
           <div class="card tile">
             <h3>STFT B1</h3>
@@ -281,11 +298,11 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Intake air</h3>
-            <div class="big">{{ fmtTemp(iat) }}</div>
+            <div class="big">{{ fmtTempC(iat) }}</div>
           </div>
           <div class="card tile">
             <h3>Ambient</h3>
-            <div class="big">{{ fmtTemp(ambient) }}</div>
+            <div class="big">{{ fmtTempC(ambient) }}</div>
           </div>
           <div class="card tile">
             <h3>MAP</h3>

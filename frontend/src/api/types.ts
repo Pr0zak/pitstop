@@ -16,6 +16,13 @@ export interface Vehicle {
   tank_count?: number | null;
   tank1_capacity?: number | null;
   tank2_capacity?: number | null;
+  // Fuelio unit codes (used by the Auto units toggle):
+  //   dist_unit:        0=km, 1=mi
+  //   fuel_unit:        0=l, 1=us_gal, 2=uk_gal
+  //   consumption_unit: 0=l/100km, 1=mpg_us, 2=mpg_uk, 3=km/l
+  dist_unit?: number | null;
+  fuel_unit?: number | null;
+  consumption_unit?: number | null;
   active?: boolean;
   // server-augmented fields (if available)
   last_seen_at?: string | null;
