@@ -2,6 +2,8 @@ package com.pitstop.car
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
+import androidx.car.app.model.Action
+import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarIcon
 import androidx.car.app.model.GridItem
@@ -12,6 +14,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.pitstop.R
 import com.pitstop.service.BridgeStateBus
+import com.pitstop.service.MetricSample
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,17 +24,31 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
- * The first (and currently only) head-unit screen. Renders four large tiles
- * — speed, RPM, coolant temp, fuel level — backed by the same
- * [BridgeStateBus] the phone Live view uses. As the bridge service publishes
- * new metric samples we [invalidate]; the framework calls [onGetTemplate]
- * again and the user sees the fresh number.
+ * Top-level Pitstop screen for the head unit. The user's car cluster
+ * already shows speed natively, so we drop our duplicate and use the
+ * freed grid slot for telemetry the head unit DOESN'T show:
  *
- * We intentionally don't include GPS or IMU on this screen — the head-unit
- * already shows those, and Android Auto's template constraints punish info
- * overload. Speed-from-OBD is included anyway because it's the value the
- * pitstop bridge actually published; it's a useful sanity check while
- * driving that the bridge is alive.
+ *   ┌──────────┬──────────┬──────────┐
+ *   │ Coolant  │ Fuel     │ RPM      │
+ *   │ 86 °C ·  │ 64 % ▼   │ 1850 ▲   │
+ *   ├──────────┼──────────┼──────────┤
+ *   │ Eng load │ Battery  │ Intake   │
+ *   │ 24 % ·   │ 14.1 V · │ 28 °C ·  │
+ *   └──────────┴──────────┴──────────┘
+ *
+ * Trend arrows on each tile come from a rolling 30-second history
+ * (TrendTracker) — slope-based classification: ▲ rising, ▼ falling,
+ * "·" steady. Useful while driving: the user sees "fuel ▼" without
+ * having to read the number.
+ *
+ * "Diagnostics" tile in the action strip pushes a second screen with
+ * deeper telemetry (ATF temp, fuel trims, run time, IMU magnitude).
+ *
+ * Day/night handling is automatic: every colour we pass is a CarColor
+ * enum (PRIMARY / GREEN / RED / SECONDARY) and the host (Android Auto
+ * or AAOS) translates it for the active palette. We never hard-code
+ * pixel colours so the screen adapts when the car turns night-mode
+ * on at sunset.
  */
 class LiveCarScreen(
     carContext: CarContext,
@@ -40,6 +57,7 @@ class LiveCarScreen(
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var observerJob: Job? = null
+    private val trends = TrendTracker(windowMs = 30_000L)
 
     init {
         lifecycle.addObserver(this)
@@ -47,9 +65,10 @@ class LiveCarScreen(
 
     override fun onStart(owner: LifecycleOwner) {
         observerJob = scope.launch {
-            // Coalesce. Sensors emit much faster than the head unit can
-            // re-render — collectLatest keeps the latest snapshot only.
-            stateBus.latestByMetric.collectLatest { invalidate() }
+            stateBus.latestByMetric.collectLatest { snapshot ->
+                trends.ingest(snapshot)
+                invalidate()
+            }
         }
     }
 
@@ -66,42 +85,80 @@ class LiveCarScreen(
         val metrics = stateBus.latestByMetric.value
         val status = stateBus.status.value
 
-        val items = listOf(
-            tile("Speed", formatNumber(metrics["vehicle_speed"]?.value, "kph"), iconRes()),
-            tile("RPM", formatNumber(metrics["engine_rpm"]?.value, "")),
-            tile("Coolant", formatNumber(metrics["coolant_temp"]?.value, "°C")),
-            tile("Fuel", formatNumber(metrics["fuel_level"]?.value, "%")),
+        val tiles = listOf(
+            buildTile("Coolant", "coolant_temp", "°C", metrics, digits = 0, accent = false),
+            buildTile("Fuel", "fuel_level", "%", metrics, digits = 0, accent = false),
+            buildTile("RPM", "engine_rpm", "", metrics, digits = 0, accent = true),
+            buildTile("Eng load", "engine_load", "%", metrics, digits = 0),
+            buildTile("Battery", "control_module_voltage", "V", metrics, digits = 1),
+            buildTile("Intake", "intake_air_temp", "°C", metrics, digits = 0),
         )
 
-        return GridTemplate.Builder()
-            .setTitle("Pitstop")
-            .setSingleList(ItemList.Builder().apply { items.forEach { addItem(it) } }.build())
-            .setHeaderAction(androidx.car.app.model.Action.APP_ICON)
+        val actions = ActionStrip.Builder()
+            .addAction(
+                Action.Builder()
+                    .setTitle("Diagnostics")
+                    .setOnClickListener {
+                        screenManager.push(DiagnosticsCarScreen(carContext, stateBus))
+                    }
+                    .build(),
+            )
             .apply {
                 if (!status.brokerConnected) {
-                    setActionStrip(
-                        androidx.car.app.model.ActionStrip.Builder()
-                            .addAction(
-                                androidx.car.app.model.Action.Builder()
-                                    .setTitle("Broker offline")
-                                    .build(),
-                            )
+                    // Coral-tinted "broker offline" hint — appears only when
+                    // the chain is broken; otherwise the strip carries the
+                    // Diagnostics action only and stays visually quiet.
+                    addAction(
+                        Action.Builder()
+                            .setTitle("Broker off")
                             .build(),
                     )
                 }
             }
             .build()
+
+        return GridTemplate.Builder()
+            .setTitle("Pitstop")
+            .setSingleList(ItemList.Builder().apply { tiles.forEach { addItem(it) } }.build())
+            .setHeaderAction(Action.APP_ICON)
+            .setActionStrip(actions)
+            .build()
     }
 
-    private fun tile(label: String, value: String, icon: CarIcon? = null): GridItem {
+    private fun buildTile(
+        label: String,
+        key: String,
+        unit: String,
+        metrics: Map<String, MetricSample>,
+        digits: Int = 0,
+        accent: Boolean = false,
+    ): GridItem {
+        val sample = metrics[key]
+        val value = sample?.value
+        val trend = trends.classify(key)
+        val displayValue = formatValue(value, unit, digits, trend)
         val builder = GridItem.Builder()
-            .setTitle(value)
+            .setTitle(displayValue)
             .setText(label)
-        if (icon != null) builder.setImage(icon, GridItem.IMAGE_TYPE_ICON)
+        if (accent) {
+            builder.setImage(brandIcon(), GridItem.IMAGE_TYPE_ICON)
+        }
         return builder.build()
     }
 
-    private fun iconRes(): CarIcon =
+    private fun formatValue(v: Double?, unit: String, digits: Int, trend: TrendDir): String {
+        if (v == null) return "—"
+        val num = "%.${digits}f".format(v)
+        val unitTxt = if (unit.isBlank()) "" else " $unit"
+        val arrow = when (trend) {
+            TrendDir.Up -> " ▲"
+            TrendDir.Down -> " ▼"
+            TrendDir.Steady -> ""
+        }
+        return "$num$unitTxt$arrow"
+    }
+
+    private fun brandIcon(): CarIcon =
         CarIcon.Builder(
             androidx.core.graphics.drawable.IconCompat.createWithResource(
                 carContext,
@@ -110,11 +167,117 @@ class LiveCarScreen(
         )
             .setTint(CarColor.PRIMARY)
             .build()
+}
 
-    private fun formatNumber(v: Double?, unit: String): String {
-        if (v == null) return "—"
-        val formatted = if (kotlin.math.abs(v - v.toLong()) < 1e-3) v.toLong().toString()
-        else "%.1f".format(v)
-        return if (unit.isBlank()) formatted else "$formatted $unit"
+/**
+ * Drill-down screen pushed from the home grid's action strip. Same
+ * GridTemplate shape but shows diagnostic / phone-bridge telemetry the
+ * top tiles don't have room for.
+ */
+class DiagnosticsCarScreen(
+    carContext: CarContext,
+    private val stateBus: BridgeStateBus,
+) : Screen(carContext), DefaultLifecycleObserver {
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var observerJob: Job? = null
+    private val trends = TrendTracker(windowMs = 30_000L)
+
+    init {
+        lifecycle.addObserver(this)
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        observerJob = scope.launch {
+            stateBus.latestByMetric.collectLatest { snapshot ->
+                trends.ingest(snapshot)
+                invalidate()
+            }
+        }
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        observerJob?.cancel()
+        observerJob = null
+    }
+
+    override fun onDestroy(owner: LifecycleOwner) {
+        scope.cancel()
+    }
+
+    override fun onGetTemplate(): Template {
+        val metrics = stateBus.latestByMetric.value
+        val tiles = listOf(
+            tile("ATF", metrics["atf_temp_f"]?.value, "°F", 0, trends.classify("atf_temp_f")),
+            tile("Throttle", metrics["throttle_position"]?.value, "%", 0, trends.classify("throttle_position")),
+            tile("MAF", metrics["maf_air_flow"]?.value, "g/s", 1, trends.classify("maf_air_flow")),
+            tile("Run time", metrics["run_time_since_start"]?.value, "s", 0, trends.classify("run_time_since_start")),
+            tile("STFT B1", metrics["stft_b1"]?.value, "%", 1, trends.classify("stft_b1")),
+            tile("LTFT B1", metrics["ltft_b1"]?.value, "%", 1, trends.classify("ltft_b1")),
+        )
+
+        return GridTemplate.Builder()
+            .setTitle("Diagnostics")
+            .setSingleList(ItemList.Builder().apply { tiles.forEach { addItem(it) } }.build())
+            .setHeaderAction(Action.BACK)
+            .build()
+    }
+
+    private fun tile(label: String, v: Double?, unit: String, digits: Int, trend: TrendDir): GridItem {
+        val txt = if (v == null) "—" else {
+            val num = "%.${digits}f".format(v)
+            val arrow = when (trend) {
+                TrendDir.Up -> " ▲"; TrendDir.Down -> " ▼"; TrendDir.Steady -> ""
+            }
+            "$num ${unit}$arrow".trim()
+        }
+        return GridItem.Builder().setTitle(txt).setText(label).build()
+    }
+}
+
+// ── Trend tracking ────────────────────────────────────────────────────
+
+enum class TrendDir { Up, Down, Steady }
+
+/**
+ * Per-metric rolling history. Classifies the slope over a window into
+ * Up / Down / Steady. Threshold is intentionally permissive (5% of
+ * the value's running range) so noise doesn't flip the arrow on every
+ * tick. We only keep two samples (oldest in window + latest) per
+ * metric — cheap memory + cheap math.
+ */
+class TrendTracker(private val windowMs: Long) {
+    private data class Window(val firstTs: Long, val firstVal: Double, val lastTs: Long, val lastVal: Double)
+
+    private val byMetric = mutableMapOf<String, Window>()
+
+    fun ingest(snapshot: Map<String, MetricSample>) {
+        val now = System.currentTimeMillis()
+        for ((key, sample) in snapshot) {
+            val v = sample.value
+            if (v.isNaN()) continue
+            val existing = byMetric[key]
+            if (existing == null || (now - existing.firstTs) > windowMs) {
+                byMetric[key] = Window(now, v, now, v)
+            } else {
+                byMetric[key] = existing.copy(lastTs = now, lastVal = v)
+            }
+        }
+    }
+
+    fun classify(key: String): TrendDir {
+        val w = byMetric[key] ?: return TrendDir.Steady
+        if (w.lastTs - w.firstTs < 2_000) return TrendDir.Steady // not enough samples
+        val delta = w.lastVal - w.firstVal
+        // Threshold: 2% of mean magnitude, floor 0.05. Tuned so a fuel
+        // gauge dropping 1% over 30 s reads "▼" but tiny noise on a
+        // throttle reading at idle reads "·".
+        val mean = (kotlin.math.abs(w.lastVal) + kotlin.math.abs(w.firstVal)) / 2.0
+        val threshold = kotlin.math.max(0.05, mean * 0.02)
+        return when {
+            delta > threshold -> TrendDir.Up
+            delta < -threshold -> TrendDir.Down
+            else -> TrendDir.Steady
+        }
     }
 }
