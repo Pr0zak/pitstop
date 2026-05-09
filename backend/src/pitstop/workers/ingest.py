@@ -52,13 +52,23 @@ class ParsedTopic:
 
 
 def parse_topic(topic: str) -> ParsedTopic | None:
-    """Parse ``<source>/<vehicle_slug>/<metric>``. Returns None on bad shape."""
+    """Parse a 3-part ``<source>/<slug>/<metric>`` or a 4-part WiCAN
+    structured topic like ``wican/<id>/can/status`` or
+    ``wican/<id>/battery/voltage``. The 4-part forms get joined into
+    the metric (``can/status``) so existing dispatch code can match
+    them by exact name.
+    """
     if not topic:
         return None
     parts = topic.split("/")
-    if len(parts) != 3:
+    if len(parts) == 3:
+        source, slug, metric = parts
+    elif len(parts) == 4 and parts[0] == "wican":
+        source = parts[0]
+        slug = parts[1]
+        metric = "/".join(parts[2:])
+    else:
         return None
-    source, slug, metric = parts
     if source not in VALID_SOURCES:
         return None
     if not slug or not metric:
@@ -493,6 +503,19 @@ class MqttIngest:
             await self._handle_engine_state(payload, vehicle_id, now)
             return
 
+        # WiCAN authoritative engine state, two flavours depending on
+        # firmware config:
+        #   wican/<id>/status        — device-level LWT (sleep timeout)
+        #   wican/<id>/can/status    — CAN-bus presence (immediate)
+        # Both carry {"status":"online"|"offline"}. The bus deduplication
+        # in trip_detector means receiving both for the same transition
+        # is harmless. The trip detector treats them as authoritative
+        # engine on/off boundary signals via the synthetic `_engine_state`
+        # metric on the in-process bus.
+        if parsed.source == "wican" and parsed.metric in ("status", "can/status"):
+            await self._handle_wican_status(payload, vehicle_id, now)
+            return
+
         # Bridge v2 envelope: {"v": <num>, "t": <unix_ms>}. Honors the
         # original capture time so an offline-buffer drain doesn't collapse
         # an hour of driving into a 3-minute ingest window.
@@ -610,12 +633,7 @@ class MqttIngest:
     async def _handle_engine_state(
         self, payload: str, vehicle_id: UUID, default_when: datetime
     ) -> None:
-        """Parse {"t","state":"on"|"off"} and insert into engine_events.
-
-        Trip detector (Pass 3) uses these as authoritative trip boundaries
-        when present; legacy silence-based detection still runs for
-        vehicles that don't publish the new event.
-        """
+        """Parse {"t","state":"on"|"off"} from the phone bridge."""
         s = payload.strip()
         if not (s.startswith("{") and s.endswith("}")):
             return
@@ -635,23 +653,63 @@ class MqttIngest:
                 when = datetime.fromtimestamp(float(t_ms) / 1000.0, tz=UTC)
             except (OverflowError, OSError, ValueError):
                 pass
+        await self._record_engine_state(vehicle_id, when, state, "bridge")
+
+    async def _handle_wican_status(
+        self, payload: str, vehicle_id: UUID, default_when: datetime
+    ) -> None:
+        """Parse {"status":"online"|"offline"} from WiCAN's MQTT LWT.
+
+        WiCAN publishes ``{"status":"online"}`` retained on connect
+        and (via the broker's LWT mechanism) ``{"status":"offline"}``
+        when its keepalive expires. We translate online→engine_on and
+        offline→engine_off, dedupe via the trip detector's state.
+        Treat repeated same-state messages as no-ops; the broker
+        re-delivers the retained "online" on every connection.
+        """
+        s = payload.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(obj, dict):
+            return
+        status = obj.get("status")
+        if status == "online":
+            state = "on"
+        elif status == "offline":
+            state = "off"
+        else:
+            return
+        await self._record_engine_state(vehicle_id, default_when, state, "wican_lwt")
+
+    async def _record_engine_state(
+        self, vehicle_id: UUID, when: datetime, state: str, source: str
+    ) -> None:
+        """Insert into engine_events + fan out to the trip detector bus.
+
+        Shared between the phone bridge's `bridge/<slug>/engine_state`
+        publishes and WiCAN's `wican/<id>/status` LWT messages. The trip
+        detector dedupes same-state events by checking its in-memory
+        per-vehicle state, so repeated retained "online" messages are
+        safe.
+        """
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO engine_events (time, vehicle_id, state, source)
-                    VALUES ($1, $2, $3, 'bridge')
+                    VALUES ($1, $2, $3, $4)
                     """,
                     when,
                     vehicle_id,
                     state,
+                    source,
                 )
         except (asyncpg.PostgresError, OSError) as exc:
             log.warning("engine_events insert failed: %s", exc)
-        # Fan out to the in-process bus so the trip detector reacts in
-        # real time. Synthetic metric name `_engine_state` is recognised
-        # there as authoritative trip-boundary signal; value_text carries
-        # the new state.
         await self._bus.publish(
             TelemetryEvent(
                 vehicle_id=vehicle_id,
@@ -659,7 +717,7 @@ class MqttIngest:
                 metric="_engine_state",
                 value_num=None,
                 value_text=state,
-                source="bridge",
+                source=source,
             )
         )
 
@@ -765,6 +823,10 @@ class MqttIngest:
                             self._cfg.mqtt_port,
                         )
                         await client.subscribe("wican/+/+")
+                        # Pick up 4-part WiCAN structured topics like
+                        # `wican/<id>/can/status` — the firmware emits
+                        # these alongside the 3-part metric topics.
+                        await client.subscribe("wican/+/+/+")
                         await client.subscribe("bridge/+/+")
                         async for msg in client.messages:
                             if self._stop.is_set():
