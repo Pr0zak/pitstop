@@ -295,6 +295,10 @@ class SettingsOut(BaseModel):
     ha: HASettings = Field(default_factory=HASettings)
     home: HomeLocation = Field(default_factory=HomeLocation)
     disk_alert_pct: int = 70
+    # Auto-purge thresholds. None = no auto-purge for that stream;
+    # the manual /admin/purge endpoints still work either way.
+    retention_readings_days: int | None = None
+    retention_logs_days: int | None = None
 
 
 class SettingsUpdate(BaseModel):
@@ -303,6 +307,8 @@ class SettingsUpdate(BaseModel):
     ha: HASettingsUpdate | None = None
     home: HomeLocation | None = None
     disk_alert_pct: int | None = None
+    retention_readings_days: int | None = None
+    retention_logs_days: int | None = None
 
 
 # Forward-compat: AnalyticsWindow is referenced by Task #16 endpoints.

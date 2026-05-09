@@ -38,13 +38,16 @@ def _row_to_settings(row: asyncpg.Record) -> dict[str, Any]:
         },
         "home": {"lat": row["home_lat"], "lon": row["home_lon"]},
         "disk_alert_pct": row["disk_alert_pct"],
+        "retention_readings_days": row["retention_readings_days"],
+        "retention_logs_days": row["retention_logs_days"],
     }
 
 
 async def _fetch_settings(conn: asyncpg.Connection) -> dict[str, Any]:
     row = await conn.fetchrow(
         "SELECT ha_enabled, ha_url, ha_token, ha_discovery_prefix, "
-        "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct "
+        "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct, "
+        "       retention_readings_days, retention_logs_days "
         "FROM settings WHERE id = 1"
     )
     if row is None:
@@ -114,6 +117,18 @@ async def patch_settings(
     if body.disk_alert_pct is not None:
         args.append(body.disk_alert_pct)
         set_parts.append(f"disk_alert_pct = ${len(args)}")
+
+    # Retention thresholds. NULL clears the auto-purge for that stream;
+    # 0 also clears (worker treats > 0 as "active").
+    update_fields = body.model_dump(exclude_unset=True)
+    if "retention_readings_days" in update_fields:
+        v = update_fields["retention_readings_days"]
+        args.append(v)
+        set_parts.append(f"retention_readings_days = ${len(args)}")
+    if "retention_logs_days" in update_fields:
+        v = update_fields["retention_logs_days"]
+        args.append(v)
+        set_parts.append(f"retention_logs_days = ${len(args)}")
 
     async with pool.acquire() as conn:
         if set_parts:

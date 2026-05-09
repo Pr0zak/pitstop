@@ -88,6 +88,7 @@ async def lifespan(app: FastAPI):
     trip_task: asyncio.Task | None = None
     ha_task: asyncio.Task | None = None
     log_drain_task: asyncio.Task | None = None
+    retention_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
@@ -126,6 +127,12 @@ async def lifespan(app: FastAPI):
         ingest_task = asyncio.create_task(ingest.run(), name="mqtt-ingest")
         trip_task = asyncio.create_task(trip_detector.run(), name="trip-detector")
         ha_task = asyncio.create_task(ha_mirror.run(), name="ha-mirror")
+        # Retention worker — auto-purges pid_readings + client_logs when the
+        # singleton settings row carries non-null retention thresholds.
+        from .workers import retention as retention_worker  # noqa: E402
+        retention_task = asyncio.create_task(
+            retention_worker.run(pool), name="retention-worker"
+        )
         yield
     finally:
         log.info("pitstop backend stopping")
@@ -135,7 +142,7 @@ async def lifespan(app: FastAPI):
             trip_detector.stop()
         if ha_mirror is not None:
             ha_mirror.stop()
-        for task in (ingest_task, trip_task, ha_task, log_drain_task):
+        for task in (ingest_task, trip_task, ha_task, log_drain_task, retention_task):
             if task is None:
                 continue
             task.cancel()

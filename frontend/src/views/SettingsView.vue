@@ -29,6 +29,8 @@ const haTestMsg = ref<string | null>(null);
 const homeLat = ref<number | null>(null);
 const homeLon = ref<number | null>(null);
 const diskAlertPct = ref<number | null>(null);
+const retentionReadingsDays = ref<number | null>(null);
+const retentionLogsDays = ref<number | null>(null);
 
 const units = useUnitsStore();
 function setUnits(u: UnitSystem) {
@@ -58,6 +60,8 @@ onMounted(async () => {
       homeLat.value = s.home?.lat ?? null;
       homeLon.value = s.home?.lon ?? null;
       diskAlertPct.value = s.disk_alert_pct ?? null;
+      retentionReadingsDays.value = s.retention_readings_days ?? null;
+      retentionLogsDays.value = s.retention_logs_days ?? null;
     }
     await loadStorage();
     await loadDevices();
@@ -98,6 +102,8 @@ async function saveAll() {
       };
       home: { lat: number | null; lon: number | null };
       disk_alert_pct: number | null;
+      retention_readings_days: number | null;
+      retention_logs_days: number | null;
     } = {
       ha: {
         enabled: haEnabled.value,
@@ -106,6 +112,8 @@ async function saveAll() {
       },
       home: { lat: homeLat.value, lon: homeLon.value },
       disk_alert_pct: diskAlertPct.value,
+      retention_readings_days: retentionReadingsDays.value,
+      retention_logs_days: retentionLogsDays.value,
     };
     if (haToken.value) {
       payload.ha.token = haToken.value;
@@ -708,7 +716,40 @@ function geolocate() {
       </p>
 
       <div class="purge">
-        <h4>Purge OBD readings</h4>
+        <h4>Auto-purge schedule</h4>
+        <p class="muted small">
+          Backend cron runs hourly. Leave a field blank (or zero) to disable
+          auto-purge for that stream — the manual buttons below still work.
+        </p>
+        <div class="purge-row">
+          <label>
+            Drop OBD readings older than
+            <input
+              type="number"
+              min="0"
+              max="3650"
+              v-model.number="retentionReadingsDays"
+              placeholder="off"
+            />
+            days
+          </label>
+        </div>
+        <div class="purge-row" style="margin-top: 0.4rem">
+          <label>
+            Drop logs older than
+            <input
+              type="number"
+              min="0"
+              max="3650"
+              v-model.number="retentionLogsDays"
+              placeholder="off"
+            />
+            days
+          </label>
+          <span class="muted small">Save settings below to apply</span>
+        </div>
+
+        <h4 style="margin-top: 1rem">Manual purge</h4>
         <div class="purge-row">
           <label>
             Older than

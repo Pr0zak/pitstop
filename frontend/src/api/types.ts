@@ -114,6 +114,10 @@ export interface Settings {
   ha: HaSettings;
   home: HomeLocation;
   disk_alert_pct?: number | null;
+  /** Null = no auto-purge for OBD readings. Positive integer = nightly cron. */
+  retention_readings_days?: number | null;
+  /** Null = no auto-purge for client logs. */
+  retention_logs_days?: number | null;
 }
 
 // Field names mirror the backend API exactly (which mirrors Fuelio's CSV
