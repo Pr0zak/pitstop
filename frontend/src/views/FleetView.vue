@@ -155,19 +155,29 @@ function countBucket(n: number, label: string, warnAt = 1, badAt = 3): {
 }
 
 function healthFor(row: FleetRow): HealthBreakdown {
-  const fresh = freshnessBucket(row.vehicle.last_seen_at);
+  // Archived vehicles (active === false) skip freshness — they're
+  // intentionally offline. Score becomes the average of just MPG +
+  // Service + Codes so the tile doesn't read "bad" purely because the
+  // bridge isn't streaming. Surfaces as a neutral "Archived" signal
+  // in the slot the freshness check would otherwise occupy.
+  const archived = row.vehicle.active === false;
+
   const mpg = mpgBucket(row.rollingMpg, row.allTimeMpg);
   const services = countBucket(row.reminderCount, "due", 1, 3);
   const dtcs = countBucket(row.dtcCount, "DTC", 1, 1);
 
+  const freshSignal = archived
+    ? { status: "ok" as const, detail: "archived" }
+    : freshnessBucket(row.vehicle.last_seen_at);
+  const freshLabel = archived ? "Status" : "Last seen";
+
   const signals = [
-    { label: "Last seen", ...fresh },
+    { label: freshLabel, ...freshSignal },
     { label: "MPG", ...mpg },
     { label: "Service", ...services },
     { label: "Codes", ...dtcs },
   ];
 
-  // Score: 25 per ok, 12.5 per warn, 0 per bad. Max 100.
   const score = signals.reduce((s, sig) => {
     return s + (sig.status === "ok" ? 25 : sig.status === "warn" ? 12.5 : 0);
   }, 0);
@@ -249,7 +259,10 @@ const overall = computed(() => {
         v-for="row in rows"
         :key="row.vehicle.id"
         class="card tile"
-        :class="`score-${Math.floor(healthFor(row).score / 30)}`"
+        :class="[
+          `score-${Math.floor(healthFor(row).score / 30)}`,
+          { archived: row.vehicle.active === false },
+        ]"
       >
         <header class="tile-head">
           <RouterLink
@@ -338,6 +351,18 @@ const overall = computed(() => {
   padding: 1rem;
   position: relative;
   overflow: hidden;
+}
+.tile.archived {
+  /* Visual recession for retired vehicles — keeps them in the grid for
+     historical browsing without the eye reading them as "active fleet."
+     Score stripe is suppressed and chrome dims one step. */
+  opacity: 0.7;
+}
+.tile.archived .name {
+  color: var(--c-ink2);
+}
+.tile.archived::before {
+  display: none !important;
 }
 /* Health-score-driven left edge stripe — coral when bad, amber warn,
    no stripe when ok. Mirrors the design's redline semantic so a glance
