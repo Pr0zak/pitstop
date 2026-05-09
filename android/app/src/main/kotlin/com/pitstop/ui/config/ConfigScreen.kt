@@ -85,6 +85,10 @@ fun ConfigScreen(
                 is ConfigToast.FlushedOk -> "Sent ${t.count} log${if (t.count == 1) "" else "s"}"
                 ConfigToast.FlushedEmpty -> "Buffer empty"
                 is ConfigToast.FlushedError -> "Flush failed: ${t.message}"
+                is ConfigToast.UpdateUpToDate -> "You're on the latest (v${t.current})"
+                is ConfigToast.UpdateAvailable ->
+                    "v${t.latest} available — open Home to download"
+                is ConfigToast.UpdateCheckError -> "Update check failed: ${t.message}"
             }
             snackbarHostState.showSnackbar(msg)
         }
@@ -161,7 +165,14 @@ fun ConfigScreen(
                 onFlush = { viewModel.flushLogsNow() },
             )
 
-            AppSection()
+            val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
+            val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
+            AppSection(
+                checking = checkingUpdate,
+                latestVersionFound = latestUpdate?.latestVersion,
+                latestIsNewer = latestUpdate?.isNewer == true,
+                onCheck = { viewModel.checkForUpdates() },
+            )
 
             // Save bar — sticky-ish at the very bottom of the scroll.
             Spacer(Modifier.size(20.dp))
@@ -567,7 +578,12 @@ private fun CarTileSlot(
 }
 
 @Composable
-private fun AppSection() {
+private fun AppSection(
+    checking: Boolean,
+    latestVersionFound: String?,
+    latestIsNewer: Boolean,
+    onCheck: () -> Unit,
+) {
     SettingsSection(title = "App") {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
@@ -577,6 +593,28 @@ private fun AppSection() {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (latestVersionFound != null) {
+                    Text(
+                        if (latestIsNewer) "Latest on GitHub: v$latestVersionFound (newer)"
+                        else "Latest on GitHub: v$latestVersionFound",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (latestIsNewer) MaterialTheme.colorScheme.tertiary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = onCheck,
+                enabled = !checking,
+            ) {
+                if (checking) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("Check now")
+                }
             }
         }
     }
