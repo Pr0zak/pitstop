@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import {
   LayoutDashboard,
+  LayoutGrid,
   Activity,
   Route,
   BarChart3,
@@ -69,6 +70,7 @@ const route = useRoute();
 
 const items = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
+  { to: "/fleet", label: "Fleet", icon: LayoutGrid },
   { to: "/setup", label: "Setup", icon: HelpCircle },
   { to: "/live", label: "Live", icon: Activity },
   { to: "/trips", label: "Trips", icon: Route },
