@@ -45,6 +45,8 @@ fun LiveScreen(
     viewModel: LiveViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
+    val bridgeStatus by viewModel.status.collectAsStateWithLifecycle()
+    val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
 
     // Keep the screen on while the Live view is composed — driver expects a
     // glanceable always-on dashboard while moving. Cleared on dispose so
@@ -94,6 +96,37 @@ fun LiveScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // Connection indicators — BLE link to the WiCAN, plus the
+            // MQTT broker state. Two glances and the user knows whether
+            // the live numbers below are real-time, stale, or stuck.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val (bleLabel, blePill) = when (bridgeStatus.phase) {
+                    com.pitstop.service.BridgePhase.Idle ->
+                        "BLE idle" to com.pitstop.ui.components.PillState.Neutral
+                    com.pitstop.service.BridgePhase.Scanning ->
+                        "BLE scan" to com.pitstop.ui.components.PillState.Connecting
+                    com.pitstop.service.BridgePhase.Connecting ->
+                        "BLE…" to com.pitstop.ui.components.PillState.Connecting
+                    com.pitstop.service.BridgePhase.Connected ->
+                        "BLE live" to com.pitstop.ui.components.PillState.Healthy
+                    com.pitstop.service.BridgePhase.Disconnected ->
+                        "BLE down" to com.pitstop.ui.components.PillState.Degraded
+                    com.pitstop.service.BridgePhase.Error ->
+                        "BLE error" to com.pitstop.ui.components.PillState.Offline
+                }
+                com.pitstop.ui.components.StatusPill(
+                    state = blePill,
+                    label = bleLabel,
+                    compact = true,
+                )
+                com.pitstop.ui.components.StatusPill(
+                    state = if (brokerConnected) com.pitstop.ui.components.PillState.Healthy
+                    else com.pitstop.ui.components.PillState.Offline,
+                    label = if (brokerConnected) "Broker live" else "Broker off",
+                    compact = true,
+                )
+            }
+
             val rpm = displayValues.value["engine_rpm"] ?: metrics["engine_rpm"]?.value
             val speed = displayValues.value["vehicle_speed"] ?: metrics["vehicle_speed"]?.value
 

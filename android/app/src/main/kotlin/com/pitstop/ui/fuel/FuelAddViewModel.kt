@@ -71,6 +71,7 @@ class FuelAddViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val api: PitstopApi,
     private val stateBus: com.pitstop.service.BridgeStateBus,
+    private val logBuffer: com.pitstop.log.LogBuffer,
 ) : ViewModel() {
 
     private val _form = MutableStateFlow(FuelFormState())
@@ -97,7 +98,28 @@ class FuelAddViewModel @Inject constructor(
     private suspend fun loadVehicles() {
         val current = settingsRepository.current()
         val defaultSlug = current.settings.vehicleSlug.ifBlank { "" }
-        val vs = runCatching { api.getVehicles() }.getOrElse { emptyList() }
+        if (current.queryToken.isBlank()) {
+            logBuffer.warn("fuel: QUERY token blank; vehicle picker will be empty")
+        }
+        if (current.settings.apiBaseUrl.isBlank()) {
+            logBuffer.warn("fuel: API base URL blank; vehicle picker will be empty")
+        }
+        val vs = runCatching { api.getVehicles() }.getOrElse { exc ->
+            logBuffer.warn(
+                "fuel: /api/vehicles fetch failed",
+                mapOf(
+                    "err" to (exc.message ?: exc::class.java.simpleName),
+                    "api_base" to current.settings.apiBaseUrl,
+                ),
+            )
+            emptyList()
+        }
+        if (vs.isEmpty()) {
+            logBuffer.warn(
+                "fuel: vehicle list returned empty",
+                mapOf("api_base" to current.settings.apiBaseUrl),
+            )
+        }
         val resolvedSlug = defaultSlug
             .ifBlank { vs.firstOrNull { it.active != false }?.slug ?: "" }
         _form.value = _form.value.copy(
