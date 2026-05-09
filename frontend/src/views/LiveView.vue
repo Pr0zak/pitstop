@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
 import { useLive } from "@/composables/useLive";
@@ -28,6 +28,31 @@ const { metrics, status } = useLive(vehicleIdRef);
 const units = useUnitsStore();
 const useImperial = computed(() => units.resolved === "imperial");
 
+// Lightweight 1 Hz tick so the freshness-derived pills below
+// (Stream / Bridge / Broker) re-evaluate even when no new frame
+// arrived for a while. Without this they'd only update on a frame.
+const tick = ref(Date.now());
+let tickInterval: number | undefined;
+onMounted(() => {
+  tickInterval = window.setInterval(() => {
+    tick.value = Date.now();
+  }, 1000);
+});
+onUnmounted(() => {
+  if (tickInterval) window.clearInterval(tickInterval);
+});
+
+/** Most recent frame timestamp across all metrics in this session. */
+const lastFrameMs = computed<number | null>(() => {
+  const m = metrics.value ?? {};
+  let max = 0;
+  for (const k of Object.keys(m)) {
+    const t = m[k]?.time ?? 0;
+    if (typeof t === "number" && t > max) max = t;
+  }
+  return max > 0 ? max : null;
+});
+
 function num(key: string): number | null {
   const v = metrics.value?.[key]?.value;
   if (typeof v === "number") return v;
@@ -38,9 +63,43 @@ function num(key: string): number | null {
   return null;
 }
 
+type PillState = "healthy" | "connecting" | "degraded" | "offline" | "neutral";
+
+/** Browser ↔ backend WebSocket. Drives the WS pill. */
+const wsLabel = computed<{ text: string; state: PillState }>(() => {
+  switch (status.value) {
+    case "connecting":
+      return { text: "WS …", state: "connecting" };
+    case "open":
+      return { text: "WS live", state: "healthy" };
+    case "stale":
+      return { text: "WS stale", state: "degraded" };
+    case "disconnected":
+      return { text: "WS off", state: "offline" };
+    default:
+      return { text: "WS idle", state: "neutral" };
+  }
+});
+
+/**
+ * Bridge → broker → backend stream. Derived from the most-recent frame
+ * timestamp; healthy if a frame landed in the last 5 s, degraded under
+ * 60 s, offline beyond. The frontend can't see the broker / BLE links
+ * directly (they're upstream of the backend) but a fresh frame proves
+ * both are up.
+ */
+const streamLabel = computed<{ text: string; state: PillState }>(() => {
+  const lf = lastFrameMs.value;
+  if (lf == null) return { text: "Stream idle", state: "neutral" };
+  const age = (tick.value - lf) / 1000;
+  if (age < 5) return { text: "Stream live", state: "healthy" };
+  if (age < 60) return { text: `Stream ${age.toFixed(0)}s`, state: "degraded" };
+  return { text: "Stream off", state: "offline" };
+});
+
 const statusLabel = computed<{
   text: string;
-  state: "healthy" | "connecting" | "degraded" | "offline" | "neutral";
+  state: PillState;
 }>(() => {
   switch (status.value) {
     case "connecting":
@@ -162,7 +221,8 @@ function trimClass(v: number | null): string {
     <header class="head">
       <h1>Live</h1>
       <div class="status">
-        <Pill :state="statusLabel.state" :label="statusLabel.text" />
+        <Pill :state="wsLabel.state" :label="wsLabel.text" />
+        <Pill :state="streamLabel.state" :label="streamLabel.text" />
       </div>
     </header>
 
