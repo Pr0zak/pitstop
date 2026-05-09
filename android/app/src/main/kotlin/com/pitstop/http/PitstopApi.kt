@@ -105,33 +105,40 @@ data class MpgTrendResponse(
 )
 
 interface PitstopApi {
-    // ── Write path ──────────────────────────────────────────────────
-    @POST("api/fillups")
+    // Path conventions, given the deployed Caddy in front of the backend:
+    //   /api/*   — Caddy strips /api/, forwards to backend root mount
+    //              points (vehicles, fillups, analytics, ...). Same shape
+    //              as the web frontend's API client.
+    //   /phone/* — Caddy forwards verbatim. Backend's api_phone.py owns
+    //              that prefix for the slug-based write aliases the phone
+    //              needs (POST /phone/fillups with vehicle_slug instead
+    //              of UUID).
+    //   /ws/*    — backend's WebSocket endpoint.
+    // The auth interceptor switches token by HTTP method (GET → query
+    // token, POST → ingest token).
+
+    // ── Write path: phone-shaped, vehicle_slug-based ───────────────
+    @POST("phone/fillups")
     suspend fun postFillup(@Body body: FillupRequest): FillupResponse
 
     @POST("api/logs")
     suspend fun postLogs(@Body body: LogBatchRequest): LogBatchResponse
 
-    // ── Read path ───────────────────────────────────────────────────
-    //
-    // GET endpoints are mounted at the root — the /api prefix is reserved
-    // for the phone-shaped write aliases (api_phone.py) where path-mismatch
-    // would have to be papered over with vehicle_slug → vehicle_id resolution.
-    // GETs are simple enough that the raw backend shape works as-is.
-    @GET("vehicles")
+    // ── Read path: shared with the web frontend, /api/ stripped by Caddy ─
+    @GET("api/vehicles")
     suspend fun getVehicles(): List<VehicleDto>
 
     /**
      * Returns a bare list (not wrapped). Backend returns
      * `[{...}, {...}]` ordered by fillup_date DESC.
      */
-    @GET("fillups")
+    @GET("api/fillups")
     suspend fun getFillups(
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 30,
     ): List<FillupDto>
 
-    @GET("analytics/mpg")
+    @GET("api/analytics/mpg")
     suspend fun getMpgTrend(
         @Query("vehicle_id") vehicleId: String,
         @Query("window") window: String = "year",

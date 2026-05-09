@@ -7,6 +7,14 @@
         reverse_proxy backend:8000
     }
 
+    # Phone-shaped slug-based ingest (api_phone.py routes prefixed with
+    # /phone). Forwarded WITHOUT stripping so the backend's
+    # @router(prefix="/phone") matches. Keeps the phone's POST
+    # /phone/fillups separate from the web's POST /fillups (vehicle_id).
+    handle /phone/* {
+        reverse_proxy backend:8000
+    }
+
     handle /ws/* {
         reverse_proxy backend:8000
     }

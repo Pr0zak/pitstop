@@ -32,7 +32,7 @@ from ..db.deps import get_pool
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["phone"])
+router = APIRouter(prefix="/phone", tags=["phone"])
 
 
 # Conversion constants. The phone always sends US units (gal + mi).
