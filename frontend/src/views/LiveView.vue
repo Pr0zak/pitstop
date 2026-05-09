@@ -4,6 +4,7 @@ import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
 import { useLive } from "@/composables/useLive";
 import ArcGauge from "@/components/charts/ArcGauge.vue";
+import Pill from "@/components/Pill.vue";
 import {
   fmtPct,
   fmtTempC,
@@ -37,18 +38,21 @@ function num(key: string): number | null {
   return null;
 }
 
-const statusLabel = computed(() => {
+const statusLabel = computed<{
+  text: string;
+  state: "healthy" | "connecting" | "degraded" | "offline" | "neutral";
+}>(() => {
   switch (status.value) {
     case "connecting":
-      return { text: "connecting", cls: "warn" };
+      return { text: "connecting", state: "connecting" };
     case "open":
-      return { text: "live", cls: "success" };
+      return { text: "live", state: "healthy" };
     case "stale":
-      return { text: "stale", cls: "warn" };
+      return { text: "stale", state: "degraded" };
     case "disconnected":
-      return { text: "disconnected", cls: "danger" };
+      return { text: "disconnected", state: "offline" };
     default:
-      return { text: "idle", cls: "" };
+      return { text: "idle", state: "neutral" };
   }
 });
 
@@ -158,7 +162,7 @@ function trimClass(v: number | null): string {
     <header class="head">
       <h1>Live</h1>
       <div class="status">
-        <span class="badge" :class="statusLabel.cls">{{ statusLabel.text }}</span>
+        <Pill :state="statusLabel.state" :label="statusLabel.text" />
       </div>
     </header>
 
