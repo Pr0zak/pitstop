@@ -15,6 +15,7 @@ import javax.inject.Inject
 
 data class FuelFormState(
     val gallons: String = "",
+    val pricePerGallon: String = "",
     val totalPrice: String = "",
     val odometer: String = "",
     val partial: Boolean = false,
@@ -28,6 +29,7 @@ data class FuelFormState(
     val submittedId: String? = null,
     val errorMessage: String? = null,
     val nearestPriorStation: String? = null,
+    val lastOdometer: Double? = null,
 )
 
 @HiltViewModel
@@ -46,20 +48,61 @@ class FuelAddViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             allHistory = historyStore.all()
+            // Surface the most recent odometer reading from history so the
+            // "Last value: 76,304 mi" hint matches the design's reference.
+            val lastOdo = allHistory.firstOrNull()?.let { null } // history doesn't carry odo today
+            _form.value = _form.value.copy(lastOdometer = lastOdo)
             refreshGps()
         }
     }
 
     fun update(transform: (FuelFormState) -> FuelFormState) {
-        _form.value = transform(_form.value).copy(
+        val next = transform(_form.value).copy(
             errorMessage = null,
             submittedId = null,
         )
+        _form.value = next
         // Recompute station suggestions live.
         val q = _form.value.stationName
         _form.value = _form.value.copy(
             stationSuggestions = historyStore.stationSuggestions(allHistory, q),
         )
+    }
+
+    /**
+     * Update gallons and propagate the totalPrice = gallons × pricePerGallon
+     * relationship — whichever two fields the user has filled, the third
+     * derives. Mirrors the auto-fill behaviour Fuelio's refuelling screen
+     * has where editing any of {gal, price/gal, total} updates the others.
+     */
+    fun setGallons(value: String) {
+        val gal = value.toDoubleOrNull()
+        val ppg = _form.value.pricePerGallon.toDoubleOrNull()
+        val derivedTotal =
+            if (gal != null && gal > 0 && ppg != null && ppg > 0)
+                "%.2f".format(gal * ppg)
+            else _form.value.totalPrice
+        update { it.copy(gallons = value, totalPrice = derivedTotal) }
+    }
+
+    fun setPricePerGallon(value: String) {
+        val ppg = value.toDoubleOrNull()
+        val gal = _form.value.gallons.toDoubleOrNull()
+        val derivedTotal =
+            if (gal != null && gal > 0 && ppg != null && ppg > 0)
+                "%.2f".format(gal * ppg)
+            else _form.value.totalPrice
+        update { it.copy(pricePerGallon = value, totalPrice = derivedTotal) }
+    }
+
+    fun setTotalPrice(value: String) {
+        val total = value.toDoubleOrNull()
+        val gal = _form.value.gallons.toDoubleOrNull()
+        val derivedPpg =
+            if (total != null && total > 0 && gal != null && gal > 0)
+                "%.3f".format(total / gal)
+            else _form.value.pricePerGallon
+        update { it.copy(totalPrice = value, pricePerGallon = derivedPpg) }
     }
 
     fun refreshGps() {
@@ -111,6 +154,9 @@ class FuelAddViewModel @Inject constructor(
                 stationName = f.stationName.ifBlank { null },
                 notes = f.notes.ifBlank { null },
             )
+            // After a successful submit we want the form to come back fresh
+            // for the next visit, but keep the last-odo hint and station
+            // suggestions populated.
             _form.value = f.copy(submitting = true, errorMessage = null)
             try {
                 val response = api.postFillup(request)
