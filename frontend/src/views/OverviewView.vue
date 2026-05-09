@@ -145,7 +145,7 @@ function num(key: string): number | null {
           <ul v-else class="recent">
             <li v-for="f in fillupsQ.data.value.items" :key="f.id">
               <span>{{ fmtDate(f.fillup_date) }}</span>
-              <span class="muted">{{ fmtMpg(f.mpg_recomputed) }} · {{ fmtMoney(f.total_price) }}</span>
+              <span class="muted">{{ fmtMpg(f.mpg) }} · {{ fmtMoney(f.price_total) }}</span>
             </li>
           </ul>
         </section>

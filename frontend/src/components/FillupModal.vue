@@ -14,23 +14,26 @@ const emit = defineEmits<{
   (e: "saved", fillup: Fillup): void;
 }>();
 
+// Form state mirrors the backend Fillup shape exactly (odo / fuel_volume /
+// price_total / is_full / is_missed / lat / lon). station_name is a UI-only
+// label that maps to `city` on save (the import preserves city; station_id
+// is opaque per the schema and not surfaced as a label).
 const form = ref({
   fillup_date: "",
-  odometer: undefined as number | undefined,
-  volume: undefined as number | undefined,
-  total_price: undefined as number | undefined,
-  unit_price: undefined as number | undefined,
-  full_tank: true,
-  partial: false,
+  odo: undefined as number | undefined,
+  fuel_volume: undefined as number | undefined,
+  price_total: undefined as number | undefined,
+  price_per_unit: undefined as number | undefined,
+  is_full: true,
+  is_missed: false,
   station_name: "",
-  latitude: undefined as number | undefined,
-  longitude: undefined as number | undefined,
+  lat: undefined as number | undefined,
+  lon: undefined as number | undefined,
   city: "",
   notes: "",
   tank_number: 1,
   fuel_type: 100,
   exclude_distance: false,
-  missed: false,
 });
 const saving = ref(false);
 const saveError = ref<string | null>(null);
@@ -44,41 +47,39 @@ watch(
   (init) => {
     if (init) {
       form.value = {
-        fillup_date: init.fillup_date?.slice(0, 16).replace("T", "T") ?? new Date().toISOString().slice(0, 16),
-        odometer: init.odometer ?? undefined,
-        volume: init.volume ?? undefined,
-        total_price: init.total_price ?? undefined,
-        unit_price: init.unit_price ?? undefined,
-        full_tank: init.full_tank ?? true,
-        partial: init.partial ?? false,
-        station_name: init.station_name ?? "",
-        latitude: init.latitude ?? undefined,
-        longitude: init.longitude ?? undefined,
+        fillup_date: init.fillup_date?.slice(0, 16) ?? new Date().toISOString().slice(0, 16),
+        odo: init.odo ?? undefined,
+        fuel_volume: init.fuel_volume ?? undefined,
+        price_total: init.price_total ?? undefined,
+        price_per_unit: init.price_per_unit != null ? Number(init.price_per_unit) : undefined,
+        is_full: init.is_full ?? true,
+        is_missed: init.is_missed ?? false,
+        station_name: init.city ?? "",
+        lat: init.lat ?? undefined,
+        lon: init.lon ?? undefined,
         city: init.city ?? "",
         notes: init.notes ?? "",
         tank_number: init.tank_number ?? 1,
         fuel_type: init.fuel_type ?? 100,
         exclude_distance: init.exclude_distance ?? false,
-        missed: init.missed ?? false,
       };
     } else {
       form.value = {
         fillup_date: new Date().toISOString().slice(0, 16),
-        odometer: undefined,
-        volume: undefined,
-        total_price: undefined,
-        unit_price: undefined,
-        full_tank: true,
-        partial: false,
+        odo: undefined,
+        fuel_volume: undefined,
+        price_total: undefined,
+        price_per_unit: undefined,
+        is_full: true,
+        is_missed: false,
         station_name: "",
-        latitude: undefined,
-        longitude: undefined,
+        lat: undefined,
+        lon: undefined,
         city: "",
         notes: "",
         tank_number: 1,
         fuel_type: 100,
         exclude_distance: false,
-        missed: false,
       };
     }
   },
@@ -112,8 +113,8 @@ function geolocate() {
   }
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      form.value.latitude = Math.round(pos.coords.latitude * 1e5) / 1e5;
-      form.value.longitude = Math.round(pos.coords.longitude * 1e5) / 1e5;
+      form.value.lat = Math.round(pos.coords.latitude * 1e5) / 1e5;
+      form.value.lon = Math.round(pos.coords.longitude * 1e5) / 1e5;
     },
     (err) => alert(`Geolocation failed: ${err.message}`),
     { enableHighAccuracy: false, timeout: 10_000 },
@@ -129,21 +130,19 @@ async function save() {
       fillup_date: form.value.fillup_date
         ? new Date(form.value.fillup_date).toISOString()
         : undefined,
-      odometer: form.value.odometer ?? null,
-      volume: form.value.volume ?? null,
-      total_price: form.value.total_price ?? null,
-      unit_price: form.value.unit_price ?? null,
-      full_tank: form.value.full_tank,
-      partial: form.value.partial,
-      station_name: form.value.station_name || null,
-      latitude: form.value.latitude ?? null,
-      longitude: form.value.longitude ?? null,
-      city: form.value.city || null,
+      odo: form.value.odo ?? null,
+      fuel_volume: form.value.fuel_volume ?? null,
+      price_total: form.value.price_total ?? null,
+      price_per_unit: form.value.price_per_unit ?? null,
+      is_full: form.value.is_full,
+      is_missed: form.value.is_missed,
+      lat: form.value.lat ?? null,
+      lon: form.value.lon ?? null,
+      city: form.value.city || form.value.station_name || null,
       notes: form.value.notes || null,
       tank_number: form.value.tank_number,
       fuel_type: form.value.fuel_type,
       exclude_distance: form.value.exclude_distance,
-      missed: form.value.missed,
     };
     let saved: Fillup;
     if (props.initial?.id) {
@@ -179,21 +178,21 @@ async function save() {
             </label>
             <label>
               Odometer (mi)
-              <input type="number" step="0.1" v-model.number="form.odometer" />
+              <input type="number" step="0.1" v-model.number="form.odo" />
             </label>
           </div>
           <div class="row three">
             <label>
               Volume (gal)
-              <input type="number" step="0.001" v-model.number="form.volume" />
+              <input type="number" step="0.001" v-model.number="form.fuel_volume" />
             </label>
             <label>
               Total ($)
-              <input type="number" step="0.01" v-model.number="form.total_price" />
+              <input type="number" step="0.01" v-model.number="form.price_total" />
             </label>
             <label>
               Unit price ($/gal)
-              <input type="number" step="0.001" v-model.number="form.unit_price" />
+              <input type="number" step="0.001" v-model.number="form.price_per_unit" />
             </label>
           </div>
           <div class="row" :class="tankCount > 1 ? 'two' : ''">
@@ -204,10 +203,7 @@ async function save() {
               </select>
             </label>
             <label class="cb">
-              <input type="checkbox" v-model="form.full_tank" /> Full tank
-            </label>
-            <label class="cb">
-              <input type="checkbox" v-model="form.partial" /> Partial
+              <input type="checkbox" v-model="form.is_full" /> Full tank
             </label>
           </div>
           <div class="station">
@@ -234,11 +230,11 @@ async function save() {
           <div class="row three">
             <label>
               Latitude
-              <input type="number" step="0.00001" v-model.number="form.latitude" />
+              <input type="number" step="0.00001" v-model.number="form.lat" />
             </label>
             <label>
               Longitude
-              <input type="number" step="0.00001" v-model.number="form.longitude" />
+              <input type="number" step="0.00001" v-model.number="form.lon" />
             </label>
             <label>
               City
@@ -256,7 +252,7 @@ async function save() {
           </label>
           <div class="row">
             <label class="cb">
-              <input type="checkbox" v-model="form.missed" /> Missed (skip MPG)
+              <input type="checkbox" v-model="form.is_missed" /> Missed (skip MPG)
             </label>
             <label class="cb">
               <input type="checkbox" v-model="form.exclude_distance" />

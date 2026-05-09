@@ -70,16 +70,27 @@ watch([vehicleId], () => {
   offset.value = 0;
 });
 
-// Sorting
+// Sorting. Header click-targets keep the conceptual names (odometer, volume,
+// total_price, mpg_recomputed) since the user reads them; the comparator
+// translates each to the actual API field name.
 type SortKey = "fillup_date" | "odometer" | "volume" | "total_price" | "mpg_recomputed";
 const sortKey = ref<SortKey>("fillup_date");
 const sortDir = ref<"asc" | "desc">("desc");
 
+const SORT_FIELD: Record<SortKey, keyof Fillup> = {
+  fillup_date: "fillup_date",
+  odometer: "odo",
+  volume: "fuel_volume",
+  total_price: "price_total",
+  mpg_recomputed: "mpg",
+};
+
 const sortedFillups = computed<Fillup[]>(() => {
   const items = [...(fillupsQ.data.value?.items ?? [])];
+  const field = SORT_FIELD[sortKey.value];
   items.sort((a, b) => {
-    const av = a[sortKey.value] ?? 0;
-    const bv = b[sortKey.value] ?? 0;
+    const av = (a as Fillup)[field] ?? 0;
+    const bv = (b as Fillup)[field] ?? 0;
     if (typeof av === "string" && typeof bv === "string") {
       return sortDir.value === "asc"
         ? av.localeCompare(bv)
@@ -129,7 +140,7 @@ async function remove(f: Fillup) {
 const stationSuggestions = computed<string[]>(() => {
   const set = new Set<string>();
   for (const f of fillupsQ.data.value?.items ?? []) {
-    if (f.station_name) set.add(f.station_name);
+    if (f.city) set.add(f.city);
   }
   return Array.from(set).sort();
 });
@@ -234,7 +245,7 @@ const summary = computed(() => {
   const items = fillupsQ.data.value?.items ?? [];
   const recent = items.slice(0, 6);
   const mpgs = recent
-    .map((f) => f.mpg_recomputed)
+    .map((f) => f.mpg)
     .filter((v): v is number => typeof v === "number");
   const avgMpg = mpgs.length ? mpgs.reduce((a, b) => a + b, 0) / mpgs.length : null;
   const totalSpend12m = (monthlyQ.data.value?.months ?? []).reduce(
@@ -315,16 +326,23 @@ const summary = computed(() => {
             <tbody>
               <tr v-for="f in sortedFillups" :key="f.id">
                 <td>{{ fmtDate(f.fillup_date) }}</td>
-                <td>{{ fmtMiles(f.odometer) }}</td>
+                <td>{{ fmtMiles(f.odo) }}</td>
                 <td>
-                  {{ fmtGallons(f.volume) }}
-                  <span v-if="f.partial" class="badge warn" title="Partial fill">P</span>
-                  <span v-if="f.missed" class="badge danger" title="Missed">M</span>
+                  {{ fmtGallons(f.fuel_volume) }}
+                  <span v-if="f.is_missed" class="badge warn" title="Missed">M</span>
+                  <span v-if="f.is_full === false" class="badge warn" title="Partial fill">P</span>
                 </td>
-                <td>{{ fmtMoney(f.total_price) }}</td>
-                <td>{{ f.station_name ?? "—" }}</td>
                 <td>
-                  <strong>{{ fmtMpg(f.mpg_recomputed) }}</strong>
+                  {{ f.price_total != null
+                      ? fmtMoney(f.price_total)
+                      : fmtMoney(
+                          (Number(f.price_per_unit) || 0) * (f.fuel_volume ?? 0)
+                        )
+                  }}
+                </td>
+                <td>{{ f.station_id ?? "—" }}</td>
+                <td>
+                  <strong>{{ fmtMpg(f.mpg) }}</strong>
                   <span v-if="f.mpg_reported != null" class="muted small">
                     ({{ fmtNumber(f.mpg_reported, { digits: 1 }) }})
                   </span>

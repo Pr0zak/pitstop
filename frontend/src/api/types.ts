@@ -116,27 +116,32 @@ export interface Settings {
   disk_alert_pct?: number | null;
 }
 
+// Field names mirror the backend API exactly (which mirrors Fuelio's CSV
+// shape — odo / fuel_volume / price_total / mpg). Renames here would require
+// a transform in every endpoint client, which we deliberately avoid.
 export interface Fillup {
   id: string;
   vehicle_id: string;
   fillup_date: string;
-  odometer?: number | null;
-  volume?: number | null;
-  full_tank?: boolean;
-  partial?: boolean;
-  total_price?: number | null;
-  unit_price?: number | null;
-  station_id?: string | null;
-  station_name?: string | null;
-  latitude?: number | null;
-  longitude?: number | null;
+  odo?: number | null;             // miles or km depending on vehicle.dist_unit
+  fuel_volume?: number | null;     // gallons or l depending on vehicle.fuel_unit
+  is_full?: boolean;
+  is_missed?: boolean;
+  price_total?: number | null;
+  price_per_unit?: number | string | null;  // backend serialises NUMERIC as string sometimes
+  station_id?: number | null;
   city?: string | null;
+  lat?: number | null;
+  lon?: number | null;
   notes?: string | null;
   tank_number?: number | null;
   fuel_type?: number | null;
+  weather?: string | null;
   exclude_distance?: boolean;
-  missed?: boolean;
-  mpg_recomputed?: number | null;
+  // Computed: backend returns `mpg` (recomputed from odo deltas + volume,
+  // Fuelio-style chain rule with partial-fill rollup) and `mpg_reported`
+  // (the value in the source export, kept for comparison).
+  mpg?: number | null;
   mpg_reported?: number | null;
   fuelio_guid?: string | null;
 }
