@@ -488,8 +488,11 @@ class ClientLogEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     ts: datetime | None = None
-    source: str
-    level: str
+    # Defaults make the field optional on the wire — the Android client
+    # sometimes omits these because kotlinx.serialization elides fields
+    # equal to their declared default ("phone" for source, "info" for level).
+    source: str = "phone"
+    level: str = "info"
     message: str = Field(default="(empty)", max_length=4000)
     vehicle_id: UUID | None = None
     device_id: str | None = Field(default=None, max_length=128)
