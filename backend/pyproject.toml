@@ -16,9 +16,10 @@ dependencies = [
     "httpx>=0.28",
     # XLS parser for the EIA weekly retail-gasoline workbook
     # (https://www.eia.gov/dnav/pet/xls/PET_PRI_GND_DCUS_NUS_W.xls).
-    # EIA dropped CSV exports for this dataset; XLS is the only
-    # zero-API-key option.
-    "openpyxl>=3.1",
+    # The file is BIFF8 .xls (Excel 97-2003), not modern XLSX, so
+    # openpyxl can't read it — xlrd 1.2 is the only maintained option
+    # for BIFF. Pinned to 1.2.x because xlrd 2.0+ dropped XLS support.
+    "xlrd>=1.2,<2.0",
 ]
 
 [project.optional-dependencies]

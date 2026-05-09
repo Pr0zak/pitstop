@@ -23,14 +23,13 @@ a bad day doesn't kill the worker.
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import asyncpg
 import httpx
-from openpyxl import load_workbook
+import xlrd
 
 log = logging.getLogger(__name__)
 
@@ -57,64 +56,73 @@ def _parse_workbook(blob: bytes) -> list[tuple[str, str, Decimal]]:
     out: list[tuple[str, str, Decimal]] = []
     cutoff = datetime.now(timezone.utc) - timedelta(weeks=104)
     try:
-        wb = load_workbook(filename=io.BytesIO(blob), data_only=True, read_only=True)
+        book = xlrd.open_workbook(file_contents=blob)
     except Exception as exc:  # noqa: BLE001
         log.warning("eia: workbook load failed: %s", exc)
         return out
 
     # Sheet "Data 1" carries U.S. All Grades / Regular / Midgrade /
-    # Premium time series. Find the column with "Regular" in the
-    # header (case-insensitive).
-    if "Data 1" not in wb.sheetnames:
-        log.warning("eia: workbook missing 'Data 1' sheet — got %s", wb.sheetnames)
+    # Premium weekly series. Find the row whose header mentions
+    # "Regular" (case-insensitive) and capture that column.
+    sheet_names = book.sheet_names()
+    if "Data 1" not in sheet_names:
+        log.warning("eia: workbook missing 'Data 1' sheet — got %s", sheet_names)
         return out
-    sheet = wb["Data 1"]
+    sheet = book.sheet_by_name("Data 1")
 
-    # Header row — second non-empty row near the top. Scan rows 1-5
-    # to find the row containing "Regular" or "All Grades".
-    rows_iter = sheet.iter_rows(values_only=True)
-    header: tuple = ()
     header_row_idx = -1
-    for i, row in enumerate(rows_iter):
-        if i > 6:
-            break
-        labels = [str(c).strip().lower() if c is not None else "" for c in row]
-        if any("regular" in lbl for lbl in labels):
-            header = row
-            header_row_idx = i
-            break
-    if header_row_idx == -1:
-        log.warning("eia: Regular column header not found in first rows")
-        return out
-
-    # Find the column index of the Regular series (U.S. average).
-    regular_col = next(
-        (
-            i for i, c in enumerate(header)
-            if c is not None and "regular" in str(c).lower()
-        ),
-        None,
-    )
-    if regular_col is None:
-        return out
-
-    # Re-scan from after the header for data rows.
-    for row in sheet.iter_rows(min_row=header_row_idx + 2, values_only=True):
-        if not row or row[0] is None:
-            continue
-        date_cell = row[0]
-        if isinstance(date_cell, datetime):
-            dt = date_cell
-        else:
-            try:
-                dt = datetime.strptime(str(date_cell).strip(), "%Y-%m-%d")
-            except ValueError:
+    regular_col: int | None = None
+    for r in range(min(7, sheet.nrows)):
+        row_values = sheet.row_values(r)
+        for i, c in enumerate(row_values):
+            if c is None:
                 continue
+            label = str(c).strip().lower()
+            if "regular" in label and "u.s." in label:
+                header_row_idx = r
+                regular_col = i
+                break
+        if header_row_idx != -1:
+            break
+    if regular_col is None:
+        # Fallback: take the first column whose header just contains
+        # "regular" (some workbook variants drop the U.S. prefix).
+        for r in range(min(7, sheet.nrows)):
+            row_values = sheet.row_values(r)
+            for i, c in enumerate(row_values):
+                if c is None:
+                    continue
+                if "regular" in str(c).strip().lower():
+                    header_row_idx = r
+                    regular_col = i
+                    break
+            if regular_col is not None:
+                break
+    if regular_col is None:
+        log.warning("eia: 'Regular' column not found")
+        return out
+
+    for r in range(header_row_idx + 1, sheet.nrows):
+        row_values = sheet.row_values(r)
+        if not row_values or row_values[0] in (None, ""):
+            continue
+        # Date cells in xlrd come back as floats (Excel serial date) or
+        # strings depending on the original cell format. xlrd_datetime
+        # parses serial dates back into a Python datetime.
+        date_raw = row_values[0]
+        try:
+            if isinstance(date_raw, (int, float)):
+                tup = xlrd.xldate_as_tuple(date_raw, book.datemode)
+                dt = datetime(*tup)
+            else:
+                dt = datetime.strptime(str(date_raw).strip(), "%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            continue
         if dt.replace(tzinfo=timezone.utc) < cutoff:
             continue
-        if regular_col >= len(row):
+        if regular_col >= len(row_values):
             continue
-        cell = row[regular_col]
+        cell = row_values[regular_col]
         if cell is None or cell == "":
             continue
         try:
