@@ -486,7 +486,13 @@ class ClientLogEntry(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     vehicle_id: UUID | None = None
     device_id: str | None = Field(default=None, max_length=128)
-    context: dict[str, Any] = Field(default_factory=dict)
+    # Allow null on the wire (the Android client serialises an absent context
+    # as `"context": null` rather than omitting the key). Normalise to {}
+    # before insert so the DB column stays JSONB-shaped.
+    context: dict[str, Any] | None = None
+
+    def context_or_empty(self) -> dict[str, Any]:
+        return self.context if self.context is not None else {}
 
 
 class ClientLogIngest(BaseModel):
