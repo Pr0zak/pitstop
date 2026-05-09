@@ -156,13 +156,33 @@ class WiCanBleManager(
         private const val TAG = "WiCanBleManager"
 
         private val CANDIDATE_PROFILES = listOf(
-            // Nordic UART (NUS) — what most ESP32-based WiCAN firmwares expose
+            // WiCAN-PRO v4.49 (current firmware) primary BLE channel: a
+            // Microchip "transparent UART" SPP-like service. Confirmed
+            // against meatpiHQ/wican-fw main/ble.c lines 176-192.
+            //
+            // Char "Read/Write" (49535343-6daa-...) is config/status only.
+            // Char "Write+Notify" (49535343-aca3-...) is the bidirectional
+            // UART data channel: we write OBD commands TO it, and the device
+            // streams responses back as notifications FROM the same char.
+            UartProfile(
+                serviceUuid = UUID.fromString("49535343-FE7D-4AE5-8FA9-9FAFD205E455"),
+                rxUuid = UUID.fromString("49535343-ACA3-481C-91EC-D85E28A60318"),
+                txUuid = UUID.fromString("49535343-ACA3-481C-91EC-D85E28A60318"),
+            ),
+            // WiCAN's secondary FFF0 service (also exposed by the same firmware,
+            // useful as a fallback if the SPP service isn't advertised).
+            UartProfile(
+                serviceUuid = UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB"),
+                rxUuid = UUID.fromString("0000FFF1-0000-1000-8000-00805F9B34FB"),  // notify
+                txUuid = UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB"),  // write
+            ),
+            // Nordic UART (NUS) — older / community wican-fw builds may expose this.
             UartProfile(
                 serviceUuid = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"),
                 rxUuid = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
                 txUuid = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
             ),
-            // 0xFFE0 SPP-style profile — fallback for older WiCAN firmware
+            // 0xFFE0 HM-10 style — kept as a long-shot fallback for clones.
             UartProfile(
                 serviceUuid = UUID.fromString("0000FFE0-0000-1000-8000-00805F9B34FB"),
                 rxUuid = UUID.fromString("0000FFE1-0000-1000-8000-00805F9B34FB"),
