@@ -35,6 +35,95 @@ const fillupsQ = useAsync(
       : Promise.resolve({ items: [], total: 0 }),
   [vehicleId],
 );
+
+// 30 most-recent fillups feed the hero cards (latest $/gal, this-month
+// cost). One query covers both — server caps at 30 by default.
+const heroFillupsQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 30 })
+      : Promise.resolve({ items: [], total: 0 }),
+  [vehicleId],
+);
+
+// Rolling-90d MPG trend feeds the consumption tile.
+const mpgTrendQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.mpgTrend(vehicleId.value, "3m")
+      : Promise.resolve({ points: [] }),
+  [vehicleId],
+);
+
+// ── Hero card derivations ─────────────────────────────────────────────
+//
+// All four numbers fall out of two queries (30 most-recent fillups +
+// /analytics/mpg windowed to 3 months). No new endpoints needed — the
+// data is already on the wire for the existing charts. We compute on
+// the client so the cards stay coupled to the same fillup list users
+// see further down the page; if a fillup edit changes a value, both
+// the card and the table refresh together.
+
+interface HeroFillup {
+  fillup_date: string;
+  price_total: number | null;
+  price_per_unit: number | null;
+  fuel_volume: number;
+  odo: number;
+  is_full: boolean;
+  is_missed: boolean;
+}
+
+const heroData = computed(() => {
+  const fillups = (heroFillupsQ.data.value?.items ?? []) as HeroFillup[];
+  const mpgPoints = mpgTrendQ.data.value?.points ?? [];
+
+  // 90-day rolling MPG — average of the points in the trend window.
+  const mpg90 = mpgPoints.length > 0
+    ? mpgPoints.reduce((s, p) => s + (p.mpg ?? 0), 0) / mpgPoints.length
+    : null;
+
+  // Latest fillup price/gal + 30-day average for delta.
+  const latest = fillups[0] ?? null;
+  const latestPpg = latest?.price_per_unit ?? null;
+  const ppgPoints = fillups
+    .map((f) => f.price_per_unit)
+    .filter((v): v is number => v != null && v > 0);
+  const avgPpg = ppgPoints.length > 0
+    ? ppgPoints.reduce((s, v) => s + v, 0) / ppgPoints.length
+    : null;
+  const ppgDelta =
+    latestPpg != null && avgPpg != null && avgPpg > 0
+      ? ((latestPpg - avgPpg) / avgPpg) * 100
+      : null;
+
+  // This calendar month's fuel cost (sum of fillups with this YYYY-MM).
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const monthCost = fillups
+    .filter((f) => (f.fillup_date ?? "").startsWith(thisMonth))
+    .reduce((s, f) => s + (f.price_total ?? 0), 0);
+  const monthCount = fillups.filter((f) =>
+    (f.fillup_date ?? "").startsWith(thisMonth),
+  ).length;
+
+  // Miles-since-last-fill: live OBD odo vs last fillup odo.
+  const liveOdoKm = num("odometer");
+  const milesSinceFill =
+    liveOdoKm != null && latest?.odo != null
+      ? Math.max(0, liveOdoKm * 0.621371 - latest.odo)
+      : null;
+
+  return {
+    mpg90,
+    latestPpg,
+    ppgDelta,
+    monthCost,
+    monthCount,
+    milesSinceFill,
+    hasLatest: !!latest,
+  };
+});
 const dtcsQ = useAsync(
   () => (vehicleId.value ? api.listDtcs(vehicleId.value, true) : Promise.resolve([])),
   [vehicleId],
@@ -86,6 +175,57 @@ function num(key: string): number | null {
     </div>
 
     <template v-else-if="vehicles.selectedVehicle">
+      <!-- Hero cards: fuel consumption + gas price + this-month spend +
+           miles since last fill. Sit above the live OBD metric grid so
+           the eye lands on long-running averages first; live readings
+           come second. -->
+      <section v-if="heroData.hasLatest" class="hero-grid">
+        <div class="card hero">
+          <h3>Avg consumption</h3>
+          <div class="hero-value">
+            <span class="big">{{ heroData.mpg90 != null ? heroData.mpg90.toFixed(1) : '—' }}</span>
+            <span class="unit">mpg</span>
+          </div>
+          <div class="hero-sub muted">90-day rolling</div>
+        </div>
+        <div class="card hero">
+          <h3>Gas price</h3>
+          <div class="hero-value">
+            <span class="big">{{ heroData.latestPpg != null ? '$' + heroData.latestPpg.toFixed(3) : '—' }}</span>
+            <span class="unit">/gal</span>
+          </div>
+          <div
+            v-if="heroData.ppgDelta != null"
+            class="hero-sub"
+            :class="{ up: heroData.ppgDelta > 0, down: heroData.ppgDelta < 0 }"
+          >
+            <span>{{ heroData.ppgDelta > 0 ? '▲' : heroData.ppgDelta < 0 ? '▼' : '·' }}</span>
+            {{ Math.abs(heroData.ppgDelta).toFixed(1) }}% vs 30-day avg
+          </div>
+        </div>
+        <div class="card hero">
+          <h3>This month</h3>
+          <div class="hero-value">
+            <span class="big">${{ heroData.monthCost.toFixed(2) }}</span>
+          </div>
+          <div class="hero-sub muted">
+            {{ heroData.monthCount }} fillup{{ heroData.monthCount === 1 ? '' : 's' }}
+          </div>
+        </div>
+        <div class="card hero">
+          <h3>Since last fill</h3>
+          <div class="hero-value">
+            <span class="big">{{ heroData.milesSinceFill != null ? heroData.milesSinceFill.toFixed(0) : '—' }}</span>
+            <span class="unit">mi</span>
+          </div>
+          <div class="hero-sub muted">
+            {{ heroData.milesSinceFill != null && heroData.mpg90 != null
+              ? '~' + (heroData.mpg90 - heroData.milesSinceFill / 16 * 0.5).toFixed(0) + ' mi range'
+              : 'live odo vs last fillup' }}
+          </div>
+        </div>
+      </section>
+
       <section class="metric-grid">
         <div class="card metric">
           <h3>RPM</h3>
@@ -205,6 +345,57 @@ function num(key: string): number | null {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.8rem;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.8rem;
+}
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.hero h3 {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--c-ink3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+.hero-value {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+.hero-value .big {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 2rem;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 1.0;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-ink0);
+}
+.hero-value .unit {
+  font-family: 'Geist', sans-serif;
+  font-size: 0.9rem;
+  color: var(--c-ink3);
+  font-weight: 500;
+}
+.hero-sub {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--c-ink3);
+  letter-spacing: -0.005em;
+  font-variant-numeric: tabular-nums;
+}
+.hero-sub.up {
+  color: var(--c-danger);
+}
+.hero-sub.down {
+  color: var(--c-success);
 }
 .metric .big {
   font-family: 'Geist Mono', ui-monospace, monospace;
