@@ -807,9 +807,38 @@ class PitstopBridgeService : Service() {
         }
     }
 
+    // Track when we last accepted a GPS-provider fix so we can ignore
+    // network-provider noise that fires alongside it. Network locations
+    // are based on cell + Wi-Fi triangulation and routinely return stale
+    // points kilometres from the real position — polluting gps_points
+    // with phantom 4 km jumps that explode haversine distance to nonsense.
+    @Volatile private var lastGpsProviderFixMs: Long = 0L
+
     private fun handleLocationFix(loc: android.location.Location) {
         val slug = vehicleSlug
         if (slug.isBlank()) return
+
+        // GPS-provider filter: prefer GPS over network. Accept network
+        // fixes only when we haven't seen a GPS fix in the last 30s
+        // (covers cold-start, garage, urban-canyon edge cases). And
+        // reject any fix with worse-than-100m accuracy regardless of
+        // provider — that's "wrong city" territory.
+        val nowMs = System.currentTimeMillis()
+        val isGps = loc.provider == android.location.LocationManager.GPS_PROVIDER
+        if (isGps) {
+            lastGpsProviderFixMs = nowMs
+        } else {
+            val staleGap = nowMs - lastGpsProviderFixMs
+            if (lastGpsProviderFixMs > 0L && staleGap < 30_000L) return
+        }
+        if (loc.hasAccuracy() && loc.accuracy > 100f) {
+            logBuffer.warn(
+                "gps fix dropped (poor accuracy)",
+                mapOf("provider" to (loc.provider ?: "unknown"), "acc_m" to loc.accuracy),
+            )
+            return
+        }
+
         val lat = loc.latitude
         val lon = loc.longitude
         // Round to 5 decimals (~1.1 m). Avoids an overly precise dump in

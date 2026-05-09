@@ -330,10 +330,15 @@ class TripDetector:
             state = self._states.setdefault(event.vehicle_id, _VehicleState())
 
             # Authoritative engine on/off transitions short-circuit the
-            # silence-based heuristic. The bridge publishes these from
-            # the v0.1.70 EngineState detector so trip boundaries snap
-            # to actual key-on / key-off rather than "first frame after
-            # 120s gap" / "60s of silence" approximations.
+            # silence-based heuristic. Two flavours of source:
+            #   - bridge: phone OBD-frame parser, accurate to seconds
+            #   - wican_lwt: WiCAN's MQTT LWT, fires on broker keepalive
+            #     timeout — can blip false-off during a brief WiFi
+            #     interruption. Only treat its "off" as authoritative if
+            #     the trip has been open >5 min (long enough that a
+            #     keepalive blip is the unlikely explanation). Bridge
+            #     "off" is always trusted because it sees STOPPED frames
+            #     directly from the OBD bus.
             if event.metric == "_engine_state":
                 state.last_seen_at = event.time
                 if event.value_text == "on":
@@ -341,10 +346,22 @@ class TripDetector:
                         await self._open_trip(state, event.vehicle_id, event.time)
                     state.last_event_in_trip_at = event.time
                 elif event.value_text == "off":
-                    if state.current_trip_id is not None:
-                        await self._close_trip(
-                            state, event.vehicle_id, event.time, "engine_off"
-                        )
+                    if state.current_trip_id is None:
+                        return
+                    if event.source == "wican_lwt" and state.current_trip_started:
+                        elapsed = (
+                            event.time - state.current_trip_started
+                        ).total_seconds()
+                        if elapsed < 300:
+                            log.info(
+                                "ignoring wican_lwt off — trip only %.0fs old "
+                                "(likely WiFi blip)",
+                                elapsed,
+                            )
+                            return
+                    await self._close_trip(
+                        state, event.vehicle_id, event.time, "engine_off"
+                    )
                 return
 
             decision = decide_on_event(
