@@ -80,6 +80,18 @@ fun StatusScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            ui.update?.takeIf { it.isNewer }?.let { info ->
+                UpdateAvailableCard(
+                    info = info,
+                    onOpen = {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, info.releaseUrl.toUri())
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    },
+                )
+            }
+
             ServiceStateCard(
                 phase = ui.status.phase,
                 deviceName = ui.status.deviceName,
@@ -234,6 +246,38 @@ private fun BrokerCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateAvailableCard(
+    info: com.pitstop.update.UpdateInfo,
+    onOpen: () -> Unit,
+) {
+    Card(
+        colors = androidx.compose.material3.CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Update available",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "v${info.currentVersion} → v${info.latestVersion}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onOpen) {
+                Icon(Icons.Filled.OpenInBrowser, contentDescription = null)
+                Spacer(Modifier.size(8.dp))
+                Text("Download v${info.latestVersion}")
             }
         }
     }
