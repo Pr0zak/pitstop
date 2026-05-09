@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -42,6 +43,7 @@ import kotlin.math.min
 @Composable
 fun LiveScreen(
     onBack: () -> Unit,
+    onOpenConfig: () -> Unit = {},
     viewModel: LiveViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
@@ -86,9 +88,9 @@ fun LiveScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Live") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                actions = {
+                    IconButton(onClick = onOpenConfig) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }
                 },
             )
