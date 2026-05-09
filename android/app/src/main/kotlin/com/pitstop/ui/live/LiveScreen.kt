@@ -18,6 +18,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,8 +27,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.app.Activity
+import android.view.WindowManager
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.service.MetricSample
@@ -41,6 +45,18 @@ fun LiveScreen(
     viewModel: LiveViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
+
+    // Keep the screen on while the Live view is composed — driver expects a
+    // glanceable always-on dashboard while moving. Cleared on dispose so
+    // navigating away returns the device to its normal display-off timeout.
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = (view.context as? Activity)?.window
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     // 30 fps interpolation tick — animates gauge values toward latest readings.
     val displayValues = remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
