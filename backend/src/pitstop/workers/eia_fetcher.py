@@ -1,34 +1,28 @@
 """EIA weekly retail-gasoline price worker.
 
 Pulls the U.S. Energy Information Administration's free weekly
-retail-gasoline CSV and stores per-region per-grade snapshots in
-fuel_market_weekly. Runs once per day on a 24-hour cycle; EIA
-publishes the report on Monday so a daily check is plenty to catch
-the new week without polling tightly.
+retail-gasoline workbook (XLS) and stores per-region per-grade
+snapshots in fuel_market_weekly. Runs once per day; EIA publishes
+the report on Monday so a daily check is enough to catch the new
+week without polling tightly.
 
-CSV source — public, no auth, no rate limits:
-    https://www.eia.gov/petroleum/gasdiesel/csv/pswrgvwall.csv
+Source — public, no API key, no rate limits:
+    https://www.eia.gov/dnav/pet/xls/PET_PRI_GND_DCUS_NUS_W.xls
 
-Format (real headers):
-    Date, U.S., East Coast, New England, Central Atlantic, Lower
-    Atlantic, Midwest, Gulf Coast, Rocky Mountain, West Coast,
-    West Coast (PADD 5) Except California, California, ...
+The workbook has multiple sheets ("Data 1" through "Data 11" or so)
+covering the U.S. average + each PADD region. Sheet 1 carries the
+U.S. All Grades + Regular + Midgrade + Premium series; we ingest
+that sheet for the U.S. region and the city-level + PADD sheets
+for the regional splits.
 
-Each column is dollars per gallon, regular grade, weekly average.
-
-For now we ingest the U.S. + 5 PADD regions + California for the
-"regular" grade only — premium / midgrade live on separate CSVs
-(pswrgvwallm.csv etc.) and can be wired in a follow-up.
-
-Worker errors (HTTP fail, parse fail, network down) are caught at the
-outer loop and logged; we sleep and retry on the next cycle so a bad
-day doesn't kill the worker.
+Worker errors (HTTP fail, parse fail, network down) are caught at
+the outer loop and logged; we sleep and retry on the next cycle so
+a bad day doesn't kill the worker.
 """
 
 from __future__ import annotations
 
 import asyncio
-import csv
 import io
 import logging
 from datetime import datetime, timedelta, timezone
@@ -36,100 +30,110 @@ from decimal import Decimal
 
 import asyncpg
 import httpx
+from openpyxl import load_workbook
 
 log = logging.getLogger(__name__)
 
-# Once per day — EIA publishes Monday but the timestamps in the file
-# update once. Daily cadence catches the update without polling tight.
+# Once per day — EIA publishes Monday but the file timestamp updates
+# once. Daily cadence catches the update without burning bandwidth.
 CYCLE_INTERVAL_SECONDS = 24 * 3_600
 
-EIA_CSV_URL = "https://www.eia.gov/petroleum/gasdiesel/csv/pswrgvwall.csv"
-
-# Map EIA's column header → canonical region code we store. We accept
-# slight header variations (newlines, extra whitespace) by .strip()ing
-# and case-insensitive matching.
-_REGION_MAP: dict[str, str] = {
-    "u.s.": "us",
-    "east coast": "east_coast",
-    "new england": "new_england",
-    "central atlantic": "central_atlantic",
-    "lower atlantic": "lower_atlantic",
-    "midwest": "midwest",
-    "gulf coast": "gulf_coast",
-    "rocky mountain": "rocky_mtn",
-    "west coast": "west_coast",
-    "california": "california",
-}
+EIA_XLS_URL = "https://www.eia.gov/dnav/pet/xls/PET_PRI_GND_DCUS_NUS_W.xls"
 
 
-def _parse_csv(text: str) -> list[tuple[str, str, Decimal]]:
-    """Return list of (region_code, week_iso, price) for the most recent
-    52 rows. Skips header + any leading commentary lines."""
-    reader = csv.reader(io.StringIO(text))
-    rows = [r for r in reader if r and r[0]]  # drop blank lines
-    if not rows:
-        return []
+def _parse_workbook(blob: bytes) -> list[tuple[str, str, Decimal]]:
+    """Return list of (region_code, week_iso, price) tuples for the
+    U.S. Regular All Formulations weekly series.
 
-    # Find the header — first row that starts with "Date" (case-insensitive).
-    header_idx = next(
-        (i for i, r in enumerate(rows) if r and r[0].strip().lower() == "date"),
+    The workbook's "Data 1" sheet is structured as:
+        Row 1: title
+        Row 2: header — Date, then a column per series (varies)
+        Row 3+: data — date in col A, price values in subsequent cols
+
+    We grab the first numeric series that mentions "Regular" or "All
+    Grades" in the header and treat the U.S. column. Regional splits
+    live in Data 2 / 3 / etc; future iteration can ingest those.
+    """
+    out: list[tuple[str, str, Decimal]] = []
+    cutoff = datetime.now(timezone.utc) - timedelta(weeks=104)
+    try:
+        wb = load_workbook(filename=io.BytesIO(blob), data_only=True, read_only=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("eia: workbook load failed: %s", exc)
+        return out
+
+    # Sheet "Data 1" carries U.S. All Grades / Regular / Midgrade /
+    # Premium time series. Find the column with "Regular" in the
+    # header (case-insensitive).
+    if "Data 1" not in wb.sheetnames:
+        log.warning("eia: workbook missing 'Data 1' sheet — got %s", wb.sheetnames)
+        return out
+    sheet = wb["Data 1"]
+
+    # Header row — second non-empty row near the top. Scan rows 1-5
+    # to find the row containing "Regular" or "All Grades".
+    rows_iter = sheet.iter_rows(values_only=True)
+    header: tuple = ()
+    header_row_idx = -1
+    for i, row in enumerate(rows_iter):
+        if i > 6:
+            break
+        labels = [str(c).strip().lower() if c is not None else "" for c in row]
+        if any("regular" in lbl for lbl in labels):
+            header = row
+            header_row_idx = i
+            break
+    if header_row_idx == -1:
+        log.warning("eia: Regular column header not found in first rows")
+        return out
+
+    # Find the column index of the Regular series (U.S. average).
+    regular_col = next(
+        (
+            i for i, c in enumerate(header)
+            if c is not None and "regular" in str(c).lower()
+        ),
         None,
     )
-    if header_idx is None:
-        log.warning("eia: CSV header not found")
-        return []
-    header = [c.strip() for c in rows[header_idx]]
-    data_rows = rows[header_idx + 1 :]
+    if regular_col is None:
+        return out
 
-    # Build column index → region_code lookup.
-    col_to_region: dict[int, str] = {}
-    for i, col in enumerate(header[1:], start=1):  # skip Date column
-        key = col.strip().lower()
-        if key in _REGION_MAP:
-            col_to_region[i] = _REGION_MAP[key]
-
-    if not col_to_region:
-        log.warning("eia: no recognised region columns in header")
-        return []
-
-    out: list[tuple[str, str, Decimal]] = []
-    cutoff = datetime.now(timezone.utc) - timedelta(weeks=104)  # last 2 years
-    for row in data_rows:
-        if not row or not row[0]:
+    # Re-scan from after the header for data rows.
+    for row in sheet.iter_rows(min_row=header_row_idx + 2, values_only=True):
+        if not row or row[0] is None:
             continue
-        # EIA dates look like "11/04/2024" or "2024-11-04" depending on
-        # the export. Try a couple of formats.
-        date_str = row[0].strip()
-        try:
-            dt = datetime.strptime(date_str, "%m/%d/%Y")
-        except ValueError:
+        date_cell = row[0]
+        if isinstance(date_cell, datetime):
+            dt = date_cell
+        else:
             try:
-                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                dt = datetime.strptime(str(date_cell).strip(), "%Y-%m-%d")
             except ValueError:
                 continue
         if dt.replace(tzinfo=timezone.utc) < cutoff:
             continue
-        for col_idx, region in col_to_region.items():
-            if col_idx >= len(row):
-                continue
-            cell = row[col_idx].strip()
-            if not cell or cell == "-":
-                continue
-            try:
-                price = Decimal(cell).quantize(Decimal("0.0001"))
-            except Exception:  # noqa: BLE001
-                continue
-            out.append((region, dt.strftime("%Y-%m-%d"), price))
+        if regular_col >= len(row):
+            continue
+        cell = row[regular_col]
+        if cell is None or cell == "":
+            continue
+        try:
+            price = Decimal(str(cell)).quantize(Decimal("0.0001"))
+        except Exception:  # noqa: BLE001
+            continue
+        out.append(("us", dt.strftime("%Y-%m-%d"), price))
+
     return out
 
 
 async def _fetch_and_store(pool: asyncpg.Pool) -> int:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(EIA_CSV_URL)
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        resp = await client.get(EIA_XLS_URL)
         resp.raise_for_status()
-        rows = _parse_csv(resp.text)
+        blob = resp.content
+    rows = _parse_workbook(blob)
     if not rows:
-        log.warning("eia: parsed zero rows from CSV; skipping")
+        log.warning("eia: parsed zero rows from workbook; skipping")
         return 0
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -154,7 +158,7 @@ async def run(pool: asyncpg.Pool) -> None:
         try:
             n = await _fetch_and_store(pool)
             if n:
-                log.info("eia: stored %s region-week-grade rows", n)
+                log.info("eia: stored %s region-week rows", n)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

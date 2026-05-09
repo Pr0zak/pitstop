@@ -60,8 +60,11 @@ const mpgTrendQ = useAsync(
 // for the user's KC-area driving; future iteration could pick
 // per-vehicle or per-home-coord. Falls back gracefully to no
 // comparison line if the worker hasn't fetched yet.
+// "us" = U.S. all-region weekly average. The XLS source EIA still
+// publishes only carries the U.S. aggregate for now; future iteration
+// can add regional sheets (Midwest, West Coast, etc).
 const eiaQ = useAsync(
-  () => api.eiaWeekly("midwest", 13),
+  () => api.eiaWeekly("us", 13),
   [],
 );
 
@@ -145,7 +148,10 @@ const heroData = computed(() => {
     latestPpg != null && eiaLatest != null && eiaLatest > 0
       ? ((latestPpg - eiaLatest) / eiaLatest) * 100
       : null;
-  const eiaRegionLabel = eiaQ.data.value?.region ?? "midwest";
+  const eiaRegionLabel = (() => {
+    const r = eiaQ.data.value?.region ?? "us";
+    return r === "us" ? "U.S. avg" : r.replace(/_/g, " ") + " avg";
+  })();
 
   return {
     mpg90,
@@ -244,7 +250,7 @@ function num(key: string): number | null {
             :class="{ up: heroData.ppgVsRegion > 0, down: heroData.ppgVsRegion < 0 }"
           >
             <span>{{ heroData.ppgVsRegion > 0 ? '▲' : heroData.ppgVsRegion < 0 ? '▼' : '·' }}</span>
-            {{ Math.abs(heroData.ppgVsRegion).toFixed(1) }}% vs {{ heroData.eiaRegionLabel }} avg
+            {{ Math.abs(heroData.ppgVsRegion).toFixed(1) }}% vs {{ heroData.eiaRegionLabel }}
             <span class="muted small"> · ${{ heroData.eiaLatest!.toFixed(3) }}/gal</span>
           </div>
         </div>
