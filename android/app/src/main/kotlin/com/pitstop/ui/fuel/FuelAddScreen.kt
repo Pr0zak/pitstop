@@ -128,20 +128,27 @@ fun FuelAddScreen(
                     }
                 },
                 actions = {
-                    IconButton(
+                    // "Save" text button — replaces the bare check icon
+                    // that was unrecognisable as a save affordance. Same
+                    // action as the bottom-of-form Save fillup button;
+                    // having it up here too means the user can save
+                    // without scrolling to the bottom (handy when the
+                    // soft keyboard covers the bottom button).
+                    androidx.compose.material3.TextButton(
                         onClick = { viewModel.submit() },
                         enabled = !form.submitting,
                     ) {
                         if (form.submitting) {
                             CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
+                                modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         } else {
-                            Icon(
-                                Icons.Filled.Check,
-                                contentDescription = "Save fillup",
-                                tint = MaterialTheme.colorScheme.primary,
+                            Text(
+                                "Save",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelLarge,
                             )
                         }
                     }

@@ -8,6 +8,11 @@ const props = defineProps<{
   vehicle: Vehicle;
   initial: Partial<Fillup> | null;
   stationSuggestions: string[];
+  // Most-recent fillup's odo + date for the parent vehicle. Surfaces
+  // as "Last value: 76,304 mi · 2026-04-28" hint under the Odometer
+  // input so the user knows what number to expect on a fresh entry.
+  lastFillupOdo?: number | null;
+  lastFillupDate?: string | null;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -210,7 +215,19 @@ async function save() {
             </label>
             <label>
               Odometer (mi)
-              <input type="number" step="0.1" v-model.number="form.odo" />
+              <input
+                type="number"
+                step="0.1"
+                v-model.number="form.odo"
+                :placeholder="props.lastFillupOdo != null ? props.lastFillupOdo.toLocaleString() : undefined"
+              />
+              <small v-if="props.lastFillupOdo != null" class="muted">
+                Last:
+                <code class="tabular">{{ props.lastFillupOdo.toLocaleString() }}</code>
+                <template v-if="props.lastFillupDate">
+                  · {{ props.lastFillupDate.slice(0, 10) }}
+                </template>
+              </small>
             </label>
           </div>
           <div class="row three">
