@@ -27,14 +27,35 @@ class PitstopAuthInterceptor @Inject constructor(
     private val logBuffer: Lazy<LogBuffer>,
 ) : Interceptor {
 
+    companion object {
+        // Public hosts whose requests should NOT be rewritten or have
+        // a Bearer token attached. UpdateChecker hits api.github.com;
+        // future workers may hit eia.gov directly. Add new hosts here.
+        private val PASSTHROUGH_HOSTS = setOf(
+            "api.github.com",
+            "github.com",
+            "www.eia.gov",
+        )
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response {
+        val original = chain.request()
+        // Skip the rewrite for absolute requests to public hosts —
+        // GitHub's release-check, EIA, etc. The interceptor was
+        // unconditionally swapping scheme/host/port, so a GET to
+        // https://api.github.com/... ended up hitting the local
+        // pitstop frontend (which serves the SPA at /repos/...).
+        // Hosts on this allow-list keep their original target.
+        val originalHost = original.url.host.lowercase()
+        if (originalHost in PASSTHROUGH_HOSTS) {
+            return chain.proceed(original)
+        }
         val secrets = runBlocking { settingsRepository.current() }
         val baseUrl = secrets.settings.apiBaseUrl.trim()
-            .ifEmpty { return chain.proceed(chain.request()) }
+            .ifEmpty { return chain.proceed(original) }
         val newBase = baseUrl.trimEnd('/').toHttpUrlOrNull()
-            ?: return chain.proceed(chain.request())
+            ?: return chain.proceed(original)
 
-        val original = chain.request()
         val newUrl = original.url.newBuilder()
             .scheme(newBase.scheme)
             .host(newBase.host)
