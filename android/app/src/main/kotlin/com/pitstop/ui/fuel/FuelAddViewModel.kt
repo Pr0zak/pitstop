@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import javax.inject.Inject
 
@@ -142,6 +143,15 @@ class FuelAddViewModel @Inject constructor(
                 _form.value = f.copy(errorMessage = "Configure vehicle slug + API URL first")
                 return@launch
             }
+
+            // Auto-refresh GPS at submit time so the saved fillup has the
+            // most recent fix available. Bound at 4 s — phone hasn't moved
+            // since the user opened the form, so a stale fix is fine if
+            // the GPS provider is slow. We don't fail the save on a
+            // missing fix; the existing f.gps falls through.
+            val freshGps = withTimeoutOrNull(4_000) { locationProvider.fix() }
+            val gpsForRequest = freshGps ?: f.gps
+
             val request = FillupRequest(
                 vehicleSlug = settings.vehicleSlug,
                 timestampIso = Instant.now().toString(),
@@ -149,11 +159,16 @@ class FuelAddViewModel @Inject constructor(
                 totalPrice = totalPrice,
                 odometerMi = f.odometer.toDoubleOrNull(),
                 partial = f.partial,
-                lat = f.gps?.lat,
-                lon = f.gps?.lon,
+                lat = gpsForRequest?.lat,
+                lon = gpsForRequest?.lon,
                 stationName = f.stationName.ifBlank { null },
                 notes = f.notes.ifBlank { null },
             )
+            // Reflect the fresh fix back into the form so the user sees
+            // the coords that landed on the server.
+            if (freshGps != null) {
+                _form.value = _form.value.copy(gps = freshGps)
+            }
             // After a successful submit we want the form to come back fresh
             // for the next visit, but keep the last-odo hint and station
             // suggestions populated.

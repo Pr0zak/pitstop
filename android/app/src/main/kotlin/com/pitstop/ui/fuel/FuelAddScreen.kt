@@ -328,6 +328,37 @@ fun FuelAddScreen(
                 }
             }
 
+            // Explicit Save button at the bottom of the form. The
+            // check action up in the TopAppBar still works (and saves
+            // a tap when keyboard is visible), but a labelled primary
+            // button at the natural end of the scroll is the obvious
+            // affordance — fixes the "how do I save this?" feedback.
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+            ) {
+                androidx.compose.material3.Button(
+                    onClick = { viewModel.submit() },
+                    enabled = !form.submitting,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (form.submitting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Text("Saving…")
+                    } else {
+                        Icon(Icons.Filled.Check, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("Save fillup")
+                    }
+                }
+            }
+
             Spacer(Modifier.height(24.dp))
         }
     }
