@@ -143,3 +143,39 @@ ADR-style. Append-only. Each decision has Context → Decision → Consequence.
 - When the user logs a fillup at a pump, walks home, opens the laptop, the row is already there. When they edit a vehicle on the laptop, the phone sees it on the next refresh.
 
 This rule was set by the user on 2026-05-08 after Phase B; backfilling parity for views the phone doesn't yet have (trips list, analytics, fuel history, maintenance reminders) is on the Phase D / Android-2 roadmap.
+
+---
+
+## ADR-014 — Tiered retention via TimescaleDB continuous aggregates
+
+**Context.** `pid_readings` is a hypertable. Live OBD + IMU + GPS streams land at 1-5 Hz per metric per vehicle. After a few weeks of regular driving the table is the dominant disk consumer (122 MB total DB size at ~98 MB readings after the user's first fortnight). The user added a manual "Purge older than N days" button (Task #54) and a backend cron (Task #67) that drops chunks past a configured age. That works for *bounded* storage but throws away every long-term trend. We want both: cheap recent data at 1 s resolution AND coarse older data for year-over-year analytics.
+
+**Decision.** Three-tier retention via Timescale continuous aggregates.
+
+```
+                  retention      cadence   approx weight
+─────────────────  ───────────   ───────   ─────────────
+ pid_readings       30 days       1 s        full firehose, ~30 GB/yr
+ pid_readings_1m    90 days       1 min      ~120 MB/yr
+ pid_readings_5m    1 year        5 min      ~24 MB/yr
+ pid_readings_1h    indefinite    1 hour     ~2 MB/yr (forever)
+```
+
+Each aggregate is a Timescale CONTINUOUS AGGREGATE with refresh + retention policies. Aggregates carry `avg / min / max / n` so the UI can keep showing both "what was the average RPM at 09:00 last Tuesday" and "what was the peak RPM during that hour."
+
+The analytics layer adds a thin `pid_readings_view` that picks the right tier per query window — coarsest sufficient grain wins. Frontend `aggregateReadings()` swaps to the new view; existing `bucket` query parameter maps cleanly onto the tiered tables.
+
+**Consequence.**
+- Long-term storage stops growing without bound. Year-over-year analytics still work.
+- Charts past 30 d become min/avg/max bands instead of raw lines — defensible tradeoff for "MPG over the past year."
+- Acute events (a single 7000 RPM spike at 14:23 last April) are lost past 30 d in sub-hour resolution. The 1-hour tier preserves max_v but not when within the hour it occurred.
+- Continuous aggregates re-materialize incrementally; refresh policy triggers in the background.
+- Migration is a one-shot create + backfill. Roll-forward is non-destructive — raw `pid_readings` retention stays at 30 d so a downgrade reverts cleanly.
+
+**Implementation order (separate task when needed):**
+1. Three CONTINUOUS AGGREGATEs + refresh policies (alembic migration).
+2. Retention policies dropping chunks past per-tier limit.
+3. Tier-picker helper in `api/readings.py`: given (from, to, bucket), return SQL for the coarsest tier whose grain ≤ bucket.
+4. Surface a "tier" stat next to "rows" + "size" on Settings → Storage.
+
+This ADR lays the policy. As of v0.1.64 the manual purge + auto-purge cron (Tasks #54 + #67) are sufficient for a single-vehicle-active fleet — implementation lands when the storage curve forces the issue.
