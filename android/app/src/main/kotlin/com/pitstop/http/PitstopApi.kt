@@ -90,11 +90,6 @@ data class FillupDto(
     @SerialName("city") val city: String? = null,
 )
 
-@Serializable
-data class FillupListResponse(
-    @SerialName("items") val items: List<FillupDto>,
-    @SerialName("total") val total: Int,
-)
 
 @Serializable
 data class MpgPointDto(
@@ -118,16 +113,25 @@ interface PitstopApi {
     suspend fun postLogs(@Body body: LogBatchRequest): LogBatchResponse
 
     // ── Read path ───────────────────────────────────────────────────
-    @GET("api/vehicles")
+    //
+    // GET endpoints are mounted at the root — the /api prefix is reserved
+    // for the phone-shaped write aliases (api_phone.py) where path-mismatch
+    // would have to be papered over with vehicle_slug → vehicle_id resolution.
+    // GETs are simple enough that the raw backend shape works as-is.
+    @GET("vehicles")
     suspend fun getVehicles(): List<VehicleDto>
 
-    @GET("api/fillups")
+    /**
+     * Returns a bare list (not wrapped). Backend returns
+     * `[{...}, {...}]` ordered by fillup_date DESC.
+     */
+    @GET("fillups")
     suspend fun getFillups(
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 30,
-    ): FillupListResponse
+    ): List<FillupDto>
 
-    @GET("api/analytics/mpg")
+    @GET("analytics/mpg")
     suspend fun getMpgTrend(
         @Query("vehicle_id") vehicleId: String,
         @Query("window") window: String = "year",

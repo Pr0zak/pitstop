@@ -98,6 +98,8 @@ class FuelAddViewModel @Inject constructor(
         val current = settingsRepository.current()
         val defaultSlug = current.settings.vehicleSlug.ifBlank { "" }
         val vs = runCatching { api.getVehicles() }.getOrElse { emptyList() }
+        val resolvedSlug = defaultSlug
+            .ifBlank { vs.firstOrNull { it.active != false }?.slug ?: "" }
         _form.value = _form.value.copy(
             vehicles = vs.map {
                 VehicleOption(
@@ -107,8 +109,39 @@ class FuelAddViewModel @Inject constructor(
                     active = it.active ?: true,
                 )
             },
-            selectedVehicleSlug = defaultSlug
-                .ifBlank { vs.firstOrNull { it.active != false }?.slug ?: "" },
+            selectedVehicleSlug = resolvedSlug,
+        )
+        // Once the vehicle list is known, fetch the latest fillup for the
+        // active selection so the "Last value: X mi" hint and odometer
+        // auto-prefill reflect the per-vehicle history (not just the
+        // bridge's live OBD reading).
+        if (resolvedSlug.isNotBlank()) loadLatestOdoForSlug(resolvedSlug)
+    }
+
+    /**
+     * Per-vehicle: pull the most-recent fillup row from /fillups, surface
+     * its .odo as the lastOdometer hint AND auto-fill the form's odometer
+     * if it's currently blank (or only carries an auto-filled value the
+     * user hasn't touched). Live OBD odo from the bridge wins when newer
+     * than the latest fillup — that's still handled in autoFillOdometer().
+     */
+    private suspend fun loadLatestOdoForSlug(slug: String) {
+        val vehicleId = _form.value.vehicles.firstOrNull { it.slug == slug }?.id ?: return
+        val latest = runCatching { api.getFillups(vehicleId, limit = 1) }
+            .getOrNull()
+            ?.firstOrNull()
+            ?: return
+        val odoMi = latest.odo
+        val current = _form.value
+        _form.value = current.copy(
+            lastOdometer = odoMi,
+            // Prefill if the field is empty or carries an auto-filled
+            // value from a previous vehicle's bridge — fresh fillup
+            // wins.
+            odometer = if (current.odometer.isBlank() || current.odometerAutoFilled) {
+                "%.0f".format(odoMi)
+            } else current.odometer,
+            odometerAutoFilled = current.odometer.isBlank() || current.odometerAutoFilled,
         )
     }
 
@@ -127,6 +160,9 @@ class FuelAddViewModel @Inject constructor(
 
     fun selectVehicle(slug: String) {
         _form.value = _form.value.copy(selectedVehicleSlug = slug)
+        // Re-fetch latest odo for the newly-picked vehicle so the
+        // hint + prefill update right away.
+        viewModelScope.launch { loadLatestOdoForSlug(slug) }
     }
 
     fun selectFuelType(code: Int) {

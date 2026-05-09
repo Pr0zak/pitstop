@@ -112,7 +112,7 @@ class StatusViewModel @Inject constructor(
                 heroData.value = null
                 return
             }
-            val fillupsResp = runCatching { api.getFillups(vehicleId, limit = 30) }.getOrElse { exc ->
+            val fillups = runCatching { api.getFillups(vehicleId, limit = 30) }.getOrElse { exc ->
                 logBuffer.warn(
                     "hero refresh: /fillups fetch failed",
                     mapOf("vehicle_id" to vehicleId, "err" to (exc.message ?: exc::class.java.simpleName)),
@@ -120,7 +120,6 @@ class StatusViewModel @Inject constructor(
                 heroData.value = null
                 return
             }
-            val fillups = fillupsResp.items
             val mpgResp = runCatching {
                 api.getMpgTrend(vehicleId, window = "year")
             }.getOrNull()
