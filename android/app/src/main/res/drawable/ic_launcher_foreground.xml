@@ -1,21 +1,82 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pitstop launcher foreground: arc-ticks-redline logo on Android's
+  108×108 dp adaptive-icon canvas. Real safe zone is the centre 66×66 dp
+  but typical Android launcher masks crop ~26 dp off each edge so we draw
+  the arc inside the centre region. Background is the flat dark
+  surface defined in @color/ic_launcher_background (matches the frontend
+  --c-bg, #101216).
+
+  Source: frontend/public/favicon.svg (viewBox 0 0 64 64). Translated to
+  108×108 via translate(22, 22) + scale(1.0625) so the 64-unit arc lands
+  centred within the safe zone.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFB300"
-        android:pathData="M54,30 m-22,0 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0z" />
-    <path
-        android:fillColor="#101216"
-        android:pathData="M54,30 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0z" />
-    <path
-        android:fillColor="#FFB300"
-        android:strokeColor="#FFB300"
-        android:strokeWidth="6"
-        android:pathData="M54,30 L54,78" />
-    <path
-        android:fillColor="#FFB300"
-        android:pathData="M40,72 L68,72 L68,82 L40,82 Z" />
+
+    <group
+        android:translateX="22"
+        android:translateY="22"
+        android:scaleX="1.0625"
+        android:scaleY="1.0625">
+
+        <!-- Main arc 180° → 45° -->
+        <path
+            android:strokeColor="#2F81F7"
+            android:strokeWidth="4.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M 10 44 A 22 22 0 0 1 47.56 28.44" />
+
+        <!-- Redline arc 45° → 0° -->
+        <path
+            android:strokeColor="#D29922"
+            android:strokeWidth="4.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M 47.56 28.44 A 22 22 0 0 1 54 44" />
+
+        <!-- 5 ticks: 3 in accent + 2 in warn -->
+        <path
+            android:strokeColor="#2F81F7"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M 10 44 L 14 44" />
+        <path
+            android:strokeColor="#2F81F7"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M 16.44 28.44 L 19.27 31.27" />
+        <path
+            android:strokeColor="#2F81F7"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M 32 22 L 32 26" />
+        <path
+            android:strokeColor="#D29922"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M 47.56 28.44 L 44.73 31.27" />
+        <path
+            android:strokeColor="#D29922"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:pathData="M 54 44 L 50 44" />
+
+        <!-- Needle into the redline + tip dot + pivot dot -->
+        <path
+            android:strokeColor="#2F81F7"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:pathData="M 32 44 L 50.5 32.7" />
+        <path
+            android:fillColor="#D29922"
+            android:pathData="M 50.5 32.7 m -3.5 0 a 3.5 3.5 0 1 0 7 0 a 3.5 3.5 0 1 0 -7 0 z" />
+        <path
+            android:fillColor="#2F81F7"
+            android:pathData="M 32 44 m -3.5 0 a 3.5 3.5 0 1 0 7 0 a 3.5 3.5 0 1 0 -7 0 z" />
+    </group>
 </vector>
