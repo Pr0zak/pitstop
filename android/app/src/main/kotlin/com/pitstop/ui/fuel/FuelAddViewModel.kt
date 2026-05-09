@@ -19,7 +19,9 @@ data class FuelFormState(
     val pricePerGallon: String = "",
     val totalPrice: String = "",
     val odometer: String = "",
+    val odometerAutoFilled: Boolean = false,
     val partial: Boolean = false,
+    val isMissed: Boolean = false,
     val stationName: String = "",
     val notes: String = "",
     val photoUri: String? = null,
@@ -31,6 +33,35 @@ data class FuelFormState(
     val errorMessage: String? = null,
     val nearestPriorStation: String? = null,
     val lastOdometer: Double? = null,
+
+    // Vehicle selection
+    val vehicles: List<VehicleOption> = emptyList(),
+    val selectedVehicleSlug: String = "",
+
+    // Gas type — Fuelio's enum-ish:
+    //   100 = Regular 87, 101 = Mid 89, 102 = Premium 91, 103 = Premium 93,
+    //   200 = Diesel, 300 = E85, 400 = LPG / propane
+    val fuelType: Int = 100,
+)
+
+/** Lightweight vehicle row for the picker dropdown. */
+data class VehicleOption(
+    val id: String,
+    val slug: String,
+    val name: String,
+    val active: Boolean,
+)
+
+/** Fuelio's fuel-type enum + display label. */
+data class FuelTypeOption(val code: Int, val label: String)
+val FUEL_TYPES: List<FuelTypeOption> = listOf(
+    FuelTypeOption(100, "Regular (87)"),
+    FuelTypeOption(101, "Mid-grade (89)"),
+    FuelTypeOption(102, "Premium (91)"),
+    FuelTypeOption(103, "Premium (93)"),
+    FuelTypeOption(200, "Diesel"),
+    FuelTypeOption(300, "E85"),
+    FuelTypeOption(400, "LPG"),
 )
 
 @HiltViewModel
@@ -39,6 +70,7 @@ class FuelAddViewModel @Inject constructor(
     private val historyStore: FuelHistoryStore,
     private val settingsRepository: SettingsRepository,
     private val api: PitstopApi,
+    private val stateBus: com.pitstop.service.BridgeStateBus,
 ) : ViewModel() {
 
     private val _form = MutableStateFlow(FuelFormState())
@@ -53,8 +85,52 @@ class FuelAddViewModel @Inject constructor(
             // "Last value: 76,304 mi" hint matches the design's reference.
             val lastOdo = allHistory.firstOrNull()?.let { null } // history doesn't carry odo today
             _form.value = _form.value.copy(lastOdometer = lastOdo)
+            // Pre-load vehicle list + default selected slug.
+            loadVehicles()
+            // Auto-prefill odometer from the live OBD bridge if a reading is
+            // available. The user can override by editing the field.
+            autoFillOdometer()
             refreshGps()
         }
+    }
+
+    private suspend fun loadVehicles() {
+        val current = settingsRepository.current()
+        val defaultSlug = current.settings.vehicleSlug.ifBlank { "" }
+        val vs = runCatching { api.getVehicles() }.getOrElse { emptyList() }
+        _form.value = _form.value.copy(
+            vehicles = vs.map {
+                VehicleOption(
+                    id = it.id,
+                    slug = it.slug,
+                    name = it.name,
+                    active = it.active ?: true,
+                )
+            },
+            selectedVehicleSlug = defaultSlug
+                .ifBlank { vs.firstOrNull { it.active != false }?.slug ?: "" },
+        )
+    }
+
+    private fun autoFillOdometer() {
+        // Don't clobber a user-edited value.
+        if (_form.value.odometer.isNotBlank() && !_form.value.odometerAutoFilled) return
+        val km = stateBus.latestByMetric.value["odometer"]?.value ?: return
+        // OBD reports km; convert to miles for the form (matches the
+        // "Odometer (mi)" label). User can override.
+        val mi = km * 0.621371
+        _form.value = _form.value.copy(
+            odometer = "%.0f".format(mi),
+            odometerAutoFilled = true,
+        )
+    }
+
+    fun selectVehicle(slug: String) {
+        _form.value = _form.value.copy(selectedVehicleSlug = slug)
+    }
+
+    fun selectFuelType(code: Int) {
+        _form.value = _form.value.copy(fuelType = code)
     }
 
     fun update(transform: (FuelFormState) -> FuelFormState) {
@@ -139,8 +215,11 @@ class FuelAddViewModel @Inject constructor(
                 return@launch
             }
             val settings = settingsRepository.current().settings
-            if (settings.vehicleSlug.isBlank() || settings.apiBaseUrl.isBlank()) {
-                _form.value = f.copy(errorMessage = "Configure vehicle slug + API URL first")
+            // Use the form's selected vehicle if set; fall back to the
+            // bridge's configured vehicle (matches pre-picker behaviour).
+            val targetSlug = f.selectedVehicleSlug.ifBlank { settings.vehicleSlug }
+            if (targetSlug.isBlank() || settings.apiBaseUrl.isBlank()) {
+                _form.value = f.copy(errorMessage = "Pick a vehicle and configure API URL first")
                 return@launch
             }
 
@@ -152,8 +231,20 @@ class FuelAddViewModel @Inject constructor(
             val freshGps = withTimeoutOrNull(4_000) { locationProvider.fix() }
             val gpsForRequest = freshGps ?: f.gps
 
+            // Compose the notes field with structured suffixes (gas type,
+            // missed flag) appended so the backend captures the extras
+            // even though the FillupRequest schema doesn't carry them
+            // directly. The /api/fillups alias passes notes through verbatim.
+            val notesParts = mutableListOf<String>()
+            if (f.notes.isNotBlank()) notesParts.add(f.notes.trim())
+            FUEL_TYPES.firstOrNull { it.code == f.fuelType }?.let {
+                if (f.fuelType != 100) notesParts.add("[fuel:${it.label}]")
+            }
+            if (f.isMissed) notesParts.add("[missed-fillup]")
+            val notesPayload = notesParts.joinToString("\n").ifBlank { null }
+
             val request = FillupRequest(
-                vehicleSlug = settings.vehicleSlug,
+                vehicleSlug = targetSlug,
                 timestampIso = Instant.now().toString(),
                 gallons = gallons,
                 totalPrice = totalPrice,
@@ -162,7 +253,7 @@ class FuelAddViewModel @Inject constructor(
                 lat = gpsForRequest?.lat,
                 lon = gpsForRequest?.lon,
                 stationName = f.stationName.ifBlank { null },
-                notes = f.notes.ifBlank { null },
+                notes = notesPayload,
             )
             // Reflect the fresh fix back into the form so the user sees
             // the coords that landed on the server.

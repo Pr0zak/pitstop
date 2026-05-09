@@ -16,16 +16,26 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -149,9 +159,15 @@ fun FuelAddScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            // ── Vehicle row (read-only for now; multi-vehicle picker is a
-            //    follow-up — pulls from the configured vehicleSlug)
-            VehicleHeaderRow(name = "Pilot", lastOdometer = form.lastOdometer)
+            // Vehicle picker — dropdown of all known vehicles, defaults to
+            // the bridge's configured slug. Submitting overrides the
+            // vehicle for this fillup only; the bridge stays on its slug.
+            VehiclePickerRow(
+                vehicles = form.vehicles,
+                selectedSlug = form.selectedVehicleSlug,
+                lastOdometer = form.lastOdometer,
+                onSelect = viewModel::selectVehicle,
+            )
 
             // Form body
             Column(
@@ -192,14 +208,10 @@ fun FuelAddScreen(
                         modifier = Modifier.weight(1f),
                         colors = darkTextFieldColors(),
                     )
-                    OutlinedTextField(
-                        value = "Regular (87)",
-                        onValueChange = { /* read-only stub for now */ },
-                        readOnly = true,
-                        label = { Text("Gas type") },
-                        singleLine = true,
+                    FuelTypeDropdown(
+                        selected = form.fuelType,
+                        onSelect = viewModel::selectFuelType,
                         modifier = Modifier.weight(1f),
-                        colors = darkTextFieldColors(),
                     )
                 }
 
@@ -259,6 +271,28 @@ fun FuelAddScreen(
                     onCheckedChange = { v -> viewModel.update { it.copy(partial = !v) } },
                 )
 
+                // Missed previous fillup — flag retroactive entries so
+                // the MPG recompute skips them (matches Fuelio's chain
+                // rule). Default off — the common case is a current fill.
+                ToggleRow(
+                    label = "Missed previous fillup",
+                    checked = form.isMissed,
+                    onCheckedChange = { v -> viewModel.update { it.copy(isMissed = v) } },
+                )
+
+                // Notes — multi-line; for trip context, gas brand,
+                // weather, etc. Free-form text shipped verbatim to
+                // the backend's fillup row.
+                OutlinedTextField(
+                    value = form.notes,
+                    onValueChange = { v -> viewModel.update { it.copy(notes = v) } },
+                    label = { Text("Notes") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = false,
+                    minLines = 2,
+                    colors = darkTextFieldColors(),
+                )
+
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
 
@@ -305,7 +339,7 @@ fun FuelAddScreen(
                 )
 
                 form.nearestPriorStation?.let { nearest ->
-                    androidx.compose.material3.AssistChip(
+                    AssistChip(
                         onClick = { viewModel.applyNearestStation() },
                         label = { Text("Use nearest: $nearest") },
                     )
@@ -317,7 +351,7 @@ fun FuelAddScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         form.stationSuggestions.take(4).forEach { s ->
-                            androidx.compose.material3.AssistChip(
+                            AssistChip(
                                 onClick = {
                                     viewModel.update { it.copy(stationName = s) }
                                 },
@@ -333,12 +367,12 @@ fun FuelAddScreen(
             // a tap when keyboard is visible), but a labelled primary
             // button at the natural end of the scroll is the obvious
             // affordance — fixes the "how do I save this?" feedback.
-            androidx.compose.foundation.layout.Box(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 16.dp),
             ) {
-                androidx.compose.material3.Button(
+                Button(
                     onClick = { viewModel.submit() },
                     enabled = !form.submitting,
                     modifier = Modifier.fillMaxWidth(),
@@ -364,17 +398,32 @@ fun FuelAddScreen(
     }
 }
 
+/**
+ * Vehicle row + picker dropdown. Renders the selected vehicle's name +
+ * last odo by default; tapping the chevron opens a DropdownMenu with
+ * every vehicle from /api/vehicles, marking inactive ones with a
+ * subtle "(archived)" suffix. Switching the selection scopes the
+ * pending fillup to that vehicle without touching the bridge config.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VehicleHeaderRow(name: String, lastOdometer: Double?) {
+private fun VehiclePickerRow(
+    vehicles: List<VehicleOption>,
+    selectedSlug: String,
+    lastOdometer: Double?,
+    onSelect: (String) -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val selected = vehicles.firstOrNull { it.slug == selectedSlug }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .clickable(
+                onClick = { menuOpen = vehicles.isNotEmpty() },
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Avatar/mark — small ink circle as a placeholder for the per-vehicle
-        // photo/avatar Fuelio shows. When we add per-vehicle artwork the same
-        // slot accepts AsyncImage cleanly.
         Box(
             modifier = Modifier
                 .size(40.dp)
@@ -393,12 +442,102 @@ private fun VehicleHeaderRow(name: String, lastOdometer: Double?) {
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(name, style = MaterialTheme.typography.titleMedium)
+            Text(
+                selected?.name ?: "(no vehicle)",
+                style = MaterialTheme.typography.titleMedium,
+            )
             lastOdometer?.let {
                 Text(
                     "${"%,.0f".format(it)} mi",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Icon(
+            Icons.Filled.ArrowDropDown,
+            contentDescription = "Switch vehicle",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false },
+        ) {
+            for (v in vehicles) {
+                DropdownMenuItem(
+                    text = {
+                        Row {
+                            Text(v.name)
+                            if (!v.active) {
+                                Text(
+                                    "  archived",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    },
+                    onClick = {
+                        onSelect(v.slug)
+                        menuOpen = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Gas-type dropdown — Fuelio's enum-ish codes (Regular 87, Premium, Diesel,
+ * E85, ...). The label maps both ways: display label in the trigger,
+ * label list in the menu.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FuelTypeDropdown(
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = FUEL_TYPES.firstOrNull { it.code == selected }?.label ?: "Regular (87)"
+    Box(modifier = modifier) {
+        OutlinedTextField(
+            value = label,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Gas type") },
+            trailingIcon = {
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                )
+            },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { open = true },
+            colors = darkTextFieldColors(),
+        )
+        // Invisible click target on top of the OutlinedTextField — the
+        // readOnly variant doesn't intercept taps reliably across all
+        // versions, so we layer a Box that opens the menu.
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clickable { open = true },
+        )
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            for (ft in FUEL_TYPES) {
+                DropdownMenuItem(
+                    text = { Text(ft.label) },
+                    onClick = {
+                        onSelect(ft.code)
+                        open = false
+                    },
                 )
             }
         }
