@@ -89,14 +89,28 @@ async def storage_stats(
                 table,
             )
             if is_hyper:
-                size = await conn.fetchval(
-                    """
-                    SELECT COALESCE(sum(total_bytes), 0)::bigint
-                      FROM timescaledb_information.chunks
-                     WHERE hypertable_name = $1
-                    """,
-                    table,
-                )
+                # Timescale's hypertable_size() returns the total disk
+                # bytes across all chunks (data + index + toast).
+                # Older Timescale releases don't have a size column on
+                # timescaledb_information.chunks — the function call is
+                # the version-stable way.
+                try:
+                    size = await conn.fetchval(
+                        "SELECT hypertable_size($1::regclass)",
+                        f"public.{table}",
+                    )
+                except asyncpg.PostgresError:
+                    # Fall back to summing chunk sizes via pg_total_relation_size.
+                    size = await conn.fetchval(
+                        """
+                        SELECT COALESCE(sum(pg_total_relation_size(
+                                   format('%I.%I', chunk_schema, chunk_name)::regclass
+                               )), 0)::bigint
+                          FROM timescaledb_information.chunks
+                         WHERE hypertable_name = $1
+                        """,
+                        table,
+                    )
             else:
                 size = await conn.fetchval(
                     "SELECT pg_total_relation_size($1)", f"public.{table}"
