@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 
 /**
@@ -150,9 +151,7 @@ private fun HeroCard(
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
                 title,
-                style = MaterialTheme.typography.labelMedium.copy(
-                    letterSpacing = MaterialTheme.typography.labelMedium.letterSpacing + 0.4.sp(),
-                ),
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.size(6.dp))
@@ -161,7 +160,7 @@ private fun HeroCard(
                     value,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.headlineMedium.copy(
-                        letterSpacing = (-1.2).sp(),
+                        letterSpacing = (-1.2).sp,
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -252,7 +251,3 @@ private fun Sparkline(
     }
 }
 
-private fun Number.sp() = androidx.compose.ui.unit.TextUnit(
-    this.toFloat(),
-    androidx.compose.ui.unit.TextUnitType.Sp,
-)
