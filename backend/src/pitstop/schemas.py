@@ -488,9 +488,9 @@ class ClientLogEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     ts: datetime | None = None
-    source: LogSource
-    level: LogLevel
-    message: str = Field(min_length=1, max_length=4000)
+    source: str
+    level: str
+    message: str = Field(default="(empty)", max_length=4000)
     vehicle_id: UUID | None = None
     device_id: str | None = Field(default=None, max_length=128)
     context: dict[str, Any] | None = None
@@ -501,6 +501,37 @@ class ClientLogEntry(BaseModel):
         if isinstance(v, str) and v.strip() == "":
             return None
         return v
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def _empty_message_placeholder(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return "(empty)"
+        if isinstance(v, str) and len(v) > 4000:
+            return v[:4000]
+        return v
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalise_source(cls, v: Any) -> str:
+        s = (str(v) if v is not None else "phone").strip().lower()
+        if s in {"phone", "web", "backend", "wican", "test"}:
+            return s
+        return "phone"  # unknown source falls back rather than 422
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _normalise_level(cls, v: Any) -> str:
+        s = (str(v) if v is not None else "info").strip().lower()
+        # Accept synonyms — Java's Level.WARNING, Python's WARNING, etc.
+        m = {
+            "warning": "warn", "warn": "warn",
+            "err": "error", "error": "error",
+            "info": "info",
+            "debug": "debug", "trace": "debug", "verbose": "debug",
+            "fatal": "error", "critical": "error",
+        }
+        return m.get(s, "info")
 
     def context_or_empty(self) -> dict[str, Any]:
         return self.context if self.context is not None else {}
