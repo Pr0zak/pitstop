@@ -42,6 +42,14 @@ const stationsQ = useAsync(
   [vehicleId, tab],
 );
 
+const stationPricesQ = useAsync(
+  () =>
+    vehicleId.value && tab.value === "map"
+      ? api.stationPrices(vehicleId.value, 5)
+      : Promise.resolve([]),
+  [vehicleId, tab],
+);
+
 const monthlyQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
@@ -638,6 +646,57 @@ const rangeEstimate = computed<{
             </dl>
           </div>
         </template>
+
+        <!-- Per-station price intelligence — derived from your own
+             fillup history. Sortable by latest price, last visit, or
+             fillup count. Map shows only stations with GPS; this list
+             shows every cluster (including station_id-only entries
+             that lack coords). -->
+        <section
+          v-if="stationPricesQ.data.value && stationPricesQ.data.value.length > 0"
+          class="card"
+        >
+          <h3>Recent station prices</h3>
+          <p class="muted small">
+            Last {{ Math.max(...stationPricesQ.data.value.map(s => s.recent.length)) }}
+            visits per station. Delta column compares the most recent
+            price against the average of the others before it.
+          </p>
+          <table class="data station-prices">
+            <thead>
+              <tr>
+                <th>Station</th>
+                <th class="num">Latest $/gal</th>
+                <th class="num">Δ vs prev avg</th>
+                <th class="num">Avg</th>
+                <th class="num">Visits</th>
+                <th>Last visit</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in stationPricesQ.data.value" :key="s.cluster_id">
+                <td>{{ s.name ?? "Unnamed station" }}</td>
+                <td class="num">${{ s.latest_price.toFixed(3) }}</td>
+                <td
+                  class="num"
+                  :class="{
+                    'delta-up': (s.delta_pct ?? 0) > 0.5,
+                    'delta-down': (s.delta_pct ?? 0) < -0.5,
+                  }"
+                >
+                  <template v-if="s.delta_pct != null">
+                    {{ s.delta_pct > 0 ? '▲' : s.delta_pct < 0 ? '▼' : '·' }}
+                    {{ Math.abs(s.delta_pct).toFixed(1) }}%
+                  </template>
+                  <template v-else>—</template>
+                </td>
+                <td class="num">${{ s.avg_price.toFixed(3) }}</td>
+                <td class="num">{{ s.fillup_count }}</td>
+                <td>{{ fmtDate(s.latest_date) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
       </template>
 
       <!-- Stats -->
@@ -802,6 +861,12 @@ const rangeEstimate = computed<{
 .mpg-fallback {
   font-style: italic;
   color: var(--c-ink2);
+}
+.station-prices .delta-up {
+  color: var(--c-danger);
+}
+.station-prices .delta-down {
+  color: var(--c-success);
 }
 .row-actions {
   display: flex;

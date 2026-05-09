@@ -272,6 +272,120 @@ async def stations(
     )
 
 
+@router.get(
+    "/station-prices",
+    dependencies=[Depends(require_query_token)],
+)
+async def station_prices(
+    vehicle_id: UUID | None = Query(default=None),
+    limit_per_station: int = Query(default=5, ge=1, le=50),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> list[dict[str, Any]]:
+    """Per-station price history derived from the user's own fillups.
+
+    Useful for "is QuikTrip on 87th still cheaper than the Phillips
+    66 on State Line?" comparisons without leaving pitstop. For each
+    cluster (station_id when present, rounded lat/lon when not):
+
+      cluster_id            same key shape as /analytics/stations
+      name                  city / station label
+      lat, lon              first non-null lat/lon in the cluster
+      fillup_count          all rows in the cluster
+      latest_price          most-recent price_per_unit (USD/unit)
+      latest_date           timestamp of that fill
+      avg_price             mean of last `limit_per_station` prices
+      delta_pct             latest vs the rest-of-recent avg, +/-
+      recent                array of {date, price_per_unit, fuel_volume}
+                            for the last N fills, newest first
+
+    All prices come straight from the fillups table (already in the
+    user's locale's $/gal or $/L). No external lookups; this is the
+    "personal price intelligence" layer of the gas-price plan.
+    """
+    where: list[str] = ["price_per_unit IS NOT NULL"]
+    args: list[Any] = []
+    if vehicle_id is not None:
+        args.append(vehicle_id)
+        where.append(f"vehicle_id = ${len(args)}")
+    where_sql = " WHERE " + " AND ".join(where)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT station_id, lat, lon, city, fuel_volume,
+                   price_per_unit, fillup_date
+              FROM fillups
+              {where_sql}
+              ORDER BY fillup_date DESC
+            """,
+            *args,
+        )
+
+    # Bucket by station, keep up to `limit_per_station * 2` rows per
+    # cluster so we can compute a stable avg and surface the most
+    # recent N for the trend visualization.
+    buckets: dict[str, dict[str, Any]] = {}
+    keep_per = limit_per_station * 2
+    for r in rows:
+        if r["station_id"] is not None:
+            key = f"sid:{r['station_id']}"
+        elif r["lat"] is not None and r["lon"] is not None:
+            key = f"ll:{round(float(r['lat']), 3)}:{round(float(r['lon']), 3)}"
+        else:
+            continue  # skip unknowns — no useful station label
+        b = buckets.setdefault(
+            key,
+            {
+                "cluster_id": key,
+                "name": r["city"],
+                "lat": float(r["lat"]) if r["lat"] is not None else None,
+                "lon": float(r["lon"]) if r["lon"] is not None else None,
+                "fillup_count": 0,
+                "rows": [],
+            },
+        )
+        b["fillup_count"] += 1
+        if len(b["rows"]) < keep_per:
+            b["rows"].append(
+                {
+                    "date": r["fillup_date"].isoformat(),
+                    "price_per_unit": float(r["price_per_unit"]),
+                    "fuel_volume": float(r["fuel_volume"] or 0),
+                }
+            )
+        # First non-null name wins for stations with mixed labels.
+        if not b["name"] and r["city"]:
+            b["name"] = r["city"]
+
+    out = []
+    for b in buckets.values():
+        recent = b["rows"][:limit_per_station]
+        if not recent:
+            continue
+        latest = recent[0]
+        avg_window = recent[1:] if len(recent) > 1 else recent
+        avg_price = sum(x["price_per_unit"] for x in avg_window) / len(avg_window)
+        delta_pct = (
+            ((latest["price_per_unit"] - avg_price) / avg_price * 100.0)
+            if avg_price > 0
+            else None
+        )
+        out.append(
+            {
+                "cluster_id": b["cluster_id"],
+                "name": b["name"],
+                "lat": b["lat"],
+                "lon": b["lon"],
+                "fillup_count": b["fillup_count"],
+                "latest_price": latest["price_per_unit"],
+                "latest_date": latest["date"],
+                "avg_price": round(avg_price, 4),
+                "delta_pct": round(delta_pct, 2) if delta_pct is not None else None,
+                "recent": recent,
+            }
+        )
+    return sorted(out, key=lambda x: x["latest_date"], reverse=True)
+
+
 @router.get("/mpg-overlay", dependencies=[Depends(require_query_token)])
 async def mpg_overlay(
     vehicle_id: UUID = Query(...),

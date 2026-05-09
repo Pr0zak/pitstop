@@ -236,6 +236,32 @@ export async function stationsCluster(vehicleId: string): Promise<StationCluster
   });
   return r.data;
 }
+
+export interface StationPrice {
+  cluster_id: string;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+  fillup_count: number;
+  latest_price: number;
+  latest_date: string;
+  avg_price: number;
+  delta_pct: number | null;
+  recent: { date: string; price_per_unit: number; fuel_volume: number }[];
+}
+
+export async function stationPrices(
+  vehicleId?: string,
+  limitPerStation = 5,
+): Promise<StationPrice[]> {
+  const r = await apiQuery.get<StationPrice[]>("/analytics/station-prices", {
+    params: {
+      ...(vehicleId ? { vehicle_id: vehicleId } : {}),
+      limit_per_station: limitPerStation,
+    },
+  });
+  return r.data;
+}
 export async function mpgOverlay(
   vehicleId: string,
   from?: string,
