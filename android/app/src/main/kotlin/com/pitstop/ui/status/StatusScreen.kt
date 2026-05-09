@@ -55,7 +55,16 @@ fun StatusScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Pitstop") },
+                title = {
+                    Column {
+                        Text("Pitstop")
+                        Text(
+                            "v${com.pitstop.BuildConfig.VERSION_NAME}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenConfig) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
