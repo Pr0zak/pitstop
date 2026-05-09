@@ -274,8 +274,12 @@ def detect_log_units(header: list[str]) -> LogUnits:
 class FuelioImporter:
     """Stateful importer for one or more uploaded files (one transaction)."""
 
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(self, conn: asyncpg.Connection, *, force: bool = False) -> None:
         self.conn = conn
+        # When force=True, bypass the lastupdated_ms gate so existing rows
+        # get overwritten with whatever the CSV says — used to backfill
+        # columns that older importer code missed (GPS, StationID, Notes).
+        self.force = force
 
     async def import_files(
         self,
@@ -579,7 +583,12 @@ class FuelioImporter:
                     f"fuel={row.get('Fuel (us gallons)') or row.get('Fuel (litres)')})"
                 )
                 continue
-            station_id = _maybe_int(row.get("StationID"))
+            # Fuelio Log column headers come with " (optional)" suffix in
+            # current exports (e.g. "latitude (optional)"). Older builds
+            # dropped the suffix. Use _val() to pick whichever exists.
+            station_id = _maybe_int(
+                _val(row, "StationID (optional)", "StationID")
+            )
             if station_id == 0:
                 station_id = None
             params = {
@@ -590,7 +599,9 @@ class FuelioImporter:
                 "fuel_volume": fuel_volume,
                 "is_full": _bool01(row.get("Full")),
                 "is_missed": _bool01(row.get("Missed")),
-                "price_total": _maybe_decimal(row.get("Price")),
+                "price_total": _maybe_decimal(
+                    _val(row, "Price (optional)", "Price")
+                ),
                 "price_per_unit": _maybe_decimal(row.get("VolumePrice")),
                 # Fuelio's exports vary on the column name for the
                 # user-reported MPG. Real exports (vehicle-N-sync.csv
@@ -612,16 +623,20 @@ class FuelioImporter:
                         "L/100km",
                     )
                 ),
-                "lat": _maybe_float(row.get("latitude")),
-                "lon": _maybe_float(row.get("longitude")),
-                "city": row.get("City") or None,
+                "lat": _maybe_float(
+                    _val(row, "latitude (optional)", "latitude")
+                ),
+                "lon": _maybe_float(
+                    _val(row, "longitude (optional)", "longitude")
+                ),
+                "city": _val(row, "City (optional)", "City") or None,
                 "station_id": station_id,
                 "tank_number": _maybe_int(row.get("TankNumber")) or 1,
                 "fuel_type": _maybe_int(row.get("FuelType")),
                 "weather": row.get("Weather") or None,
                 "tank_calc": _maybe_float(row.get("TankCalc")),
                 "exclude_distance": _bool01(row.get("ExcludeDistance")),
-                "notes": row.get("Notes") or None,
+                "notes": _val(row, "Notes (optional)", "Notes") or None,
                 "lastupdated_ms": lastupdated,
             }
             existing = await self.conn.fetchrow(
@@ -649,7 +664,7 @@ class FuelioImporter:
                 )
                 result.fillups.added += 1
                 continue
-            if (existing["lastupdated_ms"] or 0) >= lastupdated:
+            if not self.force and (existing["lastupdated_ms"] or 0) >= lastupdated:
                 result.fillups.skipped += 1
                 continue
             await self.conn.execute(
@@ -880,9 +895,10 @@ async def run_import(
     *,
     dry_run: bool,
     attach_vehicle_slug: str | None = None,
+    force: bool = False,
 ) -> ImportResult:
     """Top-level wrapper: handles the dry-run rollback dance."""
-    importer = FuelioImporter(conn)
+    importer = FuelioImporter(conn, force=force)
     if not dry_run:
         return await importer.import_files(
             files, dry_run=False, attach_vehicle_slug=attach_vehicle_slug

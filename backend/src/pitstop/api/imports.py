@@ -18,6 +18,14 @@ router = APIRouter(prefix="/import", tags=["import"])
 # Module-level singletons so ruff's B008 isn't flagged on the route signature.
 _FILES = FastAPIFile(...)
 _DRY_RUN = Query(default=False)
+_FORCE = Query(
+    default=False,
+    description=(
+        "When true, overwrite existing fillups/costs even if their "
+        "lastupdated_ms hasn't increased. Use this to backfill columns "
+        "that older importer code missed (GPS, StationID, Notes)."
+    ),
+)
 _ATTACH_VEHICLE_SLUG = Query(
     default=None,
     description=(
@@ -34,6 +42,7 @@ async def fuelio_import(
     request: Request,
     files: list[UploadFile] = _FILES,
     dry_run: bool = _DRY_RUN,
+    force: bool = _FORCE,
     attach_vehicle_slug: str | None = _ATTACH_VEHICLE_SLUG,
 ) -> dict[str, Any]:
     """Import one or more Fuelio CSV/zip exports.
@@ -61,6 +70,7 @@ async def fuelio_import(
             blobs,
             dry_run=dry_run,
             attach_vehicle_slug=attach_vehicle_slug,
+            force=force,
         )
 
     return result.to_dict()
