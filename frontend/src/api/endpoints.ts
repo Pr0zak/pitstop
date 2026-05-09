@@ -279,11 +279,14 @@ export async function deleteLogsOlderThan(days: number): Promise<void> {
 export async function importFuelio(
   files: File[],
   dryRun: boolean,
+  attachVehicleSlug: string | null = null,
 ): Promise<FuelioImportPreview> {
   const fd = new FormData();
   for (const f of files) fd.append("files", f, f.name);
+  const params = new URLSearchParams({ dry_run: dryRun ? "true" : "false" });
+  if (attachVehicleSlug) params.set("attach_vehicle_slug", attachVehicleSlug);
   const r = await apiIngest.post<FuelioImportPreview>(
-    `/import/fuelio?dry_run=${dryRun ? "true" : "false"}`,
+    `/import/fuelio?${params.toString()}`,
     fd,
     { headers: { "Content-Type": "multipart/form-data" } },
   );

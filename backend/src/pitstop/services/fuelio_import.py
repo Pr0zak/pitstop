@@ -282,8 +282,25 @@ class FuelioImporter:
         files: list[tuple[str, bytes]],
         *,
         dry_run: bool,
+        attach_vehicle_slug: str | None = None,
     ) -> ImportResult:
         result = ImportResult(dry_run=dry_run)
+
+        # Resolve the attach target up front so per-file Vehicle sections
+        # become optional. The caller (UI) supplied this, so we trust it
+        # over whatever the file says about itself.
+        attach_vehicle_id: UUID | None = None
+        if attach_vehicle_slug:
+            row = await self.conn.fetchrow(
+                "SELECT id FROM vehicles WHERE slug = $1",
+                attach_vehicle_slug,
+            )
+            if row is None:
+                result.errors.append(
+                    f"attach_vehicle_slug '{attach_vehicle_slug}' not found"
+                )
+                return result
+            attach_vehicle_id = row["id"]
 
         async with self.conn.transaction():
             for name, blob in files:
@@ -297,18 +314,35 @@ class FuelioImporter:
                     continue
                 sections = parse_csv_sections(csv_text)
                 vehicle_section = sections.get("Vehicle")
-                if vehicle_section is None or not vehicle_section.rows:
-                    msg = f"{name}: no Vehicle section"
-                    result.errors.append(msg)
-                    result.files.append(FilePreview(name=name, vehicle=None))
-                    continue
-                vehicle_row = vehicle_section.rows[0]
-                vehicle_name = vehicle_row.get("Name") or "(unnamed)"
-                result.files.append(FilePreview(name=name, vehicle=vehicle_name))
 
-                vehicle_id = await self._upsert_vehicle(vehicle_row, result)
-                if vehicle_id is None:
-                    continue
+                if attach_vehicle_id is not None:
+                    # Per-vehicle sync export: ignore any Vehicle section in the
+                    # file (Fuelio still ships one for full exports — we'd
+                    # otherwise overwrite the user's edits). Use the attach
+                    # target for fillups/costs.
+                    vehicle_id = attach_vehicle_id
+                    result.files.append(
+                        FilePreview(name=name, vehicle=attach_vehicle_slug)
+                    )
+                else:
+                    if vehicle_section is None or not vehicle_section.rows:
+                        msg = (
+                            f"{name}: no Vehicle section. Re-upload with "
+                            f"attach_vehicle_slug=… to import into an "
+                            f"existing vehicle."
+                        )
+                        result.errors.append(msg)
+                        result.files.append(FilePreview(name=name, vehicle=None))
+                        continue
+                    vehicle_row = vehicle_section.rows[0]
+                    vehicle_name = vehicle_row.get("Name") or "(unnamed)"
+                    result.files.append(
+                        FilePreview(name=name, vehicle=vehicle_name)
+                    )
+
+                    vehicle_id = await self._upsert_vehicle(vehicle_row, result)
+                    if vehicle_id is None:
+                        continue
 
                 # CostCategories first — needed to map expense cost types.
                 cost_type_map: dict[str, int] = {}
@@ -826,12 +860,17 @@ async def run_import(
     files: list[tuple[str, bytes]],
     *,
     dry_run: bool,
+    attach_vehicle_slug: str | None = None,
 ) -> ImportResult:
     """Top-level wrapper: handles the dry-run rollback dance."""
     importer = FuelioImporter(conn)
     if not dry_run:
-        return await importer.import_files(files, dry_run=False)
+        return await importer.import_files(
+            files, dry_run=False, attach_vehicle_slug=attach_vehicle_slug
+        )
     try:
-        return await importer.import_files(files, dry_run=True)
+        return await importer.import_files(
+            files, dry_run=True, attach_vehicle_slug=attach_vehicle_slug
+        )
     except _DryRunRollbackError as ex:
         return ex.result

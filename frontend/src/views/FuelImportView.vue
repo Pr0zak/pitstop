@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { RouterLink } from "vue-router";
 import { Upload, FilePlus, X, ChevronLeft } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
-import type { FuelioImportPreview } from "@/api/types";
+import type { FuelioImportPreview, Vehicle } from "@/api/types";
 
 const files = ref<File[]>([]);
 const preview = ref<FuelioImportPreview | null>(null);
@@ -12,6 +12,20 @@ const error = ref<string | null>(null);
 const isLoading = ref(false);
 const isCommitting = ref(false);
 const dragOver = ref(false);
+
+// Optional attach target for per-vehicle sync exports (vehicle-N-sync.csv)
+// which omit the Vehicle section. Selecting a vehicle here routes all
+// rows in the upload(s) to that existing vehicle by slug instead of
+// requiring the importer to upsert from a Vehicle row.
+const vehicles = ref<Vehicle[]>([]);
+const attachSlug = ref<string>("");
+onMounted(async () => {
+  try {
+    vehicles.value = await api.listVehicles();
+  } catch {
+    /* non-fatal — user can still import full exports */
+  }
+});
 
 function onPick(e: Event) {
   const input = e.target as HTMLInputElement;
@@ -42,7 +56,11 @@ async function runDryRun() {
   preview.value = null;
   committed.value = null;
   try {
-    preview.value = await api.importFuelio(files.value, true);
+    preview.value = await api.importFuelio(
+      files.value,
+      true,
+      attachSlug.value || null,
+    );
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "import failed";
   } finally {
@@ -58,7 +76,11 @@ async function commit() {
   isCommitting.value = true;
   error.value = null;
   try {
-    committed.value = await api.importFuelio(files.value, false);
+    committed.value = await api.importFuelio(
+      files.value,
+      false,
+      attachSlug.value || null,
+    );
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "commit failed";
   } finally {
@@ -108,6 +130,21 @@ const previewJson = computed(() =>
           <Upload :size="14" /> Browse
           <input type="file" multiple accept=".zip,.csv" @change="onPick" hidden />
         </label>
+      </div>
+
+      <div class="attach-row">
+        <label for="attach-vehicle">
+          Attach to existing vehicle
+          <span class="muted small">
+            (required for <code>vehicle-N-sync.csv</code>; leave blank for full exports)
+          </span>
+        </label>
+        <select id="attach-vehicle" v-model="attachSlug">
+          <option value="">— Auto-detect from file —</option>
+          <option v-for="v in vehicles" :key="v.id" :value="v.slug">
+            {{ v.name }} ({{ v.slug }})
+          </option>
+        </select>
       </div>
 
       <ul v-if="files.length" class="files">
@@ -238,6 +275,24 @@ const previewJson = computed(() =>
 .dropzone.active {
   border-color: var(--c-accent);
   background: var(--c-accent-soft);
+}
+.attach-row {
+  margin-top: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.attach-row label {
+  font-size: 0.85rem;
+  color: var(--c-muted);
+}
+.attach-row select {
+  padding: 0.4rem 0.6rem;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  color: var(--c-text);
+  width: 100%;
 }
 .picker {
   display: inline-flex;
