@@ -69,6 +69,12 @@ fun StatusScreen(
                 vehicleName = ui.status.deviceName,
             )
 
+            // Phone-web parity hero strip: avg consumption, gas price,
+            // this-month spend, miles since fill. Mirrors web Overview.
+            ui.hero?.let { hero ->
+                com.pitstop.ui.components.FuelHeroCards(data = hero)
+            }
+
             ui.update?.takeIf { it.isNewer }?.let { info ->
                 UpdateAvailableCard(
                     info = info,
