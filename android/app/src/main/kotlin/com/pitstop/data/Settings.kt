@@ -17,6 +17,16 @@ data class Settings(
      * depot. When false (default) debug lines are no-ops; info/warn/error always record.
      */
     val verboseLogging: Boolean = false,
+    /**
+     * Ordered metric keys shown on the Android Auto home grid (top 6).
+     * Empty list → use the hardcoded defaults in LiveCarScreen.
+     */
+    val aaTilesHome: List<String> = emptyList(),
+    /**
+     * Ordered metric keys shown on the Android Auto diagnostics screen.
+     * Same fallback shape as aaTilesHome.
+     */
+    val aaTilesDiag: List<String> = emptyList(),
 )
 
 data class SettingsWithSecrets(

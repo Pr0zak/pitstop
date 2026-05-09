@@ -3,6 +3,7 @@ package com.pitstop.car
 import android.content.Intent
 import androidx.car.app.Screen
 import androidx.car.app.Session
+import com.pitstop.data.SettingsRepository
 import com.pitstop.service.BridgeStateBus
 import dagger.hilt.android.scopes.ServiceScoped
 import javax.inject.Inject
@@ -15,10 +16,11 @@ import javax.inject.Inject
  */
 class PitstopSession(
     private val stateBus: BridgeStateBus,
+    private val settingsRepository: SettingsRepository,
 ) : Session() {
 
     override fun onCreateScreen(intent: Intent): Screen =
-        LiveCarScreen(carContext, stateBus)
+        LiveCarScreen(carContext, stateBus, settingsRepository)
 }
 
 /**
@@ -30,6 +32,7 @@ class PitstopSession(
 @ServiceScoped
 class PitstopSessionFactory @Inject constructor(
     private val stateBus: BridgeStateBus,
+    private val settingsRepository: SettingsRepository,
 ) {
-    fun create(): Session = PitstopSession(stateBus)
+    fun create(): Session = PitstopSession(stateBus, settingsRepository)
 }

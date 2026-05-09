@@ -33,6 +33,8 @@ class SettingsRepository @Inject constructor(
         val verboseLogging: Preferences.Key<Boolean> = booleanPreferencesKey("verbose_logging")
         val bridgeAutoStart: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_auto_start")
         val deviceId: Preferences.Key<String> = stringPreferencesKey("device_id")
+        val aaTilesHome: Preferences.Key<String> = stringPreferencesKey("aa_tiles_home")
+        val aaTilesDiag: Preferences.Key<String> = stringPreferencesKey("aa_tiles_diag")
     }
 
     /**
@@ -70,6 +72,10 @@ class SettingsRepository @Inject constructor(
             bleDeviceName = prefs[Keys.bleName]?.takeIf { it.isNotBlank() },
             publishHz = prefs[Keys.publishHz] ?: 1f,
             verboseLogging = prefs[Keys.verboseLogging] ?: false,
+            aaTilesHome = prefs[Keys.aaTilesHome]?.split(",")
+                ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+            aaTilesDiag = prefs[Keys.aaTilesDiag]?.split(",")
+                ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
         )
     }
 
@@ -98,6 +104,8 @@ class SettingsRepository @Inject constructor(
             settings.bleDeviceName?.let { prefs[Keys.bleName] = it } ?: prefs.remove(Keys.bleName)
             prefs[Keys.publishHz] = settings.publishHz
             prefs[Keys.verboseLogging] = settings.verboseLogging
+            prefs[Keys.aaTilesHome] = settings.aaTilesHome.joinToString(",")
+            prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
         }
         if (mqttPassword != null) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
         if (ingestToken != null) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)

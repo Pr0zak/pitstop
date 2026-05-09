@@ -13,6 +13,7 @@ import androidx.car.app.model.Template
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.pitstop.R
+import com.pitstop.data.SettingsRepository
 import com.pitstop.service.BridgeStateBus
 import com.pitstop.service.MetricSample
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +22,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
  * Top-level Pitstop screen for the head unit. The user's car cluster
@@ -53,6 +56,7 @@ import kotlinx.coroutines.launch
 class LiveCarScreen(
     carContext: CarContext,
     private val stateBus: BridgeStateBus,
+    private val settingsRepository: SettingsRepository,
 ) : Screen(carContext), DefaultLifecycleObserver {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -85,21 +89,29 @@ class LiveCarScreen(
         val metrics = stateBus.latestByMetric.value
         val status = stateBus.status.value
 
-        val tiles = listOf(
-            buildTile("Coolant", "coolant_temp", "°C", metrics, digits = 0, accent = false),
-            buildTile("Fuel", "fuel_level", "%", metrics, digits = 0, accent = false),
-            buildTile("RPM", "engine_rpm", "", metrics, digits = 0, accent = true),
-            buildTile("Eng load", "engine_load", "%", metrics, digits = 0),
-            buildTile("Battery", "control_module_voltage", "V", metrics, digits = 1),
-            buildTile("Intake", "intake_air_temp", "°C", metrics, digits = 0),
-        )
+        // Read user-customised tile order from DataStore. The CarApp
+        // framework calls onGetTemplate() on every invalidate, so a
+        // change in Settings shows up on the next sample without
+        // re-pairing or restarting the service.
+        //
+        // runBlocking is acceptable here: we're already on the main
+        // thread inside the framework's render call, and DataStore's
+        // first() resolves quickly from the in-memory cache.
+        val storedHome = runBlocking { settingsRepository.settings.first().aaTilesHome }
+        val resolved = CarTileCatalog.resolveHome(storedHome)
+
+        val tiles = resolved.map { spec ->
+            buildTile(spec.label, spec.key, spec.unit, metrics, spec.digits, spec.accent)
+        }
 
         val actions = ActionStrip.Builder()
             .addAction(
                 Action.Builder()
                     .setTitle("Diagnostics")
                     .setOnClickListener {
-                        screenManager.push(DiagnosticsCarScreen(carContext, stateBus))
+                        screenManager.push(
+                            DiagnosticsCarScreen(carContext, stateBus, settingsRepository),
+                        )
                     }
                     .build(),
             )
@@ -177,6 +189,7 @@ class LiveCarScreen(
 class DiagnosticsCarScreen(
     carContext: CarContext,
     private val stateBus: BridgeStateBus,
+    private val settingsRepository: SettingsRepository,
 ) : Screen(carContext), DefaultLifecycleObserver {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -207,14 +220,11 @@ class DiagnosticsCarScreen(
 
     override fun onGetTemplate(): Template {
         val metrics = stateBus.latestByMetric.value
-        val tiles = listOf(
-            tile("ATF", metrics["atf_temp_f"]?.value, "°F", 0, trends.classify("atf_temp_f")),
-            tile("Throttle", metrics["throttle_position"]?.value, "%", 0, trends.classify("throttle_position")),
-            tile("MAF", metrics["maf_air_flow"]?.value, "g/s", 1, trends.classify("maf_air_flow")),
-            tile("Run time", metrics["run_time_since_start"]?.value, "s", 0, trends.classify("run_time_since_start")),
-            tile("STFT B1", metrics["stft_b1"]?.value, "%", 1, trends.classify("stft_b1")),
-            tile("LTFT B1", metrics["ltft_b1"]?.value, "%", 1, trends.classify("ltft_b1")),
-        )
+        val storedDiag = runBlocking { settingsRepository.settings.first().aaTilesDiag }
+        val resolved = CarTileCatalog.resolveDiag(storedDiag)
+        val tiles = resolved.map { spec ->
+            tile(spec.label, metrics[spec.key]?.value, spec.unit, spec.digits, trends.classify(spec.key))
+        }
 
         return GridTemplate.Builder()
             .setTitle("Diagnostics")
