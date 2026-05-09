@@ -49,7 +49,7 @@ class StatusViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     stateBus: BridgeStateBus,
     private val mqttPublisher: MqttPublisher,
-    logBuffer: LogBuffer,
+    private val logBuffer: LogBuffer,
     logShipper: LogShipper,
     private val updateChecker: UpdateChecker,
     private val api: PitstopApi,
@@ -79,29 +79,47 @@ class StatusViewModel @Inject constructor(
     private suspend fun refreshHero() {
         try {
             val secrets = settingsRepository.current()
-            if (secrets.queryToken.isBlank() || secrets.settings.apiBaseUrl.isBlank()) {
+            if (secrets.queryToken.isBlank()) {
+                logBuffer.warn("hero refresh: QUERY_TOKEN not set in Settings; skipping")
+                heroData.value = null
+                return
+            }
+            if (secrets.settings.apiBaseUrl.isBlank()) {
+                logBuffer.warn("hero refresh: API base URL not set in Settings; skipping")
                 heroData.value = null
                 return
             }
             val slug = secrets.settings.vehicleSlug.trim().ifEmpty {
+                logBuffer.warn("hero refresh: vehicle slug not set in Settings; skipping")
                 heroData.value = null
                 return
             }
             // Resolve slug → vehicle_id locally rather than asking the
             // backend twice; we cached the vehicle list briefly.
-            val vehicles = runCatching { api.getVehicles() }.getOrElse {
+            val vehicles = runCatching { api.getVehicles() }.getOrElse { exc ->
+                logBuffer.warn(
+                    "hero refresh: /vehicles fetch failed",
+                    mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
+                )
                 heroData.value = null
                 return
             }
             val vehicleId = vehicles.firstOrNull { it.slug == slug }?.id ?: run {
+                logBuffer.warn(
+                    "hero refresh: configured slug not found in /vehicles list",
+                    mapOf("slug" to slug, "available" to vehicles.map { it.slug }),
+                )
                 heroData.value = null
                 return
             }
-            val fillupsResp = runCatching { api.getFillups(vehicleId, limit = 30) }.getOrNull()
-                ?: run {
-                    heroData.value = null
-                    return
-                }
+            val fillupsResp = runCatching { api.getFillups(vehicleId, limit = 30) }.getOrElse { exc ->
+                logBuffer.warn(
+                    "hero refresh: /fillups fetch failed",
+                    mapOf("vehicle_id" to vehicleId, "err" to (exc.message ?: exc::class.java.simpleName)),
+                )
+                heroData.value = null
+                return
+            }
             val fillups = fillupsResp.items
             val mpgResp = runCatching {
                 api.getMpgTrend(vehicleId, window = "year")
