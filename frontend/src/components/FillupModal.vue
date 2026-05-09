@@ -126,14 +126,27 @@ function geolocate() {
 async function save() {
   saving.value = true;
   saveError.value = null;
+  // Client-side guards. The backend requires non-null odo + fuel_volume;
+  // surfacing this here is friendlier than letting it 422 with a generic
+  // "save failed" toast.
+  if (form.value.odo == null || Number.isNaN(form.value.odo)) {
+    saveError.value = "Odometer is required";
+    saving.value = false;
+    return;
+  }
+  if (form.value.fuel_volume == null || Number.isNaN(form.value.fuel_volume)) {
+    saveError.value = "Fuel volume is required";
+    saving.value = false;
+    return;
+  }
   try {
     const payload: Partial<Fillup> = {
       vehicle_id: props.vehicle.id,
       fillup_date: form.value.fillup_date
         ? new Date(form.value.fillup_date).toISOString()
         : undefined,
-      odo: form.value.odo ?? null,
-      fuel_volume: form.value.fuel_volume ?? null,
+      odo: form.value.odo,
+      fuel_volume: form.value.fuel_volume,
       price_total: form.value.price_total ?? null,
       price_per_unit: form.value.price_per_unit ?? null,
       is_full: form.value.is_full,
@@ -155,7 +168,24 @@ async function save() {
     emit("saved", saved);
     emit("close");
   } catch (e: unknown) {
-    saveError.value = e instanceof Error ? e.message : "save failed";
+    // Pull a useful detail off Axios errors. FastAPI returns 422 with
+    // a `detail: [{loc, msg, ...}]` shape — surface the first message
+    // so the user sees "Input should be a valid number on body.odo"
+    // instead of a generic "save failed".
+    const axiosErr = e as {
+      response?: { data?: { detail?: unknown } };
+      message?: string;
+    };
+    const detail = axiosErr?.response?.data?.detail;
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0] as { loc?: unknown[]; msg?: string };
+      const field = Array.isArray(first.loc) ? first.loc.slice(-1)[0] : "field";
+      saveError.value = `${first.msg ?? "validation failed"} (${field})`;
+    } else if (typeof detail === "string") {
+      saveError.value = detail;
+    } else {
+      saveError.value = e instanceof Error ? e.message : "save failed";
+    }
   } finally {
     saving.value = false;
   }
