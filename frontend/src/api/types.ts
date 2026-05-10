@@ -157,6 +157,13 @@ export interface TripDtcRef {
   description?: string | null;
 }
 
+export interface TripImuEvent {
+  t: string;
+  magnitude: number;
+  lat?: number | null;
+  lon?: number | null;
+}
+
 export interface TripDetail extends Trip {
   samples: TripSample[];
   // Closest pid_readings odometer value within ±15 min of trip
@@ -166,6 +173,10 @@ export interface TripDetail extends Trip {
   // DTCs that fired during the trip's open window (from
   // dtc_events.seen_at, ascending).
   dtcs?: TripDtcRef[];
+  // Hard-accel/brake/cornering events: 1s buckets where |linear-accel|
+  // exceeded the threshold. Includes the nearest gps_point for map
+  // markers. (Task #111)
+  imu_events?: TripImuEvent[];
 }
 
 export interface Dtc {

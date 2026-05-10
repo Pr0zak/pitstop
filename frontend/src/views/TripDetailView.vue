@@ -158,6 +158,17 @@ const TRIP_SERIES: TripSeries[] = [
   // samples (dv/dt → m/s², converted to g). Won't be found in
   // pid_readings; the chart loop synthesises the column.
   { metric: "acceleration",           label: "Accel (g)",        stroke: "#fb923c", scale: "accel",  axisLabel: "g",     transform: (v) => v,            defaultVisible: false },
+  // IMU axes — raw linear-acceleration (m/s², gravity-stripped) and
+  // gyro (rad/s) at 5 Hz. Phone orientation determines which axis
+  // maps to forward/lateral/vertical — leave it to the user to
+  // toggle whichever reads cleanest for their phone mount.
+  // (Task #111)
+  { metric: "accel_x",                label: "Accel X (m/s²)",   stroke: "#fb923c", scale: "imu",    axisLabel: "m/s²",  transform: (v) => v,            defaultVisible: false },
+  { metric: "accel_y",                label: "Accel Y (m/s²)",   stroke: "#a78bfa", scale: "imu",    axisLabel: "m/s²",  transform: (v) => v,            defaultVisible: false },
+  { metric: "accel_z",                label: "Accel Z (m/s²)",   stroke: "#06b6d4", scale: "imu",    axisLabel: "m/s²",  transform: (v) => v,            defaultVisible: false },
+  { metric: "gyro_x",                 label: "Gyro X (rad/s)",   stroke: "#facc15", scale: "gyro",   axisLabel: "rad/s", transform: (v) => v,            defaultVisible: false },
+  { metric: "gyro_y",                 label: "Gyro Y (rad/s)",   stroke: "#22c55e", scale: "gyro",   axisLabel: "rad/s", transform: (v) => v,            defaultVisible: false },
+  { metric: "gyro_z",                 label: "Gyro Z (rad/s)",   stroke: "#94a3b8", scale: "gyro",   axisLabel: "rad/s", transform: (v) => v,            defaultVisible: false },
 ];
 
 // Metrics in TRIP_SERIES that are computed in the frontend rather
@@ -270,32 +281,52 @@ const chart = computed<ChartData>(() => {
     });
     side = 1 - side;
   }
-  // Vertical rules for each DTC fire event during the trip window
-  // (Task #110). Rendered as a uPlot hooks plugin so we don't have
-  // to fight the series shape — we just paint over the chart at the
-  // x-pixel for each event's seen_at.
+  // Vertical rules for DTC fire events (#110) + hard IMU events
+  // (#111). Both share the same plugin — different stroke colors
+  // so they read distinctly: red dashed for DTCs (a fault fired),
+  // amber dotted for hard accel/brake events (driving behavior).
   const dtcMarkers: { ts: number; code: string }[] = (trip.value.dtcs ?? [])
     .map((d) => ({ ts: Math.round(Date.parse(d.seen_at) / 1000), code: d.code }))
     .filter((d) => Number.isFinite(d.ts));
-  const dtcPlugin: uPlot.Plugin | null = dtcMarkers.length
+  const imuMarkers: { ts: number; mag: number }[] = (trip.value.imu_events ?? [])
+    .map((e) => ({ ts: Math.round(Date.parse(e.t) / 1000), mag: e.magnitude }))
+    .filter((e) => Number.isFinite(e.ts));
+  const hasMarkers = dtcMarkers.length > 0 || imuMarkers.length > 0;
+  const markerPlugin: uPlot.Plugin | null = hasMarkers
     ? {
         hooks: {
           draw: (u) => {
             const ctx = u.ctx;
             ctx.save();
+            ctx.font = "11px ui-sans-serif";
+            // DTC rules — solid red, code label above
             ctx.strokeStyle = "#ef4444";
             ctx.fillStyle = "#ef4444";
             ctx.lineWidth = 1;
-            ctx.font = "11px ui-sans-serif";
             for (const m of dtcMarkers) {
               const x = u.valToPos(m.ts, "x", true);
               if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+              ctx.setLineDash([]);
               ctx.beginPath();
               ctx.moveTo(x, u.bbox.top);
               ctx.lineTo(x, u.bbox.top + u.bbox.height);
               ctx.stroke();
               ctx.fillText(m.code, x + 4, u.bbox.top + 12);
             }
+            // IMU rules — dashed amber, magnitude label
+            ctx.strokeStyle = "#f59e0b";
+            ctx.fillStyle = "#f59e0b";
+            for (const m of imuMarkers) {
+              const x = u.valToPos(m.ts, "x", true);
+              if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+              ctx.setLineDash([2, 3]);
+              ctx.beginPath();
+              ctx.moveTo(x, u.bbox.top);
+              ctx.lineTo(x, u.bbox.top + u.bbox.height);
+              ctx.stroke();
+              ctx.fillText(m.mag.toFixed(1) + "g", x + 4, u.bbox.top + 26);
+            }
+            ctx.setLineDash([]);
             ctx.restore();
           },
         },
@@ -316,7 +347,7 @@ const chart = computed<ChartData>(() => {
       })),
     ],
     axes,
-    ...(dtcPlugin ? { plugins: [dtcPlugin] } : {}),
+    ...(markerPlugin ? { plugins: [markerPlugin] } : {}),
   };
   return { aligned, opts };
 });
@@ -370,6 +401,29 @@ function bucketColor(speedMps: number | null): string {
   if (speedMps < 20) return "#22c55e";      // green — suburban
   return "#2f81f7";                         // blue — highway
 }
+
+// IMU hard-event markers for the route map (#111). Each event the
+// backend returns with a non-null lat/lon becomes a dot on the
+// polyline at the position it happened. Magnitude is the marker
+// label so hovering reveals "0.6g" etc.
+const imuMapMarkers = computed<{ id: string; lng: number; lat: number; properties: Record<string, unknown> }[]>(() => {
+  const events = trip.value?.imu_events ?? [];
+  const out: { id: string; lng: number; lat: number; properties: Record<string, unknown> }[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e.lat == null || e.lon == null) continue;
+    out.push({
+      id: `imu-${i}`,
+      lng: e.lon,
+      lat: e.lat,
+      properties: {
+        label: `${e.magnitude.toFixed(2)}g at ${new Date(e.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+        magnitude: e.magnitude,
+      },
+    });
+  }
+  return out;
+});
 
 const routeSegments = computed<{ coords: [number, number][]; color: string }[]>(() => {
   const points = routeData.value?.points;
@@ -711,6 +765,7 @@ async function saveMeta() {
               <MapLibreMap
                 :route-segments="routeSegments.length ? routeSegments : undefined"
                 :route="routeSegments.length ? undefined : route2D"
+                :markers="imuMapMarkers"
                 :height="360"
               />
               <div v-if="routeSegments.length" class="speed-legend">
@@ -718,6 +773,9 @@ async function saveMeta() {
                 <span class="dot" style="background:#f59e0b"></span> city
                 <span class="dot" style="background:#22c55e"></span> suburban
                 <span class="dot" style="background:#2f81f7"></span> highway
+                <span v-if="imuMapMarkers.length" class="muted small">
+                  · {{ imuMapMarkers.length }} hard event{{ imuMapMarkers.length === 1 ? "" : "s" }}
+                </span>
               </div>
             </template>
           </div>

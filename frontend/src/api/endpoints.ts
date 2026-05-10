@@ -424,6 +424,21 @@ export async function getCostOfOwnership(vehicleId: string): Promise<CostOfOwner
   return r.data;
 }
 
+export interface MpgBySpeedClassRow {
+  class: string;
+  trip_count: number;
+  avg_mpg: number | null;
+}
+export async function getMpgBySpeedClass(
+  vehicleId: string,
+): Promise<{ classes: MpgBySpeedClassRow[] }> {
+  const r = await apiQuery.get<{ classes: MpgBySpeedClassRow[] }>(
+    "/analytics/mpg-by-speed-class",
+    { params: { vehicle_id: vehicleId } },
+  );
+  return r.data;
+}
+
 export interface FuelGradeRow {
   grade: number;
   fillup_count: number;

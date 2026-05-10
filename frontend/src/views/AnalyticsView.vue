@@ -371,6 +371,21 @@ const breakdownMaxMonth = computed(() => {
   return months.length ? Math.max(...months.map((m) => m.total)) : 0;
 });
 
+// MPG by driving environment (Task #87). Each trip classified by
+// avg_speed_kph into Highway / Mixed / City, MPG averaged per class.
+const mpgClassQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getMpgBySpeedClass(vehicleId.value)
+      : Promise.resolve({ classes: [] as api.MpgBySpeedClassRow[] }),
+  [vehicleId],
+);
+function speedClassColor(label: string): string {
+  return label === "Highway" ? "#2f81f7"
+    : label === "Mixed" ? "#22c55e"
+    : "#f59e0b";
+}
+
 // Fuel-grade comparison (Task #93). Per-grade chain MPG + price.
 // Independent of `window` — comparison only makes sense over the
 // vehicle's full history; a 30-day window has too few fillups per
@@ -568,6 +583,34 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
           </div>
         </section>
 
+        <section
+          v-if="mpgClassQ.data.value && mpgClassQ.data.value.classes.some(c => c.trip_count > 0)"
+          class="card"
+        >
+          <header class="head-inline">
+            <h3>MPG by driving environment</h3>
+            <span class="muted small">avg_speed-bucketed trips</span>
+          </header>
+          <ul class="speed-class-rows">
+            <li
+              v-for="c in mpgClassQ.data.value!.classes.filter(c => c.trip_count > 0)"
+              :key="c.class"
+            >
+              <span class="dot" :style="{ background: speedClassColor(c.class) }"></span>
+              <span class="speed-class-label">{{ c.class }}</span>
+              <span class="num speed-class-mpg">
+                {{ c.avg_mpg != null ? c.avg_mpg.toFixed(1) : "—" }}
+                <span class="muted small">mpg</span>
+              </span>
+              <span class="muted small">{{ c.trip_count }} trip{{ c.trip_count === 1 ? "" : "s" }}</span>
+            </li>
+          </ul>
+          <p class="muted small">
+            Trips classified by avg speed: Highway ≥ 55 mph, Mixed 35–55 mph, City &lt; 35 mph.
+            OBD-derived MPG averaged per class.
+          </p>
+        </section>
+
         <section v-if="(gradeQ.data.value?.grades?.length ?? 0) >= 2" class="card">
           <h3>Fuel grade comparison</h3>
           <table class="data grade-table">
@@ -735,6 +778,33 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
   height: 8px;
   border-radius: 50%;
   display: inline-block;
+}
+.speed-class-rows {
+  list-style: none;
+  margin: 0.3rem 0 0.6rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.speed-class-rows li {
+  display: grid;
+  grid-template-columns: 12px 5rem 1fr auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  font-size: 0.9rem;
+}
+.speed-class-rows .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.speed-class-label {
+  font-weight: 500;
+}
+.speed-class-mpg {
+  font-variant-numeric: tabular-nums;
 }
 .dtc-list {
   list-style: none;

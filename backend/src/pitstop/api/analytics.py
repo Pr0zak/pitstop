@@ -591,6 +591,66 @@ async def cost_breakdown(
     }
 
 
+@router.get("/mpg-by-speed-class", dependencies=[Depends(require_query_token)])
+async def mpg_by_speed_class(
+    vehicle_id: UUID = Query(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Per-trip MPG split by driving environment (Task #87).
+
+    Each trip with both distance and fuel data gets one classification
+    from its avg_speed_kph:
+        Highway     ≥ 88 kph (≈ 55 mph)
+        Mixed   56–88 kph (≈ 35–55 mph)
+        City        < 56 kph (≈ 35 mph)
+
+    Returns the count + averaged OBD-derived MPG per class. Answers
+    "how much do city errands hurt MPG vs highway driving?" without
+    needing to attribute fillup MPG to mid-trip distance shares —
+    the per-trip MPG is already direct measurement.
+
+    Trips with fuel_used_l < 0.1 are excluded — too short to give a
+    stable MPG figure (one MAF outlier dominates).
+    """
+    km_per_mi = 1.609344
+    l_per_gal = 3.785411784
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT avg_speed_kph, distance_km, fuel_used_l
+              FROM trips
+             WHERE vehicle_id = $1
+               AND avg_speed_kph IS NOT NULL
+               AND distance_km IS NOT NULL AND distance_km > 0
+               AND fuel_used_l IS NOT NULL AND fuel_used_l > 0.1
+            """,
+            vehicle_id,
+        )
+
+    classes: dict[str, list[float]] = {
+        "Highway": [],
+        "Mixed": [],
+        "City": [],
+    }
+    for r in rows:
+        kph = float(r["avg_speed_kph"])
+        mpg = (float(r["distance_km"]) / km_per_mi) / (float(r["fuel_used_l"]) / l_per_gal)
+        if mpg < 1 or mpg > 100:
+            continue  # implausible (MAF glitch, short trip)
+        cls = "Highway" if kph >= 88 else "City" if kph < 56 else "Mixed"
+        classes[cls].append(mpg)
+
+    out = []
+    for label in ("Highway", "Mixed", "City"):
+        mpgs = classes[label]
+        out.append({
+            "class": label,
+            "trip_count": len(mpgs),
+            "avg_mpg": round(sum(mpgs) / len(mpgs), 2) if mpgs else None,
+        })
+    return {"classes": out}
+
+
 @router.get("/fuel-grade", dependencies=[Depends(require_query_token)])
 async def fuel_grade_breakdown(
     vehicle_id: UUID = Query(...),
