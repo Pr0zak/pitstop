@@ -81,6 +81,82 @@ function useCurrentLocation() {
 const limit = ref(50);
 const offset = ref(0);
 
+// Stats-tab user controls — persisted to localStorage so the
+// view survives reload. Window applies to spend / cost-per-mile /
+// fillup-history charts. Chart-visibility toggles are per-chart.
+type StatsWindow = "30d" | "3m" | "12m" | "all";
+const STATS_WINDOW_KEY = "pitstop_stats_window";
+const STATS_CHARTS_KEY = "pitstop_stats_charts";
+
+function loadStatsWindow(): StatsWindow {
+  try {
+    const v = localStorage.getItem(STATS_WINDOW_KEY) as StatsWindow | null;
+    if (v === "30d" || v === "3m" || v === "12m" || v === "all") return v;
+  } catch {
+    /* ignore */
+  }
+  return "12m";
+}
+function loadVisible(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(STATS_CHARTS_KEY);
+    if (raw) return { ...DEFAULT_VISIBLE, ...JSON.parse(raw) };
+  } catch {
+    /* ignore */
+  }
+  return { ...DEFAULT_VISIBLE };
+}
+const DEFAULT_VISIBLE: Record<string, boolean> = {
+  kpis: true,
+  monthly: true,
+  cpm: true,
+  overlay: true,
+  range: true,
+  ppg: true,
+  freq: true,
+  vol: true,
+  mpgVsTemp: true,
+};
+const statsWindow = ref<StatsWindow>(loadStatsWindow());
+const chartVisible = ref<Record<string, boolean>>(loadVisible());
+
+watch(statsWindow, (v) => {
+  try { localStorage.setItem(STATS_WINDOW_KEY, v); } catch { /* ignore */ }
+});
+watch(
+  chartVisible,
+  (v) => {
+    try { localStorage.setItem(STATS_CHARTS_KEY, JSON.stringify(v)); } catch { /* ignore */ }
+  },
+  { deep: true },
+);
+
+const chartChoices = [
+  { key: "kpis", label: "KPIs" },
+  { key: "monthly", label: "Monthly spend" },
+  { key: "cpm", label: "$/mile" },
+  { key: "overlay", label: "OBD vs fillup" },
+  { key: "range", label: "Range" },
+  { key: "ppg", label: "$/gal trend" },
+  { key: "freq", label: "Frequency" },
+  { key: "vol", label: "Volume" },
+  { key: "mpgVsTemp", label: "MPG vs temp" },
+] as const;
+
+const statsWindowMonths = computed<number>(() => {
+  switch (statsWindow.value) {
+    case "30d": return 1;
+    case "3m": return 3;
+    case "12m": return 12;
+    case "all": return 240; // 20 years — effectively unbounded for monthlySpend
+  }
+});
+const statsCutoffMs = computed<number | null>(() => {
+  if (statsWindow.value === "all") return null;
+  const days = { "30d": 30, "3m": 90, "12m": 365 }[statsWindow.value];
+  return Date.now() - days * 86_400_000;
+});
+
 const fillupsQ = useAsync(
   () =>
     vehicleId.value
@@ -108,17 +184,26 @@ const stationPricesQ = useAsync(
 const monthlyQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
-      ? api.monthlySpend(vehicleId.value, 12)
+      ? api.monthlySpend(vehicleId.value, statsWindowMonths.value)
       : Promise.resolve({ months: [] }),
-  [vehicleId, tab],
+  [vehicleId, tab, statsWindow],
 );
 
 const cpmQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
-      ? api.costPerMile(vehicleId.value, "year")
+      ? api.costPerMile(
+          vehicleId.value,
+          statsWindow.value === "30d"
+            ? "month"
+            : statsWindow.value === "3m"
+              ? "3m"
+              : statsWindow.value === "12m"
+                ? "year"
+                : "all",
+        )
       : Promise.resolve({ points: [] }),
-  [vehicleId, tab],
+  [vehicleId, tab, statsWindow],
 );
 
 const overlayQ = useAsync(
@@ -135,10 +220,23 @@ const overlayQ = useAsync(
 const statsFillupsQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
-      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 200 })
+      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 500 })
       : Promise.resolve({ items: [], total: 0 }),
   [vehicleId, tab],
 );
+
+// Time-window-filtered slice of statsFillupsQ. Each chart consumes
+// this rather than the raw list so the user's window selection
+// applies uniformly without re-fetching.
+const statsFillupsFiltered = computed<Fillup[]>(() => {
+  const items = (statsFillupsQ.data.value?.items ?? []) as Fillup[];
+  const cutoff = statsCutoffMs.value;
+  if (cutoff == null) return items;
+  return items.filter((f) => {
+    const t = Date.parse(f.fillup_date ?? "");
+    return Number.isFinite(t) && t >= cutoff;
+  });
+});
 
 watch([vehicleId], () => {
   offset.value = 0;
@@ -347,7 +445,7 @@ const summary = computed(() => {
 //
 // price_per_unit is Decimal serialised as a JSON string. Coerce here.
 const ppgChart = computed(() => {
-  const items = (statsFillupsQ.data.value?.items ?? [])
+  const items = (statsFillupsFiltered.value as Fillup[])
     .map((f) => {
       const ppgRaw = f.price_per_unit;
       const ppg =
@@ -385,7 +483,7 @@ const ppgChart = computed(() => {
 
 // Days-between-fillups histogram. Bins: 0-3, 4-7, 8-14, 15-21, 22-30, 31+
 const frequencyChart = computed(() => {
-  const items = (statsFillupsQ.data.value?.items ?? [])
+  const items = (statsFillupsFiltered.value as Fillup[])
     .filter((f) => !!f.fillup_date)
     .sort(
       (a, b) =>
@@ -449,7 +547,7 @@ const frequencyChart = computed(() => {
 
 // Tank-fill volume distribution histogram. Bins are 5L wide.
 const volumeDistChart = computed(() => {
-  const items = (statsFillupsQ.data.value?.items ?? [])
+  const items = (statsFillupsFiltered.value as Fillup[])
     .map((f) => f.fuel_volume)
     .filter((v): v is number => typeof v === "number" && v > 0);
   if (items.length < 4) return null;
@@ -529,6 +627,66 @@ const rangeEstimate = computed<{
   const remainingGal = tankGal * (fuelLevel / 100);
   const miles = remainingGal * mpg;
   return { miles, fuelLevel, rollingMpg: mpg };
+});
+
+// MPG vs temperature: bin fillups by ambient temp at fillup time
+// (10 °F buckets) and chart the average recomputed MPG per bucket.
+// Falls out of the v0.1.91 weather plumbing — answers "how much
+// does cold weather hurt my MPG" directly. Needs at least 4 fillups
+// with both weather_temp_c and a recomputed mpg.
+const mpgVsTempChart = computed(() => {
+  const items = (statsFillupsFiltered.value as Fillup[])
+    .filter((f) => f.weather_temp_c != null && f.mpg != null && (f.mpg as number) > 0);
+  if (items.length < 4) return null;
+  // Group into 10°F buckets centred on each integer label.
+  const C_TO_F = (c: number) => (c * 9) / 5 + 32;
+  const buckets = new Map<number, number[]>();
+  for (const f of items) {
+    const fF = C_TO_F(f.weather_temp_c as number);
+    const bucket = Math.round(fF / 10) * 10;
+    const arr = buckets.get(bucket) ?? [];
+    arr.push(f.mpg as number);
+    buckets.set(bucket, arr);
+  }
+  const bins = Array.from(buckets.keys()).sort((a, b) => a - b);
+  const xs = bins.map((b) => b);
+  const ys = bins.map((b) => {
+    const arr = buckets.get(b)!;
+    return arr.reduce((s, v) => s + v, 0) / arr.length;
+  });
+  const aligned: uPlot.AlignedData = [xs, ys];
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 220,
+    cursor: { drag: { x: false, y: false, setScale: false } },
+    legend: { show: false },
+    scales: { x: { time: false }, y: {} },
+    axes: [
+      { stroke: "#9aa0aa", label: "°F" },
+      { stroke: "#9aa0aa", label: "mpg" },
+    ],
+    series: [
+      {},
+      {
+        label: "Avg MPG",
+        stroke: "#3fb950",
+        fill: "rgba(63,185,80,0.45)",
+        width: 1.5,
+        paths: (_u, sIdx, i0, i1) => {
+          const path = new Path2D();
+          for (let i = i0; i <= i1; i++) {
+            const xv = _u.valToPos(xs[i], "x", true);
+            const yv = _u.valToPos(ys[i], "y", true);
+            const yz = _u.valToPos(0, "y", true);
+            const w = 28;
+            path.rect(xv - w / 2, yv, w, yz - yv);
+          }
+          return { stroke: path, fill: path };
+        },
+      },
+    ],
+  };
+  return { aligned, opts, bucketCount: bins.length };
 });
 </script>
 
@@ -781,7 +939,30 @@ const rangeEstimate = computed<{
 
       <!-- Stats -->
       <template v-else>
+        <div class="stats-controls">
+          <div class="control-row">
+            <span class="muted small">Window:</span>
+            <button
+              v-for="w in (['30d', '3m', '12m', 'all'] as const)"
+              :key="w"
+              class="chip"
+              :class="{ active: statsWindow === w }"
+              @click="statsWindow = w"
+            >{{ { '30d': '30 days', '3m': '3 months', '12m': '12 months', 'all': 'All time' }[w] }}</button>
+          </div>
+          <div class="control-row">
+            <span class="muted small">Charts:</span>
+            <button
+              v-for="c in chartChoices"
+              :key="c.key"
+              class="chip"
+              :class="{ active: chartVisible[c.key] }"
+              @click="chartVisible[c.key] = !chartVisible[c.key]"
+            >{{ c.label }}</button>
+          </div>
+        </div>
         <div class="grid stats">
+          <template v-if="chartVisible.kpis">
           <div class="card kpi">
             <h3>Avg MPG (recent)</h3>
             <div class="big">{{ fmtMpg(summary.avgMpg) }}</div>
@@ -794,19 +975,20 @@ const rangeEstimate = computed<{
             <h3>Miles tracked</h3>
             <div class="big">{{ fmtMiles(summary.totalMiles) }}</div>
           </div>
-          <div class="card chart-card">
+          </template>
+          <div v-if="chartVisible.monthly" class="card chart-card">
             <h3>Monthly spend</h3>
             <div v-if="monthlyQ.loading.value" class="muted">Loading…</div>
             <div v-else-if="!monthlyChart" class="muted">No data.</div>
             <UPlotChart v-else :data="monthlyChart.aligned" :options="monthlyChart.opts" />
           </div>
-          <div class="card chart-card">
+          <div v-if="chartVisible.cpm" class="card chart-card">
             <h3>$/mile</h3>
             <div v-if="cpmQ.loading.value" class="muted">Loading…</div>
             <div v-else-if="!cpmChart" class="muted">No data.</div>
             <UPlotChart v-else :data="cpmChart.aligned" :options="cpmChart.opts" />
           </div>
-          <div class="card chart-card wide">
+          <div v-if="chartVisible.overlay" class="card chart-card wide">
             <h3>OBD vs fillup MPG</h3>
             <div v-if="overlayQ.loading.value" class="muted">Loading…</div>
             <div v-else-if="!overlayChart" class="muted">
@@ -817,7 +999,7 @@ const rangeEstimate = computed<{
 
           <!-- Range-to-empty KPI: depends on tank1_capacity + live fuel
                level. When either is missing, surfaces a hint. -->
-          <div class="card kpi">
+          <div v-if="chartVisible.range" class="card kpi">
             <h3>Range to empty</h3>
             <div v-if="!rangeEstimate" class="muted small">
               Set tank capacity on the vehicle first.
@@ -839,14 +1021,14 @@ const rangeEstimate = computed<{
             </template>
           </div>
 
-          <div class="card chart-card">
+          <div v-if="chartVisible.ppg" class="card chart-card">
             <h3>$/gallon trend</h3>
             <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
             <div v-else-if="!ppgChart" class="muted">No price data.</div>
             <UPlotChart v-else :data="ppgChart.aligned" :options="ppgChart.opts" />
           </div>
 
-          <div class="card chart-card">
+          <div v-if="chartVisible.freq" class="card chart-card">
             <h3>Fillup frequency</h3>
             <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
             <div v-else-if="!frequencyChart" class="muted">
@@ -855,13 +1037,28 @@ const rangeEstimate = computed<{
             <UPlotChart v-else :data="frequencyChart.aligned" :options="frequencyChart.opts" />
           </div>
 
-          <div class="card chart-card">
+          <div v-if="chartVisible.vol" class="card chart-card">
             <h3>Volume per fill</h3>
             <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
             <div v-else-if="!volumeDistChart" class="muted">
               Need at least 4 fillups for a distribution.
             </div>
             <UPlotChart v-else :data="volumeDistChart.aligned" :options="volumeDistChart.opts" />
+          </div>
+
+          <div v-if="chartVisible.mpgVsTemp" class="card chart-card">
+            <h3>MPG by temperature</h3>
+            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
+            <div v-else-if="!mpgVsTempChart" class="muted">
+              Need at least 4 fillups with weather data — backfill is in progress.
+            </div>
+            <template v-else>
+              <UPlotChart :data="mpgVsTempChart.aligned" :options="mpgVsTempChart.opts" />
+              <p class="muted small">
+                Average recomputed MPG grouped into 10°F buckets across
+                {{ mpgVsTempChart.bucketCount }} temperature ranges.
+              </p>
+            </template>
           </div>
         </div>
       </template>
@@ -973,6 +1170,35 @@ const rangeEstimate = computed<{
 .kpi .big {
   font-size: 1.5rem;
   font-weight: 600;
+}
+.stats-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.chip {
+  padding: 0.32rem 0.7rem;
+  font-size: 0.78rem;
+  border-radius: 999px;
+  border: 1px solid var(--c-border-soft);
+  background: var(--c-surface);
+  color: var(--c-muted);
+  cursor: pointer;
+}
+.chip:hover {
+  background: var(--c-surface-2);
+}
+.chip.active {
+  background: var(--c-accent-tint);
+  color: var(--c-ink0);
+  border-color: var(--c-accent);
 }
 .chart-card {
   grid-column: span 1;
