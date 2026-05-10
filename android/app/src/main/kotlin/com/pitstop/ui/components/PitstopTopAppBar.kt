@@ -76,9 +76,10 @@ fun PitstopTopAppBar(
 }
 
 /**
- * Tiny arc-ticks-redline mark drawn directly with Compose Canvas. Same
- * geometry as the web favicon: 270° arc from -135° to +135°, redline
- * runs +95° → +135°. Major ticks every 30°.
+ * Tiny arc-ticks-redline-needle mark drawn directly with Compose
+ * Canvas. Same geometry as the web favicon: 270° arc from -135° to
+ * +135°, redline runs +95° → +135°. Major ticks every 30°. A small
+ * triangular needle points from the hub toward the redline boundary.
  */
 @Composable
 private fun BrandMark(sizeDp: Int) {
@@ -153,10 +154,38 @@ private fun BrandMark(sizeDp: Int) {
             )
         }
 
-        // Hub dot
+        // Triangular needle pointing at the redline boundary (+95°).
+        // Tip at 78 % radius — same proportion the web variant uses
+        // (0.80 of r=24 ≈ 19.2; here 0.78 of (radius - arcStroke/2)
+        // gives the same visual stop just inside the arc).
+        val needleR = radius - arcStroke / 2f
+        val tip = pointAt(95f, needleR * 0.78f)
+        // Base width: 5 % of canvas on each side of hub, perpendicular
+        // to the needle axis. Two helpers compute the perpendicular by
+        // taking pointAt at angles ±90° from the needle direction at a
+        // small radius from the hub.
+        val baseHalfW = w * 0.05f
+        val perpA = Offset(
+            cx + cos(((95f - 90f) - 90f) * (PI / 180f)).toFloat() * baseHalfW,
+            cy + sin(((95f - 90f) - 90f) * (PI / 180f)).toFloat() * baseHalfW,
+        )
+        val perpB = Offset(
+            cx + cos(((95f - 90f) + 90f) * (PI / 180f)).toFloat() * baseHalfW,
+            cy + sin(((95f - 90f) + 90f) * (PI / 180f)).toFloat() * baseHalfW,
+        )
+        val needlePath = Path().apply {
+            moveTo(tip.x, tip.y)
+            lineTo(perpA.x, perpA.y)
+            lineTo(perpB.x, perpB.y)
+            close()
+        }
+        drawPath(path = needlePath, color = ink)
+
+        // Hub dot — slightly larger than the baseline (0.06 vs 0.045)
+        // so the needle reads anchored rather than floating.
         drawCircle(
             color = accent,
-            radius = w * 0.045f,
+            radius = w * 0.06f,
             center = Offset(cx, cy),
         )
     }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Pitstop launcher foreground: arc-ticks-redline 270° mark on Android's
+  Pitstop launcher foreground: arc-ticks-redline-needle on Android's
   108x108 dp adaptive-icon canvas. Safe zone is the centre 66x66 dp.
   Background is the design token bg ramp (#0A0C10) declared in
   res/values/ic_launcher_background.xml.
@@ -8,9 +8,10 @@
   Geometry mirrors the web favicon at viewBox 0 0 64 64; translated to
   108x108 via translate(22, 22) + scale(1.0625). The mark is the same
   one rendered by frontend/public/favicon.svg and components/logos/
-  PitstopLogo.vue (variant arc-ticks-redline) so the brand reads
-  identically across web tab favicon, phone home screen, and the
-  PitstopTopAppBar mark inside the app.
+  PitstopLogo.vue (variant arc-ticks-redline-needle) — baseline arc +
+  ticks plus a triangular needle pointing into the redline boundary
+  and a slightly larger hub. Reads identically across web tab favicon,
+  phone home screen, and the PitstopTopAppBar mark inside the app.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -71,9 +72,20 @@
               android:strokeWidth="1.4" android:strokeLineCap="round"
               android:pathData="M 48.97 50 L 45.79 46.82" />
 
-        <!-- Hub dot -->
+        <!--
+          Triangular needle from hub (32, 33) toward the redline
+          boundary tick at (50.24, 38.27), tip at 80% radius.
+          Coordinates match the web variant precisely so the
+          launcher icon and the in-app mark are pixel-identical
+          when scaled to the same size.
+        -->
+        <path
+            android:fillColor="#E7E9EE"
+            android:pathData="M 46.59 37.22 L 31.45 34.07 L 32.55 31.93 Z" />
+
+        <!-- Hub dot — accent, slightly larger to match the needle variant -->
         <path
             android:fillColor="#FF5B3A"
-            android:pathData="M 32 33 m -2 0 a 2 2 0 1 0 4 0 a 2 2 0 1 0 -4 0 z" />
+            android:pathData="M 32 33 m -2.6 0 a 2.6 2.6 0 1 0 5.2 0 a 2.6 2.6 0 1 0 -5.2 0 z" />
     </group>
 </vector>

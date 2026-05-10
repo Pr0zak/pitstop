@@ -153,6 +153,28 @@ export async function listDtcs(vehicleId: string, activeOnly = true): Promise<Dt
 export async function clearDtc(id: string): Promise<void> {
   await apiIngest.post(`/dtcs/clear/${id}`);
 }
+export interface DtcTimelineCode {
+  code: string;
+  description: string | null;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  active: boolean;
+  events: { id: string; seen_at: string }[];
+}
+export interface DtcTimeline {
+  codes: DtcTimelineCode[];
+  window_days: number;
+}
+export async function getDtcsTimeline(
+  vehicleId: string,
+  days = 365,
+): Promise<DtcTimeline> {
+  const r = await apiQuery.get<DtcTimeline>("/dtcs/timeline", {
+    params: { vehicle_id: vehicleId, days },
+  });
+  return r.data;
+}
 
 // ─── settings ─────────────────────────────────────────────────────────
 

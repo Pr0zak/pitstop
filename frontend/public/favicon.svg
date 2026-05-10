@@ -4,9 +4,10 @@
   width="64"
   height="64"
 >
-  <!-- pitstop favicon — arc-ticks-redline 270° (claude.ai/design canonical).
+  <!-- pitstop favicon — arc-ticks-redline-needle 270°.
        Hard-coded colors so the SVG renders correctly outside the app's
-       theme context. Centre 32,33; radius 24; redline +95°→+135°. -->
+       theme context. Centre 32,33; radius 24; redline +95°→+135°.
+       Triangular needle points at the redline boundary. -->
   <rect width="64" height="64" rx="12" fill="#0a0c10"/>
   <!-- Cool arc body: -135° → +95° -->
   <path d="M 15.03 50 A 24 24 0 1 1 55.86 39.04"
@@ -25,6 +26,8 @@
   <!-- Major ticks inside redline (accent) -->
   <line x1="50.24" y1="38.27" x2="45.87" y2="37.10" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
   <line x1="48.97" y1="50"    x2="45.79" y2="46.82" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
-  <!-- Hub dot -->
-  <circle cx="32" cy="33" r="2" fill="#ff5b3a"/>
+  <!-- Triangular needle: tip at 80% radius toward boundary tick -->
+  <path d="M 46.59 37.22 L 31.45 34.07 L 32.55 31.93 Z" fill="#e7e9ee"/>
+  <!-- Hub dot — slightly larger to anchor the needle -->
+  <circle cx="32" cy="33" r="2.6" fill="#ff5b3a"/>
 </svg>
