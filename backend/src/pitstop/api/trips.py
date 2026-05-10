@@ -170,8 +170,8 @@ async def get_trip(
             """
             SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1 AND metric = 'odometer'
-               AND time BETWEEN $2 - interval '15 minutes' AND $2 + interval '15 minutes'
-             ORDER BY abs(extract(epoch FROM (time - $2)))
+               AND time BETWEEN $2::timestamptz - interval '15 minutes' AND $2::timestamptz + interval '15 minutes'
+             ORDER BY abs(extract(epoch FROM (time - $2::timestamptz)))
              LIMIT 1
             """,
             row["vehicle_id"], started,
@@ -180,8 +180,8 @@ async def get_trip(
             """
             SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1 AND metric = 'odometer'
-               AND time BETWEEN $2 - interval '15 minutes' AND $2 + interval '15 minutes'
-             ORDER BY abs(extract(epoch FROM (time - $2)))
+               AND time BETWEEN $2::timestamptz - interval '15 minutes' AND $2::timestamptz + interval '15 minutes'
+             ORDER BY abs(extract(epoch FROM (time - $2::timestamptz)))
              LIMIT 1
             """,
             row["vehicle_id"], ended,
