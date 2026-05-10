@@ -132,8 +132,12 @@ const heroData = computed(() => {
     (f.fillup_date ?? "").startsWith(thisMonth),
   ).length;
 
-  // Miles-since-last-fill: live OBD odo vs last fillup odo.
-  const liveOdoKm = num("odometer");
+  // Miles-since-last-fill: prefer the persisted vehicles.latest_odo_km
+  // (refreshed every 5min by the trip deriver) over the per-metric
+  // vehicle_state cache, which is often stale or missing the odometer
+  // reading. Falls back to the legacy live-OBD path for vehicles that
+  // haven't received the v0.1.96 deriver pass yet.
+  const liveOdoKm = vehicles.selectedVehicle?.latest_odo_km ?? num("odometer");
   const milesSinceFill =
     liveOdoKm != null && latest?.odo != null
       ? Math.max(0, liveOdoKm * 0.621371 - latest.odo)

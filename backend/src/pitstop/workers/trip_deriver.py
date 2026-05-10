@@ -185,6 +185,38 @@ def _build_intervals(samples: list[_Sample]) -> list[_Interval]:
     return out
 
 
+async def _refresh_latest_odo(
+    conn: asyncpg.Connection,
+    vehicle_id: uuid.UUID,
+) -> None:
+    """Pull the freshest odometer reading from pid_readings and update
+    vehicles.latest_odo_km if it's newer than the stored value. Cheap
+    per-cycle (one SELECT max + one conditional UPDATE per vehicle).
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT max(time) AS t, max(value_num) AS odo
+          FROM pid_readings
+         WHERE vehicle_id = $1
+           AND metric = 'odometer'
+           AND value_num IS NOT NULL
+        """,
+        vehicle_id,
+    )
+    if row is None or row["t"] is None or row["odo"] is None:
+        return
+    await conn.execute(
+        """
+        UPDATE vehicles
+           SET latest_odo_km = $2,
+               latest_odo_at = $3
+         WHERE id = $1
+           AND ($3 > latest_odo_at OR latest_odo_at IS NULL OR latest_odo_km IS NULL)
+        """,
+        vehicle_id, float(row["odo"]), row["t"],
+    )
+
+
 async def _derive_for_vehicle(
     conn: asyncpg.Connection,
     vehicle_id: uuid.UUID,
@@ -194,6 +226,9 @@ async def _derive_for_vehicle(
     """Build + upsert trips for one vehicle since `since`. Returns the
     number of trip rows touched (added + updated).
     """
+    # Refresh odometer first — cheap, makes Overview's "miles since
+    # last fill" stat fresh on every deriver cycle (5 min).
+    await _refresh_latest_odo(conn, vehicle_id)
     samples = await _activity_samples(conn, vehicle_id, since)
     if not samples:
         return 0

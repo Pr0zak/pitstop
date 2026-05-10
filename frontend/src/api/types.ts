@@ -28,6 +28,11 @@ export interface Vehicle {
   last_seen_at?: string | null;
   last_metric?: string | null;
   latest?: Record<string, number | string | null> | null;
+  // Lifetime odometer reading from the freshest pid_readings entry
+  // (or fillup history when no live data). Stored canonically in km;
+  // convert at render time per the user's preferred units.
+  latest_odo_km?: number | null;
+  latest_odo_at?: string | null;
 }
 
 export interface Profile {

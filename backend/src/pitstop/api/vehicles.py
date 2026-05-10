@@ -27,6 +27,7 @@ _VEHICLE_SELECT = """
         v.tank_count, v.tank1_type, v.tank2_type,
         v.tank1_capacity, v.tank2_capacity,
         v.active, v.pid_profile_id,
+        v.latest_odo_km, v.latest_odo_at,
         s.last_seen_at, s.last_metric, COALESCE(s.latest, '{}'::jsonb) AS latest,
         p.name AS profile_name, p.description AS profile_description
       FROM vehicles v
@@ -58,6 +59,8 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
         "tank2_capacity": row["tank2_capacity"],
         "active": row["active"],
         "pid_profile_id": row["pid_profile_id"],
+        "latest_odo_km": row["latest_odo_km"],
+        "latest_odo_at": row["latest_odo_at"],
         "last_seen_at": row["last_seen_at"],
         "last_metric": row["last_metric"],
         "latest": row["latest"] or {},

@@ -137,6 +137,11 @@ class VehicleOut(VehicleBase):
     last_metric: str | None = None
     latest: dict[str, Any] = Field(default_factory=dict)
     pid_profile: ProfileBrief | None = None
+    # Lifetime odometer reading (Task #100). Updated by trip_deriver
+    # on each cycle from the freshest pid_readings odometer value;
+    # also bumped on fillup save when the user provides an odo.
+    latest_odo_km: float | None = None
+    latest_odo_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
