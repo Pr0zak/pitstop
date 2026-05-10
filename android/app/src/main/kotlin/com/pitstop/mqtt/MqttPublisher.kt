@@ -4,6 +4,7 @@ import com.hivemq.client.mqtt.MqttClient
 import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient
 import com.hivemq.client.mqtt.mqtt3.exceptions.Mqtt3ConnAckException
+import com.hivemq.client.mqtt.mqtt3.lifecycle.Mqtt3ClientDisconnectedContext
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.loggableUrl
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -69,6 +70,24 @@ class MqttPublisher @Inject constructor(
             .serverPort(port)
             .automaticReconnectWithDefaultConfig()
             .addDisconnectedListener { ctx ->
+                // HiveMQ MQTT3's automatic reconnect uses the BUILDER's
+                // CONNECT defaults — NOT the credentials from the
+                // original connectWith().send() call. Without re-applying
+                // simpleAuth here, every auto-reconnect attempt sends
+                // an unauthenticated CONNECT and Mosquitto returns
+                // NOT_AUTHORIZED in a tight loop. Capture the active
+                // username + password from this connect() invocation
+                // via closure and reapply each retry.
+                if (username.isNotBlank() && ctx is Mqtt3ClientDisconnectedContext) {
+                    ctx.reconnector.connectWith()
+                        .keepAlive(30)
+                        .cleanSession(true)
+                        .simpleAuth()
+                            .username(username)
+                            .password(password.toByteArray(Charsets.UTF_8))
+                            .applySimpleAuth()
+                        .applyConnect()
+                }
                 logBuffer.warn(
                     "mqtt disconnected",
                     mapOf(

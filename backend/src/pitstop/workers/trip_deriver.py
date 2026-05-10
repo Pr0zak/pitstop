@@ -90,16 +90,18 @@ async def _activity_samples(
       - vehicle_speed > 0 readings (driving)
       - GPS points faster than 1 m/s (moving)
 
-    Hard boundaries (kind="off"):
-      - Bridge engine_state=off — phone OBD STOPPED-frame detector,
-        accurate to seconds. Always trusted.
+    Hard boundaries (kind="off" / kind="on"):
+      - Bridge engine_state=on / =off — phone OBD-frame detector,
+        accurate to seconds. Always trusted as authoritative.
     Soft signals (kind="activity"):
-      - WiCAN LWT off — broker keepalive timeout, can blip false on
-        WiFi interruption. We DON'T treat it as a hard boundary here;
-        instead it's coerced to "activity" so the merge-gap logic
-        still groups across the blip. If the engine truly is off, a
-        bridge "off" or 5-min activity gap will close the interval.
-      - All "on" events (regardless of source) extend/open intervals.
+      - WiCAN LWT on / off — driven by broker keepalive + retained
+        publishes. Both sides can fire spuriously: a `wican_lwt off`
+        on WiFi blip, or a retained `wican_lwt on` re-delivered when
+        the *backend* reconnects to the broker (which the deriver
+        previously treated as a real key-on event, opening trips
+        with timestamps from minutes earlier than the actual drive).
+        Coerce both to "activity" so they groups across blips and
+        only the bridge events draw hard boundaries.
     """
     rows = await conn.fetch(
         """
@@ -114,8 +116,8 @@ async def _activity_samples(
         UNION ALL
         SELECT time,
                CASE
-                   WHEN state = 'off' AND source = 'bridge' THEN 'off'
-                   WHEN state = 'on' THEN 'on'
+                   WHEN source = 'bridge' AND state = 'off' THEN 'off'
+                   WHEN source = 'bridge' AND state = 'on' THEN 'on'
                    ELSE 'activity'
                END AS kind
           FROM engine_events
@@ -131,12 +133,17 @@ def _build_intervals(samples: list[_Sample]) -> list[_Interval]:
     """Walk the samples and produce activity intervals.
 
     Rules:
-      - "on" or "activity" extends or opens an interval.
-      - "off" hard-closes the current interval (engine actually
-        stopped — no merge across this).
-      - A signal-gap > MERGE_GAP_S between consecutive activity samples
-        also closes the current interval (catches drives where the
-        engine_off event was lost / never published).
+      - "off" (bridge-source only) hard-closes the current interval.
+      - "on" (bridge-source only) is an authoritative trip-start —
+        ALWAYS resets the interval start to its own time, even if
+        earlier activity was already opening one. Earlier "activity"
+        samples within the merge window are treated as pre-departure
+        noise (retained MQTT, GPS chatter, brief WiCAN wake-up
+        before key-on) and discarded by the reset.
+      - "activity" extends an existing interval or opens one when
+        none is active. A signal-gap > MERGE_GAP_S between activity
+        samples closes the current interval (catches drives where
+        engine_off was lost or never published).
     """
     out: list[_Interval] = []
     start: datetime | None = None
@@ -144,14 +151,20 @@ def _build_intervals(samples: list[_Sample]) -> list[_Interval]:
     for s in samples:
         if s.kind == "off":
             if start is not None and last is not None:
-                # Use the off-event time if it's after `last`; otherwise
-                # cap at last activity (off can fire late after silence).
                 end = max(last, s.time)
                 out.append(_Interval(start, end))
             start = None
             last = None
             continue
-        # "on" or "activity"
+        if s.kind == "on":
+            # Authoritative new trip starts here. Close any pending
+            # interval (as a separate trip) and reset.
+            if start is not None and last is not None and last < s.time:
+                out.append(_Interval(start, last))
+            start = s.time
+            last = s.time
+            continue
+        # activity
         if start is None:
             start = s.time
             last = s.time
