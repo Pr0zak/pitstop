@@ -126,6 +126,19 @@ watch(
     if (map?.loaded()) applyRoute();
   },
 );
+// Re-center when the caller changes initialCenter mid-flight (e.g.
+// "Use current location" toggle on the stations map). Only flies if
+// markers don't drive the bounds-fit anyway — we still prefer
+// fitBounds() when there are 2+ marker points so a single click of
+// "current location" doesn't yank a meaningful map view.
+watch(
+  () => props.initialCenter,
+  (c) => {
+    if (!c || !map) return;
+    if ((props.markers?.length ?? 0) >= 2) return;
+    map.flyTo({ center: c, zoom: props.initialZoom ?? 11, animate: false });
+  },
+);
 
 onBeforeUnmount(() => {
   clearMarkers();

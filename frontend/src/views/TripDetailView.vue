@@ -109,10 +109,10 @@ const chart = computed<ChartData>(() => {
       },
     ],
     axes: [
-      { stroke: "var(--c-muted)" },
-      { scale: "speed", stroke: "var(--c-muted)", label: "mph" },
-      { scale: "rpm", side: 1, stroke: "var(--c-muted)", label: "rpm" },
-      { scale: "temp", side: 1, stroke: "var(--c-muted)", grid: { show: false } },
+      { stroke: "#9aa0aa" },
+      { scale: "speed", stroke: "#9aa0aa", label: "mph" },
+      { scale: "rpm", side: 1, stroke: "#9aa0aa", label: "rpm" },
+      { scale: "temp", side: 1, stroke: "#9aa0aa", grid: { show: false } },
     ],
   };
   return { aligned, opts };

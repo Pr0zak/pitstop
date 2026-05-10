@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { useVehiclesStore } from "@/stores/vehicles";
+import { useSettingsStore } from "@/stores/settings";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type { Fillup } from "@/api/types";
@@ -20,8 +21,40 @@ import UPlotChart from "@/components/charts/UPlotChart.vue";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
 
 const vehicles = useVehiclesStore();
+const settings = useSettingsStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 const tab = ref<"fillups" | "map" | "stats">("fillups");
+
+onMounted(() => {
+  if (!settings.settings) void settings.fetchSettings();
+});
+
+// Map center: prefer the live "current location" override the user
+// can set with the button, fall back to the home location from
+// settings, fall back to NYC (MapLibreMap's own default) so the map
+// still renders something.
+const liveCenter = ref<[number, number] | null>(null);
+const mapCenter = computed<[number, number] | null>(() => {
+  if (liveCenter.value) return liveCenter.value;
+  const home = settings.settings?.home;
+  if (home && home.lat != null && home.lon != null) {
+    return [home.lon, home.lat];
+  }
+  return null;
+});
+
+function useCurrentLocation() {
+  if (!("geolocation" in navigator)) return;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      liveCenter.value = [pos.coords.longitude, pos.coords.latitude];
+    },
+    () => {
+      /* permission denied / failed — keep falling back to home */
+    },
+    { enableHighAccuracy: false, timeout: 5_000, maximumAge: 60_000 },
+  );
+}
 
 const limit = ref(50);
 const offset = ref(0);
@@ -199,7 +232,7 @@ const monthlyChart = computed(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "var(--c-muted)" }, { stroke: "var(--c-muted)", label: "$" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$" }],
     series: [
       {},
       { label: "Fuel", stroke: "#2f81f7", fill: "rgba(47,129,247,0.18)", width: 1.5 },
@@ -219,7 +252,7 @@ const cpmChart = computed(() => {
     width: 600,
     height: 200,
     scales: { x: { time: true } },
-    axes: [{ stroke: "var(--c-muted)" }, { stroke: "var(--c-muted)", label: "$/mi" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$/mi" }],
     series: [{}, { label: "$/mi", stroke: "#3fb950", width: 2 }],
   };
   return { aligned, opts };
@@ -250,7 +283,7 @@ const overlayChart = computed(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "var(--c-muted)" }, { stroke: "var(--c-muted)", label: "mpg" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
     series: [
       {},
       { label: "OBD MPG", stroke: "#3fb950", width: 1.5 },
@@ -320,8 +353,8 @@ const ppgChart = computed(() => {
     height: 200,
     scales: { x: { time: true } },
     axes: [
-      { stroke: "var(--c-muted)" },
-      { stroke: "var(--c-muted)", label: "$/gal" },
+      { stroke: "#9aa0aa" },
+      { stroke: "#9aa0aa", label: "$/gal" },
     ],
     series: [{}, { label: "$/gal", stroke: "var(--c-accent)", width: 1.5 }],
   };
@@ -361,10 +394,10 @@ const frequencyChart = computed(() => {
     scales: { x: { time: false } },
     axes: [
       {
-        stroke: "var(--c-muted)",
+        stroke: "#9aa0aa",
         values: (_u, vals) => vals.map((v) => labels[v as number] ?? ""),
       },
-      { stroke: "var(--c-muted)", label: "fillups" },
+      { stroke: "#9aa0aa", label: "fillups" },
     ],
     series: [
       {},
@@ -418,8 +451,8 @@ const volumeDistChart = computed(() => {
     height: 200,
     scales: { x: { time: false } },
     axes: [
-      { stroke: "var(--c-muted)", label: "Volume (gal)" },
-      { stroke: "var(--c-muted)", label: "fillups" },
+      { stroke: "#9aa0aa", label: "Volume (gal)" },
+      { stroke: "#9aa0aa", label: "fillups" },
     ],
     series: [
       {},
@@ -625,8 +658,25 @@ const rangeEstimate = computed<{
           </p>
         </div>
         <template v-else>
+          <div class="map-actions">
+            <button class="btn ghost" @click="useCurrentLocation">
+              Use current location
+            </button>
+            <span v-if="liveCenter" class="muted small">
+              Centered on your live position
+            </span>
+            <span v-else-if="mapCenter" class="muted small">
+              Centered on home location
+            </span>
+          </div>
           <div class="card no-pad map-card">
-            <MapLibreMap :markers="stationMarkers" :height="480" @marker-click="onMarkerClick" />
+            <MapLibreMap
+              :markers="stationMarkers"
+              :height="480"
+              :initial-center="mapCenter ?? undefined"
+              :initial-zoom="11"
+              @marker-click="onMarkerClick"
+            />
           </div>
           <div v-if="selectedStation" class="card">
             <h3>{{ String(selectedStation.properties.label ?? "Station") }}</h3>
@@ -906,7 +956,7 @@ const rangeEstimate = computed<{
   gap: 0.4rem 0.6rem;
 }
 .kv dt {
-  color: var(--c-muted);
+  color: #9aa0aa;
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;

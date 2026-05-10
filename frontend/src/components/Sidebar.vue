@@ -83,19 +83,24 @@ function toggle() {
 
 const route = useRoute();
 
+// Primary nav (top of sidebar) → live/operational items.
+// Secondary nav (bottom) → admin / setup / config that the user
+// touches once and rarely returns to.
 const items = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/fleet", label: "Fleet", icon: LayoutGrid },
-  { to: "/setup", label: "Setup", icon: HelpCircle },
   { to: "/live", label: "Live", icon: Activity },
   { to: "/trips", label: "Trips", icon: Route },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/fuel", label: "Fuel", icon: Fuel },
   { to: "/maintenance", label: "Maintenance", icon: Wrench },
   { to: "/dtcs", label: "DTCs", icon: AlertTriangle },
-  { to: "/debug", label: "Debug", icon: Bug },
+];
+const secondaryItems = [
   { to: "/vehicles", label: "Vehicles", icon: Car },
   { to: "/profiles", label: "Profiles", icon: FileJson },
+  { to: "/debug", label: "Debug", icon: Bug },
+  { to: "/setup", label: "Setup", icon: HelpCircle },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
@@ -126,6 +131,19 @@ const widthVar = computed(() =>
         :key="item.to"
         :to="item.to"
         class="nav-item"
+        :class="{ active: isActive(item.to) }"
+        :title="collapsed ? item.label : undefined"
+      >
+        <component :is="item.icon" :size="18" />
+        <span v-if="!collapsed" class="label">{{ item.label }}</span>
+      </RouterLink>
+    </nav>
+    <nav class="nav-secondary">
+      <RouterLink
+        v-for="item in secondaryItems"
+        :key="item.to"
+        :to="item.to"
+        class="nav-item secondary"
         :class="{ active: isActive(item.to) }"
         :title="collapsed ? item.label : undefined"
       >
@@ -226,6 +244,17 @@ nav {
   gap: 2px;
   flex: 1;
   overflow-y: auto;
+}
+nav.nav-secondary {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--c-line0);
+  margin-top: auto;
+  padding-top: 0.4rem;
+}
+.nav-item.secondary {
+  font-size: 0.85rem;
+  color: var(--c-muted);
+  opacity: 0.85;
 }
 .nav-item {
   display: flex;

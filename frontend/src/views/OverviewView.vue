@@ -153,6 +153,18 @@ const heroData = computed(() => {
     return r === "us" ? "U.S. avg" : r.replace(/_/g, " ") + " avg";
   })();
 
+  // Lifetime + per-fill aggregates from the same fillups window.
+  const totalGallons = fillups.reduce((s, f) => s + (toNum(f.fuel_volume) ?? 0), 0);
+  const totalCost = fillups.reduce((s, f) => s + (toNum(f.price_total) ?? 0), 0);
+  const totalMiles = fillups.length >= 2
+    ? Math.max(0, (toNum(fillups[0]?.odo) ?? 0) - (toNum(fillups[fillups.length - 1]?.odo) ?? 0))
+    : null;
+  const costPerMile = totalMiles && totalMiles > 0 ? totalCost / totalMiles : null;
+  // Best / worst MPG across the trend window.
+  const mpgVals = mpgPoints.map((p) => p.mpg ?? 0).filter((v) => v > 0);
+  const bestMpg = mpgVals.length ? Math.max(...mpgVals) : null;
+  const worstMpg = mpgVals.length ? Math.min(...mpgVals) : null;
+
   return {
     mpg90,
     latestPpg,
@@ -164,6 +176,12 @@ const heroData = computed(() => {
     eiaLatest,
     ppgVsRegion,
     eiaRegionLabel,
+    totalGallons,
+    totalCost,
+    totalMiles,
+    costPerMile,
+    bestMpg,
+    worstMpg,
   };
 });
 const dtcsQ = useAsync(
@@ -273,6 +291,39 @@ function num(key: string): number | null {
             {{ heroData.milesSinceFill != null && heroData.mpg90 != null
               ? '~' + (heroData.mpg90 - heroData.milesSinceFill / 16 * 0.5).toFixed(0) + ' mi range'
               : 'live odo vs last fillup' }}
+          </div>
+        </div>
+        <div class="card hero">
+          <h3>Cost / mile</h3>
+          <div class="hero-value">
+            <span class="big">{{ heroData.costPerMile != null ? '$' + heroData.costPerMile.toFixed(3) : '—' }}</span>
+          </div>
+          <div class="hero-sub muted">
+            {{ heroData.totalMiles != null
+              ? heroData.totalMiles.toFixed(0) + ' mi · $' + heroData.totalCost.toFixed(0) + ' total'
+              : 'last 30 fillups' }}
+          </div>
+        </div>
+        <div class="card hero">
+          <h3>Best MPG</h3>
+          <div class="hero-value">
+            <span class="big">{{ heroData.bestMpg != null ? heroData.bestMpg.toFixed(1) : '—' }}</span>
+            <span class="unit">mpg</span>
+          </div>
+          <div class="hero-sub muted">
+            {{ heroData.worstMpg != null
+              ? 'worst ' + heroData.worstMpg.toFixed(1) + ' mpg'
+              : 'this year' }}
+          </div>
+        </div>
+        <div class="card hero">
+          <h3>Total fuel</h3>
+          <div class="hero-value">
+            <span class="big">{{ heroData.totalGallons != null ? heroData.totalGallons.toFixed(0) : '—' }}</span>
+            <span class="unit">gal</span>
+          </div>
+          <div class="hero-sub muted">
+            last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups
           </div>
         </div>
       </section>

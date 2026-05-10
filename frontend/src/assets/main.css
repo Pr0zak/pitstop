@@ -355,3 +355,17 @@ table.data th.tabular {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* uPlot dark-theme overrides — uPlot's HTML legend defaults inherit
+   black-on-bright; canvas axes get raw colors directly in chart opts. */
+.u-legend {
+  color: var(--c-ink1);
+  background: transparent;
+}
+.u-legend .u-label,
+.u-legend .u-value {
+  color: var(--c-ink1);
+}
+.u-legend th {
+  color: var(--c-muted);
+}

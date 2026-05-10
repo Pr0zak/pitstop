@@ -118,7 +118,7 @@ const mpgChart = computed(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "var(--c-muted)" }, { stroke: "var(--c-muted)", label: "mpg" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
     series: [{}, { label: "MPG", stroke: "#2f81f7", width: 2 }],
   };
   return { aligned, opts };
@@ -135,7 +135,7 @@ const rpmChart = computed(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "var(--c-muted)" }, { stroke: "var(--c-muted)", label: "avg rpm" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "avg rpm" }],
     series: [
       {},
       {
@@ -184,7 +184,7 @@ const tempChart = computed(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "var(--c-muted)" }, { stroke: "var(--c-muted)", label: "°F" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "°F" }],
     series: seriesDefs,
   };
   return { aligned: cols, opts };
