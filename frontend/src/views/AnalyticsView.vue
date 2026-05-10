@@ -189,6 +189,45 @@ const tempChart = computed(() => {
   };
   return { aligned: cols, opts };
 });
+
+// Odometer history (Task #101). Backend takes a "year"/"3y"/"all"
+// window — translate from the page's AnalyticsWindow on the way in.
+const odoWindow = computed<"year" | "3y" | "all">(() =>
+  window.value === "year" ? "year"
+  : window.value === "all" ? "all"
+  : "year",
+);
+const odoQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getOdometerHistory(vehicleId.value, odoWindow.value)
+      : Promise.resolve({ points: [], summary: { window: "all", n_points: 0 } }),
+  [vehicleId, odoWindow],
+);
+
+const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+  const pts = odoQ.data.value?.points ?? [];
+  if (pts.length < 2) return null;
+  const t: number[] = [];
+  const y: (number | null)[] = [];
+  for (const p of pts) {
+    const ts = Math.round((Date.parse(p.time) || 0) / 1000);
+    t.push(ts);
+    // km → mi for display
+    y.push(p.odo_km != null ? p.odo_km * 0.621371 : null);
+  }
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 220,
+    scales: { x: { time: true } },
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mi" }],
+    series: [
+      {},
+      { label: "Odometer", stroke: "#2f81f7", width: 1.6, fill: "rgba(47,129,247,0.08)" },
+    ],
+  };
+  return { aligned: [t, y], opts };
+});
 </script>
 
 <template>
@@ -236,6 +275,26 @@ const tempChart = computed(() => {
           <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
           <div v-else-if="!tempChart" class="muted">No temperature readings.</div>
           <UPlotChart v-else :data="tempChart.aligned" :options="tempChart.opts" />
+        </section>
+
+        <section class="card">
+          <header class="head-inline">
+            <h3>Odometer history</h3>
+            <span v-if="odoQ.data.value?.summary.current_mi" class="muted small">
+              {{ Math.round(odoQ.data.value.summary.current_mi).toLocaleString() }} mi
+              <span v-if="odoQ.data.value.summary.delta_mi != null">
+                · +{{ Math.round(odoQ.data.value.summary.delta_mi).toLocaleString() }} in window
+              </span>
+              <span v-if="odoQ.data.value.summary.miles_per_day != null">
+                · {{ odoQ.data.value.summary.miles_per_day.toFixed(1) }} mi/day
+              </span>
+            </span>
+          </header>
+          <div v-if="odoQ.loading.value" class="muted">Loading…</div>
+          <div v-else-if="!odoChart" class="muted">
+            No odometer history in this window.
+          </div>
+          <UPlotChart v-else :data="odoChart.aligned" :options="odoChart.opts" />
         </section>
 
         <section class="card">
@@ -295,6 +354,16 @@ const tempChart = computed(() => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: 1rem;
+}
+.head-inline {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.head-inline h3 {
+  margin: 0;
 }
 .dtc-list {
   list-style: none;

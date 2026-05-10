@@ -203,6 +203,56 @@ function num(key: string): number | null {
   }
   return null;
 }
+
+// Anomaly card (Task #86). Fetches on vehicle change. The single
+// surfaced item is filtered through a localStorage dismiss list
+// (fingerprint → expiry epoch ms) so users who explicitly waved off
+// "MPG dropped" don't get re-nagged for 7 days.
+const ANOM_DISMISS_KEY = "pitstop_anomaly_dismiss";
+const COOLDOWN_DAYS = 7;
+const anomQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getAnomalies(vehicleId.value)
+      : Promise.resolve({ anomalies: [] as api.AnomalyItem[] }),
+  [vehicleId],
+);
+function readDismissals(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(ANOM_DISMISS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, number>;
+    // Drop expired entries on read so the map doesn't grow unbounded.
+    const now = Date.now();
+    const live: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (v > now) live[k] = v;
+    }
+    return live;
+  } catch {
+    return {};
+  }
+}
+const visibleAnomaly = computed<api.AnomalyItem | null>(() => {
+  const items = anomQ.data.value?.anomalies ?? [];
+  if (!items.length) return null;
+  const dismissed = readDismissals();
+  for (const a of items) {
+    if (!(a.fingerprint in dismissed)) return a;
+  }
+  return null;
+});
+function dismissAnomaly(fingerprint: string) {
+  const dismissed = readDismissals();
+  dismissed[fingerprint] = Date.now() + COOLDOWN_DAYS * 86400_000;
+  try {
+    localStorage.setItem(ANOM_DISMISS_KEY, JSON.stringify(dismissed));
+  } catch {
+    /* ignore quota / disabled */
+  }
+  // Force the visibleAnomaly computed to re-evaluate.
+  void anomQ.reload();
+}
 </script>
 
 <template>
@@ -213,6 +263,32 @@ function num(key: string): number | null {
         Last seen {{ vehicles.selectedVehicle.last_seen_at ? fmtRelative(vehicles.selectedVehicle.last_seen_at) : "never" }}
       </p>
     </header>
+
+    <div
+      v-if="visibleAnomaly"
+      class="anomaly-card"
+      :class="`tone-${visibleAnomaly.severity}`"
+    >
+      <div class="anomaly-icon">
+        <AlertTriangle :size="20" />
+      </div>
+      <div class="anomaly-body">
+        <div class="anomaly-headline">{{ visibleAnomaly.headline }}</div>
+        <div class="anomaly-detail muted">{{ visibleAnomaly.detail }}</div>
+      </div>
+      <div class="anomaly-actions">
+        <RouterLink
+          v-if="visibleAnomaly.deep_link"
+          :to="visibleAnomaly.deep_link"
+          class="link"
+        >Details →</RouterLink>
+        <button
+          type="button"
+          class="ghost"
+          @click="dismissAnomaly(visibleAnomaly.fingerprint)"
+        >Dismiss</button>
+      </div>
+    </div>
 
     <div v-if="!auth.hasQueryToken" class="card need-token">
       <h3>Set up your API tokens</h3>
@@ -582,5 +658,54 @@ function num(key: string): number | null {
 .need-token .link {
   display: inline-block;
   margin-top: 0.6rem;
+}
+.anomaly-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.85rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-radius: var(--r-md);
+  border: 1px solid;
+  background: var(--c-surface);
+}
+.anomaly-card.tone-warn {
+  border-color: #f59e0b66;
+  background: linear-gradient(0deg, #f59e0b0e, transparent);
+}
+.anomaly-card.tone-danger {
+  border-color: #ef444466;
+  background: linear-gradient(0deg, #ef44440e, transparent);
+}
+.anomaly-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--c-surface-soft);
+  color: #f59e0b;
+}
+.anomaly-card.tone-danger .anomaly-icon {
+  color: #ef4444;
+}
+.anomaly-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.anomaly-headline {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.anomaly-detail {
+  font-size: 0.85rem;
+}
+.anomaly-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex: none;
 }
 </style>

@@ -509,6 +509,224 @@ def _bucket_index(km: float) -> int:
     return len(_TRIP_BUCKETS_KM)
 
 
+@router.get("/anomalies", dependencies=[Depends(require_query_token)])
+async def anomalies(
+    vehicle_id: UUID = Query(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Compute the headline-worthy anomalies for a vehicle. v1 covers
+    only "MPG below personal baseline at this temperature" — other
+    types (cost/mile drift, station price shock, DTC spike) plug in
+    later as additional checkers (Task #86).
+
+    Returns at most one anomaly per type, sorted by severity. The
+    frontend keeps a localStorage dismiss-cooldown so a user who
+    explicitly waved off "MPG dropped" doesn't get nagged by the
+    same one for a week.
+    """
+    out: list[dict[str, Any]] = []
+
+    async with pool.acquire() as conn:
+        # Build temp-bucketed MPG baseline from all fillups that have
+        # weather + recomputed MPG. Only chains long enough to get
+        # decent coverage land here (skip vehicles with < 8 weather-
+        # tagged fillups — too noisy).
+        fills = await conn.fetch(
+            """
+            SELECT id, fillup_date, odo, fuel_volume, is_full,
+                   weather_temp_c
+              FROM fillups
+             WHERE vehicle_id = $1
+             ORDER BY fillup_date ASC
+            """,
+            vehicle_id,
+        )
+        v = await conn.fetchrow(
+            "SELECT dist_unit, fuel_unit FROM vehicles WHERE id = $1",
+            vehicle_id,
+        )
+
+    if v is None or len(fills) < 8:
+        return {"anomalies": out}
+    chain = [dict(r) for r in fills]
+    mpg_map = compute_recomputed_mpg(chain)
+    weathered: list[tuple[float, float, datetime]] = []  # (temp_c, mpg, date)
+    for r in chain:
+        m = mpg_map.get(r["id"])
+        if m is None or r["weather_temp_c"] is None:
+            continue
+        weathered.append((float(r["weather_temp_c"]), float(m), r["fillup_date"]))
+
+    if len(weathered) < 8:
+        return {"anomalies": out}
+
+    # Bucket by 10°F (≈5.6°C). Mean per bucket.
+    buckets: dict[int, list[float]] = defaultdict(list)
+    for tc, mpg, _ in weathered:
+        tf = tc * 9 / 5 + 32
+        bucket_idx = int(tf // 10)
+        buckets[bucket_idx].append(mpg)
+    bucket_mean: dict[int, float] = {
+        i: sum(v) / len(v) for i, v in buckets.items() if len(v) >= 2
+    }
+
+    # Look at the most recent 3 fillups with weather. Compute
+    # mean deviation from bucket baseline.
+    recent = weathered[-3:]
+    if len(recent) < 3:
+        return {"anomalies": out}
+    deviations: list[tuple[float, float, int]] = []  # (mpg, expected, bucket)
+    for tc, mpg, _ in recent:
+        tf = tc * 9 / 5 + 32
+        bucket_idx = int(tf // 10)
+        expected = bucket_mean.get(bucket_idx)
+        if expected is None:
+            continue
+        deviations.append((mpg, expected, bucket_idx))
+    if len(deviations) < 2:
+        return {"anomalies": out}
+
+    avg_actual = sum(d[0] for d in deviations) / len(deviations)
+    avg_expected = sum(d[1] for d in deviations) / len(deviations)
+    pct = (avg_actual - avg_expected) / avg_expected * 100
+    if pct < -7:
+        # Bucket the warning by its dominant temperature band
+        bucket_idx = max((d[2] for d in deviations), key=[d[2] for d in deviations].count)
+        bucket_lo = bucket_idx * 10
+        bucket_hi = bucket_lo + 10
+        out.append({
+            "type": "mpg_below_baseline",
+            "severity": "warn" if pct > -12 else "danger",
+            "headline": (
+                f"MPG is {abs(pct):.1f}% below your baseline at "
+                f"{bucket_lo}–{bucket_hi}°F"
+            ),
+            "detail": (
+                f"Last {len(deviations)} fillups: {avg_actual:.1f} mpg "
+                f"vs {avg_expected:.1f} expected for this temperature."
+            ),
+            "deep_link": "/analytics",
+            # Fingerprint lets the frontend store a dismiss cooldown
+            # without re-nagging on every page load.
+            "fingerprint": f"mpg-bucket-{bucket_idx}",
+        })
+
+    return {"anomalies": out}
+
+
+@router.get("/odometer", dependencies=[Depends(require_query_token)])
+async def odometer_history(
+    vehicle_id: UUID = Query(...),
+    window: Literal["year", "3y", "all"] = Query(default="all"),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Deduped odometer line over time (Task #101). Pulls from
+    `pid_readings` where metric='odometer' and only emits a sample
+    when the value changes from the prior point — long runs of
+    identical readings between km transitions collapse to a single
+    edge. Augmented with fillup `odo` values converted to km when
+    the fillup pre-dates the WiCAN coverage window. Capped to ~500
+    points by uniform downsampling so a 5-year history stays fast.
+    """
+    # Pull pid_readings odometer history
+    if window == "year":
+        cutoff = datetime.now(UTC) - timedelta(days=365)
+    elif window == "3y":
+        cutoff = datetime.now(UTC) - timedelta(days=3 * 365)
+    else:
+        cutoff = datetime.fromtimestamp(0, UTC)
+
+    async with pool.acquire() as conn:
+        pid_rows = await conn.fetch(
+            """
+            SELECT time, value_num
+              FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'odometer'
+               AND value_num IS NOT NULL
+               AND time >= $2
+             ORDER BY time ASC
+            """,
+            vehicle_id, cutoff,
+        )
+        # Fillup odometers — Fuelio-style stored in either km or mi
+        # depending on vehicle.dist_unit. Read the unit once and
+        # normalise to km here.
+        v = await conn.fetchrow(
+            "SELECT dist_unit FROM vehicles WHERE id = $1", vehicle_id,
+        )
+        fill_rows = await conn.fetch(
+            """
+            SELECT fillup_date, odo
+              FROM fillups
+             WHERE vehicle_id = $1
+               AND odo IS NOT NULL
+               AND fillup_date >= $2
+             ORDER BY fillup_date ASC
+            """,
+            vehicle_id, cutoff,
+        )
+
+    dist_unit = int(v["dist_unit"]) if v and v["dist_unit"] is not None else 1
+    mi_to_km = 1.609344
+    fillup_points: list[tuple[datetime, float]] = []
+    for r in fill_rows:
+        odo_native = float(r["odo"])
+        odo_km = odo_native * mi_to_km if dist_unit == 1 else odo_native
+        fillup_points.append((r["fillup_date"], odo_km))
+
+    pid_points: list[tuple[datetime, float]] = [
+        (r["time"], float(r["value_num"])) for r in pid_rows
+    ]
+
+    # Merge: prefer pid_readings inside the WiCAN-covered window;
+    # take fillups for the prefix the live data doesn't reach.
+    merged: list[tuple[datetime, float]] = []
+    if pid_points:
+        first_pid_t = pid_points[0][0]
+        for ts, odo in fillup_points:
+            if ts < first_pid_t:
+                merged.append((ts, odo))
+        merged.extend(pid_points)
+    else:
+        merged = fillup_points
+
+    # Dedupe consecutive identical readings — keep the first sample
+    # of each plateau, plus the last seen reading so the chart tail
+    # always reflects the freshest value.
+    deduped: list[tuple[datetime, float]] = []
+    for ts, odo in merged:
+        if not deduped or deduped[-1][1] != odo:
+            deduped.append((ts, odo))
+    if merged and (not deduped or deduped[-1][0] != merged[-1][0]):
+        deduped.append(merged[-1])
+
+    # Cap to ~500 points by uniform downsampling.
+    cap = 500
+    if len(deduped) > cap:
+        step = len(deduped) / cap
+        deduped = [deduped[int(i * step)] for i in range(cap)] + [deduped[-1]]
+
+    points = [
+        {"time": ts.isoformat(), "odo_km": round(odo, 3)}
+        for ts, odo in deduped
+    ]
+
+    # Summary: total Δ over the window + miles/day mean
+    summary: dict[str, Any] = {"window": window, "n_points": len(points)}
+    if len(deduped) >= 2:
+        first_ts, first_odo = deduped[0]
+        last_ts, last_odo = deduped[-1]
+        delta_km = last_odo - first_odo
+        days = max((last_ts - first_ts).total_seconds() / 86400.0, 1)
+        summary["delta_km"] = round(delta_km, 1)
+        summary["delta_mi"] = round(delta_km / mi_to_km, 1)
+        summary["miles_per_day"] = round((delta_km / mi_to_km) / days, 2)
+        summary["current_km"] = round(last_odo, 1)
+        summary["current_mi"] = round(last_odo / mi_to_km, 1)
+    return {"points": points, "summary": summary}
+
+
 @router.get("/trip-baseline", dependencies=[Depends(require_query_token)])
 async def trip_baseline(
     vehicle_id: UUID = Query(...),

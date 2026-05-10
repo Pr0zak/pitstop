@@ -338,6 +338,46 @@ export async function mpgOverlay(
   return r.data;
 }
 
+export interface AnomalyItem {
+  type: string;
+  severity: "warn" | "danger";
+  headline: string;
+  detail: string;
+  deep_link: string;
+  fingerprint: string;
+}
+export interface AnomaliesResponse { anomalies: AnomalyItem[] }
+export async function getAnomalies(vehicleId: string): Promise<AnomaliesResponse> {
+  const r = await apiQuery.get<AnomaliesResponse>("/analytics/anomalies", {
+    params: { vehicle_id: vehicleId },
+  });
+  return r.data;
+}
+
+export interface OdometerHistoryPoint { time: string; odo_km: number }
+export interface OdometerHistorySummary {
+  window: string;
+  n_points: number;
+  delta_km?: number;
+  delta_mi?: number;
+  miles_per_day?: number;
+  current_km?: number;
+  current_mi?: number;
+}
+export interface OdometerHistory {
+  points: OdometerHistoryPoint[];
+  summary: OdometerHistorySummary;
+}
+export async function getOdometerHistory(
+  vehicleId: string,
+  window: "year" | "3y" | "all" = "all",
+): Promise<OdometerHistory> {
+  const r = await apiQuery.get<OdometerHistory>("/analytics/odometer", {
+    params: { vehicle_id: vehicleId, window },
+  });
+  return r.data;
+}
+
 export interface TripBaseline {
   bucket_label: string;
   sample_size: number;
