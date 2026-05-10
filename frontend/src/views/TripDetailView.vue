@@ -330,6 +330,66 @@ function fmtBucketSeconds(s: number): string {
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
 }
 
+// Stop list (Task #113): consecutive GPS points where speed_mps < 1
+// for ≥30 s. Reveals red-light wait times, brief errands, garage
+// stops. Centroid is the median of the run's lat/lon.
+interface TripStop { started_at: string; duration_s: number; lat: number; lon: number }
+const stops = computed<TripStop[]>(() => {
+  const points = routeData.value?.points;
+  if (!points || points.length < 2) return [];
+  const out: TripStop[] = [];
+  let runStart = -1;
+  for (let i = 0; i <= points.length; i++) {
+    const stopped = i < points.length && (points[i].speed_mps ?? 0) < 1;
+    if (stopped && runStart < 0) {
+      runStart = i;
+    } else if (!stopped && runStart >= 0) {
+      const startP = points[runStart];
+      const endP = points[i - 1];
+      const dur = (Date.parse(endP.t) - Date.parse(startP.t)) / 1000;
+      if (dur >= 30) {
+        const mid = points[runStart + Math.floor((i - 1 - runStart) / 2)];
+        out.push({
+          started_at: startP.t,
+          duration_s: Math.round(dur),
+          lat: mid.lat,
+          lon: mid.lon,
+        });
+      }
+      runStart = -1;
+    }
+  }
+  return out;
+});
+
+// Time-of-day badge (Task #113). Driven entirely by trip.started_at —
+// hour-of-week categorisation. Useful context for MPG analysis ("rush
+// hour drives average X mpg vs off-peak Y").
+function todBadge(startedAt?: string | null): { label: string; tone: string } | null {
+  if (!startedAt) return null;
+  const d = new Date(startedAt);
+  if (Number.isNaN(d.getTime())) return null;
+  const dow = d.getDay();      // 0 Sun .. 6 Sat
+  const hr = d.getHours();
+  const isWeekend = dow === 0 || dow === 6;
+  if (hr >= 22 || hr < 5) return { label: "Late night", tone: "tone-night" };
+  if (isWeekend) {
+    if (hr < 11) return { label: "Weekend morning", tone: "tone-weekend" };
+    if (hr < 17) return { label: "Weekend afternoon", tone: "tone-weekend" };
+    return { label: "Weekend evening", tone: "tone-weekend" };
+  }
+  if (hr >= 7 && hr < 9) return { label: "Morning rush", tone: "tone-rush" };
+  if (hr >= 16 && hr < 19) return { label: "Evening rush", tone: "tone-rush" };
+  return { label: "Off-peak", tone: "tone-offpeak" };
+}
+const tripBadge = computed(() => (trip.value ? todBadge(trip.value.started_at) : null));
+
+function fmtClock(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 let chartRef: uPlot | null = null;
 function onChartReady(c: uPlot) {
   chartRef = c;
@@ -381,6 +441,9 @@ async function saveMeta() {
         <RouterLink to="/trips" class="back"><ChevronLeft :size="14" /> Trips</RouterLink>
         <h1 v-if="trip">{{ fmtDateTime(trip.started_at) }}</h1>
         <h1 v-else>Trip</h1>
+        <span v-if="tripBadge" class="tod-badge" :class="tripBadge.tone">
+          {{ tripBadge.label }}
+        </span>
       </div>
       <button class="ghost" type="button" @click="reload"><RefreshCw :size="14" /></button>
     </header>
@@ -442,6 +505,32 @@ async function saveMeta() {
                 <span class="dot" style="background:#2f81f7"></span> highway
               </div>
             </template>
+          </div>
+
+          <div v-if="stops.length" class="card">
+            <header class="chart-head">
+              <h3>Stops</h3>
+              <span class="muted small">
+                {{ stops.length }} stop{{ stops.length === 1 ? "" : "s" }}
+                ≥30s · total
+                {{ fmtBucketSeconds(stops.reduce((a, s) => a + s.duration_s, 0)) }}
+              </span>
+            </header>
+            <ul class="stops">
+              <li v-for="(s, i) in stops" :key="i">
+                <span class="num">{{ fmtClock(s.started_at) }}</span>
+                <span class="dot" style="background:#ef4444"></span>
+                <span>{{ fmtBucketSeconds(s.duration_s) }} stop</span>
+                <a
+                  class="muted small"
+                  :href="`https://www.openstreetmap.org/?mlat=${s.lat}&mlon=${s.lon}&zoom=17`"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  {{ s.lat.toFixed(4) }}, {{ s.lon.toFixed(4) }}
+                </a>
+              </li>
+            </ul>
           </div>
 
           <div v-if="speedTotalSeconds > 0" class="card">
@@ -672,6 +761,61 @@ async function saveMeta() {
 .stats dd {
   margin: 0;
   font-weight: 500;
+}
+.tod-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border: 1px solid var(--c-border-soft);
+  background: var(--c-surface-soft);
+  color: var(--c-muted);
+  margin-left: 0.6rem;
+}
+.tod-badge.tone-rush {
+  border-color: #f59e0b66;
+  background: #f59e0b22;
+  color: #f59e0b;
+}
+.tod-badge.tone-night {
+  border-color: #6366f166;
+  background: #6366f122;
+  color: #818cf8;
+}
+.tod-badge.tone-weekend {
+  border-color: #22c55e66;
+  background: #22c55e22;
+  color: #22c55e;
+}
+.tod-badge.tone-offpeak {
+  border-color: #2f81f766;
+  background: #2f81f722;
+  color: #2f81f7;
+}
+.stops {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.stops li {
+  display: grid;
+  grid-template-columns: 4rem auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  font-size: 0.88rem;
+}
+.stops a {
+  color: var(--c-muted);
+  text-decoration: none;
+}
+.stops a:hover {
+  color: var(--c-text);
+  text-decoration: underline;
 }
 .dtc-inline {
   list-style: none;
