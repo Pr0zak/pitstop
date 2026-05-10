@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LocalGasStation
 import androidx.compose.material.icons.outlined.Settings
@@ -38,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.pitstop.ui.config.ConfigScreen
 import com.pitstop.ui.fuel.FuelAddScreen
+import com.pitstop.ui.history.HistoryScreen
 import com.pitstop.ui.live.LiveScreen
 import com.pitstop.ui.status.StatusScreen
 import com.pitstop.ui.theme.PitstopTheme
@@ -72,6 +75,7 @@ private data class TabDestination(
 private val tabDestinations = listOf(
     TabDestination("Home",     Icons.Filled.Home,            Icons.Outlined.Home),
     TabDestination("Live",     Icons.Filled.Speed,           Icons.Outlined.Speed),
+    TabDestination("History",  Icons.Filled.History,         Icons.Outlined.History),
     TabDestination("Fuel",     Icons.Filled.LocalGasStation, Icons.Outlined.LocalGasStation),
     TabDestination("Settings", Icons.Filled.Settings,        Icons.Outlined.Settings),
 )
@@ -153,8 +157,9 @@ private fun PitstopRoot() {
             when (page) {
                 0 -> StatusScreen()
                 1 -> LiveScreen()
-                2 -> FuelAddScreen()
-                3 -> ConfigScreen()
+                2 -> HistoryScreen()
+                3 -> FuelAddScreen()
+                4 -> ConfigScreen()
             }
         }
     }

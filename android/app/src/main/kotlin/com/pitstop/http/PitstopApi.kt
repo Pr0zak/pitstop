@@ -149,7 +149,23 @@ interface PitstopApi {
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 5,
     ): List<TripDto>
+
+    @GET("api/dtcs")
+    suspend fun getDtcs(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("active_only") activeOnly: Boolean = true,
+    ): List<DtcDto>
 }
+
+@kotlinx.serialization.Serializable
+data class DtcDto(
+    val id: String,
+    @kotlinx.serialization.SerialName("vehicle_id") val vehicleId: String,
+    val code: String,
+    @kotlinx.serialization.SerialName("seen_at") val seenAt: String,
+    @kotlinx.serialization.SerialName("cleared_at") val clearedAt: String? = null,
+    val description: String? = null,
+)
 
 @kotlinx.serialization.Serializable
 data class TripDto(
