@@ -52,7 +52,14 @@ log = logging.getLogger(__name__)
 
 
 CYCLE_INTERVAL_S = 5 * 60          # 5 minutes
-LOOKBACK_S = 5 * 60                 # tail-walk back 5 min on each cycle
+# Look back 24h on every cycle. Anything shorter and a sliding
+# window misses bridge engine_on events that are older than the
+# window edge — the algorithm then falls back to "first activity
+# sample" as the trip start, which produces a NEW trip row (with
+# a different deterministic UUID) on every subsequent cycle. 24h
+# of pid_readings + engine_events is a few thousand rows for an
+# active vehicle, well under 100ms per cycle.
+LOOKBACK_S = 24 * 3_600
 # Bridge any signal-gap shorter than this within an activity interval.
 MERGE_GAP_S = 5 * 60                # 5 minutes
 # Discard intervals shorter than this regardless of distance.
@@ -299,12 +306,7 @@ async def run(pool: asyncpg.Pool, cfg: "Settings") -> None:
     log.info("trip deriver started (cycle every %s s)", CYCLE_INTERVAL_S)
     while True:
         try:
-            since = datetime.now(UTC) - timedelta(seconds=LOOKBACK_S * 12)
-            # On every cycle look back 1h by default (12 × LOOKBACK_S).
-            # That's plenty for late buffer drains without re-scanning
-            # the whole history. The first cycle after a process restart
-            # picks up everything in the last hour; older trips are
-            # whatever the last persistent run derived.
+            since = datetime.now(UTC) - timedelta(seconds=LOOKBACK_S)
             summary = await derive_window(pool, cfg, since=since)
             touched = sum(summary.values())
             if touched:
