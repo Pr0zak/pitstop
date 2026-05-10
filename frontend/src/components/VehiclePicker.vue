@@ -34,7 +34,10 @@ function onDocClick(e: MouseEvent) {
 }
 
 const selected = computed(() => vehicles.selectedVehicle);
-const showPicker = computed(() => vehicles.vehicles.length > 1);
+const showPicker = computed(
+  () => vehicles.activeVehicles.length + vehicles.archivedVehicles.length > 1,
+);
+const showArchived = ref(false);
 
 function pick(id: string) {
   vehicles.selectVehicle(id);
@@ -65,7 +68,7 @@ function pick(id: string) {
     </div>
     <div v-if="open && showPicker" class="dropdown">
       <button
-        v-for="v in vehicles.vehicles"
+        v-for="v in vehicles.activeVehicles"
         :key="v.id"
         type="button"
         class="option"
@@ -77,6 +80,36 @@ function pick(id: string) {
           {{ [v.year, v.make, v.model].filter(Boolean).join(" ") }}
         </span>
       </button>
+      <template v-if="vehicles.archivedVehicles.length > 0">
+        <button
+          v-if="!showArchived"
+          type="button"
+          class="option archive-toggle"
+          @click.stop="showArchived = true"
+        >
+          <span class="opt-name muted">
+            Show archived ({{ vehicles.archivedVehicles.length }})
+          </span>
+        </button>
+        <template v-else>
+          <div class="divider" />
+          <button
+            v-for="v in vehicles.archivedVehicles"
+            :key="v.id"
+            type="button"
+            class="option archived"
+            :class="{ selected: v.id === selected?.id }"
+            @click="pick(v.id)"
+          >
+            <span class="opt-name">{{ v.name }}</span>
+            <span class="opt-sub muted">
+              archived<template v-if="v.year || v.make || v.model">
+                · {{ [v.year, v.make, v.model].filter(Boolean).join(" ") }}
+              </template>
+            </span>
+          </button>
+        </template>
+      </template>
     </div>
   </div>
   <div v-else class="vehicle-picker">
@@ -151,5 +184,16 @@ function pick(id: string) {
 }
 .opt-sub {
   font-size: 0.78rem;
+}
+.divider {
+  height: 1px;
+  background: var(--c-border-soft);
+  margin: 0.2rem 0;
+}
+.archive-toggle .opt-name {
+  font-size: 0.82rem;
+}
+.option.archived {
+  opacity: 0.7;
 }
 </style>
