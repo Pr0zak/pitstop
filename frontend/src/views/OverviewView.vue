@@ -193,6 +193,15 @@ const dtcsQ = useAsync(
   [vehicleId],
 );
 
+// Lifetime cost-of-ownership (Task #98).
+const cooQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getCostOfOwnership(vehicleId.value)
+      : Promise.resolve(null as api.CostOfOwnership | null),
+  [vehicleId],
+);
+
 const latest = computed(() => vehicles.selectedVehicle?.latest ?? {});
 function num(key: string): number | null {
   const v = latest.value?.[key];
@@ -404,6 +413,62 @@ function dismissAnomaly(fingerprint: string) {
           </div>
           <div class="hero-sub muted">
             last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups
+          </div>
+        </div>
+        <!--
+          Cost of ownership (Task #98). Headline number lights up only
+          when the user has set a purchase price; otherwise the card
+          falls back to fuel + maintenance lifetime totals so the
+          slot doesn't go dark.
+        -->
+        <div v-if="cooQ.data.value" class="card hero coo">
+          <h3>Lifetime $/mi</h3>
+          <div class="hero-value">
+            <span class="big">
+              {{ cooQ.data.value.cost_per_mi != null
+                ? '$' + cooQ.data.value.cost_per_mi.toFixed(3)
+                : '—' }}
+            </span>
+          </div>
+          <div class="hero-sub muted">
+            <template v-if="cooQ.data.value.purchase_price != null">
+              ${{ Math.round(cooQ.data.value.total).toLocaleString() }} total
+              <span v-if="cooQ.data.value.lifetime_mi != null">
+                · {{ Math.round(cooQ.data.value.lifetime_mi).toLocaleString() }} mi
+              </span>
+            </template>
+            <template v-else>
+              <RouterLink to="/settings" class="link">
+                Add purchase price →
+              </RouterLink>
+            </template>
+          </div>
+          <!-- Stacked breakdown bar; only renders when total > 0 -->
+          <div v-if="cooQ.data.value.total > 0" class="coo-bar">
+            <span
+              class="coo-seg coo-purchase"
+              :style="{
+                width: ((cooQ.data.value.purchase_price ?? 0) /
+                  cooQ.data.value.total * 100).toFixed(1) + '%',
+              }"
+              :title="`Purchase $${(cooQ.data.value.purchase_price ?? 0).toFixed(0)}`"
+            />
+            <span
+              class="coo-seg coo-fuel"
+              :style="{
+                width: (cooQ.data.value.fuel_total /
+                  cooQ.data.value.total * 100).toFixed(1) + '%',
+              }"
+              :title="`Fuel $${cooQ.data.value.fuel_total.toFixed(0)}`"
+            />
+            <span
+              class="coo-seg coo-maint"
+              :style="{
+                width: (cooQ.data.value.maintenance_total /
+                  cooQ.data.value.total * 100).toFixed(1) + '%',
+              }"
+              :title="`Maintenance $${cooQ.data.value.maintenance_total.toFixed(0)}`"
+            />
           </div>
         </div>
       </section>
@@ -708,4 +773,19 @@ function dismissAnomaly(fingerprint: string) {
   align-items: center;
   flex: none;
 }
+.coo-bar {
+  display: flex;
+  height: 6px;
+  margin-top: 0.5rem;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--c-surface-soft);
+}
+.coo-seg {
+  display: inline-block;
+  height: 100%;
+}
+.coo-purchase { background: #6366f1; }
+.coo-fuel    { background: #2f81f7; }
+.coo-maint   { background: #f59e0b; }
 </style>

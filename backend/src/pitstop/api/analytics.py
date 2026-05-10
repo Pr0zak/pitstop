@@ -15,7 +15,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import require_query_token
 from ..db.deps import get_pool
@@ -507,6 +507,144 @@ def _bucket_index(km: float) -> int:
         if km < edge:
             return i
     return len(_TRIP_BUCKETS_KM)
+
+
+@router.get("/fuel-grade", dependencies=[Depends(require_query_token)])
+async def fuel_grade_breakdown(
+    vehicle_id: UUID = Query(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Per-grade fuel comparison (Task #93). Groups fillups by
+    `fuel_type` and reports recomputed MPG, mean price/unit, total
+    volume, total cost, and fillup count per grade. Lets the user
+    see whether premium is buying them anything.
+
+    Recomputed MPG is the Fuelio-style chain over each grade's
+    fillups *in isolation* — that's the apples-to-apples way to
+    compare grades, not the global chain that mixes them.
+    """
+    async with pool.acquire() as conn:
+        fills = await conn.fetch(
+            """
+            SELECT id, fillup_date, odo, fuel_volume, is_full,
+                   fuel_type, price_total, price_per_unit
+              FROM fillups
+             WHERE vehicle_id = $1
+               AND fuel_type IS NOT NULL
+             ORDER BY fillup_date ASC
+            """,
+            vehicle_id,
+        )
+
+    if not fills:
+        return {"grades": []}
+
+    grades: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for r in fills:
+        grades[int(r["fuel_type"])].append(dict(r))
+
+    out: list[dict[str, Any]] = []
+    for grade, rows in grades.items():
+        # Compute per-grade chain MPG
+        chain = sorted(rows, key=lambda r: r["fillup_date"])
+        mpg_map = compute_recomputed_mpg(chain)
+        mpgs = [float(v) for v in mpg_map.values() if v is not None]
+        avg_mpg = sum(mpgs) / len(mpgs) if mpgs else None
+
+        prices = [
+            float(r["price_per_unit"]) for r in rows
+            if r["price_per_unit"] is not None
+        ]
+        avg_price = sum(prices) / len(prices) if prices else None
+        total_volume = sum(
+            float(r["fuel_volume"]) for r in rows if r["fuel_volume"] is not None
+        )
+        total_cost = sum(
+            float(r["price_total"]) for r in rows if r["price_total"] is not None
+        )
+        out.append({
+            "grade": grade,
+            "fillup_count": len(rows),
+            "avg_mpg": round(avg_mpg, 2) if avg_mpg is not None else None,
+            "avg_price_per_unit": round(avg_price, 3) if avg_price is not None else None,
+            "total_volume": round(total_volume, 2),
+            "total_cost": round(total_cost, 2),
+            "first_fillup": chain[0]["fillup_date"].isoformat(),
+            "last_fillup": chain[-1]["fillup_date"].isoformat(),
+        })
+    out.sort(key=lambda g: g["fillup_count"], reverse=True)
+    return {"grades": out}
+
+
+@router.get("/cost-of-ownership", dependencies=[Depends(require_query_token)])
+async def cost_of_ownership(
+    vehicle_id: UUID = Query(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Lifetime $/mile breakdown (Task #98). Sums fillups + expenses
+    + optional purchase price; divides by lifetime miles. The honest
+    "what is this car costing me?" number.
+
+    Returns components separately so the UI can render a stacked
+    bar / breakdown without re-fetching. `cost_per_mi` is null when
+    we don't yet have a meaningful odometer (latest_odo_km - the
+    odometer at purchase isn't computable).
+    """
+    async with pool.acquire() as conn:
+        v = await conn.fetchrow(
+            """
+            SELECT id, purchase_price, purchase_date, latest_odo_km, dist_unit
+              FROM vehicles
+             WHERE id = $1
+            """,
+            vehicle_id,
+        )
+        if v is None:
+            raise HTTPException(status_code=404, detail="vehicle not found")
+        fuel_total = await conn.fetchval(
+            "SELECT COALESCE(SUM(price_total), 0) FROM fillups WHERE vehicle_id = $1",
+            vehicle_id,
+        )
+        # Maintenance = sum of expenses where is_income is not true.
+        maint_total = await conn.fetchval(
+            """
+            SELECT COALESCE(SUM(cost), 0)
+              FROM expenses
+             WHERE vehicle_id = $1
+               AND COALESCE(is_income, false) = false
+               AND COALESCE(is_template, false) = false
+            """,
+            vehicle_id,
+        )
+
+    purchase_price = (
+        float(v["purchase_price"]) if v["purchase_price"] is not None else None
+    )
+    fuel_total_f = float(fuel_total or 0)
+    maint_total_f = float(maint_total or 0)
+    total = (purchase_price or 0) + fuel_total_f + maint_total_f
+
+    # Lifetime miles: prefer latest_odo_km; null when no odometer
+    # data yet. We can't subtract a "purchase odometer" because it's
+    # not stored — caveat documented in the response.
+    latest_odo_km = float(v["latest_odo_km"]) if v["latest_odo_km"] is not None else None
+    lifetime_mi = latest_odo_km / 1.609344 if latest_odo_km is not None else None
+
+    cost_per_mi = (
+        round(total / lifetime_mi, 3)
+        if lifetime_mi and lifetime_mi > 0
+        else None
+    )
+
+    return {
+        "purchase_price": purchase_price,
+        "purchase_date": v["purchase_date"].isoformat() if v["purchase_date"] else None,
+        "fuel_total": round(fuel_total_f, 2),
+        "maintenance_total": round(maint_total_f, 2),
+        "total": round(total, 2),
+        "lifetime_mi": round(lifetime_mi, 1) if lifetime_mi else None,
+        "cost_per_mi": cost_per_mi,
+    }
 
 
 @router.get("/anomalies", dependencies=[Depends(require_query_token)])

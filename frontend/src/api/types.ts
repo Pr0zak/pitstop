@@ -33,6 +33,11 @@ export interface Vehicle {
   // convert at render time per the user's preferred units.
   latest_odo_km?: number | null;
   latest_odo_at?: string | null;
+  // Lifetime cost-of-ownership inputs (Task #98). Both nullable
+  // — the COO card hides the headline number until the user
+  // enters a purchase price.
+  purchase_price?: number | null;
+  purchase_date?: string | null;
 }
 
 export interface Profile {

@@ -113,6 +113,8 @@ class VehicleUpdate(BaseModel):
     tank2_capacity: float | None = None
     active: bool | None = None
     pid_profile_id: UUID | None = None
+    purchase_price: float | None = None
+    purchase_date: date | None = None
 
     @field_validator("slug")
     @classmethod
@@ -142,6 +144,9 @@ class VehicleOut(VehicleBase):
     # also bumped on fillup save when the user provides an odo.
     latest_odo_km: float | None = None
     latest_odo_at: datetime | None = None
+    # Lifetime cost-of-ownership inputs (Task #98).
+    purchase_price: float | None = None
+    purchase_date: date | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -184,10 +184,16 @@ const stationPricesQ = useAsync(
   [vehicleId, tab],
 );
 
+// Fetch 36 months minimum so the YoY ghost-line lookups (Task #84)
+// always have prior-year data even when the display window is just
+// 30 days. Backend caps at 120; 36 is well within.
 const monthlyQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
-      ? api.monthlySpend(vehicleId.value, statsWindowMonths.value)
+      ? api.monthlySpend(
+          vehicleId.value,
+          Math.max(statsWindowMonths.value, 36),
+        )
       : Promise.resolve({ months: [] }),
   [vehicleId, tab, statsWindow],
 );
@@ -343,24 +349,76 @@ function onMarkerClick(id: string, properties: Record<string, unknown>) {
   selectedStation.value = { id, properties };
 }
 
-// Stats charts
+// Stats charts. Monthly chart layers YoY ghost lines (Task #84)
+// underneath the primary series — same-calendar-month value from
+// 1y / 2y ago, projected onto the primary x-axis so users can see
+// "is this worse than last winter, or just normal?" at a glance.
 const monthlyChart = computed(() => {
-  const months = monthlyQ.data.value?.months ?? [];
-  if (months.length === 0) return null;
-  const t = months.map((m) => Math.round((Date.parse(m.month) || 0) / 1000));
-  const fuel = months.map((m) => m.fuel ?? 0);
-  const service = months.map((m) => m.service ?? 0);
-  const aligned: uPlot.AlignedData = [t, fuel, service];
+  const allMonths = monthlyQ.data.value?.months ?? [];
+  if (allMonths.length === 0) return null;
+  // Primary slice: respect the page's window (statsCutoffMs) when
+  // set; otherwise take the most recent 12 so the chart isn't a
+  // wall of 36 rows.
+  const cutoff = statsCutoffMs.value;
+  const primary = cutoff != null
+    ? allMonths.filter((m) => Date.parse(m.month) >= cutoff)
+    : allMonths.slice(-Math.max(12, statsWindowMonths.value));
+  if (primary.length === 0) return null;
+  // Build a (year-month) → totals map from the full 36-month
+  // history so we can look up prior-year same-month values.
+  const byYM = new Map<string, { fuel: number; service: number }>();
+  for (const m of allMonths) {
+    const d = new Date(m.month);
+    byYM.set(
+      `${d.getUTCFullYear()}-${d.getUTCMonth()}`,
+      { fuel: m.fuel ?? 0, service: m.service ?? 0 },
+    );
+  }
+  const lookupYoY = (m: typeof allMonths[0], yearsBack: number): number | null => {
+    const d = new Date(m.month);
+    const prev = byYM.get(`${d.getUTCFullYear() - yearsBack}-${d.getUTCMonth()}`);
+    return prev ? prev.fuel + prev.service : null;
+  };
+  const t = primary.map((m) => Math.round((Date.parse(m.month) || 0) / 1000));
+  const fuel = primary.map((m) => m.fuel ?? 0);
+  const service = primary.map((m) => m.service ?? 0);
+  const ghost1 = primary.map((m) => lookupYoY(m, 1));
+  const ghost2 = primary.map((m) => lookupYoY(m, 2));
+  const hasGhost1 = ghost1.some((v) => v != null);
+  const hasGhost2 = ghost2.some((v) => v != null);
+
+  const aligned: uPlot.AlignedData = hasGhost2
+    ? [t, fuel, service, ghost1, ghost2]
+    : hasGhost1
+      ? [t, fuel, service, ghost1]
+      : [t, fuel, service];
+  const series: uPlot.Series[] = [
+    {},
+    { label: "Fuel", stroke: "#2f81f7", fill: "rgba(47,129,247,0.18)", width: 1.5 },
+    { label: "Service", stroke: "#d29922", fill: "rgba(210,153,34,0.18)", width: 1.5 },
+  ];
+  if (hasGhost1) {
+    series.push({
+      label: "1y ago (total)",
+      stroke: "rgba(154,160,170,0.55)",
+      width: 1,
+      dash: [3, 3],
+    });
+  }
+  if (hasGhost2) {
+    series.push({
+      label: "2y ago (total)",
+      stroke: "rgba(154,160,170,0.32)",
+      width: 1,
+      dash: [3, 3],
+    });
+  }
   const opts: uPlot.Options = {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
     axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$" }],
-    series: [
-      {},
-      { label: "Fuel", stroke: "#2f81f7", fill: "rgba(47,129,247,0.18)", width: 1.5 },
-      { label: "Service", stroke: "#d29922", fill: "rgba(210,153,34,0.18)", width: 1.5 },
-    ],
+    series,
   };
   return { aligned, opts };
 });

@@ -10,7 +10,7 @@ import { fmtDateTime, fmtMpg, fmtRelative } from "@/composables/useFormat";
 
 const vehicles = useVehiclesStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
-const window = ref<AnalyticsWindow>("year");
+const window = ref<AnalyticsWindow>("all");
 
 // Time range for aggregate calls
 const fromIso = computed(() => {
@@ -190,6 +190,21 @@ const tempChart = computed(() => {
   return { aligned: cols, opts };
 });
 
+// Fuel-grade comparison (Task #93). Per-grade chain MPG + price.
+// Independent of `window` — comparison only makes sense over the
+// vehicle's full history; a 30-day window has too few fillups per
+// grade.
+const gradeQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getFuelGradeBreakdown(vehicleId.value)
+      : Promise.resolve({ grades: [] as api.FuelGradeRow[] }),
+  [vehicleId],
+);
+function gradeLabel(g: number): string {
+  return api.FUEL_GRADE_LABELS[g] ?? `Grade ${g}`;
+}
+
 // Odometer history (Task #101). Backend takes a "year"/"3y"/"all"
 // window — translate from the page's AnalyticsWindow on the way in.
 const odoWindow = computed<"year" | "3y" | "all">(() =>
@@ -275,6 +290,30 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
           <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
           <div v-else-if="!tempChart" class="muted">No temperature readings.</div>
           <UPlotChart v-else :data="tempChart.aligned" :options="tempChart.opts" />
+        </section>
+
+        <section v-if="(gradeQ.data.value?.grades?.length ?? 0) >= 2" class="card">
+          <h3>Fuel grade comparison</h3>
+          <table class="data grade-table">
+            <thead>
+              <tr>
+                <th>Grade</th>
+                <th>Fillups</th>
+                <th>Avg MPG</th>
+                <th>Avg $/gal</th>
+                <th>Total cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="g in gradeQ.data.value!.grades" :key="g.grade">
+                <td>{{ gradeLabel(g.grade) }}</td>
+                <td>{{ g.fillup_count }}</td>
+                <td>{{ g.avg_mpg != null ? g.avg_mpg.toFixed(1) : "—" }}</td>
+                <td>{{ g.avg_price_per_unit != null ? "$" + g.avg_price_per_unit.toFixed(3) : "—" }}</td>
+                <td>${{ g.total_cost.toFixed(2) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </section>
 
         <section class="card">

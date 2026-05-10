@@ -21,6 +21,8 @@ const form = ref({
   vin: "",
   fuelio_guid: "",
   active: true,
+  purchase_price: undefined as number | undefined,
+  purchase_date: "" as string,
 });
 
 function slugify(s: string): string {
@@ -56,6 +58,8 @@ function openCreate() {
     vin: "",
     fuelio_guid: "",
     active: true,
+    purchase_price: undefined,
+    purchase_date: "",
   };
   showModal.value = true;
   submitError.value = null;
@@ -74,6 +78,8 @@ function openEdit(v: Vehicle) {
     vin: v.vin ?? "",
     fuelio_guid: v.fuelio_guid ?? "",
     active: v.active ?? true,
+    purchase_price: v.purchase_price ?? undefined,
+    purchase_date: v.purchase_date ?? "",
   };
   showModal.value = true;
   submitError.value = null;
@@ -93,6 +99,8 @@ async function submit() {
       vin: form.value.vin.trim() || null,
       fuelio_guid: form.value.fuelio_guid.trim() || null,
       active: form.value.active,
+      purchase_price: form.value.purchase_price ?? null,
+      purchase_date: form.value.purchase_date || null,
     };
     if (editing.value) {
       await api.updateVehicle(editing.value.id, payload);
@@ -207,6 +215,24 @@ async function remove(v: Vehicle) {
             </div>
             <label>VIN<input v-model="form.vin" /></label>
             <label>Fuelio GUID<input v-model="form.fuelio_guid" /></label>
+            <div class="grid">
+              <label>
+                Purchase price
+                <input
+                  type="number"
+                  step="0.01"
+                  v-model.number="form.purchase_price"
+                  placeholder="0.00"
+                />
+                <small class="muted">
+                  Used for the lifetime $/mile card.
+                </small>
+              </label>
+              <label>
+                Purchase date
+                <input type="date" v-model="form.purchase_date" />
+              </label>
+            </div>
             <label class="cb">
               <input type="checkbox" v-model="form.active" /> Active
             </label>

@@ -338,6 +338,61 @@ export async function mpgOverlay(
   return r.data;
 }
 
+export interface CostOfOwnership {
+  purchase_price: number | null;
+  purchase_date: string | null;
+  fuel_total: number;
+  maintenance_total: number;
+  total: number;
+  lifetime_mi: number | null;
+  cost_per_mi: number | null;
+}
+export async function getCostOfOwnership(vehicleId: string): Promise<CostOfOwnership> {
+  const r = await apiQuery.get<CostOfOwnership>("/analytics/cost-of-ownership", {
+    params: { vehicle_id: vehicleId },
+  });
+  return r.data;
+}
+
+export interface FuelGradeRow {
+  grade: number;
+  fillup_count: number;
+  avg_mpg: number | null;
+  avg_price_per_unit: number | null;
+  total_volume: number;
+  total_cost: number;
+  first_fillup: string;
+  last_fillup: string;
+}
+export async function getFuelGradeBreakdown(
+  vehicleId: string,
+): Promise<{ grades: FuelGradeRow[] }> {
+  const r = await apiQuery.get<{ grades: FuelGradeRow[] }>("/analytics/fuel-grade", {
+    params: { vehicle_id: vehicleId },
+  });
+  return r.data;
+}
+
+/**
+ * Fuelio's `fuel_type` numeric codes — best-effort label table.
+ * Codes vary by region/version of the Fuelio export. Any code not
+ * in this table is shown as "Grade <N>". 100 is the most common
+ * default in modern exports.
+ */
+export const FUEL_GRADE_LABELS: Record<number, string> = {
+  0: "Diesel",
+  1: "Regular (87)",
+  2: "Mid-grade (89)",
+  3: "Premium (91)",
+  4: "Premium (93)",
+  5: "E85",
+  6: "LPG",
+  7: "CNG",
+  100: "Regular",
+  101: "Mid-grade",
+  102: "Premium",
+};
+
 export interface AnomalyItem {
   type: string;
   severity: "warn" | "danger";
