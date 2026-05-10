@@ -7,15 +7,12 @@ import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import {
   fmtRelative,
-  fmtRpm,
-  fmtSpeed,
-  fmtTemp,
   fmtMpg,
   fmtMiles,
   fmtMoney,
   fmtDate,
 } from "@/composables/useFormat";
-import { Activity, Route, Fuel, AlertTriangle } from "lucide-vue-next";
+import { Fuel, Route, AlertTriangle } from "lucide-vue-next";
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
@@ -501,30 +498,7 @@ function dismissAnomaly(fingerprint: string) {
         </div>
       </section>
 
-      <section class="metric-grid">
-        <div class="card metric">
-          <h3>RPM</h3>
-          <div class="big">{{ fmtRpm(num("engine_rpm")) }}</div>
-        </div>
-        <div class="card metric">
-          <h3>Speed</h3>
-          <div class="big">{{ fmtSpeed(num("vehicle_speed")) }}</div>
-        </div>
-        <div class="card metric">
-          <h3>Coolant</h3>
-          <div class="big">{{ fmtTemp(num("coolant_temp")) }}</div>
-        </div>
-        <div class="card metric">
-          <h3>Fuel level</h3>
-          <div class="big">
-            {{ num("fuel_level") != null ? Math.round(num("fuel_level")!) + "%" : "—" }}
-          </div>
-        </div>
-      </section>
-
-      <!-- Brand tape: a thin redline accent under the metric grid that
-           visually echoes the gauge cluster you'd see on the Live page.
-           Subtle on its own but ties the page to the rest of the system. -->
+      <!-- Brand tape: a thin redline accent under the hero strip. -->
       <div class="brand-tape" aria-hidden="true">
         <span class="tape-track" />
         <span class="tape-redline" />
@@ -592,16 +566,6 @@ function dismissAnomaly(fingerprint: string) {
           </ul>
         </section>
 
-        <section class="card">
-          <h3>
-            <Activity :size="14" /> Live
-            <RouterLink to="/live" class="more">open →</RouterLink>
-          </h3>
-          <p class="muted">
-            Real-time gauges for {{ vehicles.selectedVehicle?.name }}. Open the Live view
-            to subscribe to the WebSocket feed.
-          </p>
-        </section>
       </div>
     </template>
   </div>
@@ -615,11 +579,6 @@ function dismissAnomaly(fingerprint: string) {
 }
 .head h1 {
   margin-bottom: 0.2rem;
-}
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 0.8rem;
 }
 .hero-grid {
   display: grid;
@@ -671,22 +630,6 @@ function dismissAnomaly(fingerprint: string) {
 }
 .hero-sub.down {
   color: var(--c-success);
-}
-.metric .big {
-  font-family: 'Geist Mono', ui-monospace, monospace;
-  font-size: 2rem;
-  font-weight: 500;
-  letter-spacing: -0.04em;
-  line-height: 1.0;
-  font-variant-numeric: tabular-nums;
-  color: var(--c-ink0);
-}
-.metric h3 {
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--c-ink3);
 }
 .brand-tape {
   position: relative;
