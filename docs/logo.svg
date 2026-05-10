@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="96" height="96" fill="none" aria-label="pitstop logo">
+  <!-- arc-ticks-redline — the default app logo. Cool white body of the
+       tachometer arc with the last quarter tinted warn-coral as the
+       redline. Five major ticks + two redline ticks, accent hub dot. -->
+  <path d="M 15.03 50 A 24 24 0 1 1 55.86 39.04" stroke="#e7e9ee" stroke-width="3.5" stroke-linecap="butt" fill="none" opacity="0.92"/>
+  <path d="M 55.86 39.04 A 24 24 0 0 1 48.97 50" stroke="#ff5b3a" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+  <line x1="15.03" y1="50" x2="18.21" y2="46.82" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="13.76" y1="38.27" x2="18.13" y2="37.10" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="20.74" y1="22.74" x2="23.92" y2="25.92" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="32" y1="9" x2="32" y2="13.5" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="43.26" y1="22.74" x2="40.08" y2="25.92" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="50.24" y1="38.27" x2="45.87" y2="37.10" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
+  <line x1="48.97" y1="50" x2="45.79" y2="46.82" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
+  <circle cx="32" cy="33" r="2" fill="#ff5b3a"/>
+</svg>

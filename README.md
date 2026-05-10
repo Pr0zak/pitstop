@@ -1,3 +1,7 @@
+<p align="left">
+  <img src="docs/logo.svg" alt="pitstop logo" width="96" height="96" />
+</p>
+
 # pitstop
 
 Self-hosted vehicle telemetry and fuel-tracking app.
