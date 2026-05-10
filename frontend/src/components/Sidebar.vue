@@ -21,6 +21,7 @@ import {
 } from "lucide-vue-next";
 import PitstopLogo from "@/components/logos/PitstopLogo.vue";
 import {
+  LOGOS,
   STORAGE_KEY as LOGO_KEY,
   DEFAULT_LOGO,
   type LogoName,
@@ -43,7 +44,9 @@ const logoName = ref<LogoName>(DEFAULT_LOGO);
 function loadLogo() {
   try {
     const v = localStorage.getItem(LOGO_KEY) as LogoName | null;
-    if (v) logoName.value = v;
+    // Validate: stale localStorage values from removed variants
+    // would render an empty SVG. Fall back to the default.
+    if (v && LOGOS.some((l) => l.name === v)) logoName.value = v;
   } catch {
     /* ignore */
   }

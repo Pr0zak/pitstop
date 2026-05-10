@@ -39,6 +39,93 @@ const { data: routeData } = useAsync(
   [tripId],
 );
 
+// "This trip vs your average" baseline (Task #112). Fetches the
+// vehicle's mean stats for trips in the same distance bucket. The
+// computed flips active once `trip` resolves so we only fire once
+// per detail page open. Backend returns `sufficient: false` when
+// the bucket has < 5 samples and we hide the panel in that case.
+const baselineKey = computed(() => {
+  if (!trip.value || !trip.value.vehicle_id || trip.value.distance_km == null) {
+    return null;
+  }
+  return `${trip.value.vehicle_id}:${trip.value.distance_km}`;
+});
+const { data: baseline } = useAsync(
+  async () => {
+    if (!trip.value || !trip.value.vehicle_id || trip.value.distance_km == null) {
+      return null;
+    }
+    return api.getTripBaseline(trip.value.vehicle_id, trip.value.distance_km);
+  },
+  [baselineKey],
+);
+
+interface BaselineRow { label: string; thisTrip: string; avg: string; deltaPct: number | null }
+const baselineRows = computed<BaselineRow[]>(() => {
+  if (!trip.value || !baseline.value || !baseline.value.sufficient) return [];
+  const t = trip.value;
+  const b = baseline.value;
+  const rows: BaselineRow[] = [];
+
+  if (b.avg_duration_s != null && t.duration_s != null) {
+    const tMin = Math.round(t.duration_s / 60);
+    const aMin = Math.round(b.avg_duration_s / 60);
+    rows.push({
+      label: "Duration",
+      thisTrip: `${tMin} min`,
+      avg: `${aMin} min`,
+      deltaPct: aMin > 0 ? ((tMin - aMin) / aMin) * 100 : null,
+    });
+  }
+  if (b.avg_speed_kph != null && t.avg_speed_kph != null) {
+    const tMph = t.avg_speed_kph * 0.621371;
+    const aMph = b.avg_speed_kph * 0.621371;
+    rows.push({
+      label: "Avg speed",
+      thisTrip: `${tMph.toFixed(0)} mph`,
+      avg: `${aMph.toFixed(0)} mph`,
+      deltaPct: aMph > 0 ? ((tMph - aMph) / aMph) * 100 : null,
+    });
+  }
+  if (b.avg_max_speed_kph != null && t.max_speed_kph != null) {
+    const tMph = t.max_speed_kph * 0.621371;
+    const aMph = b.avg_max_speed_kph * 0.621371;
+    rows.push({
+      label: "Top speed",
+      thisTrip: `${tMph.toFixed(0)} mph`,
+      avg: `${aMph.toFixed(0)} mph`,
+      deltaPct: aMph > 0 ? ((tMph - aMph) / aMph) * 100 : null,
+    });
+  }
+  if (b.avg_mpg != null && t.distance_km != null && t.fuel_used_l != null && t.fuel_used_l > 0.4) {
+    const mi = t.distance_km * 0.621371;
+    const gal = t.fuel_used_l * 0.264172;
+    if (gal > 0) {
+      const tMpg = mi / gal;
+      rows.push({
+        label: "MPG",
+        thisTrip: tMpg.toFixed(1),
+        avg: b.avg_mpg.toFixed(1),
+        deltaPct: b.avg_mpg > 0 ? ((tMpg - b.avg_mpg) / b.avg_mpg) * 100 : null,
+      });
+    }
+  }
+  return rows;
+});
+
+// Helper for color tone on the delta cell. MPG / speed: positive
+// = green ("better than average"). Duration: positive = red
+// ("slower than average"). Top speed: positive = neutral-yellow
+// (faster, but not necessarily better).
+function deltaTone(label: string, pct: number): string {
+  if (Math.abs(pct) < 3) return "neutral";
+  const goodIfPositive = label === "MPG" || label === "Avg speed";
+  const goodIfNegative = label === "Duration";
+  if (goodIfPositive) return pct > 0 ? "good" : "bad";
+  if (goodIfNegative) return pct < 0 ? "good" : "bad";
+  return "neutral";
+}
+
 // Build uPlot data + options from samples.
 type ChartData = { aligned: uPlot.AlignedData; opts: uPlot.Options } | null;
 
@@ -730,6 +817,40 @@ async function saveMeta() {
             </dl>
           </div>
 
+          <div v-if="baselineRows.length" class="card">
+            <header class="chart-head">
+              <h3>vs. your average</h3>
+              <span class="muted small">
+                {{ baseline?.bucket_label }} · n={{ baseline?.sample_size }}
+              </span>
+            </header>
+            <table class="baseline">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>This</th>
+                  <th>Avg</th>
+                  <th>Δ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in baselineRows" :key="r.label">
+                  <th>{{ r.label }}</th>
+                  <td class="num">{{ r.thisTrip }}</td>
+                  <td class="num muted">{{ r.avg }}</td>
+                  <td
+                    v-if="r.deltaPct !== null"
+                    class="num"
+                    :class="deltaTone(r.label, r.deltaPct)"
+                  >
+                    {{ r.deltaPct >= 0 ? "+" : "" }}{{ r.deltaPct.toFixed(0) }}%
+                  </td>
+                  <td v-else class="muted">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
           <div class="card">
             <h3>Notes &amp; category</h3>
             <label>
@@ -912,6 +1033,35 @@ async function saveMeta() {
   color: var(--c-text);
   text-decoration: underline;
 }
+.baseline {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.3rem;
+}
+.baseline th, .baseline td {
+  padding: 0.25rem 0.4rem;
+  text-align: left;
+  border-bottom: 1px solid var(--c-border-soft);
+  font-size: 0.85rem;
+}
+.baseline thead th {
+  color: var(--c-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom-color: var(--c-border);
+}
+.baseline tbody th {
+  font-weight: 500;
+  color: var(--c-text);
+}
+.baseline td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.baseline td.good { color: #3fb950; }
+.baseline td.bad { color: #ef4444; }
+.baseline td.neutral { color: var(--c-muted); }
 .dtc-inline {
   list-style: none;
   margin: 0.3rem 0 0;

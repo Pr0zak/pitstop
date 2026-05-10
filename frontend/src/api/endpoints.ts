@@ -316,6 +316,27 @@ export async function mpgOverlay(
   return r.data;
 }
 
+export interface TripBaseline {
+  bucket_label: string;
+  sample_size: number;
+  sufficient: boolean;
+  avg_distance_km: number | null;
+  avg_duration_s: number | null;
+  avg_speed_kph: number | null;
+  avg_max_speed_kph: number | null;
+  avg_mpg: number | null;
+}
+
+export async function getTripBaseline(
+  vehicleId: string,
+  distanceKm: number,
+): Promise<TripBaseline> {
+  const r = await apiQuery.get<TripBaseline>("/analytics/trip-baseline", {
+    params: { vehicle_id: vehicleId, distance_km: distanceKm },
+  });
+  return r.data;
+}
+
 // ─── maintenance ──────────────────────────────────────────────────────
 
 export async function listReminders(vehicleId?: string): Promise<ReminderGroup> {

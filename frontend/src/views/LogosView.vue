@@ -40,11 +40,11 @@ const previewBgs = computed(() => [
 
 <template>
   <div class="logos">
-    <h1>Logo concepts</h1>
+    <h1>Logo refinements</h1>
     <p class="muted">
-      Six concepts. Click one to set it as the brand mark in the sidebar and top
-      bar. Stored in your browser's localStorage; reset by picking a different
-      one. Each renders as inline SVG, no raster assets.
+      Baseline mark plus four refinements. Click one to set it as the brand
+      mark in the sidebar and top bar — selection is stored in this browser's
+      localStorage. Each renders as inline SVG; no raster assets.
     </p>
     <p v-if="justSaved" class="badge success saved">
       <Check :size="12" /> Saved — selection: <code>{{ selected }}</code>
@@ -63,8 +63,8 @@ const previewBgs = computed(() => [
             <PitstopLogo
               :name="logo.name"
               :size="80"
-              color="var(--c-accent)"
-              :accent="logo.name === 'wrench-gauge' ? 'var(--c-warn)' : 'var(--c-accent)'"
+              color="var(--c-text)"
+              accent="var(--c-warn)"
             />
           </div>
           <div class="meta">

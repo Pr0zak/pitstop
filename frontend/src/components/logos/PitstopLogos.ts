@@ -1,30 +1,19 @@
 /**
- * Logo concepts for pitstop. Each is a small SVG component the user can
- * preview from /logos and pick. Stored as inline SVG so the bundle size
+ * Logo concepts for pitstop. The brand mark is a 270° tachometer arc
+ * with a redline segment at the upper-right; this file holds the
+ * baseline plus a small set of refinement variants the user can
+ * preview from /logos and pick. Stored as inline SVG so the bundle
  * stays trivial and we never depend on raster assets.
  *
  * The shared <PitstopLogo :name="..." :size="..."> component renders
- * whichever the user has selected (persisted to localStorage).
+ * whichever variant the user has selected (persisted to localStorage).
  */
 export type LogoName =
-  | "arc"
-  | "arc-redline"
-  | "arc-ticks"
-  | "arc-ticks-fine"
-  | "arc-ticks-major"
-  | "arc-ticks-out"
   | "arc-ticks-redline"
-  | "arc-ticks-pointer"
-  | "arc-ticks-min"
-  | "arc-dotted"
-  | "arc-segments"
-  | "arc-needle"
-  | "arc-360"
-  | "wrench-gauge"
-  | "lights"
-  | "spark"
-  | "wheel"
-  | "tread-p";
+  | "arc-ticks-redline-needle"
+  | "arc-ticks-redline-fine"
+  | "arc-ticks-redline-bold"
+  | "arc-ticks-redline-fill";
 
 export interface LogoMeta {
   name: LogoName;
@@ -34,94 +23,34 @@ export interface LogoMeta {
 
 export const LOGOS: LogoMeta[] = [
   {
-    name: "arc",
-    label: "Speedo arc",
-    description: "Tachometer arc with a needle dot at the redline.",
-  },
-  {
-    name: "arc-redline",
-    label: "Speedo + redline",
-    description: "Same arc; the last quarter is warn-coloured to mark the redline.",
-  },
-  {
-    name: "arc-ticks",
-    label: "Speedo + ticks",
-    description: "Arc with five tick marks (0/¼/½/¾/full), needle at ¾. Original.",
-  },
-  {
-    name: "arc-ticks-fine",
-    label: "Ticks · fine",
-    description: "Same layout, but nine evenly-spaced ticks for an instrument feel.",
-  },
-  {
-    name: "arc-ticks-major",
-    label: "Ticks · major+minor",
-    description: "Five long ticks at the cardinals with four short ones between them.",
-  },
-  {
-    name: "arc-ticks-out",
-    label: "Ticks · radiating",
-    description: "Five ticks radiating outward beyond the arc, like spokes.",
-  },
-  {
     name: "arc-ticks-redline",
-    label: "Ticks + redline",
-    description: "Five ticks plus the last quarter of the arc painted warn-colour.",
+    label: "Redline (baseline)",
+    description:
+      "270° tach arc with major ticks every 45°; the last 40° runs warn-coloured. The current default.",
   },
   {
-    name: "arc-ticks-pointer",
-    label: "Ticks + triangle",
-    description: "Five ticks; the needle is a tapered triangular pointer.",
+    name: "arc-ticks-redline-needle",
+    label: "Redline + needle",
+    description:
+      "Adds a clean diagonal needle pointing at the redline boundary. Strong directional cue without crowding the silhouette.",
   },
   {
-    name: "arc-ticks-min",
-    label: "Ticks · minimal",
-    description: "Just three ticks at left/top/right and a needle. Calmer than the original.",
+    name: "arc-ticks-redline-fine",
+    label: "Redline · fine ticks",
+    description:
+      "Same baseline plus six minor sub-ticks halfway between the majors. Reads as instrument-grade at large sizes.",
   },
   {
-    name: "arc-dotted",
-    label: "Speedo dotted",
-    description: "Arc rendered as a row of dots, with a brighter dot at the needle tip.",
+    name: "arc-ticks-redline-bold",
+    label: "Redline · bold",
+    description:
+      "Thicker arc + ticks + a larger hub. Heavier presence; better at small sizes (sidebar, favicon).",
   },
   {
-    name: "arc-segments",
-    label: "Speedo zones",
-    description: "Three coloured arc segments — green / amber / warn — and a needle.",
-  },
-  {
-    name: "arc-needle",
-    label: "Needle only",
-    description: "No arc; just the needle and pivot. The most reductive of the set.",
-  },
-  {
-    name: "arc-360",
-    label: "Full tach",
-    description: "Closed circular tach with a single tick at 12 o'clock and a needle.",
-  },
-  {
-    name: "wrench-gauge",
-    label: "Gauge + wrench",
-    description: "Dial gauge crossed with a small wrench — service feel.",
-  },
-  {
-    name: "lights",
-    label: "Start lights",
-    description: "Three F1-style start lights stacked vertically.",
-  },
-  {
-    name: "spark",
-    label: "Spark + bolt",
-    description: "Stylized spark plug with an ignition bolt.",
-  },
-  {
-    name: "wheel",
-    label: "Steering wheel",
-    description: "Minimal three-spoke steering wheel ring.",
-  },
-  {
-    name: "tread-p",
-    label: "Tread P",
-    description: "Tire tread forming a P-mark.",
+    name: "arc-ticks-redline-fill",
+    label: "Redline · capped",
+    description:
+      "Solid filled redline segment that fades into the cool body via gradient. Hot-metal feel.",
   },
 ];
 

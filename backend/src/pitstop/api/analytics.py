@@ -492,3 +492,81 @@ async def mpg_overlay(
         )
 
     return {"obd_mpg": obd_series, "fillup_mpg": fillup_series}
+
+
+# Distance bucket boundaries in km (5 buckets: <3.2, <16, <48, <161, ≥161 km
+# = <2 mi, <10 mi, <30 mi, <100 mi, ≥100 mi). Matches the task description's
+# bucketing — keeps the math fair when comparing 1-mi school runs against
+# 90-mi commutes.
+_TRIP_BUCKETS_KM = [3.2, 16, 48, 161]
+_TRIP_BUCKET_LABELS = ["<2 mi", "2-10 mi", "10-30 mi", "30-100 mi", "100+ mi"]
+
+
+def _bucket_index(km: float) -> int:
+    for i, edge in enumerate(_TRIP_BUCKETS_KM):
+        if km < edge:
+            return i
+    return len(_TRIP_BUCKETS_KM)
+
+
+@router.get("/trip-baseline", dependencies=[Depends(require_query_token)])
+async def trip_baseline(
+    vehicle_id: UUID = Query(...),
+    distance_km: float = Query(..., gt=0),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Average MPG / speed / duration for trips in the same distance
+    bucket as `distance_km`. Powers the "this trip vs your average"
+    panel on TripDetail (Task #112).
+
+    Returns `null` averages when the bucket has < 5 samples — the UI
+    hides the panel in that case to avoid drawing conclusions from a
+    single trip.
+    """
+    bucket_i = _bucket_index(distance_km)
+    lo = _TRIP_BUCKETS_KM[bucket_i - 1] if bucket_i > 0 else 0.0
+    hi = _TRIP_BUCKETS_KM[bucket_i] if bucket_i < len(_TRIP_BUCKETS_KM) else None
+    where_hi = "AND distance_km < $3" if hi is not None else ""
+
+    args: list[Any] = [vehicle_id, lo]
+    if hi is not None:
+        args.append(hi)
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            SELECT
+                count(*) AS n,
+                avg(distance_km) AS avg_km,
+                avg(duration_s) AS avg_duration_s,
+                avg(avg_speed_kph) AS avg_speed_kph,
+                avg(max_speed_kph) AS avg_max_speed_kph,
+                -- Recomputed MPG: km/mi ÷ L/gal, only for trips with
+                -- meaningful fuel data
+                avg(
+                  CASE WHEN fuel_used_l > 0.4
+                       THEN (distance_km / 1.609344) / (fuel_used_l / 3.785411784)
+                  END
+                ) AS avg_mpg
+              FROM trips
+             WHERE vehicle_id = $1
+               AND ended_at IS NOT NULL
+               AND distance_km IS NOT NULL
+               AND distance_km >= $2
+               {where_hi}
+            """,
+            *args,
+        )
+
+    n = int(row["n"] or 0)
+    sufficient = n >= 5
+    return {
+        "bucket_label": _TRIP_BUCKET_LABELS[bucket_i],
+        "sample_size": n,
+        "sufficient": sufficient,
+        "avg_distance_km": float(row["avg_km"]) if sufficient and row["avg_km"] else None,
+        "avg_duration_s": int(row["avg_duration_s"]) if sufficient and row["avg_duration_s"] else None,
+        "avg_speed_kph": float(row["avg_speed_kph"]) if sufficient and row["avg_speed_kph"] else None,
+        "avg_max_speed_kph": float(row["avg_max_speed_kph"]) if sufficient and row["avg_max_speed_kph"] else None,
+        "avg_mpg": float(row["avg_mpg"]) if sufficient and row["avg_mpg"] else None,
+    }
