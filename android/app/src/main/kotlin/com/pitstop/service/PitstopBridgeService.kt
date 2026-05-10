@@ -263,6 +263,12 @@ class PitstopBridgeService : Service() {
                 )
             }
             publishEngineState("off", tMs)
+            // Clear cached metric samples so the Live screen doesn't
+            // sit on stale RPM / speed / coolant values from the
+            // just-finished drive. GPS + IMU stop being published to
+            // the bus too (see publish gates below) so the screen
+            // stays blank until the next engine_on.
+            stateBus.clearMetrics()
             // Seal the open drive (#117). The sealer persists to Room
             // and kicks the upload worker; subsequent retries collapse
             // on the deterministic client_drive_uuid.
@@ -801,11 +807,14 @@ class PitstopBridgeService : Service() {
         if (slug.isBlank()) return
 
         // Gate the firehose: only ship to the broker when the engine is
-        // actually running. While parked at home / WiCAN asleep / out of
-        // the car this saves ~30 useless rows/sec going into pid_readings.
-        // We still update the local state bus so the phone Live view
-        // continues to show whatever the sensors are reading.
-        val publishToBroker = stateBus.status.value.engineState == EngineState.On
+        // Gate every IMU update — local state bus, MQTT publish, and
+        // drive recorder — on engine_state=On. While parked at home /
+        // WiCAN asleep / out of the car this saves ~30 useless rows/s
+        // going into pid_readings AND prevents the Live screen from
+        // showing the phone's own accelerometer noise while sitting on
+        // a table.
+        if (stateBus.status.value.engineState != EngineState.On) return
+        val publishToBroker = true
 
         // Compose one IMU sample for the drive recorder per tick.
         // Recorder takes both accel + gyro together so the per-sample
@@ -890,16 +899,15 @@ class PitstopBridgeService : Service() {
         // logs and over the wire while preserving driving accuracy.
         val latR = (lat * 1e5).toLong() / 1e5
         val lonR = (lon * 1e5).toLong() / 1e5
-        // Always mirror to the local state bus — phone Live position card
-        // shows the current location even when parked.
+        // Don't update the local state bus while parked either.
+        // Otherwise the Live screen shows GPS coords ticking up while
+        // the car is off, which is confusing — the screen should be
+        // blank between drives.
+        if (stateBus.status.value.engineState != EngineState.On) return
         stateBus.publishMetric("gps_lat", latR)
         stateBus.publishMetric("gps_lon", lonR)
         if (loc.hasSpeed()) stateBus.publishMetric("gps_speed", loc.speed.toDouble())
         if (loc.hasAltitude()) stateBus.publishMetric("gps_alt", loc.altitude)
-        // Don't ship to broker while parked. GPS at home produces a stuck
-        // point at 5 sec cadence (~17k rows/day per vehicle) of zero
-        // analytical value. When engine is on we want every fix.
-        if (stateBus.status.value.engineState != EngineState.On) return
 
         // Bridge payload v2: one /location row carries the whole fix
         // (lat/lon/alt/speed/heading/accuracy) with the original capture

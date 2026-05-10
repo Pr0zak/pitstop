@@ -93,4 +93,15 @@ class BridgeStateBus @Inject constructor() {
         _status.value = BridgeStatus()
         _latestByMetric.value = emptyMap()
     }
+
+    /**
+     * Drop every cached metric sample (Live screen goes blank). Called
+     * on `engine_off` so the user doesn't see stale RPM / speed from
+     * the prior drive sitting on the gauges indefinitely. The next
+     * engine_on repopulates as fresh OBD frames arrive.
+     */
+    fun clearMetrics() {
+        _latestByMetric.value = emptyMap()
+        _status.update { it.copy(metricsActive = 0) }
+    }
 }
