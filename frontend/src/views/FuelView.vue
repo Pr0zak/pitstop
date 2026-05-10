@@ -12,6 +12,7 @@ import {
   fmtMpg,
   fmtMoney,
   fmtMiles,
+  fmtOdo,
   fmtGallons,
   fmtNumber,
 } from "@/composables/useFormat";
@@ -594,7 +595,7 @@ const rangeEstimate = computed<{
             <tbody>
               <tr v-for="f in sortedFillups" :key="f.id">
                 <td>{{ fmtDate(f.fillup_date) }}</td>
-                <td>{{ fmtMiles(f.odo) }}</td>
+                <td>{{ fmtOdo(f.odo) }}</td>
                 <td>
                   {{ fmtGallons(f.fuel_volume) }}
                   <span v-if="f.is_missed" class="badge warn" title="Missed">M</span>

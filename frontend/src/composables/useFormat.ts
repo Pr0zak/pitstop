@@ -41,6 +41,12 @@ export function fmtMpg(v: number | null | undefined): string {
 export function fmtMiles(v: number | null | undefined): string {
   return fmtNumber(v, { digits: 1, suffix: "mi" });
 }
+/** Whole-mile odometer reading (no decimal). Use for any "odo" field
+ *  rendered in tables / cards — Fuelio stores it as float but the
+ *  real-world value is always a whole mile, so the .0 just clutters. */
+export function fmtOdo(v: number | null | undefined): string {
+  return fmtNumber(v, { digits: 0, suffix: "mi" });
+}
 export function fmtGallons(v: number | null | undefined): string {
   return fmtNumber(v, { digits: 2, suffix: "gal" });
 }

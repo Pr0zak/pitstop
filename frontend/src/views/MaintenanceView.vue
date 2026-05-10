@@ -6,7 +6,7 @@ import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type { Reminder } from "@/api/types";
 import { Wrench, Check, AlertTriangle, Clock } from "lucide-vue-next";
-import { fmtDate, fmtMiles } from "@/composables/useFormat";
+import { fmtDate, fmtOdo, fmtMiles } from "@/composables/useFormat";
 
 const vehicles = useVehiclesStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
@@ -89,8 +89,8 @@ function describeDelta(r: Reminder): string {
             </div>
             <div class="numbers">
               <span class="muted small">
-                {{ r.current_odo != null ? fmtMiles(r.current_odo) : "—" }}
-                <span v-if="r.remind_odo != null"> / target {{ fmtMiles(r.remind_odo) }}</span>
+                {{ r.current_odo != null ? fmtOdo(r.current_odo) : "—" }}
+                <span v-if="r.remind_odo != null"> / target {{ fmtOdo(r.remind_odo) }}</span>
                 <span v-if="r.remind_date"> · due {{ fmtDate(r.remind_date) }}</span>
               </span>
               <span class="badge danger">{{ describeDelta(r) || "overdue" }}</span>
@@ -119,8 +119,8 @@ function describeDelta(r: Reminder): string {
             </div>
             <div class="numbers">
               <span class="muted small">
-                {{ r.current_odo != null ? fmtMiles(r.current_odo) : "—" }}
-                <span v-if="r.remind_odo != null"> / target {{ fmtMiles(r.remind_odo) }}</span>
+                {{ r.current_odo != null ? fmtOdo(r.current_odo) : "—" }}
+                <span v-if="r.remind_odo != null"> / target {{ fmtOdo(r.remind_odo) }}</span>
                 <span v-if="r.remind_date"> · due {{ fmtDate(r.remind_date) }}</span>
               </span>
               <span class="badge" :class="severity(r) === 'warn' ? 'warn' : ''">
