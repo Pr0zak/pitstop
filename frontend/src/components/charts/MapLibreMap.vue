@@ -7,6 +7,11 @@ interface Props {
   // Each feature is rendered as a circle marker. Use `route` for a polyline.
   markers?: { id: string; lng: number; lat: number; properties?: Record<string, unknown> }[];
   route?: [number, number][]; // array of [lng, lat]
+  // Optional: pre-segmented route with per-segment colors. When set,
+  // overrides the single-color `route` rendering. Each segment is a
+  // 2+-point LineString with a CSS color string. Used by TripDetail's
+  // speed-colored polyline.
+  routeSegments?: { coords: [number, number][]; color: string }[];
   height?: number;
   initialCenter?: [number, number]; // [lng, lat]
   initialZoom?: number;
@@ -55,33 +60,49 @@ function applyMarkers() {
   }
 }
 
+function buildRouteData(): GeoJSON.FeatureCollection {
+  // Prefer the pre-segmented form when callers provide it (speed-
+  // colored polyline). Otherwise fall back to one feature with the
+  // default blue color for the simple `route` prop.
+  if (props.routeSegments && props.routeSegments.length > 0) {
+    return {
+      type: "FeatureCollection",
+      features: props.routeSegments.map((s) => ({
+        type: "Feature",
+        properties: { color: s.color },
+        geometry: { type: "LineString", coordinates: s.coords },
+      })),
+    };
+  }
+  return {
+    type: "FeatureCollection",
+    features: props.route && props.route.length > 0 ? [{
+      type: "Feature",
+      properties: { color: "#2f81f7" },
+      geometry: { type: "LineString", coordinates: props.route },
+    }] : [],
+  };
+}
+
 function applyRoute() {
   if (!map) return;
   if (!map.getSource("trip-route")) {
     map.addSource("trip-route", {
       type: "geojson",
-      data: {
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: props.route ?? [] },
-      },
+      data: buildRouteData(),
     });
     map.addLayer({
       id: "trip-route",
       type: "line",
       source: "trip-route",
       paint: {
-        "line-color": "#2f81f7",
+        "line-color": ["get", "color"],
         "line-width": 3,
       },
     });
   } else {
     const src = map.getSource("trip-route") as maplibregl.GeoJSONSource;
-    src.setData({
-      type: "Feature",
-      properties: {},
-      geometry: { type: "LineString", coordinates: props.route ?? [] },
-    });
+    src.setData(buildRouteData());
   }
   fitBounds();
 }
@@ -90,6 +111,9 @@ function fitBounds() {
   if (!map) return;
   const points: [number, number][] = [];
   if (props.route) points.push(...props.route);
+  if (props.routeSegments) {
+    for (const s of props.routeSegments) points.push(...s.coords);
+  }
   if (props.markers) {
     for (const m of props.markers) points.push([m.lng, m.lat]);
   }
@@ -125,6 +149,13 @@ watch(
   () => {
     if (map?.loaded()) applyRoute();
   },
+);
+watch(
+  () => props.routeSegments,
+  () => {
+    if (map?.loaded()) applyRoute();
+  },
+  { deep: true },
 );
 // Re-center when the caller changes initialCenter mid-flight (e.g.
 // "Use current location" toggle on the stations map). Only flies if

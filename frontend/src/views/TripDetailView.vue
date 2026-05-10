@@ -137,6 +137,113 @@ const route2D = computed<[number, number][]>(() => {
     .map((s) => [s.gps_lon as number, s.gps_lat as number]);
 });
 
+/**
+ * Speed-bucketed polyline segments. Each segment is a 2-point
+ * LineString colored by the speed at the segment's start.
+ *   stopped (<1 m/s)        red    — traffic / parked / lights
+ *   city (1-10 m/s, ~2-22mph) amber — surface streets
+ *   suburban (10-20, ~22-45) green — main arterials
+ *   highway (20+, 45+ mph)    blue  — interstate
+ * Falls back to a single blue segment when speed data is absent
+ * (legacy trips with no /route endpoint coverage).
+ */
+function bucketColor(speedMps: number | null): string {
+  if (speedMps == null) return "#2f81f7";
+  if (speedMps < 1) return "#ef4444";       // red — stopped
+  if (speedMps < 10) return "#f59e0b";      // amber — city
+  if (speedMps < 20) return "#22c55e";      // green — suburban
+  return "#2f81f7";                         // blue — highway
+}
+
+const routeSegments = computed<{ coords: [number, number][]; color: string }[]>(() => {
+  const points = routeData.value?.points;
+  if (!points || points.length < 2) return [];
+  const out: { coords: [number, number][]; color: string }[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    out.push({
+      coords: [
+        [points[i].lon, points[i].lat],
+        [points[i + 1].lon, points[i + 1].lat],
+      ],
+      color: bucketColor(points[i].speed_mps),
+    });
+  }
+  return out;
+});
+
+/** Speed distribution: seconds spent in each bucket. Inferred from
+ *  consecutive GPS points; assumes ~5s cadence per fix. */
+interface SpeedBucket { label: string; color: string; seconds: number }
+const speedDistribution = computed<SpeedBucket[]>(() => {
+  const points = routeData.value?.points;
+  if (!points || points.length < 2) return [];
+  const buckets: SpeedBucket[] = [
+    { label: "Stopped", color: "#ef4444", seconds: 0 },
+    { label: "City", color: "#f59e0b", seconds: 0 },
+    { label: "Suburban", color: "#22c55e", seconds: 0 },
+    { label: "Highway", color: "#2f81f7", seconds: 0 },
+  ];
+  for (let i = 1; i < points.length; i++) {
+    const dt = (Date.parse(points[i].t) - Date.parse(points[i - 1].t)) / 1000;
+    if (!Number.isFinite(dt) || dt <= 0 || dt > 60) continue;
+    const sp = points[i - 1].speed_mps ?? 0;
+    const idx = sp < 1 ? 0 : sp < 10 ? 1 : sp < 20 ? 2 : 3;
+    buckets[idx].seconds += dt;
+  }
+  return buckets;
+});
+const speedTotalSeconds = computed(() =>
+  speedDistribution.value.reduce((s, b) => s + b.seconds, 0),
+);
+
+/** Elevation profile: list of [cumulative_km, alt_m] pairs from
+ *  gps_points. Skip if fewer than 4 points have altitude data. */
+interface ElevationPoint { km: number; alt_m: number }
+const elevationProfile = computed<ElevationPoint[]>(() => {
+  const points = routeData.value?.points;
+  if (!points || points.length < 4) return [];
+  const out: ElevationPoint[] = [];
+  let cumKm = 0;
+  let prev: typeof points[0] | null = null;
+  for (const p of points) {
+    if (prev != null) {
+      cumKm += haversineKm(prev.lat, prev.lon, p.lat, p.lon);
+    }
+    if (p.alt_m != null) out.push({ km: cumKm, alt_m: p.alt_m });
+    prev = p;
+  }
+  return out.length >= 4 ? out : [];
+});
+const elevationStats = computed(() => {
+  const pts = elevationProfile.value;
+  if (pts.length === 0) return null;
+  const alts = pts.map((p) => p.alt_m);
+  const min = Math.min(...alts);
+  const max = Math.max(...alts);
+  let climb = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = pts[i].alt_m - pts[i - 1].alt_m;
+    if (d > 0) climb += d;
+  }
+  return { min, max, climb };
+});
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const r = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(a));
+}
+
+function fmtBucketSeconds(s: number): string {
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.round(s / 60);
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+}
+
 let chartRef: uPlot | null = null;
 function onChartReady(c: uPlot) {
   chartRef = c;
@@ -225,7 +332,78 @@ async function saveMeta() {
             <div v-if="route2D.length === 0" class="muted">
               No GPS data captured for this trip.
             </div>
-            <MapLibreMap v-else :route="route2D" :height="360" />
+            <template v-else>
+              <MapLibreMap
+                :route-segments="routeSegments.length ? routeSegments : undefined"
+                :route="routeSegments.length ? undefined : route2D"
+                :height="360"
+              />
+              <div v-if="routeSegments.length" class="speed-legend">
+                <span class="dot" style="background:#ef4444"></span> stopped
+                <span class="dot" style="background:#f59e0b"></span> city
+                <span class="dot" style="background:#22c55e"></span> suburban
+                <span class="dot" style="background:#2f81f7"></span> highway
+              </div>
+            </template>
+          </div>
+
+          <div v-if="speedTotalSeconds > 0" class="card">
+            <h3>Speed distribution</h3>
+            <div class="bucket-bar">
+              <div
+                v-for="b in speedDistribution"
+                :key="b.label"
+                class="bucket"
+                :style="{
+                  background: b.color,
+                  width: ((b.seconds / speedTotalSeconds) * 100).toFixed(2) + '%',
+                }"
+                :title="`${b.label} · ${fmtBucketSeconds(b.seconds)}`"
+              />
+            </div>
+            <dl class="bucket-list">
+              <template v-for="b in speedDistribution" :key="b.label">
+                <dt>
+                  <span class="dot" :style="{ background: b.color }"></span>
+                  {{ b.label }}
+                </dt>
+                <dd>
+                  {{ fmtBucketSeconds(b.seconds) }}
+                  <span class="muted small">
+                    ({{ ((b.seconds / speedTotalSeconds) * 100).toFixed(0) }}%)
+                  </span>
+                </dd>
+              </template>
+            </dl>
+          </div>
+
+          <div v-if="elevationStats" class="card">
+            <header class="chart-head">
+              <h3>Elevation</h3>
+              <span class="muted small">
+                {{ elevationStats.min.toFixed(0) }}–{{ elevationStats.max.toFixed(0) }} m
+                · climb {{ elevationStats.climb.toFixed(0) }} m
+              </span>
+            </header>
+            <svg
+              :viewBox="`0 0 ${elevationProfile.length} 100`"
+              preserveAspectRatio="none"
+              class="elev-svg"
+            >
+              <polyline
+                :points="elevationProfile.map((p, i) => {
+                  const min = elevationStats!.min;
+                  const max = elevationStats!.max;
+                  const range = Math.max(1, max - min);
+                  const y = 100 - ((p.alt_m - min) / range) * 90 - 5;
+                  return `${i},${y}`;
+                }).join(' ')"
+                fill="none"
+                stroke="#22c55e"
+                stroke-width="1.4"
+                vector-effect="non-scaling-stroke"
+              />
+            </svg>
           </div>
         </section>
 
@@ -383,5 +561,52 @@ async function saveMeta() {
   .layout {
     grid-template-columns: 1fr;
   }
+}
+.speed-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--c-muted);
+  align-items: center;
+}
+.speed-legend .dot,
+.bucket-list .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.4em;
+  vertical-align: middle;
+}
+.bucket-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 0.6rem;
+}
+.bucket-bar .bucket {
+  height: 100%;
+}
+.bucket-list {
+  display: grid;
+  grid-template-columns: max-content auto;
+  gap: 0.3rem 0.8rem;
+  margin: 0;
+  font-size: 0.85rem;
+}
+.bucket-list dt {
+  color: var(--c-ink1);
+}
+.bucket-list dd {
+  margin: 0;
+  color: var(--c-muted);
+}
+.elev-svg {
+  width: 100%;
+  height: 80px;
 }
 </style>
