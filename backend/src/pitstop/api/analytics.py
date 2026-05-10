@@ -838,31 +838,36 @@ async def anomalies(
 async def hard_events(
     vehicle_id: UUID = Query(...),
     days: int = Query(default=90, ge=1, le=3650),
-    threshold_mps2: float = Query(default=4.0, ge=1.0, le=20.0),
+    threshold_mps2: float = Query(default=5.0, ge=1.0, le=20.0),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, Any]:
     """Count hard accel/brake events from phone IMU (Task #95).
 
-    For each timestamp, pair accel_x/y/z, compute magnitude, and
-    subtract gravity (~9.81). Deviation > `threshold_mps2` is a
-    "hard event" — covers hard braking, hard acceleration, sharp
-    cornering, or pothole hits regardless of phone orientation.
+    The phone bridge publishes **linear** acceleration (gravity
+    already compensated — per-axis mean ≈ 0 at rest, per data),
+    so magnitude above `threshold_mps2` is a hard event directly.
+    Covers hard braking, hard acceleration, sharp cornering, or
+    pothole hits regardless of phone orientation.
 
     Returns total count + rate per 100 mi over the window + a
     per-day series for charting.
     """
     cutoff = datetime.now(UTC) - timedelta(days=days)
-    G = 9.80665
 
     async with pool.acquire() as conn:
-        # Pivot accel_x/y/z by time using time_bucket of 1s — phone
+        # Pivot accel_x/y/z by time using time_bucket of 1s. Phone
         # bridge publishes at >5 Hz, so 1s buckets capture each
         # distinct event without exploding the row count.
+        #
+        # NB: use avg() per axis (centroid acceleration in the
+        # second), not max(abs()). Each axis's per-second max can
+        # occur at a different instant — composing magnitude from
+        # per-axis maxes overstates true magnitude wildly.
         rows = await conn.fetch(
             """
             SELECT time_bucket(make_interval(secs => 1), time) AS t,
                    metric,
-                   max(abs(value_num)) AS v
+                   avg(value_num) AS v
               FROM pid_readings
              WHERE vehicle_id = $1
                AND metric IN ('accel_x', 'accel_y', 'accel_z')
@@ -897,7 +902,7 @@ async def hard_events(
         ay = axes.get("accel_y", 0.0)
         az = axes.get("accel_z", 0.0)
         mag = (ax * ax + ay * ay + az * az) ** 0.5
-        if abs(mag - G) > threshold_mps2:
+        if mag > threshold_mps2:
             total += 1
             daily_counts[t.date()] += 1
 

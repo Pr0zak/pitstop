@@ -481,14 +481,14 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
               <span v-if="hardQ.data.value.rate_per_100mi != null">
                 · {{ hardQ.data.value.rate_per_100mi.toFixed(1) }} / 100 mi
               </span>
-              · |a−g| &gt; {{ hardQ.data.value.threshold_mps2 }} m/s²
+              · |a| &gt; {{ hardQ.data.value.threshold_mps2 }} m/s²
             </span>
           </header>
           <UPlotChart v-if="hardSpark" :data="hardSpark.aligned" :options="hardSpark.opts" />
           <p class="muted small">
-            Counts each 1-second bucket where |IMU magnitude − 9.81 m/s²| exceeds the
-            threshold. Captures hard braking, hard acceleration, sharp cornering, or
-            pothole hits regardless of phone orientation.
+            Counts each 1-second bucket where the IMU's linear-acceleration magnitude
+            exceeds the threshold. Captures hard braking, hard acceleration, sharp
+            cornering, or pothole hits regardless of phone orientation.
           </p>
         </section>
 
