@@ -35,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -115,6 +116,41 @@ class PitstopBridgeService : Service() {
         scope.launch {
             presence.inCar.collect { v ->
                 stateBus.update { it.copy(inCar = v) }
+            }
+        }
+        // OBD-quiet watchdog: if engine_state has been On for ≥60s
+        // with no fresh OBD frame, force engine_off and seal the
+        // drive. Catches the case where the WiCAN goes to sleep
+        // mid-trip (user parked, BLE drops) — the STOPPED-streak
+        // gate only fires when WiCAN is awake and responding STOPPED;
+        // an outright silent WiCAN never triggers it. Without this,
+        // a "drive A → 7-min parked → drive B" pattern gets sealed
+        // as one big buffer with bogus duration.
+        scope.launch {
+            val obdQuietThresholdMs = 60_000L
+            while (isActive) {
+                kotlinx.coroutines.delay(10_000L)
+                val s = stateBus.status.value
+                if (s.engineState != EngineState.On) continue
+                val lastFrame = s.lastFrameAtMs ?: continue
+                val ageMs = System.currentTimeMillis() - lastFrame
+                if (lastFrame > 0 && ageMs > obdQuietThresholdMs) {
+                    logBuffer.info(
+                        "engine off (OBD-quiet watchdog)",
+                        mapOf("frame_age_ms" to ageMs),
+                    )
+                    val tMs = System.currentTimeMillis()
+                    stateBus.update {
+                        it.copy(
+                            engineState = EngineState.Off,
+                            engineStateChangedAtMs = tMs,
+                        )
+                    }
+                    publishEngineState("off", tMs)
+                    stateBus.clearMetrics()
+                    val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                    driveSealer.seal(tMs, deviceId, kind = "quiet")
+                }
             }
         }
         logBuffer.info("bridge service created")
@@ -241,10 +277,18 @@ class PitstopBridgeService : Service() {
             publishEngineState("on", tMs)
             // Open a phone-canonical drive buffer (#117). The recorder
             // mirrors every PID / GPS / IMU sample the bridge publishes
-            // while open, then DriveSealer.seal() persists + uploads
-            // on engine_off.
+            // while open; on engine_off DriveSealer.seal() persists +
+            // uploads. If the prior buffer never closed cleanly (BLE
+            // dropped before engine_off fired), seal the orphan with
+            // incomplete=true so the drive isn't lost.
             if (vehicleSlug.isNotBlank()) {
-                driveRecorder.open(vehicleSlug, tMs)
+                val result = driveRecorder.open(vehicleSlug, tMs)
+                result.orphan?.let { orphan ->
+                    scope.launch {
+                        val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                        driveSealer.sealOrphan(orphan, deviceId)
+                    }
+                }
             }
         }
     }

@@ -63,15 +63,19 @@ class DriveSealer @Inject constructor(
     }
 
     /**
-     * Orphan-buffer recovery: called on app start when we find an
-     * open drive marker that didn't get a clean close (phone crashed
-     * mid-drive). Stamp the trip incomplete=true so the user knows
-     * the stats may be partial.
+     * Orphan-buffer recovery: called when DriveRecorder.open()
+     * finds a prior buffer still open (engine_off never fired) OR
+     * on app-start crash recovery. The caller passes the orphaned
+     * [DriveBuffer] directly — we use its [DriveBuffer.startedAtMs]
+     * as the drive start and `now` as the ended_at. Stamped
+     * `incomplete=true` so the trip row badges accordingly.
      */
-    suspend fun sealIncomplete(deviceId: String): PendingDrive? {
+    suspend fun sealOrphan(orphan: DriveBuffer, deviceId: String): PendingDrive {
         val now = System.currentTimeMillis()
-        val buf = recorder.closeIncomplete(now) ?: return null
-        return persist(buf, now, incomplete = true, deviceId = deviceId)
+        // The orphan's last engine event might not be there — add one
+        // synthetic 'off' at now so the payload's engine_events bookend.
+        orphan.addEngineEvent(now, "off")
+        return persist(orphan, now, incomplete = true, deviceId = deviceId)
     }
 
     private suspend fun persist(

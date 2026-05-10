@@ -33,32 +33,38 @@ class DriveRecorder @Inject constructor(
 
     /**
      * Engine-on transition (or first OBD frame after a long quiet).
-     * Opens a new buffer keyed on (vehicleId, startedAtMs). If a
-     * buffer is already open for a different drive, the prior one is
-     * sealed as `incomplete` first.
+     * Opens a new buffer keyed on (vehicleId, startedAtMs).
+     *
+     * Returns the orphaned prior buffer (if any) along with the
+     * fresh one — caller is expected to hand the orphan to
+     * [DriveSealer.sealIncomplete] before discarding. Previously we
+     * just logged + dropped the orphan, which silently lost drives.
      */
-    fun open(vehicleId: String, startedAtMs: Long): DriveBuffer {
+    fun open(vehicleId: String, startedAtMs: Long): OpenResult {
         val prior = _open.value
+        val fresh = DriveBuffer(vehicleId, startedAtMs)
+        _open.value = fresh
+        fresh.addEngineEvent(startedAtMs, "on")
         if (prior != null) {
             logs.warn(
-                "DriveRecorder.open: prior buffer still open; will seal as incomplete",
+                "DriveRecorder.open: orphan prior buffer detected, will seal as incomplete",
                 mapOf(
                     "prior_vehicle" to prior.vehicleId,
                     "prior_started" to prior.startedAtMs,
+                    "prior_frames" to prior.frameCount(),
                     "new_vehicle" to vehicleId,
                     "new_started" to startedAtMs,
                 ),
             )
         }
-        val fresh = DriveBuffer(vehicleId, startedAtMs)
-        _open.value = fresh
-        fresh.addEngineEvent(startedAtMs, "on")
         logs.info(
             "DriveRecorder: drive opened",
             mapOf("vehicle_id" to vehicleId, "started_at" to startedAtMs),
         )
-        return fresh
+        return OpenResult(fresh = fresh, orphan = prior)
     }
+
+    data class OpenResult(val fresh: DriveBuffer, val orphan: DriveBuffer?)
 
     /** Convenience accessor for the publish path. */
     fun current(): DriveBuffer? = _open.value

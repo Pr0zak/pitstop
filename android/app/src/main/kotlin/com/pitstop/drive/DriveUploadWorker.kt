@@ -39,13 +39,16 @@ class DriveUploadWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        // Step 1: prune server-acked rows older than 24h. Cheap — one
-        // SQL DELETE, no row reads. Keeps the table from growing
-        // without bound across years of driving.
+        val unackedAtStart = dao.unackedCount()
+        logs.info(
+            "DriveUploadWorker: starting",
+            mapOf("unacked" to unackedAtStart),
+        )
+        // Step 1: prune server-acked rows older than 24h.
         val cutoff = System.currentTimeMillis() - ACK_RETENTION_MS
         val pruned = dao.pruneAcked(cutoff)
         if (pruned > 0) {
-            logs.debug(
+            logs.info(
                 "DriveUploadWorker: pruned acked rows older than 24h",
                 mapOf("count" to pruned),
             )
@@ -90,9 +93,9 @@ class DriveUploadWorker @AssistedInject constructor(
             }
         }
 
-        logs.debug(
+        logs.info(
             "DriveUploadWorker: queue drained this pass",
-            mapOf("count" to drained),
+            mapOf("count" to drained, "still_unacked" to dao.unackedCount()),
         )
         return Result.success()
     }
