@@ -390,6 +390,90 @@ function fmtClock(iso?: string | null): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// Auto-generated narrative sentence (Task #103). Synthesises headline
+// numbers into one human-readable line at the top of the page. Each
+// clause is independent — skipped when its inputs are missing — so a
+// stub trip ("just started, no GPS yet") still produces a sane line.
+const summarySentence = computed<string>(() => {
+  const t = trip.value;
+  if (!t) return "";
+  const parts: string[] = [];
+
+  // 1) "13-min morning drive" / "13-min drive"
+  const minutes = t.duration_s ? Math.round(t.duration_s / 60) : null;
+  const todLabel = (() => {
+    if (!t.started_at) return null;
+    const h = new Date(t.started_at).getHours();
+    if (h >= 22 || h < 5) return "late-night";
+    if (h < 11) return "morning";
+    if (h < 17) return "afternoon";
+    return "evening";
+  })();
+  if (minutes != null) {
+    if (minutes < 1) parts.push("Brief drive");
+    else parts.push(`${minutes}-min ${todLabel ? todLabel + " " : ""}drive`);
+  }
+
+  // 2) Weather. Suffix: "in 67°F clear conditions"
+  if (t.weather_temp_c != null) {
+    const f = Math.round(t.weather_temp_c * 9 / 5 + 32);
+    const wmo = t.weather_code != null ? WMO_CODE[t.weather_code]?.label : null;
+    parts.push(`in ${f}°F${wmo ? ` ${wmo}` : ""} conditions`);
+  }
+
+  // 3) Speed split. Use bucket distribution if it produced totals.
+  if (speedTotalSeconds.value > 0) {
+    const total = speedTotalSeconds.value;
+    const hwy = speedDistribution.value.find((b) => b.label === "Highway");
+    const sub = speedDistribution.value.find((b) => b.label === "Suburban");
+    const city = speedDistribution.value.find((b) => b.label === "City");
+    const hwyPct = hwy ? Math.round((hwy.seconds / total) * 100) : 0;
+    const subPct = sub ? Math.round((sub.seconds / total) * 100) : 0;
+    const cityPct = city ? Math.round((city.seconds / total) * 100) : 0;
+    if (hwyPct >= 50) parts.push(`mostly highway (${hwyPct}%)`);
+    else if (cityPct >= 50) parts.push(`mostly city (${cityPct}%)`);
+    else if (hwyPct + subPct + cityPct > 0)
+      parts.push(`mixed: ${hwyPct}% hwy, ${subPct}% suburban, ${cityPct}% city`);
+  }
+
+  // 4) Stops & distance.
+  if (t.distance_km != null && t.distance_km > 0) {
+    const mi = (t.distance_km * 0.621371).toFixed(1);
+    parts.push(`${mi} mi covered`);
+  }
+  if (stops.value.length >= 2) {
+    parts.push(`${stops.value.length} stops`);
+  }
+
+  // 5) MPG. distance_km / fuel_used_l → mi/gal_us. Only when fuel reading
+  // is meaningful (>0.1 gal).
+  if (t.distance_km != null && t.fuel_used_l != null && t.fuel_used_l > 0.4) {
+    const mi = t.distance_km * 0.621371;
+    const gal = t.fuel_used_l * 0.264172;
+    if (gal > 0) {
+      const mpg = mi / gal;
+      if (mpg > 1 && mpg < 100) parts.push(`averaged ${mpg.toFixed(1)} mpg`);
+    }
+  }
+
+  // 6) Top speed.
+  if (t.max_speed_kph != null && t.max_speed_kph > 0) {
+    parts.push(`peaked at ${Math.round(t.max_speed_kph * 0.621371)} mph`);
+  }
+
+  // 7) DTCs.
+  if ((t.dtcs?.length ?? 0) > 0) {
+    parts.push(`${t.dtcs!.length} DTC${t.dtcs!.length === 1 ? "" : "s"} fired`);
+  }
+
+  if (parts.length === 0) return "";
+  // Join with commas, terminate. Keep it conversational by joining
+  // the first weather suffix with the duration without a comma.
+  const head = parts[0] + (parts[1]?.startsWith("in ") ? " " + parts[1] : "");
+  const tail = parts.slice(parts[1]?.startsWith("in ") ? 2 : 1).join(", ");
+  return tail ? `${head}, ${tail}.` : `${head}.`;
+});
+
 let chartRef: uPlot | null = null;
 function onChartReady(c: uPlot) {
   chartRef = c;
@@ -455,6 +539,7 @@ async function saveMeta() {
       <p class="muted">Failed to load: {{ error }}</p>
     </div>
     <template v-else-if="trip">
+      <p v-if="summarySentence" class="trip-summary">{{ summarySentence }}</p>
       <div class="layout">
         <section class="main-col">
           <div class="card">
@@ -761,6 +846,16 @@ async function saveMeta() {
 .stats dd {
   margin: 0;
   font-weight: 500;
+}
+.trip-summary {
+  margin: 0;
+  padding: 0.7rem 0.95rem;
+  background: var(--c-surface-soft);
+  border-left: 3px solid var(--c-accent);
+  border-radius: var(--r-md);
+  color: var(--c-text);
+  font-size: 0.95rem;
+  line-height: 1.45;
 }
 .tod-badge {
   display: inline-flex;
