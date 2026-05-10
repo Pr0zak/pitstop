@@ -127,7 +127,11 @@ async def get_trip(
                  WHERE vehicle_id = $1
                    AND time >= $2 AND time <= $3
                    AND metric IN ('vehicle_speed', 'engine_rpm', 'coolant_temp',
-                                  'throttle_position', 'maf_air_flow')
+                                  'throttle_position', 'maf_air_flow',
+                                  'manifold_pressure', 'engine_load',
+                                  'control_module_voltage', 'fuel_level',
+                                  'intake_air_temp', 'engine_oil_temp',
+                                  'atf_temp_f')
                    AND value_num IS NOT NULL
                  GROUP BY 1, 2
                  ORDER BY 1 ASC

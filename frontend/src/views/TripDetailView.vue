@@ -42,11 +42,52 @@ const { data: routeData } = useAsync(
 // Build uPlot data + options from samples.
 type ChartData = { aligned: uPlot.AlignedData; opts: uPlot.Options } | null;
 
+// Series definitions keyed on metric name. Each defines its display
+// label, stroke color, axis scale, and a transform from canonical SI
+// units to the display unit (kph→mph, °C→°F, etc).
+interface TripSeries {
+  metric: string;
+  label: string;
+  stroke: string;
+  scale: string;
+  axisLabel: string;
+  transform: (v: number) => number;
+  defaultVisible: boolean;
+}
+const TRIP_SERIES: TripSeries[] = [
+  { metric: "vehicle_speed",          label: "Speed (mph)",      stroke: "#2f81f7", scale: "speed",  axisLabel: "mph",   transform: (v) => v * 0.621371, defaultVisible: true },
+  { metric: "engine_rpm",             label: "RPM",              stroke: "#3fb950", scale: "rpm",    axisLabel: "rpm",   transform: (v) => v,            defaultVisible: true },
+  { metric: "coolant_temp",           label: "Coolant (°F)",     stroke: "#d29922", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: true },
+  { metric: "throttle_position",      label: "Throttle (%)",     stroke: "#a78bfa", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
+  { metric: "engine_load",            label: "Load (%)",         stroke: "#ec4899", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
+  { metric: "manifold_pressure",      label: "MAP (kPa)",        stroke: "#06b6d4", scale: "kpa",    axisLabel: "kPa",   transform: (v) => v,            defaultVisible: false },
+  { metric: "maf_air_flow",           label: "MAF (g/s)",        stroke: "#14b8a6", scale: "maf",    axisLabel: "g/s",   transform: (v) => v,            defaultVisible: false },
+  { metric: "fuel_level",             label: "Fuel (%)",         stroke: "#f97316", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
+  { metric: "control_module_voltage", label: "Battery (V)",      stroke: "#facc15", scale: "volt",   axisLabel: "V",     transform: (v) => v,            defaultVisible: false },
+  { metric: "intake_air_temp",        label: "Intake (°F)",      stroke: "#94a3b8", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
+  { metric: "engine_oil_temp",        label: "Oil (°F)",         stroke: "#f87171", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
+  { metric: "atf_temp_f",             label: "ATF (°F)",         stroke: "#dc2626", scale: "temp",   axisLabel: "°F",    transform: (v) => v,            defaultVisible: false },
+];
+
+// Persisted visibility selection — survives reload + revisit.
+const SERIES_VIS_KEY = "pitstop_trip_series_visible";
+function loadSeriesVis(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SERIES_VIS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return Object.fromEntries(TRIP_SERIES.map((s) => [s.metric, s.defaultVisible]));
+}
+const seriesVisible = ref<Record<string, boolean>>(loadSeriesVis());
+watch(seriesVisible, (v) => {
+  try { localStorage.setItem(SERIES_VIS_KEY, JSON.stringify(v)); } catch { /* ignore */ }
+}, { deep: true });
+
 const chart = computed<ChartData>(() => {
   if (!trip.value || !trip.value.samples || trip.value.samples.length === 0) return null;
-  // Backend returns long-form rows: {time, metric, value_num}. Pivot
-  // to wide form keyed on bucket time so uPlot can render multi-axis.
-  // Each metric maps to its target series array.
+  // Pivot long-form samples ({time, metric, value_num}) to wide form
+  // keyed on bucket time. Backwards-compat: handle the old wide-form
+  // shape too in case an older API response sneaks in.
   const buckets = new Map<number, Record<string, number | null>>();
   for (const s of trip.value.samples as Array<{
     time: string;
@@ -61,66 +102,59 @@ const chart = computed<ChartData>(() => {
     if (s.metric && s.value_num !== undefined && s.value_num !== null) {
       slot[s.metric] = s.value_num;
     }
-    // Backwards compat: pre-pivot wide-form responses still work.
     if (s.vehicle_speed != null) slot["vehicle_speed"] = s.vehicle_speed;
     if (s.engine_rpm != null) slot["engine_rpm"] = s.engine_rpm;
     if (s.coolant_temp != null) slot["coolant_temp"] = s.coolant_temp;
     buckets.set(ts, slot);
   }
   const sortedTs = Array.from(buckets.keys()).sort((a, b) => a - b);
+  const visible = TRIP_SERIES.filter((s) => seriesVisible.value[s.metric]);
+  if (visible.length === 0) return null;
   const t: number[] = [];
-  const speed: (number | null)[] = [];
-  const rpm: (number | null)[] = [];
-  const coolant: (number | null)[] = [];
+  const arrays = visible.map(() => [] as (number | null)[]);
   for (const ts of sortedTs) {
     const slot = buckets.get(ts)!;
     t.push(ts);
-    // Convert kph→mph if user prefers imperial; backend stores SI.
-    const vs = slot["vehicle_speed"];
-    speed.push(vs == null ? null : vs * 0.621371);
-    rpm.push(slot["engine_rpm"] ?? null);
-    const c = slot["coolant_temp"];
-    coolant.push(c == null ? null : (c * 9) / 5 + 32);
+    visible.forEach((s, i) => {
+      const v = slot[s.metric];
+      arrays[i].push(v == null ? null : s.transform(v));
+    });
   }
-  const aligned: uPlot.AlignedData = [t, speed, rpm, coolant];
+  const aligned: uPlot.AlignedData = [t, ...arrays] as uPlot.AlignedData;
+  // Build the scales object: every distinct scale used by visible series.
+  const scales: Record<string, { time?: boolean }> = { x: { time: true } };
+  for (const s of visible) scales[s.scale] = {};
+  // Axes — first is x; then one per *unique* scale, alternating sides.
+  const axisScalesSeen = new Set<string>();
+  const axes: uPlot.Axis[] = [{ stroke: "#9aa0aa" }];
+  let side = 0; // 0 = left (3 for top, but we want bottom-default), 1 = right
+  for (const s of visible) {
+    if (axisScalesSeen.has(s.scale)) continue;
+    axisScalesSeen.add(s.scale);
+    axes.push({
+      scale: s.scale,
+      stroke: "#9aa0aa",
+      label: s.axisLabel,
+      side: side === 0 ? 3 : 1,
+      grid: { show: side === 0 },
+    });
+    side = 1 - side;
+  }
   const opts: uPlot.Options = {
     width: 800,
     height: 320,
     cursor: { drag: { x: true, y: false, setScale: true } },
-    scales: {
-      x: { time: true },
-      speed: {},
-      rpm: {},
-      temp: {},
-    },
+    scales,
     series: [
       {},
-      {
-        label: "Speed (mph)",
-        stroke: "#2f81f7",
-        scale: "speed",
-        width: 1.5,
-      },
-      {
-        label: "RPM",
-        stroke: "#3fb950",
-        scale: "rpm",
-        width: 1.5,
-      },
-      {
-        label: "Coolant (°F)",
-        stroke: "#d29922",
-        scale: "temp",
-        width: 1,
-        dash: [4, 3],
-      },
+      ...visible.map((s) => ({
+        label: s.label,
+        stroke: s.stroke,
+        scale: s.scale,
+        width: 1.4,
+      })),
     ],
-    axes: [
-      { stroke: "#9aa0aa" },
-      { scale: "speed", stroke: "#9aa0aa", label: "mph" },
-      { scale: "rpm", side: 1, stroke: "#9aa0aa", label: "rpm" },
-      { scale: "temp", side: 1, stroke: "#9aa0aa", grid: { show: false } },
-    ],
+    axes,
   };
   return { aligned, opts };
 });
@@ -313,7 +347,18 @@ async function saveMeta() {
               <h3>Timeline</h3>
               <button class="ghost" type="button" @click="resetZoom">Reset zoom</button>
             </header>
-            <div v-if="!chart" class="muted">No samples in this trip.</div>
+            <div class="series-chips">
+              <button
+                v-for="s in TRIP_SERIES"
+                :key="s.metric"
+                class="chip"
+                :class="{ active: seriesVisible[s.metric] }"
+                :style="seriesVisible[s.metric] ? { borderColor: s.stroke, color: s.stroke } : {}"
+                type="button"
+                @click="seriesVisible[s.metric] = !seriesVisible[s.metric]"
+              >{{ s.label.replace(/ \(.*\)/, '') }}</button>
+            </div>
+            <div v-if="!chart" class="muted">No metrics selected (or no samples in this trip).</div>
             <UPlotChart
               v-else
               :data="chart.aligned"
@@ -608,5 +653,27 @@ async function saveMeta() {
 .elev-svg {
   width: 100%;
   height: 80px;
+}
+.series-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0.6rem 0;
+}
+.series-chips .chip {
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--c-border-soft);
+  background: var(--c-surface);
+  color: var(--c-muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.series-chips .chip:hover {
+  background: var(--c-surface-2);
+}
+.series-chips .chip.active {
+  background: var(--c-surface-2);
+  border-width: 1.5px;
 }
 </style>
