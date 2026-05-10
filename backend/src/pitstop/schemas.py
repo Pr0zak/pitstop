@@ -240,6 +240,13 @@ class TripOut(BaseModel):
     weather_precip_mm: float | None = None
     weather_wind_kph: float | None = None
     weather_code: int | None = None
+    # Provenance (Task #116). 'phone_batch' for atomic uploads from
+    # the phone, 'deriver' for legacy/WiCAN-only post-processing.
+    # 'incomplete' is true when the phone sealed without an
+    # engine_off event (phone died mid-drive) — frontend badges
+    # these so the user knows the trip stats may be partial.
+    source: str = "deriver"
+    incomplete: bool = False
 
 
 class TripUpdate(BaseModel):

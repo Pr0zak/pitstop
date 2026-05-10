@@ -25,7 +25,8 @@ _TRIP_COLS = (
     "max_rpm, max_speed_kph, avg_speed_kph, avg_coolant_c, fuel_used_l, "
     "dtc_count, category, notes, "
     "weather_temp_c, weather_humidity_pct, weather_precip_mm, "
-    "weather_wind_kph, weather_code"
+    "weather_wind_kph, weather_code, "
+    "source, incomplete"
 )
 
 
@@ -50,6 +51,8 @@ def _row_to_trip(row: asyncpg.Record) -> dict[str, Any]:
         "weather_precip_mm": row["weather_precip_mm"],
         "weather_wind_kph": row["weather_wind_kph"],
         "weather_code": row["weather_code"],
+        "source": row["source"],
+        "incomplete": row["incomplete"],
     }
 
 

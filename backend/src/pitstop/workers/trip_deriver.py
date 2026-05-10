@@ -232,9 +232,62 @@ async def _derive_for_vehicle(
     samples = await _activity_samples(conn, vehicle_id, since)
     if not samples:
         return 0
+
+    # Skip ranges that already have a phone-sourced trip (#119).
+    # The phone owns drive boundaries for any vehicle with a bridge;
+    # this deriver only fills in legacy gaps (pre-pivot data) and
+    # WiCAN-only driveway sessions.
+    phone_ranges = await conn.fetch(
+        """
+        SELECT started_at, ended_at
+          FROM trips
+         WHERE vehicle_id = $1
+           AND source = 'phone_batch'
+           AND ended_at >= $2
+         ORDER BY started_at
+        """,
+        vehicle_id, since,
+    )
+
+    def _in_skip_range(t: datetime) -> bool:
+        # Linear scan — phone_ranges is small (10s of rows in 24h
+        # lookback even at peak driving).
+        for r in phone_ranges:
+            if r["started_at"] <= t <= r["ended_at"]:
+                return True
+        return False
+
+    if phone_ranges:
+        samples = [s for s in samples if not _in_skip_range(s.time)]
+        if not samples:
+            log.info(
+                "deriver: all samples in phone-sourced ranges, skipping",
+                extra={
+                    "vehicle_id": str(vehicle_id),
+                    "skip_ranges": len(phone_ranges),
+                },
+            )
+            return 0
+
     intervals = _build_intervals(samples)
     touched = 0
     for iv in intervals:
+        # Defense in depth — if an interval *overlaps* a phone-sourced
+        # trip (the phone may have closed slightly past our last sample
+        # but the next sample is from the deriver's path), drop it.
+        if any(
+            r["started_at"] < iv.ended_at and r["ended_at"] > iv.started_at
+            for r in phone_ranges
+        ):
+            log.warning(
+                "deriver: interval overlaps phone-sourced trip, skipping",
+                extra={
+                    "vehicle_id": str(vehicle_id),
+                    "interval_started": iv.started_at.isoformat(),
+                    "interval_ended": iv.ended_at.isoformat(),
+                },
+            )
+            continue
         duration = (iv.ended_at - iv.started_at).total_seconds()
         if duration < MIN_DURATION_S:
             continue
@@ -286,12 +339,14 @@ async def _derive_for_vehicle(
                 distance_km, max_rpm, max_speed_kph, avg_speed_kph,
                 avg_coolant_c, fuel_used_l, dtc_count,
                 weather_temp_c, weather_humidity_pct,
-                weather_precip_mm, weather_wind_kph, weather_code
+                weather_precip_mm, weather_wind_kph, weather_code,
+                source
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9,
                 $10, $11, $12,
-                $13, $14, $15, $16, $17
+                $13, $14, $15, $16, $17,
+                'deriver'
             )
             ON CONFLICT (id) DO UPDATE SET
                 ended_at = EXCLUDED.ended_at,
