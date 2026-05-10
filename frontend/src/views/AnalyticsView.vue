@@ -208,6 +208,139 @@ const tempChart = computed(() => {
   return { aligned: cols, opts };
 });
 
+// Hard accel/brake events from IMU (Task #95).
+const hardQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getHardEvents(vehicleId.value, 90)
+      : Promise.resolve(null as api.HardEvents | null),
+  [vehicleId],
+);
+const hardSpark = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+  const pts = hardQ.data.value?.series ?? [];
+  if (pts.length < 2) return null;
+  const t = pts.map((p) => Math.round((Date.parse(p.date) || 0) / 1000));
+  const y = pts.map((p) => p.count);
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 160,
+    scales: { x: { time: true } },
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "events/day" }],
+    series: [
+      {},
+      { label: "Hard events", stroke: "#ef4444", width: 1.4, fill: "rgba(239,68,68,0.18)" },
+    ],
+  };
+  return { aligned: [t, y], opts };
+});
+
+// Engine hours vs miles (Task #96). Backend walks
+// time_since_engine_start, sums per-cycle maxes, and pairs each
+// month with the odometer high-water mark.
+const hoursQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getEngineHours(vehicleId.value)
+      : Promise.resolve(null as api.EngineHours | null),
+  [vehicleId],
+);
+const hoursChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+  const points = hoursQ.data.value?.points ?? [];
+  if (points.length < 2) return null;
+  const t: number[] = [];
+  const hrs: (number | null)[] = [];
+  const ratio: (number | null)[] = []; // hrs per 100 mi
+  for (const p of points) {
+    const ts = Math.round((Date.parse(p.month) || 0) / 1000);
+    t.push(ts);
+    hrs.push(p.cumulative_hours);
+    if (p.cumulative_km != null && p.cumulative_km > 0) {
+      const mi = p.cumulative_km / 1.609344;
+      ratio.push(mi > 0 ? (p.cumulative_hours / mi) * 100 : null);
+    } else {
+      ratio.push(null);
+    }
+  }
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 220,
+    scales: { x: { time: true }, hrs: {}, ratio: {} },
+    axes: [
+      { stroke: "#9aa0aa" },
+      { scale: "hrs", stroke: "#9aa0aa", label: "engine hours", side: 3 },
+      { scale: "ratio", stroke: "#9aa0aa", label: "hrs / 100 mi", side: 1, grid: { show: false } },
+    ],
+    series: [
+      {},
+      { label: "Cum. engine hrs", scale: "hrs", stroke: "#3fb950", width: 1.6 },
+      { label: "Hrs / 100 mi", scale: "ratio", stroke: "#a78bfa", width: 1.4, dash: [4, 3] },
+    ],
+  };
+  return { aligned: [t, hrs, ratio] as uPlot.AlignedData, opts };
+});
+
+// Long-term fuel trim drift (Task #89). LTFT trending up over
+// months signals the ECU has learned to add fuel — vacuum leak,
+// weak O2 sensor, clogging air filter, etc.
+const trimQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getFuelTrimHistory(vehicleId.value, 180)
+      : Promise.resolve(null as api.FuelTrimResponse | null),
+  [vehicleId],
+);
+
+const trimChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+  const series = trimQ.data.value?.series;
+  if (!series) return null;
+  // Union of every distinct timestamp across all 4 series so uPlot
+  // gets a single x-axis. Each series fills with null where it
+  // didn't have a sample for that day.
+  const tsSet = new Set<number>();
+  for (const m of Object.values(series)) {
+    for (const p of m) tsSet.add(Math.round((Date.parse(p.time) || 0) / 1000));
+  }
+  if (tsSet.size === 0) return null;
+  const ts = Array.from(tsSet).sort((a, b) => a - b);
+  const idx = new Map<number, number>();
+  ts.forEach((t, i) => idx.set(t, i));
+  const cols: (number | null)[][] = [];
+  const seriesDefs: uPlot.Series[] = [{}];
+  // Pair colors so STFT/LTFT for each bank read together.
+  const SPECS: Array<{ key: string; label: string; stroke: string; dash?: number[] }> = [
+    { key: "ltft_b1", label: "LTFT B1", stroke: "#2f81f7" },
+    { key: "ltft_b2", label: "LTFT B2", stroke: "#a78bfa" },
+    { key: "stft_b1", label: "STFT B1", stroke: "rgba(47,129,247,0.55)", dash: [3, 3] },
+    { key: "stft_b2", label: "STFT B2", stroke: "rgba(167,139,250,0.55)", dash: [3, 3] },
+  ];
+  for (const s of SPECS) {
+    const col: (number | null)[] = new Array(ts.length).fill(null);
+    for (const p of series[s.key] ?? []) {
+      const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
+      if (i != null) col[i] = p.pct;
+    }
+    if (col.some((v) => v != null)) {
+      cols.push(col);
+      seriesDefs.push({
+        label: s.label,
+        stroke: s.stroke,
+        width: 1.4,
+        ...(s.dash ? { dash: s.dash } : {}),
+      });
+    }
+  }
+  if (cols.length === 0) return null;
+  const aligned: uPlot.AlignedData = [ts, ...cols] as uPlot.AlignedData;
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 220,
+    scales: { x: { time: true } },
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "%" }],
+    series: seriesDefs,
+  };
+  return { aligned, opts };
+});
+
 // Cost breakdown (Task #92). Per-month spend by category for a
 // stacked bar — fuel, maintenance, registration, etc.
 const breakdownQ = useAsync(
@@ -338,6 +471,50 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
           <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
           <div v-else-if="!tempChart" class="muted">No temperature readings.</div>
           <UPlotChart v-else :data="tempChart.aligned" :options="tempChart.opts" />
+        </section>
+
+        <section v-if="hardSpark || (hardQ.data.value && hardQ.data.value.total > 0)" class="card">
+          <header class="head-inline">
+            <h3>Hard events</h3>
+            <span v-if="hardQ.data.value" class="muted small">
+              {{ hardQ.data.value.total }} in 90 d
+              <span v-if="hardQ.data.value.rate_per_100mi != null">
+                · {{ hardQ.data.value.rate_per_100mi.toFixed(1) }} / 100 mi
+              </span>
+              · |a−g| &gt; {{ hardQ.data.value.threshold_mps2 }} m/s²
+            </span>
+          </header>
+          <UPlotChart v-if="hardSpark" :data="hardSpark.aligned" :options="hardSpark.opts" />
+          <p class="muted small">
+            Counts each 1-second bucket where |IMU magnitude − 9.81 m/s²| exceeds the
+            threshold. Captures hard braking, hard acceleration, sharp cornering, or
+            pothole hits regardless of phone orientation.
+          </p>
+        </section>
+
+        <section v-if="hoursChart" class="card">
+          <header class="head-inline">
+            <h3>Engine hours vs miles</h3>
+            <span v-if="hoursQ.data.value" class="muted small">
+              {{ hoursQ.data.value.total_hours.toFixed(0) }} hrs total
+              <span v-if="hoursQ.data.value.hrs_per_100mi != null">
+                · {{ hoursQ.data.value.hrs_per_100mi.toFixed(2) }} hrs/100 mi
+              </span>
+            </span>
+          </header>
+          <UPlotChart :data="hoursChart.aligned" :options="hoursChart.opts" />
+        </section>
+
+        <section v-if="trimChart" class="card">
+          <header class="head-inline">
+            <h3>Fuel trim drift</h3>
+            <span class="muted small">180 days · LTFT solid, STFT dashed</span>
+          </header>
+          <UPlotChart :data="trimChart.aligned" :options="trimChart.opts" />
+          <p class="muted small">
+            LTFT drifting steadily &gt;+5% suggests vacuum leak, weak O2 sensor, or
+            clogging air filter. Steady &lt;-5% suggests a richening fault.
+          </p>
         </section>
 
         <section v-if="breakdownQ.data.value?.months?.length" class="card">

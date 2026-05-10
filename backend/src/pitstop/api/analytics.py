@@ -834,6 +834,251 @@ async def anomalies(
     return {"anomalies": out}
 
 
+@router.get("/hard-events", dependencies=[Depends(require_query_token)])
+async def hard_events(
+    vehicle_id: UUID = Query(...),
+    days: int = Query(default=90, ge=1, le=3650),
+    threshold_mps2: float = Query(default=4.0, ge=1.0, le=20.0),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Count hard accel/brake events from phone IMU (Task #95).
+
+    For each timestamp, pair accel_x/y/z, compute magnitude, and
+    subtract gravity (~9.81). Deviation > `threshold_mps2` is a
+    "hard event" — covers hard braking, hard acceleration, sharp
+    cornering, or pothole hits regardless of phone orientation.
+
+    Returns total count + rate per 100 mi over the window + a
+    per-day series for charting.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    G = 9.80665
+
+    async with pool.acquire() as conn:
+        # Pivot accel_x/y/z by time using time_bucket of 1s — phone
+        # bridge publishes at >5 Hz, so 1s buckets capture each
+        # distinct event without exploding the row count.
+        rows = await conn.fetch(
+            """
+            SELECT time_bucket(make_interval(secs => 1), time) AS t,
+                   metric,
+                   max(abs(value_num)) AS v
+              FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric IN ('accel_x', 'accel_y', 'accel_z')
+               AND time >= $2
+               AND value_num IS NOT NULL
+             GROUP BY 1, 2
+            """,
+            vehicle_id, cutoff,
+        )
+        # Window distance for the per-100-mi rate
+        odo_minmax = await conn.fetchrow(
+            """
+            SELECT min(value_num) AS odo_min, max(value_num) AS odo_max
+              FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'odometer'
+               AND time >= $2
+               AND value_num IS NOT NULL
+            """,
+            vehicle_id, cutoff,
+        )
+
+    # Pivot into (timestamp → {axis: max_abs})
+    buckets: dict[datetime, dict[str, float]] = defaultdict(dict)
+    for r in rows:
+        buckets[r["t"]][r["metric"]] = float(r["v"])
+
+    daily_counts: dict[date, int] = defaultdict(int)
+    total = 0
+    for t, axes in buckets.items():
+        ax = axes.get("accel_x", 0.0)
+        ay = axes.get("accel_y", 0.0)
+        az = axes.get("accel_z", 0.0)
+        mag = (ax * ax + ay * ay + az * az) ** 0.5
+        if abs(mag - G) > threshold_mps2:
+            total += 1
+            daily_counts[t.date()] += 1
+
+    miles = None
+    if odo_minmax and odo_minmax["odo_min"] is not None and odo_minmax["odo_max"] is not None:
+        delta_km = float(odo_minmax["odo_max"]) - float(odo_minmax["odo_min"])
+        if delta_km > 0:
+            miles = delta_km / 1.609344
+    rate_per_100mi = round(total / miles * 100, 2) if miles and miles > 0 else None
+
+    series = [
+        {"date": d.isoformat(), "count": n}
+        for d, n in sorted(daily_counts.items())
+    ]
+    return {
+        "total": total,
+        "rate_per_100mi": rate_per_100mi,
+        "threshold_mps2": threshold_mps2,
+        "window_days": days,
+        "series": series,
+    }
+
+
+@router.get("/engine-hours", dependencies=[Depends(require_query_token)])
+async def engine_hours(
+    vehicle_id: UUID = Query(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Cumulative engine hours derived from time_since_engine_start
+    (Task #96). The PID resets to 0 at each engine start, so cycle
+    duration = max value of the cycle. Total = sum across cycles.
+
+    Returns the headline total + a monthly-bucketed series
+    [{month, cumulative_hours, cumulative_km}] for charting hours
+    vs miles over time. The hrs/100mi ratio surfaces creeping idle
+    issues or use-pattern changes.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT time, value_num
+              FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'time_since_engine_start'
+               AND value_num IS NOT NULL
+             ORDER BY time ASC
+            """,
+            vehicle_id,
+        )
+        # Odometer readings for the cumulative-km curve. Same source
+        # the latest_odo_km field draws from. Fall back to fillups
+        # max-odo per month if pid_readings is sparse.
+        odo_rows = await conn.fetch(
+            """
+            SELECT date_trunc('month', time) AS month,
+                   max(value_num)            AS odo_km
+              FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'odometer'
+               AND value_num IS NOT NULL
+             GROUP BY 1
+             ORDER BY 1 ASC
+            """,
+            vehicle_id,
+        )
+
+    # Walk the time_since_engine_start trail. A drop > 50 % from
+    # the rolling max signals a cycle reset; the prior max is the
+    # cycle's duration.
+    monthly_hours: dict[datetime, float] = defaultdict(float)
+    cycle_max = 0.0
+    prev_val = 0.0
+    cycle_month: datetime | None = None
+    for r in rows:
+        v = float(r["value_num"])
+        ts = r["time"]
+        m = ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if v < prev_val * 0.5 and prev_val > 0:
+            # End of cycle; close out
+            if cycle_month is not None:
+                monthly_hours[cycle_month] += cycle_max
+            cycle_max = v
+            cycle_month = m
+        else:
+            cycle_max = max(cycle_max, v)
+            cycle_month = m
+        prev_val = v
+    # Close the final cycle
+    if cycle_month is not None and cycle_max > 0:
+        monthly_hours[cycle_month] += cycle_max
+
+    # Build cumulative series, paired with monthly odometer max.
+    odo_by_month = {r["month"]: float(r["odo_km"]) for r in odo_rows}
+    all_months = sorted(set(monthly_hours.keys()) | set(odo_by_month.keys()))
+    cum_h_s = 0.0
+    last_odo_km: float | None = None
+    points = []
+    for m in all_months:
+        cum_h_s += monthly_hours.get(m, 0.0)
+        if m in odo_by_month:
+            last_odo_km = odo_by_month[m]
+        points.append({
+            "month": m.isoformat(),
+            "cumulative_hours": round(cum_h_s / 3600.0, 2),
+            "cumulative_km": round(last_odo_km, 1) if last_odo_km is not None else None,
+        })
+
+    total_hours = cum_h_s / 3600.0
+    last_km = last_odo_km
+    hrs_per_100mi: float | None = None
+    if last_km and last_km > 0:
+        miles = last_km / 1.609344
+        hrs_per_100mi = round(total_hours / miles * 100, 2)
+
+    return {
+        "total_hours": round(total_hours, 2),
+        "hrs_per_100mi": hrs_per_100mi,
+        "points": points,
+    }
+
+
+@router.get("/fuel-trim", dependencies=[Depends(require_query_token)])
+async def fuel_trim_history(
+    vehicle_id: UUID = Query(...),
+    days: int = Query(default=180, ge=7, le=3650),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Long-term fuel trim drift (Task #89). Daily-bucketed averages
+    of STFT/LTFT for both banks. LTFT trending +5% over months means
+    the ECU has learned to add fuel — usually a vacuum leak,
+    weakening O2 sensors, or a clogging air filter. STFT swings
+    around zero are normal; the long-term line is the diagnostic.
+
+    Falls back to a flat LIMIT scan if Timescale isn't available.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    metrics = ("stft_b1", "stft_b2", "ltft_b1", "ltft_b2")
+
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT time_bucket(make_interval(days => 1), time) AS bucket,
+                       metric,
+                       avg(value_num) AS avg_pct
+                  FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = ANY($2)
+                   AND time >= $3
+                   AND value_num IS NOT NULL
+                 GROUP BY 1, 2
+                 ORDER BY 1 ASC
+                """,
+                vehicle_id, list(metrics), cutoff,
+            )
+        except asyncpg.UndefinedFunctionError:
+            rows = await conn.fetch(
+                """
+                SELECT date_trunc('day', time) AS bucket,
+                       metric,
+                       avg(value_num) AS avg_pct
+                  FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = ANY($2)
+                   AND time >= $3
+                   AND value_num IS NOT NULL
+                 GROUP BY 1, 2
+                 ORDER BY 1 ASC
+                """,
+                vehicle_id, list(metrics), cutoff,
+            )
+
+    series: dict[str, list[dict[str, Any]]] = {m: [] for m in metrics}
+    for r in rows:
+        series[r["metric"]].append({
+            "time": r["bucket"].isoformat(),
+            "pct": round(float(r["avg_pct"]), 2),
+        })
+    return {"series": series, "window_days": days}
+
+
 @router.get("/odometer", dependencies=[Depends(require_query_token)])
 async def odometer_history(
     vehicle_id: UUID = Query(...),

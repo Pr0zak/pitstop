@@ -193,6 +193,15 @@ const dtcsQ = useAsync(
   [vehicleId],
 );
 
+// Engine hours (Task #96).
+const hoursQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getEngineHours(vehicleId.value)
+      : Promise.resolve(null as api.EngineHours | null),
+  [vehicleId],
+);
+
 // Lifetime cost-of-ownership (Task #98).
 const cooQ = useAsync(
   () =>
@@ -415,6 +424,25 @@ function dismissAnomaly(fingerprint: string) {
             last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups
           </div>
         </div>
+        <!--
+          Engine hours (Task #96). Total engine-on hours + the
+          hrs-per-100-mi idle ratio. Tile hides if we have zero
+          time_since_engine_start samples (pre-WiCAN history).
+        -->
+        <div v-if="hoursQ.data.value && hoursQ.data.value.total_hours > 0" class="card hero">
+          <h3>Engine hours</h3>
+          <div class="hero-value">
+            <span class="big">{{ Math.round(hoursQ.data.value.total_hours).toLocaleString() }}</span>
+            <span class="unit">hrs</span>
+          </div>
+          <div class="hero-sub muted">
+            <span v-if="hoursQ.data.value.hrs_per_100mi != null">
+              {{ hoursQ.data.value.hrs_per_100mi.toFixed(2) }} hrs/100 mi
+            </span>
+            <span v-else>cumulative</span>
+          </div>
+        </div>
+
         <!--
           Cost of ownership (Task #98). Headline number lights up only
           when the user has set a purchase price; otherwise the card

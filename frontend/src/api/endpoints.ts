@@ -338,6 +338,56 @@ export async function mpgOverlay(
   return r.data;
 }
 
+export interface HardEventsDay { date: string; count: number }
+export interface HardEvents {
+  total: number;
+  rate_per_100mi: number | null;
+  threshold_mps2: number;
+  window_days: number;
+  series: HardEventsDay[];
+}
+export async function getHardEvents(
+  vehicleId: string,
+  days = 90,
+): Promise<HardEvents> {
+  const r = await apiQuery.get<HardEvents>("/analytics/hard-events", {
+    params: { vehicle_id: vehicleId, days },
+  });
+  return r.data;
+}
+
+export interface EngineHoursPoint {
+  month: string;
+  cumulative_hours: number;
+  cumulative_km: number | null;
+}
+export interface EngineHours {
+  total_hours: number;
+  hrs_per_100mi: number | null;
+  points: EngineHoursPoint[];
+}
+export async function getEngineHours(vehicleId: string): Promise<EngineHours> {
+  const r = await apiQuery.get<EngineHours>("/analytics/engine-hours", {
+    params: { vehicle_id: vehicleId },
+  });
+  return r.data;
+}
+
+export interface FuelTrimPoint { time: string; pct: number }
+export interface FuelTrimResponse {
+  series: Record<string, FuelTrimPoint[]>;
+  window_days: number;
+}
+export async function getFuelTrimHistory(
+  vehicleId: string,
+  days = 180,
+): Promise<FuelTrimResponse> {
+  const r = await apiQuery.get<FuelTrimResponse>("/analytics/fuel-trim", {
+    params: { vehicle_id: vehicleId, days },
+  });
+  return r.data;
+}
+
 export interface CostBreakdownMonth {
   month: string;
   total: number;
