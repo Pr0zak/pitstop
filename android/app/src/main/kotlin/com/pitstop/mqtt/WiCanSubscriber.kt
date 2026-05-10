@@ -54,6 +54,7 @@ class WiCanSubscriber @Inject constructor(
 
     @Volatile private var started = false
     @Volatile private var msgCount: Long = 0L
+    @Volatile private var retainedDropped: Long = 0L
 
     fun start() {
         if (started) return
@@ -65,7 +66,18 @@ class WiCanSubscriber @Inject constructor(
             // server-side by slug match before fanout. Bare `+` keeps
             // the MQTT subscription minimal (one filter).
             val filter = if (slug.isNotEmpty()) "wican/$slug/pid" else "wican/+/pid"
-            mqttPublisher.subscribe(filter) { topic, payload ->
+            mqttPublisher.subscribe(filter) { topic, payload, isRetain ->
+                // Drop retained messages. WiCAN's AutoPID publishes with
+                // retain=true so the broker delivers the last known value
+                // to any new subscriber. On phone subscribe (or after a
+                // broker reconnect) we'd otherwise paint stale RPM /
+                // coolant / battery from the prior drive onto the Live
+                // screen. Only live messages — published while we were
+                // already subscribed — update the state bus.
+                if (isRetain) {
+                    retainedDropped += 1
+                    return@subscribe
+                }
                 handleMessage(topic, payload)
             }
         }

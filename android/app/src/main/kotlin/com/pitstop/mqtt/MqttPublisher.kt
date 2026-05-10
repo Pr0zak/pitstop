@@ -40,7 +40,10 @@ class MqttPublisher @Inject constructor(
     // Topic-filter → callback registry. Used by [subscribe] to hold
     // listeners that survive reconnects: each call to `connect()`
     // re-applies them to the fresh HiveMQ client.
-    private data class Subscription(val topicFilter: String, val callback: (String, ByteArray) -> Unit)
+    private data class Subscription(
+        val topicFilter: String,
+        val callback: (topic: String, payload: ByteArray, isRetain: Boolean) -> Unit,
+    )
     private val subscriptions = mutableListOf<Subscription>()
     private val subscriptionsLock = Any()
 
@@ -150,7 +153,10 @@ class MqttPublisher @Inject constructor(
      * callback fires on the HiveMQ flow thread — keep it cheap, push
      * heavy work to a coroutine on the caller's scope.
      */
-    fun subscribe(topicFilter: String, callback: (topic: String, payload: ByteArray) -> Unit) {
+    fun subscribe(
+        topicFilter: String,
+        callback: (topic: String, payload: ByteArray, isRetain: Boolean) -> Unit,
+    ) {
         synchronized(subscriptionsLock) {
             subscriptions.add(Subscription(topicFilter, callback))
         }
@@ -169,7 +175,7 @@ class MqttPublisher @Inject constructor(
     private fun applyOneSubscription(
         c: Mqtt3AsyncClient,
         topicFilter: String,
-        callback: (String, ByteArray) -> Unit,
+        callback: (String, ByteArray, Boolean) -> Unit,
     ) {
         c.subscribeWith()
             .topicFilter(topicFilter)
@@ -178,7 +184,7 @@ class MqttPublisher @Inject constructor(
                 runCatching {
                     val topic = msg.topic.toString()
                     val payload = msg.payloadAsBytes ?: ByteArray(0)
-                    callback(topic, payload)
+                    callback(topic, payload, msg.isRetain)
                 }.onFailure { exc ->
                     logBuffer.warn(
                         "mqtt subscribe callback threw",
