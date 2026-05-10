@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.pitstop.log.LogBuffer
 import com.pitstop.update.scheduleUpdateChecks
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -13,6 +14,7 @@ import javax.inject.Inject
 class PitstopApp : Application(), Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
+    @Inject lateinit var logBuffer: LogBuffer
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -21,12 +23,47 @@ class PitstopApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        installCrashHandler()
         createNotificationChannels()
         // Periodic update check (every ~6 h). KEEP policy means a
         // re-launch doesn't reset the cadence — the existing periodic
         // job stays scheduled across reboots via WorkManager's
         // persistence layer.
         scheduleUpdateChecks(this)
+    }
+
+    /**
+     * Capture uncaught exceptions to the log buffer before letting the
+     * default handler kill the process. Without this, foreground-service
+     * crashes leave no breadcrumb on the server because the log shipper
+     * never runs its periodic flush. The first line of the stack trace
+     * is the most useful — strip the rest to keep client_logs concise.
+     */
+    private fun installCrashHandler() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val stack = throwable.stackTraceToString().lineSequence()
+                    .take(8)
+                    .joinToString("\n")
+                logBuffer.error(
+                    "uncaught exception",
+                    mapOf(
+                        "thread" to thread.name,
+                        "type" to throwable::class.java.simpleName,
+                        "msg" to (throwable.message ?: ""),
+                        "stack" to stack,
+                    ),
+                )
+                // Best-effort synchronous flush so the log lands before
+                // the process dies. The shipper itself is async; this
+                // gives it a chance.
+                Thread.sleep(500)
+            } catch (_: Throwable) {
+                /* don't recurse */
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
     }
 
     private fun createNotificationChannels() {

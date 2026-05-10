@@ -18,6 +18,7 @@ import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -108,31 +109,52 @@ class PresenceTracker @Inject constructor(
     /** Begin observing presence signals. Idempotent. */
     fun start() {
         if (aaCollectJob != null) return
-        // Subscribe AA LiveData → MutableStateFlow on a long-lived job.
-        // .asFlow() uses observeForever; cancelling this job removes it.
-        aaCollectJob = ownScope.launch {
-            CarConnection(context).type.asFlow().collect { value ->
-                _aaType.value = value
+        // CarConnection.type is a LiveData; .asFlow() calls
+        // observeForever() under the hood, which MUST run on the main
+        // thread. Default dispatcher would throw IllegalStateException
+        // and (since this is the bridge service's onCreate path) take
+        // the foreground service down with it.
+        aaCollectJob = ownScope.launch(Dispatchers.Main.immediate) {
+            try {
+                CarConnection(context).type.asFlow().collect { value ->
+                    _aaType.value = value
+                }
+            } catch (t: Throwable) {
+                logBuffer.warn(
+                    "presence: CarConnection observe failed",
+                    mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                )
             }
         }
-        // Bluetooth profile proxy + state-change receiver.
-        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
-            ?.adapter
-        if (adapter != null) {
-            adapter.getProfileProxy(context, proxyListener, BluetoothProfile.HEADSET)
-        } else {
-            logBuffer.warn("presence: bluetooth adapter unavailable")
+        // Bluetooth profile proxy + state-change receiver. Wrap the
+        // whole setup in a try/catch — getProfileProxy / registerReceiver
+        // can throw on devices with no BT, weird OEM ROMs, or revoked
+        // BLUETOOTH_CONNECT permission. Don't take the bridge down for
+        // a presence-detection failure.
+        try {
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+                ?.adapter
+            if (adapter != null) {
+                adapter.getProfileProxy(context, proxyListener, BluetoothProfile.HEADSET)
+            } else {
+                logBuffer.warn("presence: bluetooth adapter unavailable")
+            }
+            val rx = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) = recomputeHfp()
+            }
+            btReceiver = rx
+            ContextCompat.registerReceiver(
+                context,
+                rx,
+                IntentFilter(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        } catch (t: Throwable) {
+            logBuffer.warn(
+                "presence: bluetooth setup failed",
+                mapOf("err" to (t.message ?: t::class.java.simpleName)),
+            )
         }
-        val rx = object : BroadcastReceiver() {
-            override fun onReceive(c: Context?, intent: Intent?) = recomputeHfp()
-        }
-        btReceiver = rx
-        ContextCompat.registerReceiver(
-            context,
-            rx,
-            IntentFilter(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
     }
 
     /** Stop observing. Releases the profile proxy + receiver. */
