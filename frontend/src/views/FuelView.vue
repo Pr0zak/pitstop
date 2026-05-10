@@ -148,7 +148,10 @@ const statsWindowMonths = computed<number>(() => {
     case "30d": return 1;
     case "3m": return 3;
     case "12m": return 12;
-    case "all": return 240; // 20 years — effectively unbounded for monthlySpend
+    // Backend monthlySpend caps months at 120 (10 years), which is
+    // plenty for the user's Fuelio history. Anything above triggers a
+    // 422 and the chart goes empty.
+    case "all": return 120;
   }
 });
 const statsCutoffMs = computed<number | null>(() => {
