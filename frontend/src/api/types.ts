@@ -38,6 +38,9 @@ export interface Vehicle {
   // enters a purchase price.
   purchase_price?: number | null;
   purchase_date?: string | null;
+  // EPA combined MPG sticker. Reference line on the MPG chart; null
+  // hides the overlay. (Task #90)
+  epa_mpg_combined?: number | null;
 }
 
 export interface Profile {

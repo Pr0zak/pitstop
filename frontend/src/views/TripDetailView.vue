@@ -154,7 +154,15 @@ const TRIP_SERIES: TripSeries[] = [
   { metric: "intake_air_temp",        label: "Intake (°F)",      stroke: "#94a3b8", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
   { metric: "engine_oil_temp",        label: "Oil (°F)",         stroke: "#f87171", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
   { metric: "atf_temp_f",             label: "ATF (°F)",         stroke: "#dc2626", scale: "temp",   axisLabel: "°F",    transform: (v) => v,            defaultVisible: false },
+  // Derived series — computed below from successive vehicle_speed
+  // samples (dv/dt → m/s², converted to g). Won't be found in
+  // pid_readings; the chart loop synthesises the column.
+  { metric: "acceleration",           label: "Accel (g)",        stroke: "#fb923c", scale: "accel",  axisLabel: "g",     transform: (v) => v,            defaultVisible: false },
 ];
+
+// Metrics in TRIP_SERIES that are computed in the frontend rather
+// than fetched from pid_readings.
+const DERIVED_METRICS = new Set(["acceleration"]);
 
 // Persisted visibility selection — survives reload + revisit.
 const SERIES_VIS_KEY = "pitstop_trip_series_visible";
@@ -197,12 +205,47 @@ const chart = computed<ChartData>(() => {
   const sortedTs = Array.from(buckets.keys()).sort((a, b) => a - b);
   const visible = TRIP_SERIES.filter((s) => seriesVisible.value[s.metric]);
   if (visible.length === 0) return null;
+
+  // Pre-compute the acceleration column when it's visible. dv/dt
+  // from successive vehicle_speed samples (km/h → m/s, then divided
+  // by 9.81 to render as g — intuitive for "0.4g hard brake" cues).
+  // Null when either neighbouring speed sample is missing.
+  const accelByTs = new Map<number, number | null>();
+  if (visible.some((s) => s.metric === "acceleration")) {
+    const G = 9.80665;
+    const KPH_TO_MPS = 1 / 3.6;
+    let prevTs: number | null = null;
+    let prevSpeed: number | null = null;
+    for (const ts of sortedTs) {
+      const speedKph = buckets.get(ts)?.["vehicle_speed"];
+      if (speedKph == null || prevTs == null || prevSpeed == null) {
+        accelByTs.set(ts, null);
+      } else {
+        const dt = ts - prevTs;
+        if (dt <= 0) {
+          accelByTs.set(ts, null);
+        } else {
+          const dv = (Number(speedKph) - prevSpeed) * KPH_TO_MPS;
+          accelByTs.set(ts, dv / dt / G);
+        }
+      }
+      if (speedKph != null) {
+        prevTs = ts;
+        prevSpeed = Number(speedKph);
+      }
+    }
+  }
+
   const t: number[] = [];
   const arrays = visible.map(() => [] as (number | null)[]);
   for (const ts of sortedTs) {
     const slot = buckets.get(ts)!;
     t.push(ts);
     visible.forEach((s, i) => {
+      if (s.metric === "acceleration") {
+        arrays[i].push(accelByTs.get(ts) ?? null);
+        return;
+      }
       const v = slot[s.metric];
       arrays[i].push(v == null ? null : s.transform(v));
     });

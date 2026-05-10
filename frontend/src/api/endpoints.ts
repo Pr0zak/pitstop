@@ -338,6 +338,26 @@ export async function mpgOverlay(
   return r.data;
 }
 
+export interface CostBreakdownMonth {
+  month: string;
+  total: number;
+  categories: Record<string, number>;
+}
+export interface CostBreakdown {
+  months: CostBreakdownMonth[];
+  summary: Record<string, number>;
+  category_order: string[];
+}
+export async function getCostBreakdown(
+  vehicleId: string,
+  months = 12,
+): Promise<CostBreakdown> {
+  const r = await apiQuery.get<CostBreakdown>("/analytics/cost-breakdown", {
+    params: { vehicle_id: vehicleId, months },
+  });
+  return r.data;
+}
+
 export interface CostOfOwnership {
   purchase_price: number | null;
   purchase_date: string | null;

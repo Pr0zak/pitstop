@@ -29,6 +29,7 @@ _VEHICLE_SELECT = """
         v.active, v.pid_profile_id,
         v.latest_odo_km, v.latest_odo_at,
         v.purchase_price, v.purchase_date,
+        v.epa_mpg_combined,
         s.last_seen_at, s.last_metric, COALESCE(s.latest, '{}'::jsonb) AS latest,
         p.name AS profile_name, p.description AS profile_description
       FROM vehicles v
@@ -66,6 +67,9 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
             float(row["purchase_price"]) if row["purchase_price"] is not None else None
         ),
         "purchase_date": row["purchase_date"],
+        "epa_mpg_combined": (
+            float(row["epa_mpg_combined"]) if row["epa_mpg_combined"] is not None else None
+        ),
         "last_seen_at": row["last_seen_at"],
         "last_metric": row["last_metric"],
         "latest": row["latest"] or {},

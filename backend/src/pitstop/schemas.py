@@ -115,6 +115,7 @@ class VehicleUpdate(BaseModel):
     pid_profile_id: UUID | None = None
     purchase_price: float | None = None
     purchase_date: date | None = None
+    epa_mpg_combined: float | None = None
 
     @field_validator("slug")
     @classmethod
@@ -147,6 +148,8 @@ class VehicleOut(VehicleBase):
     # Lifetime cost-of-ownership inputs (Task #98).
     purchase_price: float | None = None
     purchase_date: date | None = None
+    # EPA combined MPG sticker for "rated vs actual" overlay (Task #90).
+    epa_mpg_combined: float | None = None
 
 
 # ---------------------------------------------------------------------------

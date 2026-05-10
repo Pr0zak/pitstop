@@ -113,13 +113,31 @@ const mpgChart = computed(() => {
   if (points.length === 0) return null;
   const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
   const y = points.map((p) => p.mpg ?? null);
-  const aligned: uPlot.AlignedData = [t, y];
+  // EPA reference line (Task #90). Constant value across the window
+  // when the vehicle has an epa_mpg_combined set; rendered as a
+  // dashed grey line under the actual-MPG primary so the user can
+  // see how their real-world economy compares to the sticker.
+  const epa = vehicles.selectedVehicle?.epa_mpg_combined ?? null;
+  const epaCol = epa != null ? t.map(() => epa) : null;
+  const aligned: uPlot.AlignedData = epaCol ? [t, y, epaCol] : [t, y];
+  const series: uPlot.Series[] = [
+    {},
+    { label: "MPG", stroke: "#2f81f7", width: 2 },
+  ];
+  if (epaCol) {
+    series.push({
+      label: `EPA combined (${epa})`,
+      stroke: "rgba(154,160,170,0.65)",
+      width: 1,
+      dash: [4, 3],
+    });
+  }
   const opts: uPlot.Options = {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
     axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
-    series: [{}, { label: "MPG", stroke: "#2f81f7", width: 2 }],
+    series,
   };
   return { aligned, opts };
 });
@@ -188,6 +206,36 @@ const tempChart = computed(() => {
     series: seriesDefs,
   };
   return { aligned: cols, opts };
+});
+
+// Cost breakdown (Task #92). Per-month spend by category for a
+// stacked bar — fuel, maintenance, registration, etc.
+const breakdownQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getCostBreakdown(vehicleId.value, 12)
+      : Promise.resolve(null as api.CostBreakdown | null),
+  [vehicleId],
+);
+// Stable per-category color so the legend matches the bars.
+const CATEGORY_COLORS: Record<string, string> = {
+  Fuel: "#2f81f7",
+  Service: "#f59e0b",
+  Maintenance: "#f59e0b",
+  Repair: "#ef4444",
+  Tires: "#a78bfa",
+  Insurance: "#06b6d4",
+  Registration: "#3fb950",
+  Oil: "#facc15",
+  Tax: "#14b8a6",
+  Other: "#94a3b8",
+};
+function categoryColor(name: string): string {
+  return CATEGORY_COLORS[name] ?? CATEGORY_COLORS.Other;
+}
+const breakdownMaxMonth = computed(() => {
+  const months = breakdownQ.data.value?.months ?? [];
+  return months.length ? Math.max(...months.map((m) => m.total)) : 0;
 });
 
 // Fuel-grade comparison (Task #93). Per-grade chain MPG + price.
@@ -290,6 +338,57 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
           <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
           <div v-else-if="!tempChart" class="muted">No temperature readings.</div>
           <UPlotChart v-else :data="tempChart.aligned" :options="tempChart.opts" />
+        </section>
+
+        <section v-if="breakdownQ.data.value?.months?.length" class="card">
+          <header class="head-inline">
+            <h3>Annual cost breakdown</h3>
+            <span v-if="breakdownQ.data.value!.summary" class="muted small">
+              {{ Object.values(breakdownQ.data.value!.summary).reduce((a, b) => a + b, 0).toFixed(0) }}
+              total · 12 mo
+            </span>
+          </header>
+          <div class="breakdown-rows">
+            <div
+              v-for="m in breakdownQ.data.value!.months"
+              :key="m.month"
+              class="breakdown-row"
+            >
+              <span class="breakdown-month muted">
+                {{ new Date(m.month).toLocaleDateString([], { month: "short", year: "2-digit" }) }}
+              </span>
+              <span
+                class="breakdown-bar"
+                :title="
+                  Object.entries(m.categories)
+                    .map(([k, v]) => `${k}: $${v.toFixed(0)}`)
+                    .join('  ·  ')
+                "
+              >
+                <span
+                  v-for="cat in breakdownQ.data.value!.category_order.filter(c => m.categories[c])"
+                  :key="cat"
+                  class="breakdown-seg"
+                  :style="{
+                    width: ((m.categories[cat] / breakdownMaxMonth) * 100).toFixed(2) + '%',
+                    background: categoryColor(cat),
+                  }"
+                />
+              </span>
+              <span class="breakdown-total num">${{ m.total.toFixed(0) }}</span>
+            </div>
+          </div>
+          <div class="breakdown-legend">
+            <span
+              v-for="cat in breakdownQ.data.value!.category_order"
+              :key="`leg-${cat}`"
+              class="legend-chip"
+            >
+              <span class="dot" :style="{ background: categoryColor(cat) }"></span>
+              {{ cat }}
+              <span class="muted">${{ (breakdownQ.data.value!.summary[cat] ?? 0).toFixed(0) }}</span>
+            </span>
+          </div>
         </section>
 
         <section v-if="(gradeQ.data.value?.grades?.length ?? 0) >= 2" class="card">
@@ -403,6 +502,62 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
 }
 .head-inline h3 {
   margin: 0;
+}
+.breakdown-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+.breakdown-row {
+  display: grid;
+  grid-template-columns: 4rem 1fr 4rem;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+.breakdown-month {
+  font-size: 0.78rem;
+}
+.breakdown-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--c-surface-soft);
+}
+.breakdown-seg {
+  display: inline-block;
+  height: 100%;
+}
+.breakdown-total {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.breakdown-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+}
+.legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--c-border-soft);
+  border-radius: 999px;
+}
+.legend-chip .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
 }
 .dtc-list {
   list-style: none;

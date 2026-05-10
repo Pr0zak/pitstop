@@ -23,6 +23,7 @@ const form = ref({
   active: true,
   purchase_price: undefined as number | undefined,
   purchase_date: "" as string,
+  epa_mpg_combined: undefined as number | undefined,
 });
 
 function slugify(s: string): string {
@@ -60,6 +61,7 @@ function openCreate() {
     active: true,
     purchase_price: undefined,
     purchase_date: "",
+    epa_mpg_combined: undefined,
   };
   showModal.value = true;
   submitError.value = null;
@@ -80,6 +82,7 @@ function openEdit(v: Vehicle) {
     active: v.active ?? true,
     purchase_price: v.purchase_price ?? undefined,
     purchase_date: v.purchase_date ?? "",
+    epa_mpg_combined: v.epa_mpg_combined ?? undefined,
   };
   showModal.value = true;
   submitError.value = null;
@@ -101,6 +104,7 @@ async function submit() {
       active: form.value.active,
       purchase_price: form.value.purchase_price ?? null,
       purchase_date: form.value.purchase_date || null,
+      epa_mpg_combined: form.value.epa_mpg_combined ?? null,
     };
     if (editing.value) {
       await api.updateVehicle(editing.value.id, payload);
@@ -231,6 +235,18 @@ async function remove(v: Vehicle) {
               <label>
                 Purchase date
                 <input type="date" v-model="form.purchase_date" />
+              </label>
+              <label>
+                EPA combined MPG
+                <input
+                  type="number"
+                  step="0.1"
+                  v-model.number="form.epa_mpg_combined"
+                  placeholder="e.g. 23"
+                />
+                <small class="muted">
+                  Reference line on the MPG chart.
+                </small>
               </label>
             </div>
             <label class="cb">

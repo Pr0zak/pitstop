@@ -509,6 +509,88 @@ def _bucket_index(km: float) -> int:
     return len(_TRIP_BUCKETS_KM)
 
 
+@router.get("/cost-breakdown", dependencies=[Depends(require_query_token)])
+async def cost_breakdown(
+    vehicle_id: UUID = Query(...),
+    months: int = Query(default=12, ge=1, le=120),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Per-month spend rolled up by category (Task #92). Joins fillups
+    (always category=fuel) + expenses (category from cost_types) and
+    groups by year-month for a stacked-bar chart.
+
+    Returns one row per month with a `categories` map of label→amount,
+    plus the overall total. Frontend renders a stacked bar where each
+    color is a category and the bar height is the month's total.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=months * 31)
+    async with pool.acquire() as conn:
+        fuel_rows = await conn.fetch(
+            """
+            SELECT date_trunc('month', fillup_date) AS month,
+                   COALESCE(SUM(price_total), 0)    AS total
+              FROM fillups
+             WHERE vehicle_id = $1
+               AND fillup_date >= $2
+               AND price_total IS NOT NULL
+             GROUP BY 1
+            """,
+            vehicle_id, cutoff,
+        )
+        # Expenses joined to expense_categories for the human label.
+        # Skip income rows + template rows (those are reminder
+        # placeholders, not actual spend).
+        expense_rows = await conn.fetch(
+            """
+            SELECT date_trunc('month', e.expense_date) AS month,
+                   COALESCE(c.name, 'Other')           AS category,
+                   COALESCE(SUM(e.cost), 0)            AS total
+              FROM expenses e
+              LEFT JOIN expense_categories c ON c.id = e.cost_type_id
+             WHERE e.vehicle_id = $1
+               AND e.expense_date >= $2
+               AND COALESCE(e.is_income, false) = false
+               AND COALESCE(e.is_template, false) = false
+             GROUP BY 1, 2
+            """,
+            vehicle_id, cutoff,
+        )
+
+    # Pivot into month → {category: amount}
+    months_map: dict[datetime, dict[str, float]] = defaultdict(dict)
+    categories: set[str] = {"Fuel"}
+    for r in fuel_rows:
+        months_map[r["month"]]["Fuel"] = float(r["total"])
+    for r in expense_rows:
+        months_map[r["month"]][r["category"]] = float(r["total"])
+        categories.add(r["category"])
+
+    # Sort months ascending, build the response shape
+    sorted_months = sorted(months_map.keys())
+    out = []
+    for m in sorted_months:
+        cats = months_map[m]
+        total = sum(cats.values())
+        out.append({
+            "month": m.isoformat(),
+            "total": round(total, 2),
+            "categories": {k: round(v, 2) for k, v in cats.items()},
+        })
+
+    # Year-total summary across all categories
+    summary: dict[str, float] = defaultdict(float)
+    for m in sorted_months:
+        for k, v in months_map[m].items():
+            summary[k] += v
+    summary_rounded = {k: round(v, 2) for k, v in summary.items()}
+
+    return {
+        "months": out,
+        "summary": summary_rounded,
+        "category_order": sorted(categories),
+    }
+
+
 @router.get("/fuel-grade", dependencies=[Depends(require_query_token)])
 async def fuel_grade_breakdown(
     vehicle_id: UUID = Query(...),
