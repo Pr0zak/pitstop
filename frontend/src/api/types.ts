@@ -84,6 +84,9 @@ export interface Trip {
   max_rpm?: number | null;
   fuel_used_l?: number | null;
   dtc_count?: number | null;
+  // Seconds engine-on but stopped (Task #91). Null on legacy trips
+  // until the deriver re-runs.
+  idle_s?: number | null;
   category?: string | null;
   notes?: string | null;
   // Per-trip weather observation captured at trip-open via

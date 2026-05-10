@@ -154,14 +154,6 @@ fun ConfigScreen(
                 update = { transform -> viewModel.update(transform) },
             )
 
-            AndroidAutoSection(
-                home = form.aaTilesHome,
-                diag = form.aaTilesDiag,
-                onUpdate = { home, diag ->
-                    viewModel.update { it.copy(aaTilesHome = home, aaTilesDiag = diag) }
-                },
-            )
-
             LogsSection(
                 verbose = form.verboseLogging,
                 buffered = bufferedCount,
@@ -472,121 +464,6 @@ private fun UnitChip(label: String, selected: Boolean, onClick: () -> Unit) {
         onClick = onClick,
         label = { Text(label) },
     )
-}
-
-/**
- * Android Auto tile customisation. Two ordered groups of 6 metric keys
- * each — home grid + diagnostics screen. Each slot is a dropdown showing
- * every metric in CarTileCatalog.ALL with a label like "Coolant (°C)".
- * Empty selection picks the default for that slot.
- *
- * Default fallback (per-slot): if the user picks "(default)" or hasn't
- * configured this slot yet, the corresponding default key from
- * CarTileCatalog fills in. So an unconfigured Settings panel matches
- * the head-unit behaviour exactly.
- */
-@Composable
-private fun AndroidAutoSection(
-    home: List<String>,
-    diag: List<String>,
-    onUpdate: (home: List<String>, diag: List<String>) -> Unit,
-) {
-    SettingsSection(
-        title = "Android Auto",
-        description = "Pick which 6 metrics show on the head-unit Home grid + Diagnostics screen. Changes apply on the next AA refresh — no re-pair needed.",
-    ) {
-        Text(
-            "Home grid",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        for (i in 0 until 6) {
-            CarTileSlot(
-                index = i,
-                selected = home.getOrNull(i),
-                onSelect = { newKey ->
-                    val updated = home.toMutableList()
-                    while (updated.size <= i) updated.add("")
-                    updated[i] = newKey ?: ""
-                    onUpdate(updated.filter { it.isNotEmpty() }, diag)
-                },
-            )
-        }
-        Spacer(Modifier.size(8.dp))
-        Text(
-            "Diagnostics screen",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        for (i in 0 until 6) {
-            CarTileSlot(
-                index = i,
-                selected = diag.getOrNull(i),
-                onSelect = { newKey ->
-                    val updated = diag.toMutableList()
-                    while (updated.size <= i) updated.add("")
-                    updated[i] = newKey ?: ""
-                    onUpdate(home, updated.filter { it.isNotEmpty() })
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun CarTileSlot(
-    index: Int,
-    selected: String?,
-    onSelect: (String?) -> Unit,
-) {
-    var open by remember { mutableStateOf(false) }
-    val spec = selected?.let { com.pitstop.car.CarTileCatalog.byKey(it) }
-    val label = spec?.let {
-        if (it.unit.isNotEmpty()) "${it.label} (${it.unit})" else it.label
-    } ?: "(default)"
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "${index + 1}.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(24.dp),
-        )
-        OutlinedButton(
-            onClick = { open = true },
-            modifier = Modifier.weight(1f),
-        ) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-        }
-        androidx.compose.material3.DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-        ) {
-            androidx.compose.material3.DropdownMenuItem(
-                text = { Text("(default)") },
-                onClick = {
-                    onSelect(null)
-                    open = false
-                },
-            )
-            for (s in com.pitstop.car.CarTileCatalog.ALL) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (s.unit.isNotEmpty()) "${s.label} (${s.unit})" else s.label,
-                        )
-                    },
-                    onClick = {
-                        onSelect(s.key)
-                        open = false
-                    },
-                )
-            }
-        }
-    }
 }
 
 @Composable

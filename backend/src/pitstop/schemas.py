@@ -230,6 +230,10 @@ class TripOut(BaseModel):
     avg_coolant_c: float | None
     fuel_used_l: float | None
     dtc_count: int
+    # Seconds the engine was on with vehicle speed < 1 m/s (Task #91).
+    # Populated by compute_trip_stats; null for pre-migration rows
+    # until the deriver re-runs on them.
+    idle_s: int | None = None
     category: str | None
     notes: str | None
     # Per-trip weather observation captured at trip-open via the

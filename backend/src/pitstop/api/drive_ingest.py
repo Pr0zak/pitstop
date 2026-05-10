@@ -298,13 +298,13 @@ async def post_drive(
             INSERT INTO trips (
                 id, vehicle_id, started_at, ended_at, duration_s,
                 distance_km, max_rpm, max_speed_kph, avg_speed_kph,
-                avg_coolant_c, fuel_used_l, dtc_count,
+                avg_coolant_c, fuel_used_l, dtc_count, idle_s,
                 source, incomplete
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9,
-                $10, $11, $12,
-                'phone_batch', $13
+                $10, $11, $12, $13,
+                'phone_batch', $14
             )
             ON CONFLICT (id) DO UPDATE SET
                 ended_at = EXCLUDED.ended_at,
@@ -316,6 +316,7 @@ async def post_drive(
                 avg_coolant_c = EXCLUDED.avg_coolant_c,
                 fuel_used_l = EXCLUDED.fuel_used_l,
                 dtc_count = EXCLUDED.dtc_count,
+                idle_s = EXCLUDED.idle_s,
                 source = EXCLUDED.source,
                 incomplete = EXCLUDED.incomplete
             """,
@@ -323,7 +324,7 @@ async def post_drive(
             stats["duration_s"], stats["distance_km"],
             stats["max_rpm"], stats["max_speed_kph"],
             stats["avg_speed_kph"], stats["avg_coolant_c"],
-            stats["fuel_used_l"], stats["dtc_count"],
+            stats["fuel_used_l"], stats["dtc_count"], stats.get("idle_s"),
             body.incomplete,
         )
 

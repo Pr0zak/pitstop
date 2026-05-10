@@ -269,6 +269,26 @@ async def compute_trip_stats(
         ended_at,
     )
 
+    # Idle seconds (Task #91). Count distinct seconds where
+    # vehicle_speed < 1 m/s (≈ 3.6 kph). The bridge only publishes
+    # vehicle_speed while the engine is responding to OBD requests,
+    # so any low-speed sample inside the trip window is engine-on +
+    # vehicle-stopped — exactly what we want.
+    idle_s = await conn.fetchval(
+        """
+        SELECT count(DISTINCT date_trunc('second', time))
+          FROM pid_readings
+         WHERE vehicle_id = $1
+           AND metric = 'vehicle_speed'
+           AND value_num IS NOT NULL
+           AND value_num < 1
+           AND time >= $2 AND time <= $3
+        """,
+        vehicle_id,
+        started_at,
+        ended_at,
+    )
+
     def _f(v: object) -> float | None:
         if v is None:
             return None
@@ -283,6 +303,7 @@ async def compute_trip_stats(
         "distance_km": _f(distance_km),
         "fuel_used_l": _f(fuel_used_l),
         "dtc_count": int(dtc_count or 0),
+        "idle_s": int(idle_s or 0) if idle_s is not None else None,
     }
 
 

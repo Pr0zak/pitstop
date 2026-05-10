@@ -337,15 +337,15 @@ async def _derive_for_vehicle(
             INSERT INTO trips (
                 id, vehicle_id, started_at, ended_at, duration_s,
                 distance_km, max_rpm, max_speed_kph, avg_speed_kph,
-                avg_coolant_c, fuel_used_l, dtc_count,
+                avg_coolant_c, fuel_used_l, dtc_count, idle_s,
                 weather_temp_c, weather_humidity_pct,
                 weather_precip_mm, weather_wind_kph, weather_code,
                 source
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9,
-                $10, $11, $12,
-                $13, $14, $15, $16, $17,
+                $10, $11, $12, $13,
+                $14, $15, $16, $17, $18,
                 'deriver'
             )
             ON CONFLICT (id) DO UPDATE SET
@@ -358,6 +358,7 @@ async def _derive_for_vehicle(
                 avg_coolant_c = EXCLUDED.avg_coolant_c,
                 fuel_used_l = EXCLUDED.fuel_used_l,
                 dtc_count = EXCLUDED.dtc_count,
+                idle_s = EXCLUDED.idle_s,
                 weather_temp_c = COALESCE(EXCLUDED.weather_temp_c, trips.weather_temp_c),
                 weather_humidity_pct = COALESCE(EXCLUDED.weather_humidity_pct, trips.weather_humidity_pct),
                 weather_precip_mm = COALESCE(EXCLUDED.weather_precip_mm, trips.weather_precip_mm),
@@ -368,7 +369,7 @@ async def _derive_for_vehicle(
             stats["duration_s"], stats["distance_km"],
             stats["max_rpm"], stats["max_speed_kph"],
             stats["avg_speed_kph"], stats["avg_coolant_c"],
-            stats["fuel_used_l"], stats["dtc_count"],
+            stats["fuel_used_l"], stats["dtc_count"], stats.get("idle_s"),
             wtemp, whum, wprecip, wwind, wcode,
         )
         touched += 1

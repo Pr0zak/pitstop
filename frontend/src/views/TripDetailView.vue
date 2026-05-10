@@ -833,6 +833,13 @@ async function saveMeta() {
                   · {{ trip.weather_humidity_pct }}% rh
                 </span>
               </dd>
+              <dt v-if="trip.idle_s != null && trip.idle_s > 0">Idle</dt>
+              <dd v-if="trip.idle_s != null && trip.idle_s > 0">
+                {{ fmtBucketSeconds(trip.idle_s) }}
+                <span class="muted small">
+                  · {{ trip.duration_s ? Math.round((trip.idle_s / trip.duration_s) * 100) : 0 }}%
+                </span>
+              </dd>
               <dt v-if="odoDelta != null">Odometer Δ</dt>
               <dd v-if="odoDelta != null">
                 <span class="num">{{ fmtOdoDeltaMi(odoDelta) }}</span>

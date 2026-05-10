@@ -23,7 +23,7 @@ router = APIRouter(prefix="/trips", tags=["trips"])
 _TRIP_COLS = (
     "id, vehicle_id, started_at, ended_at, duration_s, distance_km, "
     "max_rpm, max_speed_kph, avg_speed_kph, avg_coolant_c, fuel_used_l, "
-    "dtc_count, category, notes, "
+    "dtc_count, idle_s, category, notes, "
     "weather_temp_c, weather_humidity_pct, weather_precip_mm, "
     "weather_wind_kph, weather_code, "
     "source, incomplete"
@@ -44,6 +44,7 @@ def _row_to_trip(row: asyncpg.Record) -> dict[str, Any]:
         "avg_coolant_c": row["avg_coolant_c"],
         "fuel_used_l": row["fuel_used_l"],
         "dtc_count": row["dtc_count"],
+        "idle_s": row["idle_s"],
         "category": row["category"],
         "notes": row["notes"],
         "weather_temp_c": row["weather_temp_c"],
