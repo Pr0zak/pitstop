@@ -61,6 +61,24 @@ function reset() {
   offset.value = 0;
   void reload();
 }
+
+// Per-purpose rollup over the currently visible page (Task #94).
+// Untagged trips collapse into a single "—" bucket so the user can
+// see how much of their drive history is uncategorised at a glance.
+interface PurposeRow { label: string; count: number; km: number; fuel_l: number }
+const purposeRollup = computed<PurposeRow[]>(() => {
+  if (!data.value?.items) return [];
+  const m = new Map<string, PurposeRow>();
+  for (const t of data.value.items) {
+    const label = (t.category && t.category.trim()) || "—";
+    const cur = m.get(label) ?? { label, count: 0, km: 0, fuel_l: 0 };
+    cur.count += 1;
+    cur.km += t.distance_km ?? 0;
+    cur.fuel_l += t.fuel_used_l ?? 0;
+    m.set(label, cur);
+  }
+  return Array.from(m.values()).sort((a, b) => b.km - a.km);
+});
 </script>
 
 <template>
@@ -93,6 +111,19 @@ function reset() {
       <p class="muted">No trips in this range.</p>
     </div>
     <template v-else>
+      <div v-if="purposeRollup.length > 1" class="card purposes">
+        <h3>By purpose <span class="muted small">— this page</span></h3>
+        <ul class="rollup">
+          <li v-for="r in purposeRollup" :key="r.label">
+            <span class="tag" :class="{ untagged: r.label === '—' }">{{ r.label }}</span>
+            <span class="num">{{ r.count }}</span>
+            <span class="muted small">trips</span>
+            <span class="num">{{ fmtDistanceKm(r.km) }}</span>
+            <span class="num muted">{{ fmtVolumeL(r.fuel_l) }}</span>
+          </li>
+        </ul>
+      </div>
+
       <div class="card no-pad">
         <table class="data">
           <thead>
@@ -103,6 +134,7 @@ function reset() {
               <th>Max speed</th>
               <th>Max RPM</th>
               <th>Fuel</th>
+              <th>Purpose</th>
               <th>DTCs</th>
             </tr>
           </thead>
@@ -119,6 +151,10 @@ function reset() {
               <td>{{ fmtSpeedKph(t.max_speed_kph ?? null) }}</td>
               <td>{{ fmtRpm(t.max_rpm) }}</td>
               <td>{{ fmtVolumeL(t.fuel_used_l ?? null) }}</td>
+              <td>
+                <span v-if="t.category" class="tag">{{ t.category }}</span>
+                <span v-else class="muted">—</span>
+              </td>
               <td>{{ t.dtc_count ?? 0 }}</td>
             </tr>
           </tbody>
@@ -177,5 +213,43 @@ function reset() {
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+.purposes h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+.rollup {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.rollup li {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) auto auto auto auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+.tag {
+  background: var(--c-surface-soft);
+  border: 1px solid var(--c-border-soft);
+  border-radius: 999px;
+  padding: 0 0.55rem;
+  font-size: 0.82rem;
+  color: var(--c-text);
+}
+.tag.untagged {
+  color: var(--c-muted);
+  font-style: italic;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.small {
+  font-size: 0.78rem;
 }
 </style>

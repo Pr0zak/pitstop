@@ -560,7 +560,19 @@ async function saveMeta() {
             <h3>Notes &amp; category</h3>
             <label>
               Category
-              <input v-model="categoryDraft" placeholder="Private, Work, …" />
+              <input
+                v-model="categoryDraft"
+                list="trip-category-suggestions"
+                placeholder="Commute, Errands, Road trip, …"
+              />
+              <datalist id="trip-category-suggestions">
+                <option value="Commute" />
+                <option value="Errands" />
+                <option value="Road trip" />
+                <option value="Work" />
+                <option value="Leisure" />
+                <option value="Personal" />
+              </datalist>
             </label>
             <label>
               Notes
