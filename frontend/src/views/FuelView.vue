@@ -19,6 +19,27 @@ import { Plus, Pencil, X, Upload } from "lucide-vue-next";
 import FillupModal from "@/components/FillupModal.vue";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
+import { WMO_CODE } from "@/api/types";
+
+function wxIcon(code: number | null | undefined): string {
+  if (code == null) return "";
+  return WMO_CODE[code]?.icon ?? "·";
+}
+function weatherTitle(f: Fillup): string {
+  if (f.weather_temp_c == null) return "";
+  const parts: string[] = [];
+  const lbl = f.weather_code != null ? WMO_CODE[f.weather_code]?.label : null;
+  if (lbl) parts.push(lbl);
+  if (f.weather_humidity_pct != null) parts.push(`${f.weather_humidity_pct}% rh`);
+  if (f.weather_wind_kph != null) {
+    const mph = Math.round(f.weather_wind_kph * 0.621371);
+    parts.push(`wind ${mph} mph`);
+  }
+  if (f.weather_precip_mm != null && f.weather_precip_mm > 0) {
+    parts.push(`${f.weather_precip_mm.toFixed(1)} mm precip`);
+  }
+  return parts.join(" · ");
+}
 
 const vehicles = useVehiclesStore();
 const settings = useSettingsStore();
@@ -563,6 +584,7 @@ const rangeEstimate = computed<{
                 <th class="sortable" @click="changeSort('volume')">Volume</th>
                 <th class="sortable" @click="changeSort('total_price')">Total</th>
                 <th>Station</th>
+                <th title="Conditions at fillup time">Wx</th>
                 <th class="sortable" @click="changeSort('mpg_recomputed')">
                   MPG <small class="muted">(reported)</small>
                 </th>
@@ -587,6 +609,13 @@ const rangeEstimate = computed<{
                   }}
                 </td>
                 <td>{{ f.station_id ?? "—" }}</td>
+                <td :title="weatherTitle(f)">
+                  <span v-if="f.weather_temp_c != null">
+                    {{ wxIcon(f.weather_code) }}
+                    {{ Math.round(f.weather_temp_c * 9 / 5 + 32) }}°
+                  </span>
+                  <span v-else class="muted">—</span>
+                </td>
                 <td>
                   <!--
                     MPG cell: prefer the API's recomputed value (handles

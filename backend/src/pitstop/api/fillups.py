@@ -30,7 +30,9 @@ router = APIRouter(prefix="/fillups", tags=["fillups"])
 _FILLUP_COLS = (
     "id, vehicle_id, fuelio_guid, fillup_date, odo, fuel_volume, "
     "is_full, is_missed, price_total, price_per_unit, mpg_reported, "
-    "lat, lon, city, station_id, tank_number, fuel_type, weather, notes"
+    "lat, lon, city, station_id, tank_number, fuel_type, weather, notes, "
+    "weather_temp_c, weather_humidity_pct, weather_precip_mm, "
+    "weather_wind_kph, weather_code"
 )
 
 
@@ -55,6 +57,11 @@ def _row_to_fillup(row: asyncpg.Record) -> dict[str, Any]:
         "fuel_type": row["fuel_type"],
         "weather": row["weather"],
         "notes": row["notes"],
+        "weather_temp_c": row["weather_temp_c"],
+        "weather_humidity_pct": row["weather_humidity_pct"],
+        "weather_precip_mm": row["weather_precip_mm"],
+        "weather_wind_kph": row["weather_wind_kph"],
+        "weather_code": row["weather_code"],
     }
 
 

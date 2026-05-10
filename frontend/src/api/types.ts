@@ -73,10 +73,52 @@ export interface Trip {
   dtc_count?: number | null;
   category?: string | null;
   notes?: string | null;
+  // Per-trip weather observation captured at trip-open via
+  // services/weather.py (Task #78). Sampled at the first GPS point
+  // in the trip window — accurate to a city block + 1 hour.
+  weather_temp_c?: number | null;
+  weather_humidity_pct?: number | null;
+  weather_precip_mm?: number | null;
+  weather_wind_kph?: number | null;
+  weather_code?: number | null;
   /** @deprecated use distance_km */ distance_mi?: number | null;
   /** @deprecated use max_speed_kph */ max_speed?: number | null;
   /** @deprecated use fuel_used_l */ fuel_used?: number | null;
 }
+
+/**
+ * Lookup table for WMO weather codes 0..99 → short label + emoji
+ * the UI can show alongside the numeric reading. Values follow
+ * Open-Meteo's interpretation of the WMO standard. Unknown codes
+ * fall back to "—".
+ * Reference: https://open-meteo.com/en/docs (search "WMO Weather code")
+ */
+export const WMO_CODE: Record<number, { label: string; icon: string }> = {
+  0: { label: "clear", icon: "☀️" },
+  1: { label: "mainly clear", icon: "🌤" },
+  2: { label: "partly cloudy", icon: "⛅" },
+  3: { label: "overcast", icon: "☁️" },
+  45: { label: "fog", icon: "🌫" },
+  48: { label: "rime fog", icon: "🌫" },
+  51: { label: "light drizzle", icon: "🌦" },
+  53: { label: "drizzle", icon: "🌦" },
+  55: { label: "heavy drizzle", icon: "🌧" },
+  61: { label: "light rain", icon: "🌧" },
+  63: { label: "rain", icon: "🌧" },
+  65: { label: "heavy rain", icon: "🌧" },
+  71: { label: "light snow", icon: "🌨" },
+  73: { label: "snow", icon: "🌨" },
+  75: { label: "heavy snow", icon: "❄️" },
+  77: { label: "snow grains", icon: "🌨" },
+  80: { label: "rain showers", icon: "🌦" },
+  81: { label: "rain showers", icon: "🌧" },
+  82: { label: "violent showers", icon: "🌧" },
+  85: { label: "snow showers", icon: "🌨" },
+  86: { label: "snow showers", icon: "❄️" },
+  95: { label: "thunderstorm", icon: "⛈" },
+  96: { label: "thunder + hail", icon: "⛈" },
+  99: { label: "severe thunder", icon: "⛈" },
+};
 
 export interface TripSample {
   time: string;
@@ -154,7 +196,15 @@ export interface Fillup {
   notes?: string | null;
   tank_number?: number | null;
   fuel_type?: number | null;
+  /** Fuelio's free-text weather field (rarely populated). Different
+   *  from the structured weather_* columns populated by the backend
+   *  Open-Meteo fetcher (Task #78). */
   weather?: string | null;
+  weather_temp_c?: number | null;
+  weather_humidity_pct?: number | null;
+  weather_precip_mm?: number | null;
+  weather_wind_kph?: number | null;
+  weather_code?: number | null;
   exclude_distance?: boolean;
   // Computed: backend returns `mpg` (recomputed from odo deltas + volume,
   // Fuelio-style chain rule with partial-fill rollup) and `mpg_reported`

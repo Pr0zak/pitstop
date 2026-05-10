@@ -14,7 +14,14 @@ import {
   fmtRpm,
   fmtVolumeL,
   fmtTemp,
+  fmtTempC,
 } from "@/composables/useFormat";
+import { WMO_CODE } from "@/api/types";
+
+function weatherEmoji(code: number | null | undefined): string {
+  if (code == null) return "—";
+  return WMO_CODE[code]?.icon ?? "·";
+}
 import { ChevronLeft, RefreshCw } from "lucide-vue-next";
 
 const route = useRoute();
@@ -236,6 +243,17 @@ async function saveMeta() {
               <dd>{{ fmtRpm(trip.max_rpm) }}</dd>
               <dt>Fuel used</dt>
               <dd>{{ fmtVolumeL(trip.fuel_used_l ?? null) }}</dd>
+              <dt v-if="trip.weather_temp_c != null">Weather</dt>
+              <dd v-if="trip.weather_temp_c != null">
+                <span>{{ weatherEmoji(trip.weather_code) }}</span>
+                {{ fmtTempC(trip.weather_temp_c) }}
+                <span v-if="trip.weather_wind_kph != null" class="muted small">
+                  · wind {{ Math.round(trip.weather_wind_kph * 0.621371) }} mph
+                </span>
+                <span v-if="trip.weather_humidity_pct != null" class="muted small">
+                  · {{ trip.weather_humidity_pct }}% rh
+                </span>
+              </dd>
               <dt>DTCs</dt>
               <dd>{{ trip.dtc_count ?? 0 }}</dd>
               <dt>Started</dt>

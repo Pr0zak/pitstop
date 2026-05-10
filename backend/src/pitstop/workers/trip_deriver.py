@@ -190,20 +190,53 @@ async def _derive_for_vehicle(
         distance_km = stats.get("distance_km")
         if distance_km is None or float(distance_km) < cfg.trip_min_distance_km:
             continue
+        # Realtime weather hook (Task #78): grab the first GPS point
+        # in the trip window and fetch the obs at trip start. Best-
+        # effort — service.weather.fetch returns EMPTY_OBS on any
+        # error so the trip still gets upserted with NULL weather
+        # columns. Backfill worker fills the gap on the next cycle.
+        from ..services.weather import fetch as fetch_weather
+        gps_anchor = await conn.fetchrow(
+            """
+            SELECT lat, lon FROM gps_points
+             WHERE vehicle_id = $1 AND time >= $2 AND time <= $3
+             ORDER BY time ASC LIMIT 1
+            """,
+            vehicle_id, iv.started_at, iv.ended_at,
+        )
+        weather = None
+        if gps_anchor is not None:
+            weather = await fetch_weather(
+                float(gps_anchor["lat"]),
+                float(gps_anchor["lon"]),
+                iv.started_at,
+            )
         trip_id = _trip_id_for(vehicle_id, iv.started_at)
         # UPSERT: if the row already exists (same deterministic id),
         # update only the stat columns. Preserve user-set category +
         # notes — the user might have edited them since last cycle.
+        # Weather columns: only overwrite when we have a fresh obs;
+        # COALESCE keeps prior values intact if today's fetch failed
+        # (so the backfill worker doesn't lose a previously-fetched
+        # value just because the realtime path momentarily errored).
+        wtemp = weather.temp_c if weather else None
+        whum = weather.humidity_pct if weather else None
+        wprecip = weather.precip_mm if weather else None
+        wwind = weather.wind_kph if weather else None
+        wcode = weather.weather_code if weather else None
         await conn.execute(
             """
             INSERT INTO trips (
                 id, vehicle_id, started_at, ended_at, duration_s,
                 distance_km, max_rpm, max_speed_kph, avg_speed_kph,
-                avg_coolant_c, fuel_used_l, dtc_count
+                avg_coolant_c, fuel_used_l, dtc_count,
+                weather_temp_c, weather_humidity_pct,
+                weather_precip_mm, weather_wind_kph, weather_code
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9,
-                $10, $11, $12
+                $10, $11, $12,
+                $13, $14, $15, $16, $17
             )
             ON CONFLICT (id) DO UPDATE SET
                 ended_at = EXCLUDED.ended_at,
@@ -214,13 +247,19 @@ async def _derive_for_vehicle(
                 avg_speed_kph = EXCLUDED.avg_speed_kph,
                 avg_coolant_c = EXCLUDED.avg_coolant_c,
                 fuel_used_l = EXCLUDED.fuel_used_l,
-                dtc_count = EXCLUDED.dtc_count
+                dtc_count = EXCLUDED.dtc_count,
+                weather_temp_c = COALESCE(EXCLUDED.weather_temp_c, trips.weather_temp_c),
+                weather_humidity_pct = COALESCE(EXCLUDED.weather_humidity_pct, trips.weather_humidity_pct),
+                weather_precip_mm = COALESCE(EXCLUDED.weather_precip_mm, trips.weather_precip_mm),
+                weather_wind_kph = COALESCE(EXCLUDED.weather_wind_kph, trips.weather_wind_kph),
+                weather_code = COALESCE(EXCLUDED.weather_code, trips.weather_code)
             """,
             trip_id, vehicle_id, iv.started_at, iv.ended_at,
             stats["duration_s"], stats["distance_km"],
             stats["max_rpm"], stats["max_speed_kph"],
             stats["avg_speed_kph"], stats["avg_coolant_c"],
             stats["fuel_used_l"], stats["dtc_count"],
+            wtemp, whum, wprecip, wwind, wcode,
         )
         touched += 1
     return touched

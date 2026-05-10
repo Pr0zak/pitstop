@@ -36,6 +36,7 @@ from .workers.ha_mirror import HaMirror
 from .workers.ingest import MqttIngest
 from .workers.trip_detector import TripDetector
 from .workers import trip_deriver
+from .workers import weather_backfiller
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 log = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ async def lifespan(app: FastAPI):
     retention_task: asyncio.Task | None = None
     eia_task: asyncio.Task | None = None
     deriver_task: asyncio.Task | None = None
+    weather_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
@@ -150,6 +152,13 @@ async def lifespan(app: FastAPI):
         eia_task = asyncio.create_task(
             eia_fetcher.run(pool), name="eia-fetcher"
         )
+        # Weather backfiller — populates weather_* columns on
+        # historical fillups/trips via Open-Meteo. Realtime path
+        # writes inline via services/weather.py at trip-close /
+        # fillup-save; this worker handles the long tail.
+        weather_task = asyncio.create_task(
+            weather_backfiller.run(pool), name="weather-backfiller"
+        )
         yield
     finally:
         log.info("pitstop backend stopping")
@@ -161,7 +170,7 @@ async def lifespan(app: FastAPI):
             ha_mirror.stop()
         for task in (
             ingest_task, trip_task, ha_task, log_drain_task,
-            retention_task, eia_task, deriver_task,
+            retention_task, eia_task, deriver_task, weather_task,
         ):
             if task is None:
                 continue

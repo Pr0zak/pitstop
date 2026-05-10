@@ -219,6 +219,14 @@ class TripOut(BaseModel):
     dtc_count: int
     category: str | None
     notes: str | None
+    # Per-trip weather observation captured at trip-open via the
+    # Open-Meteo fetcher (Task #78). All nullable until the
+    # backfiller catches up on historical rows.
+    weather_temp_c: float | None = None
+    weather_humidity_pct: int | None = None
+    weather_precip_mm: float | None = None
+    weather_wind_kph: float | None = None
+    weather_code: int | None = None
 
 
 class TripUpdate(BaseModel):
@@ -375,6 +383,14 @@ class FillupOut(FillupBase):
     fuelio_guid: str | None = None
     mpg_reported: float | None = None
     mpg: float | None = None  # recomputed by API; None on partial fillups
+    # Per-fillup weather observation (Task #78). NULL until the
+    # backfiller / realtime-save fetches Open-Meteo. Distinct from
+    # FillupBase.weather (Fuelio's free-text field).
+    weather_temp_c: float | None = None
+    weather_humidity_pct: int | None = None
+    weather_precip_mm: float | None = None
+    weather_wind_kph: float | None = None
+    weather_code: int | None = None
 
 
 # ---------------------------------------------------------------------------
