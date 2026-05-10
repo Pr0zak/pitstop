@@ -161,6 +161,53 @@ async def get_trip(
         }
         for r in sample_rows
     ]
+
+    # Odometer at trip start + end (Task #99). Pull the closest
+    # pid_readings odometer value within ±15 minutes of each
+    # boundary; null when WiCAN didn't publish in that window.
+    async with pool.acquire() as conn:
+        odo_start = await conn.fetchval(
+            """
+            SELECT value_num FROM pid_readings
+             WHERE vehicle_id = $1 AND metric = 'odometer'
+               AND time BETWEEN $2 - interval '15 minutes' AND $2 + interval '15 minutes'
+             ORDER BY abs(extract(epoch FROM (time - $2)))
+             LIMIT 1
+            """,
+            row["vehicle_id"], started,
+        )
+        odo_end = await conn.fetchval(
+            """
+            SELECT value_num FROM pid_readings
+             WHERE vehicle_id = $1 AND metric = 'odometer'
+               AND time BETWEEN $2 - interval '15 minutes' AND $2 + interval '15 minutes'
+             ORDER BY abs(extract(epoch FROM (time - $2)))
+             LIMIT 1
+            """,
+            row["vehicle_id"], ended,
+        )
+        # DTCs that fired during the trip window (Task #110).
+        dtc_rows = await conn.fetch(
+            """
+            SELECT id, code, seen_at, description
+              FROM dtc_events
+             WHERE vehicle_id = $1
+               AND seen_at BETWEEN $2 AND $3
+             ORDER BY seen_at ASC
+            """,
+            row["vehicle_id"], started, ended,
+        )
+    out["odo_start_km"] = float(odo_start) if odo_start is not None else None
+    out["odo_end_km"] = float(odo_end) if odo_end is not None else None
+    out["dtcs"] = [
+        {
+            "id": str(d["id"]),
+            "code": d["code"],
+            "seen_at": d["seen_at"],
+            "description": d["description"],
+        }
+        for d in dtc_rows
+    ]
     return out
 
 

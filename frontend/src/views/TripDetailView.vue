@@ -140,6 +140,37 @@ const chart = computed<ChartData>(() => {
     });
     side = 1 - side;
   }
+  // Vertical rules for each DTC fire event during the trip window
+  // (Task #110). Rendered as a uPlot hooks plugin so we don't have
+  // to fight the series shape — we just paint over the chart at the
+  // x-pixel for each event's seen_at.
+  const dtcMarkers: { ts: number; code: string }[] = (trip.value.dtcs ?? [])
+    .map((d) => ({ ts: Math.round(Date.parse(d.seen_at) / 1000), code: d.code }))
+    .filter((d) => Number.isFinite(d.ts));
+  const dtcPlugin: uPlot.Plugin | null = dtcMarkers.length
+    ? {
+        hooks: {
+          draw: (u) => {
+            const ctx = u.ctx;
+            ctx.save();
+            ctx.strokeStyle = "#ef4444";
+            ctx.fillStyle = "#ef4444";
+            ctx.lineWidth = 1;
+            ctx.font = "11px ui-sans-serif";
+            for (const m of dtcMarkers) {
+              const x = u.valToPos(m.ts, "x", true);
+              if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+              ctx.beginPath();
+              ctx.moveTo(x, u.bbox.top);
+              ctx.lineTo(x, u.bbox.top + u.bbox.height);
+              ctx.stroke();
+              ctx.fillText(m.code, x + 4, u.bbox.top + 12);
+            }
+            ctx.restore();
+          },
+        },
+      }
+    : null;
   const opts: uPlot.Options = {
     width: 800,
     height: 320,
@@ -155,9 +186,30 @@ const chart = computed<ChartData>(() => {
       })),
     ],
     axes,
+    ...(dtcPlugin ? { plugins: [dtcPlugin] } : {}),
   };
   return { aligned, opts };
 });
+
+const odoDelta = computed<number | null>(() => {
+  const t = trip.value;
+  if (!t || t.odo_start_km == null || t.odo_end_km == null) return null;
+  const d = t.odo_end_km - t.odo_start_km;
+  // Reject obviously-wrong deltas (engine-off readings can return the
+  // *previous* trip's value when the ECU hasn't logged yet, producing
+  // a negative or 100x-too-large delta).
+  if (d < 0 || d > 1000) return null;
+  return d;
+});
+
+function fmtOdoMi(km: number | null): string {
+  if (km == null) return "—";
+  return (km * 0.621371).toFixed(0);
+}
+function fmtOdoDeltaMi(km: number | null): string {
+  if (km == null) return "—";
+  return `+${(km * 0.621371).toFixed(1)} mi`;
+}
 
 const route2D = computed<[number, number][]>(() => {
   // Prefer gps_points (richer + accurate); fall back to legacy
@@ -477,8 +529,26 @@ async function saveMeta() {
                   · {{ trip.weather_humidity_pct }}% rh
                 </span>
               </dd>
+              <dt v-if="odoDelta != null">Odometer Δ</dt>
+              <dd v-if="odoDelta != null">
+                <span class="num">{{ fmtOdoDeltaMi(odoDelta) }}</span>
+                <span class="muted small">
+                  · {{ fmtOdoMi(trip.odo_start_km ?? null) }}
+                  → {{ fmtOdoMi(trip.odo_end_km ?? null) }} mi
+                </span>
+              </dd>
               <dt>DTCs</dt>
-              <dd>{{ trip.dtc_count ?? 0 }}</dd>
+              <dd>
+                <span>{{ trip.dtc_count ?? trip.dtcs?.length ?? 0 }}</span>
+                <ul v-if="trip.dtcs?.length" class="dtc-inline">
+                  <li v-for="d in trip.dtcs" :key="d.id">
+                    <code>{{ d.code }}</code>
+                    <span v-if="d.description" class="muted small">
+                      — {{ d.description }}
+                    </span>
+                  </li>
+                </ul>
+              </dd>
               <dt>Started</dt>
               <dd>{{ fmtDateTime(trip.started_at) }}</dd>
               <dt>Ended</dt>
@@ -590,6 +660,24 @@ async function saveMeta() {
 .stats dd {
   margin: 0;
   font-weight: 500;
+}
+.dtc-inline {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.dtc-inline code {
+  background: var(--c-surface-soft);
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  color: #ef4444;
+  font-size: 0.78rem;
+}
+.num {
+  font-variant-numeric: tabular-nums;
 }
 .card label {
   display: flex;

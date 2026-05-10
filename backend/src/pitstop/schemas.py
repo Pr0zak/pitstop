@@ -251,6 +251,12 @@ class TripSamplePoint(BaseModel):
 
 class TripDetail(TripOut):
     samples: list[TripSamplePoint] = Field(default_factory=list)
+    # Closest odometer reading within ±15 min of trip start / end.
+    # Null when WiCAN didn't publish during the window. (Task #99)
+    odo_start_km: float | None = None
+    odo_end_km: float | None = None
+    # DTCs that first fired during this trip's window. (Task #110)
+    dtcs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

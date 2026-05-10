@@ -139,8 +139,22 @@ export interface TripSample {
   gps_lon?: number | null;
 }
 
+export interface TripDtcRef {
+  id: string;
+  code: string;
+  seen_at: string;
+  description?: string | null;
+}
+
 export interface TripDetail extends Trip {
   samples: TripSample[];
+  // Closest pid_readings odometer value within ±15 min of trip
+  // start / end. Null when WiCAN didn't publish in that window.
+  odo_start_km?: number | null;
+  odo_end_km?: number | null;
+  // DTCs that fired during the trip's open window (from
+  // dtc_events.seen_at, ascending).
+  dtcs?: TripDtcRef[];
 }
 
 export interface Dtc {
