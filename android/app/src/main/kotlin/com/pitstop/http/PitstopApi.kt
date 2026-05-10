@@ -143,4 +143,25 @@ interface PitstopApi {
         @Query("vehicle_id") vehicleId: String,
         @Query("window") window: String = "year",
     ): MpgTrendResponse
+
+    @GET("api/trips")
+    suspend fun getTrips(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("limit") limit: Int = 5,
+    ): List<TripDto>
 }
+
+@kotlinx.serialization.Serializable
+data class TripDto(
+    val id: String,
+    @kotlinx.serialization.SerialName("vehicle_id") val vehicleId: String,
+    @kotlinx.serialization.SerialName("started_at") val startedAt: String,
+    @kotlinx.serialization.SerialName("ended_at") val endedAt: String? = null,
+    @kotlinx.serialization.SerialName("duration_s") val durationS: Int? = null,
+    @kotlinx.serialization.SerialName("distance_km") val distanceKm: Double? = null,
+    @kotlinx.serialization.SerialName("max_speed_kph") val maxSpeedKph: Double? = null,
+    @kotlinx.serialization.SerialName("max_rpm") val maxRpm: Double? = null,
+    @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
+    @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
+    val category: String? = null,
+)

@@ -9,10 +9,10 @@ import MapLibreMap from "@/components/charts/MapLibreMap.vue";
 import {
   fmtDateTime,
   fmtDuration,
-  fmtMiles,
-  fmtSpeed,
+  fmtDistanceKm,
+  fmtSpeedKph,
   fmtRpm,
-  fmtGallons,
+  fmtVolumeL,
   fmtTemp,
 } from "@/composables/useFormat";
 import { ChevronLeft, RefreshCw } from "lucide-vue-next";
@@ -37,16 +37,43 @@ type ChartData = { aligned: uPlot.AlignedData; opts: uPlot.Options } | null;
 
 const chart = computed<ChartData>(() => {
   if (!trip.value || !trip.value.samples || trip.value.samples.length === 0) return null;
-  const samples = trip.value.samples;
+  // Backend returns long-form rows: {time, metric, value_num}. Pivot
+  // to wide form keyed on bucket time so uPlot can render multi-axis.
+  // Each metric maps to its target series array.
+  const buckets = new Map<number, Record<string, number | null>>();
+  for (const s of trip.value.samples as Array<{
+    time: string;
+    metric?: string;
+    value_num?: number | null;
+    vehicle_speed?: number | null;
+    engine_rpm?: number | null;
+    coolant_temp?: number | null;
+  }>) {
+    const ts = Math.round((Date.parse(s.time) || 0) / 1000);
+    const slot = buckets.get(ts) ?? {};
+    if (s.metric && s.value_num !== undefined && s.value_num !== null) {
+      slot[s.metric] = s.value_num;
+    }
+    // Backwards compat: pre-pivot wide-form responses still work.
+    if (s.vehicle_speed != null) slot["vehicle_speed"] = s.vehicle_speed;
+    if (s.engine_rpm != null) slot["engine_rpm"] = s.engine_rpm;
+    if (s.coolant_temp != null) slot["coolant_temp"] = s.coolant_temp;
+    buckets.set(ts, slot);
+  }
+  const sortedTs = Array.from(buckets.keys()).sort((a, b) => a - b);
   const t: number[] = [];
   const speed: (number | null)[] = [];
   const rpm: (number | null)[] = [];
   const coolant: (number | null)[] = [];
-  for (const s of samples) {
-    t.push(Math.round((Date.parse(s.time) || 0) / 1000));
-    speed.push(s.vehicle_speed ?? null);
-    rpm.push(s.engine_rpm ?? null);
-    coolant.push(s.coolant_temp ?? null);
+  for (const ts of sortedTs) {
+    const slot = buckets.get(ts)!;
+    t.push(ts);
+    // Convert kph→mph if user prefers imperial; backend stores SI.
+    const vs = slot["vehicle_speed"];
+    speed.push(vs == null ? null : vs * 0.621371);
+    rpm.push(slot["engine_rpm"] ?? null);
+    const c = slot["coolant_temp"];
+    coolant.push(c == null ? null : (c * 9) / 5 + 32);
   }
   const aligned: uPlot.AlignedData = [t, speed, rpm, coolant];
   const opts: uPlot.Options = {
@@ -202,13 +229,13 @@ async function saveMeta() {
               <dt>Duration</dt>
               <dd>{{ fmtDuration(trip.duration_s) }}</dd>
               <dt>Distance</dt>
-              <dd>{{ fmtMiles(trip.distance_mi) }}</dd>
+              <dd>{{ fmtDistanceKm(trip.distance_km ?? null) }}</dd>
               <dt>Max speed</dt>
-              <dd>{{ fmtSpeed(trip.max_speed) }}</dd>
+              <dd>{{ fmtSpeedKph(trip.max_speed_kph ?? null) }}</dd>
               <dt>Max RPM</dt>
               <dd>{{ fmtRpm(trip.max_rpm) }}</dd>
               <dt>Fuel used</dt>
-              <dd>{{ fmtGallons(trip.fuel_used) }}</dd>
+              <dd>{{ fmtVolumeL(trip.fuel_used_l ?? null) }}</dd>
               <dt>DTCs</dt>
               <dd>{{ trip.dtc_count ?? 0 }}</dd>
               <dt>Started</dt>

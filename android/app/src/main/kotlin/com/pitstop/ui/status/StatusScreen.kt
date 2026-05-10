@@ -85,8 +85,16 @@ fun StatusScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Hero — the eye lands here first. The card cluster below
-            // fills in detail; this just answers "is the bridge OK?"
+            // Fuel hero strip leads — the user wants their fuel state
+            // first thing on the screen (avg consumption, current gas
+            // price, this-month spend, miles since fill).
+            ui.hero?.let { hero ->
+                com.pitstop.ui.components.FuelHeroCards(data = hero)
+            }
+
+            // Bridge / broker state below the fuel cards. Still
+            // prominent because a broken bridge invalidates the data
+            // above, but no longer the eye-first element.
             com.pitstop.ui.components.HeroStatusBanner(
                 phase = ui.status.phase,
                 brokerConnected = ui.status.brokerConnected,
@@ -94,10 +102,11 @@ fun StatusScreen(
                 vehicleName = ui.status.deviceName,
             )
 
-            // Phone-web parity hero strip: avg consumption, gas price,
-            // this-month spend, miles since fill. Mirrors web Overview.
-            ui.hero?.let { hero ->
-                com.pitstop.ui.components.FuelHeroCards(data = hero)
+            // Recent trips card — surfaces the last 5 drives so the
+            // user can spot anomalies at a glance without bouncing
+            // to the web.
+            ui.recentTrips?.takeIf { it.isNotEmpty() }?.let { trips ->
+                RecentTripsCard(trips = trips)
             }
 
             ui.update?.takeIf { it.isNewer }?.let { info ->
@@ -311,4 +320,66 @@ private fun formatRelative(tsMs: Long?): String {
         delta < 60_000 -> "${delta / 1000}s ago"
         else -> "${delta / 60_000}m ago"
     }
+}
+
+@Composable
+private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>) {
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Recent trips",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            for (trip in trips) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = formatTripDate(trip.startedAt),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = formatTripSubtitle(trip),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    val mi = trip.distanceKm?.let { it * 0.621371 }
+                    Text(
+                        text = mi?.let { "%.1f mi".format(it) } ?: "—",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun formatTripDate(iso: String): String {
+    return try {
+        val d = java.time.OffsetDateTime.parse(iso)
+        d.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mma"))
+    } catch (_: Throwable) {
+        iso.take(16)
+    }
+}
+
+private fun formatTripSubtitle(trip: com.pitstop.http.TripDto): String {
+    val parts = mutableListOf<String>()
+    trip.durationS?.let {
+        parts += if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s"
+    }
+    trip.maxSpeedKph?.let { parts += "max %.0f mph".format(it * 0.621371) }
+    trip.maxRpm?.let { parts += "%.0f rpm".format(it) }
+    if (trip.dtcCount > 0) parts += "${trip.dtcCount} DTC"
+    return parts.joinToString(" · ").ifEmpty { "—" }
 }

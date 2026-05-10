@@ -7,10 +7,10 @@ import * as api from "@/api/endpoints";
 import {
   fmtDateTime,
   fmtDuration,
-  fmtMiles,
-  fmtSpeed,
+  fmtDistanceKm,
+  fmtSpeedKph,
   fmtRpm,
-  fmtGallons,
+  fmtVolumeL,
 } from "@/composables/useFormat";
 
 const vehicles = useVehiclesStore();
@@ -115,10 +115,10 @@ function reset() {
             >
               <td>{{ fmtDateTime(t.started_at) }}</td>
               <td>{{ fmtDuration(t.duration_s) }}</td>
-              <td>{{ fmtMiles(t.distance_mi) }}</td>
-              <td>{{ fmtSpeed(t.max_speed) }}</td>
+              <td>{{ fmtDistanceKm(t.distance_km ?? null) }}</td>
+              <td>{{ fmtSpeedKph(t.max_speed_kph ?? null) }}</td>
               <td>{{ fmtRpm(t.max_rpm) }}</td>
-              <td>{{ fmtGallons(t.fuel_used) }}</td>
+              <td>{{ fmtVolumeL(t.fuel_used_l ?? null) }}</td>
               <td>{{ t.dtc_count ?? 0 }}</td>
             </tr>
           </tbody>

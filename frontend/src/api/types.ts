@@ -60,13 +60,22 @@ export interface Trip {
   started_at: string;
   ended_at?: string | null;
   duration_s?: number | null;
-  distance_mi?: number | null;
-  max_speed?: number | null;
+  // Backend stores SI canonical units (km, kph, litres); frontend
+  // converts at render time per the user's preferred system. Old
+  // mi/mph/gal aliases kept optional so any in-flight responses with
+  // the old shape don't error out.
+  distance_km?: number | null;
+  max_speed_kph?: number | null;
+  avg_speed_kph?: number | null;
+  avg_coolant_c?: number | null;
   max_rpm?: number | null;
-  fuel_used?: number | null;
+  fuel_used_l?: number | null;
   dtc_count?: number | null;
   category?: string | null;
   notes?: string | null;
+  /** @deprecated use distance_km */ distance_mi?: number | null;
+  /** @deprecated use max_speed_kph */ max_speed?: number | null;
+  /** @deprecated use fuel_used_l */ fuel_used?: number | null;
 }
 
 export interface TripSample {

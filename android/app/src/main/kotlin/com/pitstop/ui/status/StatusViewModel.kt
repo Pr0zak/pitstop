@@ -41,6 +41,12 @@ data class StatusUiState(
      * token isn't configured or the backend isn't reachable.
      */
     val hero: HeroCardData? = null,
+    /**
+     * Last 3-5 trips for the selected vehicle, surfaced in the Home
+     * "Recent trips" card. Null while loading; empty list when the
+     * backend has no trips for the vehicle.
+     */
+    val recentTrips: List<com.pitstop.http.TripDto>? = null,
 )
 
 @HiltViewModel
@@ -59,6 +65,7 @@ class StatusViewModel @Inject constructor(
     private val updateInfo = MutableStateFlow<UpdateInfo?>(null)
     private val updateChecking = MutableStateFlow(false)
     private val heroData = MutableStateFlow<HeroCardData?>(null)
+    private val recentTrips = MutableStateFlow<List<com.pitstop.http.TripDto>?>(null)
 
     init {
         // Background check on first observe — best-effort, no UI block.
@@ -163,8 +170,17 @@ class StatusViewModel @Inject constructor(
                 milesSinceFill = milesSinceFill,
                 mpgSeries = mpgPoints.mapNotNull { it.mpg },
             )
+
+            // Recent trips for the Home "Recent trips" card. Best-effort —
+            // empty list on failure (eg. backend stale, missing endpoint
+            // on older releases) so the card just disappears instead of
+            // showing an error.
+            recentTrips.value = runCatching {
+                api.getTrips(vehicleId, limit = 5)
+            }.getOrElse { emptyList() }
         } catch (_: Throwable) {
             heroData.value = null
+            recentTrips.value = null
         }
     }
 
@@ -190,6 +206,7 @@ class StatusViewModel @Inject constructor(
             updateInfo,
             updateChecking,
             heroData,
+            recentTrips,
         ) { values ->
             val status = values[0] as BridgeStatus
             val settings = values[1] as com.pitstop.data.Settings
@@ -199,6 +216,8 @@ class StatusViewModel @Inject constructor(
             val info = values[5] as UpdateInfo?
             val checking = values[6] as Boolean
             val hero = values[7] as HeroCardData?
+            @Suppress("UNCHECKED_CAST")
+            val trips = values[8] as List<com.pitstop.http.TripDto>?
             StatusUiState(
                 status = status.copy(
                     brokerConnected = mqttPublisher.isConnected(),
@@ -221,6 +240,7 @@ class StatusViewModel @Inject constructor(
                 update = info,
                 updateChecking = checking,
                 hero = hero,
+                recentTrips = trips,
             )
         }.stateIn(
             scope = viewModelScope,
