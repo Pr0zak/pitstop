@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.pitstop.drive.scheduleDriveUploads
 import com.pitstop.log.LogBuffer
 import com.pitstop.update.scheduleUpdateChecks
 import dagger.hilt.android.HiltAndroidApp
@@ -30,6 +31,11 @@ class PitstopApp : Application(), Configuration.Provider {
         // job stays scheduled across reboots via WorkManager's
         // persistence layer.
         scheduleUpdateChecks(this)
+        // Drive-upload backstop (#117). Per-drive immediate kicks
+        // come from DriveSealer; this 4 h periodic catches edge
+        // cases where the immediate kick missed (Doze, process
+        // death between seal and worker schedule).
+        scheduleDriveUploads(this)
     }
 
     /**

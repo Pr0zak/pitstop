@@ -117,6 +117,11 @@ dependencies {
     // WorkManager — runs the periodic update-check worker
     implementation(libs.work.runtime)
 
+    // Room — local SQLite queue for pending drive uploads (#117)
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
     // Network
     implementation(libs.retrofit)
     implementation(libs.retrofit.serialization)

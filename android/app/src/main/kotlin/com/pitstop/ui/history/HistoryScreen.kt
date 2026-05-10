@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,6 +46,7 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val pendingCount by viewModel.pendingCount.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(0) }
 
     Scaffold(topBar = { PitstopTopAppBar() }) { padding ->
@@ -52,6 +55,30 @@ fun HistoryScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            // Pending drive upload queue — appears only when there's
+            // something to ship. Surfaces queue size + "Sync now"
+            // button so the user knows what's parked locally.
+            if (pendingCount > 0) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "$pendingCount drive${if (pendingCount == 1) "" else "s"} pending upload",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    AssistChip(
+                        onClick = { viewModel.syncNow() },
+                        label = { Text("Sync now") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        ),
+                    )
+                }
+            }
             SecondaryTabRow(selectedTabIndex = selectedTab) {
                 listOf("Trips", "Fillups", "DTCs").forEachIndexed { i, label ->
                     Tab(

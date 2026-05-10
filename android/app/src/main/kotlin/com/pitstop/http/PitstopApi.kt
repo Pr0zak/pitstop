@@ -124,6 +124,17 @@ interface PitstopApi {
     @POST("api/logs")
     suspend fun postLogs(@Body body: LogBatchRequest): LogBatchResponse
 
+    /**
+     * Atomic per-drive batch upload (Task #117). The phone seals a
+     * drive on the engine-off + presence-gone gate and POSTs the
+     * whole thing — PIDs, GPS, engine events, IMU — in one request.
+     * The server keys idempotency on `client_drive_uuid`.
+     */
+    @POST("ingest/drive")
+    suspend fun postDrive(
+        @Body body: com.pitstop.drive.DriveUploadDto,
+    ): com.pitstop.drive.DriveUploadResponseDto
+
     // ── Read path: shared with the web frontend, /api/ stripped by Caddy ─
     @GET("api/vehicles")
     suspend fun getVehicles(): List<VehicleDto>

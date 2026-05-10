@@ -63,6 +63,8 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var logShipper: LogShipper
     @Inject lateinit var presence: com.pitstop.presence.PresenceTracker
     @Inject lateinit var wicanSubscriber: com.pitstop.mqtt.WiCanSubscriber
+    @Inject lateinit var driveRecorder: com.pitstop.drive.DriveRecorder
+    @Inject lateinit var driveSealer: com.pitstop.drive.DriveSealer
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bleManager: WiCanBleManager? = null
@@ -237,6 +239,13 @@ class PitstopBridgeService : Service() {
                 )
             }
             publishEngineState("on", tMs)
+            // Open a phone-canonical drive buffer (#117). The recorder
+            // mirrors every PID / GPS / IMU sample the bridge publishes
+            // while open, then DriveSealer.seal() persists + uploads
+            // on engine_off.
+            if (vehicleSlug.isNotBlank()) {
+                driveRecorder.open(vehicleSlug, tMs)
+            }
         }
     }
 
@@ -254,6 +263,13 @@ class PitstopBridgeService : Service() {
                 )
             }
             publishEngineState("off", tMs)
+            // Seal the open drive (#117). The sealer persists to Room
+            // and kicks the upload worker; subsequent retries collapse
+            // on the deterministic client_drive_uuid.
+            scope.launch {
+                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                driveSealer.seal(tMs, deviceId)
+            }
         }
     }
 
@@ -544,6 +560,10 @@ class PitstopBridgeService : Service() {
         stateBus.publishMetric(pid.name, value)
         val topic = "bridge/${vehicleSlug}/${pid.name}"
         publishOrBuffer(topic, v2Envelope(value))
+        // Mirror into the drive recorder so the canonical batch
+        // upload (#117) has every PID frame even when the live MQTT
+        // stream drops bytes.
+        driveRecorder.current()?.addPid(System.currentTimeMillis(), pid.name, value)
     }
 
     /**
@@ -787,29 +807,47 @@ class PitstopBridgeService : Service() {
         // continues to show whatever the sensors are reading.
         val publishToBroker = stateBus.status.value.engineState == EngineState.On
 
-        lastAccel?.let { a ->
-            stateBus.publishMetric("accel_x", a[0].toDouble())
-            stateBus.publishMetric("accel_y", a[1].toDouble())
-            stateBus.publishMetric("accel_z", a[2].toDouble())
+        // Compose one IMU sample for the drive recorder per tick.
+        // Recorder takes both accel + gyro together so the per-sample
+        // timestamp lines up — analytics that pair the two axes get
+        // the same instant of data, instead of two stagger-ed rows.
+        val tImu = System.currentTimeMillis()
+        val a = lastAccel
+        val g = lastGyro
+        if (a != null || g != null) {
+            driveRecorder.current()?.addImu(
+                t = tImu,
+                ax = a?.get(0)?.toDouble(),
+                ay = a?.get(1)?.toDouble(),
+                az = a?.get(2)?.toDouble(),
+                gx = g?.get(0)?.toDouble(),
+                gy = g?.get(1)?.toDouble(),
+                gz = g?.get(2)?.toDouble(),
+            )
+        }
+        a?.let {
+            stateBus.publishMetric("accel_x", it[0].toDouble())
+            stateBus.publishMetric("accel_y", it[1].toDouble())
+            stateBus.publishMetric("accel_z", it[2].toDouble())
             // Skip publishing if the phone is essentially still — even
             // during a drive, idling at a red light produces all-zero
             // samples that just bloat the DB.
-            val mag = kotlin.math.sqrt((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).toDouble())
+            val mag = kotlin.math.sqrt((it[0] * it[0] + it[1] * it[1] + it[2] * it[2]).toDouble())
             if (publishToBroker && mag >= imuAccelNoiseMs2) {
-                publishOrBuffer("bridge/$slug/accel_x", v2EnvelopeStr("%.3f".format(a[0])))
-                publishOrBuffer("bridge/$slug/accel_y", v2EnvelopeStr("%.3f".format(a[1])))
-                publishOrBuffer("bridge/$slug/accel_z", v2EnvelopeStr("%.3f".format(a[2])))
+                publishOrBuffer("bridge/$slug/accel_x", v2EnvelopeStr("%.3f".format(it[0])))
+                publishOrBuffer("bridge/$slug/accel_y", v2EnvelopeStr("%.3f".format(it[1])))
+                publishOrBuffer("bridge/$slug/accel_z", v2EnvelopeStr("%.3f".format(it[2])))
             }
         }
-        lastGyro?.let { g ->
-            stateBus.publishMetric("gyro_x", g[0].toDouble())
-            stateBus.publishMetric("gyro_y", g[1].toDouble())
-            stateBus.publishMetric("gyro_z", g[2].toDouble())
-            val mag = kotlin.math.sqrt((g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).toDouble())
+        g?.let {
+            stateBus.publishMetric("gyro_x", it[0].toDouble())
+            stateBus.publishMetric("gyro_y", it[1].toDouble())
+            stateBus.publishMetric("gyro_z", it[2].toDouble())
+            val mag = kotlin.math.sqrt((it[0] * it[0] + it[1] * it[1] + it[2] * it[2]).toDouble())
             if (publishToBroker && mag >= imuGyroNoiseRadS) {
-                publishOrBuffer("bridge/$slug/gyro_x", v2EnvelopeStr("%.3f".format(g[0])))
-                publishOrBuffer("bridge/$slug/gyro_y", v2EnvelopeStr("%.3f".format(g[1])))
-                publishOrBuffer("bridge/$slug/gyro_z", v2EnvelopeStr("%.3f".format(g[2])))
+                publishOrBuffer("bridge/$slug/gyro_x", v2EnvelopeStr("%.3f".format(it[0])))
+                publishOrBuffer("bridge/$slug/gyro_y", v2EnvelopeStr("%.3f".format(it[1])))
+                publishOrBuffer("bridge/$slug/gyro_z", v2EnvelopeStr("%.3f".format(it[2])))
             }
         }
     }
@@ -877,6 +915,18 @@ class PitstopBridgeService : Service() {
         if (loc.hasAccuracy()) sb.append(",\"acc\":").append("%.1f".format(loc.accuracy))
         sb.append("}")
         publishJson("bridge/$slug/location", sb.toString())
+        // Mirror to the drive recorder. Server's gps_points table
+        // expects km/h speed? No — it's m/s, matching the Location
+        // API. Heading + accuracy come from the same Location obj.
+        driveRecorder.current()?.addGps(
+            t = loc.time.coerceAtLeast(System.currentTimeMillis()),
+            lat = latR,
+            lon = lonR,
+            altM = if (loc.hasAltitude()) loc.altitude else null,
+            speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
+            headingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null,
+            accuracyM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
+        )
     }
 
     private fun stopBridge() {

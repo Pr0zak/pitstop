@@ -3,6 +3,8 @@ package com.pitstop.ui.history
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.data.SettingsRepository
+import com.pitstop.drive.DriveSealer
+import com.pitstop.drive.PendingDriveDao
 import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
 import com.pitstop.http.PitstopApi
@@ -12,9 +14,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -40,13 +44,33 @@ class HistoryViewModel @Inject constructor(
     private val api: PitstopApi,
     private val settings: SettingsRepository,
     private val logBuffer: LogBuffer,
+    private val pendingDao: PendingDriveDao,
+    private val driveSealer: DriveSealer,
 ) : ViewModel() {
 
     private val _ui = MutableStateFlow(HistoryUiState())
     val ui: StateFlow<HistoryUiState> = _ui.asStateFlow()
 
+    /**
+     * Live count of unacked drives in the local queue (#117). Drives
+     * accumulate when the phone can't reach the server; "Sync now"
+     * kicks a worker. The badge surfaces in the History header so
+     * the user always knows what's pending.
+     */
+    val pendingCount: StateFlow<Int> = pendingDao.observeUnackedCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
     init {
         refresh()
+    }
+
+    /** User tapped "Sync now". Enqueues an immediate upload pass. */
+    fun syncNow() {
+        driveSealer.kickWorker()
+        logBuffer.info(
+            "history: sync-now requested",
+            mapOf("pending" to pendingCount.value),
+        )
     }
 
     /** Reload all three lists in parallel. Each list manages its own
