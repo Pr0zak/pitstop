@@ -65,10 +65,6 @@ Three layers, each covering the others' blind spots:
 
 The trip deriver consumes all three. The phone uses `engine_state` as the gate for IMU + GPS broker publishes (no flooding the DB while parked).
 
-## Privacy
-
-`Pr0zak/pitstop` is **public**. Real-data exports (Fuelio CSVs, fillup rows with GPS / station / cost / VIN / plate, `.env` files, keystores, internal infra hostnames, owner identity) **must not** be committed. The `.gitignore` blocks `data/`, `*.csv` (except the synthetic test fixture under `deploy/tests/fixtures/`), `*.zip`, `.env*`, `*.jks`, `keystore.properties`, `**/private/`, `pid_profiles/private-*.json`. CI's release tooling re-runs a layered grep audit before tagging.
-
 ## Development
 
 Backend + frontend run via Docker Compose; the phone app builds with Gradle. The `deploy/` scripts provision a Proxmox LXC end-to-end (including the Docker-in-LXC `runc` swap for unprivileged containers). See [docs/deployment.md](./docs/deployment.md) and [PLAN.md](./PLAN.md).
