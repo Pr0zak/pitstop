@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  1x1 home-screen widget that taps through to the Fuel tab (#121).
+  Layout strategy: rounded surface tile + centered fuel-pump glyph
+  with a small "+" badge in the top-right corner so it reads as
+  "add fuel" at a glance.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_add_fillup_bg"
+    android:padding="12dp">
+
+    <!-- Pump icon, centered -->
+    <ImageView
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_gravity="center"
+        android:src="@drawable/ic_fuel_pump"
+        android:tint="#FF5B3A"
+        android:contentDescription="Add fillup" />
+
+    <!-- "+" badge in the top-right so the widget reads as an action,
+         not just a static icon. -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:text="+"
+        android:textColor="#E7E9EE"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:includeFontPadding="false" />
+</FrameLayout>

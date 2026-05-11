@@ -1,6 +1,7 @@
 package com.pitstop
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -38,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.ui.config.ConfigScreen
 import com.pitstop.ui.fuel.FuelAddScreen
 import com.pitstop.ui.history.HistoryScreen
@@ -45,24 +47,50 @@ import com.pitstop.ui.live.LiveScreen
 import com.pitstop.ui.status.StatusScreen
 import com.pitstop.ui.theme.PitstopTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    /** Cleared by the launcher when a deep-link intent fires and the
+     *  pager scrolls there; subsequent recomposes don't re-navigate. */
+    private val pendingTabIndex = MutableStateFlow<Int?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // The Add-Fillup widget (#121) launches us with this action so
+        // we land directly on the Fuel tab. Other launch paths (icon
+        // tap, recents, deep link) get the default Home tab.
+        val initialTab = if (intent?.action == ACTION_ADD_FILLUP) 3 else 0
         setContent {
             PitstopTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    PitstopRoot()
+                    PitstopRoot(
+                        initialTab = initialTab,
+                        pendingTabFlow = pendingTabIndex,
+                    )
                 }
             }
         }
+    }
+
+    /** Single-task launchMode means a widget tap on an already-
+     *  running app reuses this instance — we get the new intent
+     *  here. Surface it to the composable so the pager scrolls. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ACTION_ADD_FILLUP) {
+            pendingTabIndex.value = 3
+        }
+    }
+
+    companion object {
+        const val ACTION_ADD_FILLUP = "com.pitstop.action.ADD_FILLUP"
     }
 }
 
@@ -82,9 +110,24 @@ private val tabDestinations = listOf(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PitstopRoot() {
-    val pagerState = rememberPagerState(initialPage = 0) { tabDestinations.size }
+private fun PitstopRoot(
+    initialTab: Int = 0,
+    pendingTabFlow: MutableStateFlow<Int?>? = null,
+) {
+    val pagerState = rememberPagerState(initialPage = initialTab) { tabDestinations.size }
     val scope = rememberCoroutineScope()
+
+    // Route an onNewIntent deep link (widget tap on already-running
+    // app) to the right pager page. Clears the pending value so a
+    // recompose doesn't repeat the scroll.
+    val pendingTab = pendingTabFlow?.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingTab?.value) {
+        val target = pendingTab?.value
+        if (target != null) {
+            pagerState.animateScrollToPage(target)
+            pendingTabFlow?.value = null
+        }
+    }
 
     // Up-front permission request (notifications + bluetooth + location).
     val perms = buildList {

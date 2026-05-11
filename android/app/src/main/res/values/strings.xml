@@ -27,4 +27,8 @@
     <string name="config_scan">Scan</string>
     <string name="config_save">Save</string>
     <string name="config_first_run_hint">First-run note: this app reaches your pitstop broker over LAN. Off-network use requires Tailscale on this phone with \"Use Tailscale subnets\" enabled.</string>
+
+    <!-- Widgets -->
+    <string name="widget_add_fillup_label">Add fillup</string>
+    <string name="widget_add_fillup_description">Tap to log a new fill-up at the pump</string>
 </resources>
