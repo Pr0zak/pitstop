@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -87,6 +88,13 @@ class DriveSealer @Inject constructor(
         return persist(orphan, now, incomplete = true, deviceId = deviceId)
     }
 
+    /** Per-app-install directory holding queued drive payloads on disk. */
+    private fun payloadDir(): File =
+        File(context.filesDir, "pending-drives").apply { mkdirs() }
+
+    private fun payloadFile(uuid: String): File =
+        File(payloadDir(), "$uuid.json")
+
     private suspend fun persist(
         buf: DriveBuffer,
         endedAtMs: Long,
@@ -95,6 +103,12 @@ class DriveSealer @Inject constructor(
     ): PendingDrive {
         val dto = buf.seal(endedAtMs, incomplete, deviceId)
         val payloadJson = json.encodeToString(dto)
+        // Write to disk before inserting. Inlining into the SQLite row
+        // breaks down on big drives — Android's default CursorWindow
+        // caps row reads at ~2 MB, so a 5+ MB row becomes unreadable
+        // (CursorWindow IllegalStateException) and stalls the queue.
+        val file = payloadFile(dto.clientDriveUuid)
+        file.writeText(payloadJson)
         val row = PendingDrive(
             clientDriveUuid = dto.clientDriveUuid,
             vehicleId = dto.vehicleId,
@@ -102,7 +116,8 @@ class DriveSealer @Inject constructor(
             endedAt = endedAtMs,
             incomplete = incomplete,
             frameCount = dto.frameCount,
-            payloadJson = payloadJson,
+            payloadJson = "",
+            payloadFilePath = file.absolutePath,
         )
         dao.insert(row)
         _lastSealedAt.value = endedAtMs
@@ -116,6 +131,7 @@ class DriveSealer @Inject constructor(
                 "frame_count" to dto.frameCount,
                 "incomplete" to incomplete,
                 "payload_bytes" to payloadJson.length,
+                "payload_file" to file.absolutePath,
             ),
         )
         kickWorker()

@@ -3,6 +3,7 @@ package com.pitstop.drive
 import com.pitstop.http.PitstopApi
 import com.pitstop.log.LogBuffer
 import kotlinx.serialization.json.Json
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,6 +17,14 @@ import javax.inject.Singleton
  * in this codebase (the OneTimeWork from kickWorker never logged in
  * v0.1.102 testing — Hilt assisted-inject likely silently failing).
  * Keeping the worker around as a safety net but not relying on it.
+ *
+ * Storage model (v0.1.111+): payloads live on disk; the SQLite row
+ * carries metadata + a file path. Loading the payload no longer
+ * goes through the CursorWindow, so multi-megabyte drives upload
+ * cleanly. Legacy rows from before the v1→v2 migration carry their
+ * payload inline and aren't readable above ~2 MB; those rows are
+ * dropped here (the server has the same trip via the live MQTT
+ * stream + post-processed deriver, so no data is actually lost).
  */
 @Singleton
 class DriveUploader @Inject constructor(
@@ -45,49 +54,62 @@ class DriveUploader @Inject constructor(
         }
 
         // Track rows we've already attempted in this pass — Outcome.Failure
-        // doesn't mark the row in any way visible to dao.oldestUnacked(),
+        // doesn't mark the row in any way visible to dao.oldestUnackedMeta(),
         // so without this gate we'd hot-loop forever on the same drive.
         val seenThisPass = mutableSetOf<String>()
         var drained = 0
         while (true) {
-            val row = dao.oldestUnacked() ?: break
-            if (row.clientDriveUuid in seenThisPass) {
+            val meta = dao.oldestUnackedMeta() ?: break
+            if (meta.clientDriveUuid in seenThisPass) {
                 logs.info(
                     "DriveUploader: stopping pass (head row already attempted)",
                     mapOf(
-                        "client_drive_uuid" to row.clientDriveUuid,
+                        "client_drive_uuid" to meta.clientDriveUuid,
                         "drained_this_pass" to drained,
                     ),
                 )
                 break
             }
-            seenThisPass.add(row.clientDriveUuid)
-            val outcome = tryUpload(row)
-            when (outcome) {
+            seenThisPass.add(meta.clientDriveUuid)
+
+            // Legacy oversized rows (pre-v0.1.111): payload was inlined
+            // and is now unreadable for drives over ~2 MB. The live MQTT
+            // stream + server-side deriver has the trip; drop the queue
+            // row so it stops blocking the head.
+            if (meta.payloadFilePath == null) {
+                logs.warn(
+                    "DriveUploader: dropping legacy oversize row (pre-v0.1.111)",
+                    mapOf(
+                        "client_drive_uuid" to meta.clientDriveUuid,
+                        "frame_count" to meta.frameCount,
+                    ),
+                )
+                dao.deleteByUuid(meta.clientDriveUuid)
+                continue
+            }
+
+            when (tryUpload(meta)) {
                 Outcome.Success -> drained += 1
                 Outcome.Retry -> {
                     logs.info(
                         "DriveUploader: network/server error, stopping pass",
                         mapOf(
-                            "client_drive_uuid" to row.clientDriveUuid,
-                            "attempt" to (row.attemptCount + 1),
+                            "client_drive_uuid" to meta.clientDriveUuid,
+                            "attempt" to (meta.attemptCount + 1),
                             "drained_this_pass" to drained,
                         ),
                     )
                     return drained
                 }
                 Outcome.Failure -> {
-                    // Re-read so the log reflects the JUST-stored error
-                    // from this attempt, not the stale one from a prior
-                    // pass. Confused us during v0.1.103→104 debugging.
-                    val fresh = dao.oldestUnacked()
-                    val freshErr = if (fresh?.clientDriveUuid == row.clientDriveUuid) {
+                    val fresh = dao.oldestUnackedMeta()
+                    val freshErr = if (fresh?.clientDriveUuid == meta.clientDriveUuid) {
                         fresh.lastError ?: "?"
                     } else "?"
                     logs.warn(
                         "DriveUploader: drive rejected by server, skipping",
                         mapOf(
-                            "client_drive_uuid" to row.clientDriveUuid,
+                            "client_drive_uuid" to meta.clientDriveUuid,
                             "last_error" to freshErr,
                         ),
                     )
@@ -102,17 +124,28 @@ class DriveUploader @Inject constructor(
         return drained
     }
 
-    private suspend fun tryUpload(row: PendingDrive): Outcome {
+    private suspend fun tryUpload(meta: PendingDriveMeta): Outcome {
         val now = System.currentTimeMillis()
-        val dto = try {
-            json.decodeFromString<DriveUploadDto>(row.payloadJson)
+        val path = meta.payloadFilePath!!  // guarded by null-check in drain()
+        val payloadJson = try {
+            File(path).readText()
         } catch (t: Throwable) {
-            dao.bumpAttempt(row.clientDriveUuid, now, "deserialise: ${t.message}")
+            dao.bumpAttempt(meta.clientDriveUuid, now, "payload file read: ${t.message}")
+            return Outcome.Failure
+        }
+        val dto = try {
+            json.decodeFromString<DriveUploadDto>(payloadJson)
+        } catch (t: Throwable) {
+            dao.bumpAttempt(meta.clientDriveUuid, now, "deserialise: ${t.message}")
             return Outcome.Failure
         }
         return try {
             val resp = api.postDrive(dto)
-            dao.markAcked(row.clientDriveUuid, now, resp.tripId)
+            dao.markAcked(meta.clientDriveUuid, now, resp.tripId)
+            // Server has the data — release the on-disk copy now. The
+            // row stays around for the 24-hour audit window but won't
+            // be re-uploaded.
+            runCatching { File(path).delete() }
             logs.info(
                 "DriveUploader: upload accepted",
                 mapOf(
@@ -125,13 +158,13 @@ class DriveUploader @Inject constructor(
             Outcome.Success
         } catch (t: retrofit2.HttpException) {
             val msg = "http ${t.code()}: ${t.message()}"
-            dao.bumpAttempt(row.clientDriveUuid, now, msg)
+            dao.bumpAttempt(meta.clientDriveUuid, now, msg)
             if (t.code() in 400..499) Outcome.Failure else Outcome.Retry
         } catch (t: java.io.IOException) {
-            dao.bumpAttempt(row.clientDriveUuid, now, "io: ${t.message}")
+            dao.bumpAttempt(meta.clientDriveUuid, now, "io: ${t.message}")
             Outcome.Retry
         } catch (t: Throwable) {
-            dao.bumpAttempt(row.clientDriveUuid, now, "unexpected: ${t.message}")
+            dao.bumpAttempt(meta.clientDriveUuid, now, "unexpected: ${t.message}")
             Outcome.Retry
         }
     }
