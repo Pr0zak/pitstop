@@ -364,10 +364,13 @@ private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>) {
     }
 }
 
+// Backend serves UTC; convert to local zone before formatting (otherwise
+// a trip at 20:32Z renders as "8:32PM" instead of "3:32PM" in CDT).
 private fun formatTripDate(iso: String): String {
     return try {
-        val d = java.time.OffsetDateTime.parse(iso)
-        d.format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mma"))
+        java.time.OffsetDateTime.parse(iso)
+            .atZoneSameInstant(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mma"))
     } catch (_: Throwable) {
         iso.take(16)
     }

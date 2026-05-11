@@ -38,6 +38,7 @@ import com.pitstop.http.FillupDto
 import com.pitstop.http.TripDto
 import com.pitstop.ui.components.PitstopTopAppBar
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -279,15 +280,22 @@ private fun CenteredText(text: String) {
     }
 }
 
+// Backend serves timestamps in UTC; convert to the device's local zone
+// before formatting so a trip at 20:32Z renders as "3:32PM" in CDT, not
+// "8:32PM". Without the withZoneSameInstant() step OffsetDateTime keeps
+// its parsed offset and formats the raw UTC fields.
+private val LOCAL_ZONE: ZoneId = ZoneId.systemDefault()
+
 private fun formatTripDate(iso: String): String =
     runCatching {
-        val d = OffsetDateTime.parse(iso)
-        d.format(DateTimeFormatter.ofPattern("MMM d, h:mma"))
+        OffsetDateTime.parse(iso)
+            .atZoneSameInstant(LOCAL_ZONE)
+            .format(DateTimeFormatter.ofPattern("MMM d, h:mma"))
     }.getOrDefault(iso.take(16))
 
 private fun formatFillupDate(iso: String): String =
     runCatching {
-        // Fillups have just date+time without timezone in some payloads
-        val d = OffsetDateTime.parse(iso)
-        d.format(DateTimeFormatter.ofPattern("MMM d"))
+        OffsetDateTime.parse(iso)
+            .atZoneSameInstant(LOCAL_ZONE)
+            .format(DateTimeFormatter.ofPattern("MMM d"))
     }.getOrElse { iso.take(10) }
