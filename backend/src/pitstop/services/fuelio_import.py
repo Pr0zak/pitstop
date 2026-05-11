@@ -107,6 +107,19 @@ def _maybe_float(s: str | None) -> float | None:
         return None
 
 
+def _none_if_null_island(value: float | None, other: float | None) -> float | None:
+    """Return None when (value, other) is at "Null Island" (lat=0, lon=0).
+    Fuelio exports the sentinel for fillups with no recorded GPS; we'd
+    otherwise plot it at the equator/prime-meridian intersection off
+    the African coast on the Stations map.
+    """
+    if value is None or other is None:
+        return value
+    if abs(value) < 0.01 and abs(other) < 0.01:
+        return None
+    return value
+
+
 def _maybe_int(s: str | None) -> int | None:
     if s is None or s == "":
         return None
@@ -623,11 +636,18 @@ class FuelioImporter:
                         "L/100km",
                     )
                 ),
-                "lat": _maybe_float(
-                    _val(row, "latitude (optional)", "latitude")
+                # NULL out the "Null Island" sentinel — Fuelio exports
+                # (0, 0) when the user didn't record a location, which
+                # would otherwise plot off the African coast on the
+                # Stations map. Real driving doesn't put a station within
+                # 1 km of the equator/prime-meridian intersection.
+                "lat": _none_if_null_island(
+                    _maybe_float(_val(row, "latitude (optional)", "latitude")),
+                    _maybe_float(_val(row, "longitude (optional)", "longitude")),
                 ),
-                "lon": _maybe_float(
-                    _val(row, "longitude (optional)", "longitude")
+                "lon": _none_if_null_island(
+                    _maybe_float(_val(row, "longitude (optional)", "longitude")),
+                    _maybe_float(_val(row, "latitude (optional)", "latitude")),
                 ),
                 "city": _val(row, "City (optional)", "City") or None,
                 "station_id": station_id,

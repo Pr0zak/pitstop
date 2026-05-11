@@ -242,18 +242,29 @@ async def stations(
 
     clusters: dict[str, dict[str, Any]] = {}
     for r in rows:
+        # Drop "Null Island" — Fuelio exports sometimes carry (0, 0)
+        # for fillups where the user didn't record a location. Without
+        # this filter the cluster shows up off the African coast.
+        lat_v = r["lat"]
+        lon_v = r["lon"]
+        if (
+            lat_v is not None and lon_v is not None
+            and abs(float(lat_v)) < 0.01 and abs(float(lon_v)) < 0.01
+        ):
+            lat_v = None
+            lon_v = None
         if r["station_id"] is not None:
             key = f"sid:{r['station_id']}"
-        elif r["lat"] is not None and r["lon"] is not None:
-            key = f"ll:{round(float(r['lat']), 3)}:{round(float(r['lon']), 3)}"
+        elif lat_v is not None and lon_v is not None:
+            key = f"ll:{round(float(lat_v), 3)}:{round(float(lon_v), 3)}"
         else:
             key = "unknown"
         c = clusters.setdefault(
             key,
             {
                 "cluster_id": key,
-                "lat": float(r["lat"]) if r["lat"] is not None else None,
-                "lon": float(r["lon"]) if r["lon"] is not None else None,
+                "lat": lat_v,
+                "lon": lon_v,
                 "name": r["city"],
                 "fillup_count": 0,
                 "total_volume": 0.0,
