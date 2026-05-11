@@ -284,6 +284,49 @@ async def _derive_for_vehicle(
             return 0
 
     intervals = _build_intervals(samples)
+
+    # Self-cleanup: delete deriver trips whose started_at falls
+    # strictly inside one of the new intervals (but isn't itself an
+    # interval start). These are stale outputs from earlier deriver
+    # runs that split a single drive into multiple trips — typically
+    # caused by an idle-stop split before the engine_rpm > 0 fix.
+    # The new run merged them into one longer trip; the shorter
+    # leftover would otherwise show as a duplicate in the trips list.
+    new_starts = {iv.started_at for iv in intervals}
+    stale_purged = 0
+    for iv in intervals:
+        rows = await conn.fetch(
+            """
+            DELETE FROM trips
+             WHERE vehicle_id = $1
+               AND source = 'deriver'
+               AND started_at >  $2
+               AND ended_at   <= $3
+            RETURNING id, started_at
+            """,
+            vehicle_id, iv.started_at, iv.ended_at,
+        )
+        for r in rows:
+            if r["started_at"] in new_starts:
+                continue  # shouldn't happen given the strict > but defensive
+            stale_purged += 1
+            log.info(
+                "deriver: purged stale trip merged into longer interval",
+                extra={
+                    "vehicle_id": str(vehicle_id),
+                    "purged_id": str(r["id"]),
+                    "purged_started": r["started_at"].isoformat(),
+                    "absorbed_into_started": iv.started_at.isoformat(),
+                    "absorbed_into_ended": iv.ended_at.isoformat(),
+                },
+            )
+    if stale_purged > 0:
+        log.info(
+            "deriver: self-cleanup removed %d stale trip(s)",
+            stale_purged,
+            extra={"vehicle_id": str(vehicle_id)},
+        )
+
     touched = 0
     for iv in intervals:
         # Defense in depth — if an interval *overlaps* a phone-sourced
