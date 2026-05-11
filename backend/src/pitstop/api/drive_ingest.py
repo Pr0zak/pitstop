@@ -351,6 +351,43 @@ async def post_drive(
             body.client_drive_uuid, trip_id, body.device_id, actual,
         )
 
+        # Remove any deriver-source trips that overlap this phone-
+        # sourced window. The deriver may have already produced a trip
+        # for the same range before the phone batch arrived (deriver
+        # runs every 5 min, phone seal-then-upload can happen after).
+        # The deriver's skip-phone-sourced rule (#119) prevents NEW
+        # overlaps, but we also need to clean up STALE deriver rows
+        # that pre-date this upload.
+        # NB: we don't touch deriver trips that fall outside the
+        # phone's window — those are different physical drives the
+        # deriver split correctly (the OBD-quiet watchdog now catches
+        # parking gaps but old phone-batch trips from before v0.1.102
+        # may still merge across them).
+        wiped = await conn.fetch(
+            """
+            DELETE FROM trips
+             WHERE vehicle_id = $1
+               AND source = 'deriver'
+               AND started_at >= $2
+               AND ended_at   <= $3
+               AND id <> $4
+            RETURNING id
+            """,
+            resolved_vehicle_id,
+            body.started_at, body.ended_at,
+            trip_id,
+        )
+        if wiped:
+            log.info(
+                "drive upload: cleaned %d deriver shadow trip(s)",
+                len(wiped),
+                extra={
+                    "vehicle_id": str(resolved_vehicle_id),
+                    "client_drive_uuid": str(body.client_drive_uuid),
+                    "wiped_trip_ids": [str(r["id"]) for r in wiped],
+                },
+            )
+
     log.info(
         "drive upload accepted",
         extra={
