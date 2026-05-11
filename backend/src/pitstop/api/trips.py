@@ -253,9 +253,9 @@ async def get_trip(
                 SELECT lat, lon
                   FROM gps_points
                  WHERE vehicle_id = $1
-                   AND time BETWEEN $2 - interval '5 seconds'
-                                AND $2 + interval '5 seconds'
-                 ORDER BY abs(extract(epoch FROM (time - $2)))
+                   AND time BETWEEN $2::timestamptz - interval '5 seconds'
+                                AND $2::timestamptz + interval '5 seconds'
+                 ORDER BY abs(extract(epoch FROM (time - $2::timestamptz)))
                  LIMIT 1
                 """,
                 row["vehicle_id"], ev["t"],
