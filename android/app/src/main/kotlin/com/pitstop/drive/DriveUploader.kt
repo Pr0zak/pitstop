@@ -44,9 +44,24 @@ class DriveUploader @Inject constructor(
             )
         }
 
+        // Track rows we've already attempted in this pass — Outcome.Failure
+        // doesn't mark the row in any way visible to dao.oldestUnacked(),
+        // so without this gate we'd hot-loop forever on the same drive.
+        val seenThisPass = mutableSetOf<String>()
         var drained = 0
         while (true) {
             val row = dao.oldestUnacked() ?: break
+            if (row.clientDriveUuid in seenThisPass) {
+                logs.info(
+                    "DriveUploader: stopping pass (head row already attempted)",
+                    mapOf(
+                        "client_drive_uuid" to row.clientDriveUuid,
+                        "drained_this_pass" to drained,
+                    ),
+                )
+                break
+            }
+            seenThisPass.add(row.clientDriveUuid)
             val outcome = tryUpload(row)
             when (outcome) {
                 Outcome.Success -> drained += 1

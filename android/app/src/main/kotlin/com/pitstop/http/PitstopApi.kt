@@ -130,7 +130,7 @@ interface PitstopApi {
      * whole thing — PIDs, GPS, engine events, IMU — in one request.
      * The server keys idempotency on `client_drive_uuid`.
      */
-    @POST("ingest/drive")
+    @POST("api/ingest/drive")
     suspend fun postDrive(
         @Body body: com.pitstop.drive.DriveUploadDto,
     ): com.pitstop.drive.DriveUploadResponseDto
