@@ -562,11 +562,13 @@ interface SpeedBucket { label: string; color: string; seconds: number }
 const speedDistribution = computed<SpeedBucket[]>(() => {
   const points = routeData.value?.points;
   if (!points || points.length < 2) return [];
+  // Bucket thresholds in m/s: <1, <10, <20, ≥20.
+  // mph: <2, <22, <45, ≥45.
   const buckets: SpeedBucket[] = [
-    { label: "Stopped", color: "#ef4444", seconds: 0 },
-    { label: "City", color: "#f59e0b", seconds: 0 },
-    { label: "Suburban", color: "#22c55e", seconds: 0 },
-    { label: "Highway", color: "#2f81f7", seconds: 0 },
+    { label: "Stopped (<2 mph)",     color: "#ef4444", seconds: 0 },
+    { label: "City (2–22 mph)",      color: "#f59e0b", seconds: 0 },
+    { label: "Suburban (22–45 mph)", color: "#22c55e", seconds: 0 },
+    { label: "Highway (>45 mph)",    color: "#2f81f7", seconds: 0 },
   ];
   for (let i = 1; i < points.length; i++) {
     const dt = (Date.parse(points[i].t) - Date.parse(points[i - 1].t)) / 1000;
@@ -723,9 +725,9 @@ const summarySentence = computed<string>(() => {
   // 3) Speed split. Use bucket distribution if it produced totals.
   if (speedTotalSeconds.value > 0) {
     const total = speedTotalSeconds.value;
-    const hwy = speedDistribution.value.find((b) => b.label === "Highway");
-    const sub = speedDistribution.value.find((b) => b.label === "Suburban");
-    const city = speedDistribution.value.find((b) => b.label === "City");
+    const hwy = speedDistribution.value.find((b) => b.label.startsWith("Highway"));
+    const sub = speedDistribution.value.find((b) => b.label.startsWith("Suburban"));
+    const city = speedDistribution.value.find((b) => b.label.startsWith("City"));
     const hwyPct = hwy ? Math.round((hwy.seconds / total) * 100) : 0;
     const subPct = sub ? Math.round((sub.seconds / total) * 100) : 0;
     const cityPct = city ? Math.round((city.seconds / total) * 100) : 0;

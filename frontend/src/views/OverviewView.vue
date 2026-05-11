@@ -52,6 +52,27 @@ const mpgTrendQ = useAsync(
   [vehicleId],
 );
 
+// Long-range MPG trend (yearly buckets) for the MPG-trend hero card.
+const mpgAllQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.mpgTrend(vehicleId.value, "all")
+      : Promise.resolve({ points: [] }),
+  [vehicleId],
+);
+
+// Odometer history for the Odo hero sparkline.
+const odoHistoryQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.getOdometerHistory(vehicleId.value, "all")
+      : Promise.resolve({
+          points: [] as api.OdometerHistoryPoint[],
+          summary: { window: "all", n_points: 0 } as api.OdometerHistorySummary,
+        }),
+  [vehicleId],
+);
+
 // EIA weekly retail-gasoline averages — feeds the "vs region avg"
 // sub-line on the Gas price hero. Region is hard-coded to "midwest"
 // for the user's KC-area driving; future iteration could pick
@@ -218,6 +239,73 @@ function num(key: string): number | null {
   }
   return null;
 }
+
+// Build a normalised SVG path "M0,y0 L1,y1 …" from an array of
+// numbers, mapped into a 0–100 × 0–30 viewBox so the same SVG
+// renders cleanly at any tile width. Returns null when not enough
+// data to draw a line.
+function sparkPath(values: (number | null)[]): string | null {
+  const xs: { i: number; v: number }[] = [];
+  values.forEach((v, i) => { if (v != null && Number.isFinite(v)) xs.push({ i, v }); });
+  if (xs.length < 2) return null;
+  const min = Math.min(...xs.map((p) => p.v));
+  const max = Math.max(...xs.map((p) => p.v));
+  const range = max - min || 1;
+  const stepX = 100 / (values.length - 1 || 1);
+  return xs.map((p, k) => {
+    const x = (p.i * stepX).toFixed(2);
+    const y = (30 - ((p.v - min) / range) * 28 - 1).toFixed(2);
+    return (k === 0 ? "M" : "L") + x + "," + y;
+  }).join(" ");
+}
+
+// MPG long-range trend for the hero card. Pulls from mpgAllQ
+// (yearly buckets) and exposes latest, prior, delta-vs-prior, and
+// a sparkline path of the per-year averages.
+interface MpgTrendHero {
+  latest: number | null;
+  prior: number | null;
+  deltaPct: number | null;
+  spark: string | null;
+}
+const mpgTrendHero = computed<MpgTrendHero>(() => {
+  const pts = (mpgAllQ.data.value?.points ?? []).filter((p) => p.mpg != null);
+  if (pts.length === 0) {
+    return { latest: null, prior: null, deltaPct: null, spark: null };
+  }
+  const latest = pts[pts.length - 1].mpg!;
+  const prior = pts.length >= 2 ? pts[pts.length - 2].mpg! : null;
+  const deltaPct = prior != null && prior > 0
+    ? ((latest - prior) / prior) * 100
+    : null;
+  return {
+    latest,
+    prior,
+    deltaPct,
+    spark: sparkPath(pts.map((p) => p.mpg)),
+  };
+});
+
+// Odometer hero: current mi + lifetime delta + sparkline of
+// cumulative miles over time.
+interface OdoHero {
+  currentMi: number | null;
+  deltaMi: number | null;
+  milesPerDay: number | null;
+  spark: string | null;
+}
+const odoHero = computed<OdoHero>(() => {
+  const summary = odoHistoryQ.data.value?.summary;
+  const pts = odoHistoryQ.data.value?.points ?? [];
+  return {
+    currentMi: summary?.current_mi ?? null,
+    deltaMi: summary?.delta_mi ?? null,
+    milesPerDay: summary?.miles_per_day ?? null,
+    spark: pts.length >= 2
+      ? sparkPath(pts.map((p) => (p.odo_km != null ? p.odo_km * 0.621371 : null)))
+      : null,
+  };
+});
 
 // Anomaly card (Task #86). Fetches on vehicle change. The single
 // surfaced item is filtered through a localStorage dismiss list
@@ -420,6 +508,73 @@ function dismissAnomaly(fingerprint: string) {
           <div class="hero-sub muted">
             last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups
           </div>
+        </div>
+
+        <!-- MPG trend over the full history (yearly buckets). -->
+        <div v-if="mpgTrendHero.latest != null" class="card hero">
+          <h3>MPG trend</h3>
+          <div class="hero-value">
+            <span class="big">{{ mpgTrendHero.latest!.toFixed(1) }}</span>
+            <span class="unit">mpg</span>
+          </div>
+          <div
+            v-if="mpgTrendHero.deltaPct != null"
+            class="hero-sub"
+            :class="{ up: mpgTrendHero.deltaPct < 0, down: mpgTrendHero.deltaPct > 0 }"
+          >
+            <span>{{ mpgTrendHero.deltaPct > 0 ? '▲' : mpgTrendHero.deltaPct < 0 ? '▼' : '·' }}</span>
+            {{ Math.abs(mpgTrendHero.deltaPct).toFixed(1) }}% vs prior year
+          </div>
+          <div v-else class="hero-sub muted">yearly average</div>
+          <svg
+            v-if="mpgTrendHero.spark"
+            class="hero-spark"
+            viewBox="0 0 100 30"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path :d="mpgTrendHero.spark" stroke="#2f81f7" stroke-width="1.4" fill="none" />
+          </svg>
+        </div>
+
+        <!-- Lifetime fuel spend from the COO endpoint. -->
+        <div v-if="cooQ.data.value && cooQ.data.value.fuel_total > 0" class="card hero">
+          <h3>Fuel cost</h3>
+          <div class="hero-value">
+            <span class="big">${{ Math.round(cooQ.data.value.fuel_total).toLocaleString() }}</span>
+          </div>
+          <div class="hero-sub muted">
+            lifetime
+            <span v-if="heroData.totalGallons != null">
+              · ${{
+                (cooQ.data.value.fuel_total / Math.max(1, heroData.totalGallons)).toFixed(2)
+              }}/gal avg
+            </span>
+          </div>
+        </div>
+
+        <!-- Odometer history sparkline. -->
+        <div v-if="odoHero.currentMi != null" class="card hero">
+          <h3>Odometer</h3>
+          <div class="hero-value">
+            <span class="big">{{ Math.round(odoHero.currentMi).toLocaleString() }}</span>
+            <span class="unit">mi</span>
+          </div>
+          <div v-if="odoHero.deltaMi != null" class="hero-sub muted">
+            +{{ Math.round(odoHero.deltaMi).toLocaleString() }} mi
+            <span v-if="odoHero.milesPerDay != null">
+              · {{ odoHero.milesPerDay.toFixed(1) }}/day
+            </span>
+          </div>
+          <svg
+            v-if="odoHero.spark"
+            class="hero-spark"
+            viewBox="0 0 100 30"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path :d="odoHero.spark" stroke="#3fb950" stroke-width="1.4" fill="none" />
+          </svg>
         </div>
         <!--
           Engine hours (Task #96). Total engine-on hours + the
@@ -630,6 +785,13 @@ function dismissAnomaly(fingerprint: string) {
 }
 .hero-sub.down {
   color: var(--c-success);
+}
+.hero-spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+  margin-top: 0.4rem;
+  opacity: 0.75;
 }
 .brand-tape {
   position: relative;

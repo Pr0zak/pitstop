@@ -102,7 +102,7 @@ function applyRoute() {
       source: "trip-route",
       paint: {
         "line-color": ["get", "color"],
-        "line-width": 3,
+        "line-width": 5,
       },
     });
   } else {
