@@ -112,6 +112,17 @@ async def _activity_samples(
     """
     rows = await conn.fetch(
         """
+        -- Engine running at idle (RPM > 0) counts as activity. Without
+        -- this, a 5+ min idle stop (sitting in a parking lot with the
+        -- engine on) gets treated as no-activity → MERGE_GAP_S split,
+        -- producing two trips where there's actually one. RPM is the
+        -- direct truth: zero means engine off, anything else means
+        -- engine running.
+        SELECT time, 'activity' AS kind FROM pid_readings
+         WHERE vehicle_id = $1 AND time >= $2
+           AND metric = 'engine_rpm' AND value_num IS NOT NULL
+           AND value_num > 0
+        UNION ALL
         SELECT time, 'activity' AS kind FROM pid_readings
          WHERE vehicle_id = $1 AND time >= $2
            AND metric = 'vehicle_speed' AND value_num IS NOT NULL

@@ -175,6 +175,21 @@ const TRIP_SERIES: TripSeries[] = [
 // than fetched from pid_readings.
 const DERIVED_METRICS = new Set(["acceleration"]);
 
+// Set of metric names that actually have at least one non-null
+// sample in THIS trip. Powers the chip-dimming so the user can
+// tell at a glance which toggles are useful — flipping on a
+// metric the WiCAN profile doesn't poll just shows an empty line.
+const metricsWithData = computed<Set<string>>(() => {
+  const out = new Set<string>();
+  const samples = trip.value?.samples ?? [];
+  for (const s of samples as Array<{ metric?: string; value_num?: number | null }>) {
+    if (s.metric && s.value_num != null) out.add(s.metric);
+  }
+  // Derived metrics have data if their inputs do.
+  if (out.has("vehicle_speed")) out.add("acceleration");
+  return out;
+});
+
 // Persisted visibility selection — survives reload + revisit.
 const SERIES_VIS_KEY = "pitstop_trip_series_visible";
 function loadSeriesVis(): Record<string, boolean> {
@@ -736,8 +751,12 @@ async function saveMeta() {
                 v-for="s in TRIP_SERIES"
                 :key="s.metric"
                 class="chip"
-                :class="{ active: seriesVisible[s.metric] }"
+                :class="{
+                  active: seriesVisible[s.metric],
+                  empty: !metricsWithData.has(s.metric),
+                }"
                 :style="seriesVisible[s.metric] ? { borderColor: s.stroke, color: s.stroke } : {}"
+                :title="metricsWithData.has(s.metric) ? '' : 'No data for this trip'"
                 type="button"
                 @click="seriesVisible[s.metric] = !seriesVisible[s.metric]"
               >{{ s.label.replace(/ \(.*\)/, '') }}</button>
@@ -1256,6 +1275,13 @@ async function saveMeta() {
   flex-wrap: wrap;
   gap: 0.4rem;
   margin: 0.4rem 0 0.6rem 0;
+}
+.series-chips .chip.empty {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.series-chips .chip.empty:hover {
+  opacity: 0.45;
 }
 .series-chips .chip {
   padding: 0.28rem 0.6rem;
