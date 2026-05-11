@@ -362,10 +362,61 @@ const chart = computed<ChartData>(() => {
       })),
     ],
     axes,
-    ...(markerPlugin ? { plugins: [markerPlugin] } : {}),
+    ...(markerPlugin || cursorMapSyncPlugin ? {
+      plugins: [
+        ...(markerPlugin ? [markerPlugin] : []),
+        cursorMapSyncPlugin,
+      ],
+    } : {}),
   };
   return { aligned, opts };
 });
+
+// Hover marker for chart ↔ map sync. The cursor plugin below
+// updates this on every uPlot setCursor; MapLibreMap watches it
+// and renders a distinct marker at the matching GPS position.
+const hoverGps = ref<{ lat: number; lon: number } | null>(null);
+
+// uPlot plugin: on every cursor move, find the nearest GPS point
+// by time and update hoverGps. The map's prop watcher then moves
+// the marker. Throttled by uPlot's natural mousemove rate.
+const cursorMapSyncPlugin: uPlot.Plugin = {
+  hooks: {
+    setCursor: (u) => {
+      const idx = u.cursor.idx;
+      if (idx == null) {
+        hoverGps.value = null;
+        return;
+      }
+      const ts = (u.data[0] as number[] | undefined)?.[idx];
+      if (ts == null) {
+        hoverGps.value = null;
+        return;
+      }
+      const points = routeData.value?.points;
+      if (!points || points.length === 0) {
+        hoverGps.value = null;
+        return;
+      }
+      // Binary search would be O(log n) but points are sorted and
+      // capped at a few thousand — linear scan is fast enough and
+      // simpler. Tolerance: within ±15s counts as "on the route".
+      let best: typeof points[number] | null = null;
+      let bestDelta = Infinity;
+      for (const p of points) {
+        const ptTs = Math.round((Date.parse(p.t) || 0) / 1000);
+        const d = Math.abs(ptTs - ts);
+        if (d < bestDelta) {
+          bestDelta = d;
+          best = p;
+        }
+      }
+      hoverGps.value = best && bestDelta < 15
+        ? { lat: best.lat, lon: best.lon }
+        : null;
+    },
+  },
+};
 
 const odoDelta = computed<number | null>(() => {
   const t = trip.value;
@@ -785,6 +836,7 @@ async function saveMeta() {
                 :route-segments="routeSegments.length ? routeSegments : undefined"
                 :route="routeSegments.length ? undefined : route2D"
                 :markers="imuMapMarkers"
+                :hover-marker="hoverGps"
                 :height="360"
               />
               <div v-if="routeSegments.length" class="speed-legend">

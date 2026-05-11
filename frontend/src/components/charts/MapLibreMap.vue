@@ -12,6 +12,10 @@ interface Props {
   // 2+-point LineString with a CSS color string. Used by TripDetail's
   // speed-colored polyline.
   routeSegments?: { coords: [number, number][]; color: string }[];
+  // Optional: a single position to spotlight on the route. Used by
+  // TripDetail to sync the chart cursor with the map — hovering a
+  // point on the timeline pulses a marker at the matching GPS fix.
+  hoverMarker?: { lat: number; lon: number } | null;
   height?: number;
   initialCenter?: [number, number]; // [lng, lat]
   initialZoom?: number;
@@ -24,6 +28,7 @@ const emit = defineEmits<{
 const root = ref<HTMLDivElement | null>(null);
 let map: maplibregl.Map | null = null;
 let markerInstances: maplibregl.Marker[] = [];
+let hoverMarkerInstance: maplibregl.Marker | null = null;
 
 const OSM_STYLE = {
   version: 8,
@@ -107,6 +112,27 @@ function applyRoute() {
   fitBounds();
 }
 
+function applyHoverMarker() {
+  if (!map) return;
+  const pos = props.hoverMarker;
+  if (!pos) {
+    if (hoverMarkerInstance) {
+      hoverMarkerInstance.remove();
+      hoverMarkerInstance = null;
+    }
+    return;
+  }
+  if (hoverMarkerInstance) {
+    hoverMarkerInstance.setLngLat([pos.lon, pos.lat]);
+    return;
+  }
+  const el = document.createElement("div");
+  el.className = "ps-hover-marker";
+  hoverMarkerInstance = new maplibregl.Marker({ element: el })
+    .setLngLat([pos.lon, pos.lat])
+    .addTo(map);
+}
+
 function fitBounds() {
   if (!map) return;
   const points: [number, number][] = [];
@@ -143,6 +169,7 @@ onMounted(() => {
     // ever rendered until the user re-triggered the watcher.
     applyRoute();
     applyMarkers();
+    applyHoverMarker();
   });
 });
 
@@ -165,6 +192,13 @@ watch(
   },
   { deep: true },
 );
+watch(
+  () => props.hoverMarker,
+  () => {
+    if (map?.loaded()) applyHoverMarker();
+  },
+  { deep: true },
+);
 // Re-center when the caller changes initialCenter mid-flight (e.g.
 // "Use current location" toggle on the stations map). Only flies if
 // markers don't drive the bounds-fit anyway — we still prefer
@@ -181,6 +215,10 @@ watch(
 
 onBeforeUnmount(() => {
   clearMarkers();
+  if (hoverMarkerInstance) {
+    hoverMarkerInstance.remove();
+    hoverMarkerInstance = null;
+  }
   if (map) {
     map.remove();
     map = null;
@@ -213,6 +251,15 @@ onBeforeUnmount(() => {
 }
 .ps-marker:hover {
   transform: scale(1.2);
+}
+.ps-hover-marker {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 2px #f59e0b, 0 0 12px rgba(245, 158, 11, 0.8);
+  pointer-events: none;
 }
 .maplibregl-popup-content {
   background: var(--c-surface) !important;
