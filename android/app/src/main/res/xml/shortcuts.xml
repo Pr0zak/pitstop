@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Static launcher shortcut (#121).
+
+  - "add_fillup" routes to MainActivity with ACTION_ADD_FILLUP so the
+    pager opens on the Fuel tab. The activity already has the deep-link
+    plumbing for this action (see MainActivity.onCreate / onNewIntent).
+  - shortcutShortLabel is what shows on the home screen tile when the
+    user drags the shortcut out; shortcutLongLabel is what shows in the
+    long-press menu over the app icon.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="add_fillup"
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_add_fillup"
+        android:shortcutShortLabel="@string/shortcut_add_fillup_short"
+        android:shortcutLongLabel="@string/shortcut_add_fillup_long"
+        android:shortcutDisabledMessage="@string/shortcut_add_fillup_disabled">
+        <intent
+            android:action="com.pitstop.action.ADD_FILLUP"
+            android:targetPackage="com.pitstop"
+            android:targetClass="com.pitstop.MainActivity" />
+    </shortcut>
+</shortcuts>

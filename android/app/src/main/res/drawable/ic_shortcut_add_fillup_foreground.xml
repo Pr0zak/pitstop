@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Foreground of the Add-Fillup launcher shortcut adaptive icon (#121).
+
+  180° fuel-gauge dome: semicircle arc opening downward, with a red
+  "low-fuel" zone at the E end, a white needle pointing into that
+  zone (visual prompt — time to fill up), small E and F labels at
+  the endpoints, and a brand-accent hub. Deliberately distinct from
+  the launcher's 270° tachometer sweep so the shortcut reads as a
+  different tool at a glance.
+
+  Source viewport 64x64. Content bbox x[10, 54], y[14, 50] —
+  width 44, height 36, centre (32, 32). The group transform places
+  the bbox centre at the 108 dp canvas centre (54, 54) and scales
+  the content to fill the 66 dp safe-zone width:
+
+      translate_x = 54 - 32 * 1.5 = 6
+      translate_y = 54 - 32 * 1.5 = 6
+
+  All angles below are SVG screen-space (measured clockwise from
+  +X axis; +Y is down). E is at 180°, top of dome at 270°, F at 0°.
+  Needle sits at 205° — a touch past E, into the red zone.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:translateX="6"
+        android:translateY="6"
+        android:scaleX="1.5"
+        android:scaleY="1.5">
+
+        <!-- Dome arc: E (180°) over the top (270°) to F (0°) -->
+        <path
+            android:strokeColor="#E7E9EE"
+            android:strokeAlpha="0.92"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="butt"
+            android:fillColor="#00000000"
+            android:pathData="M 10 36 A 22 22 0 0 1 54 36" />
+
+        <!-- Red low-fuel zone: 180° to 225° (~1/4 of the sweep) -->
+        <path
+            android:strokeColor="#FF5B3A"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M 10 36 A 22 22 0 0 1 16.44 20.44" />
+
+        <!--
+          Triangular needle from hub (32, 36) to tip at 205° on a
+          radius-18 circle. The tip lands inside the red zone, so
+          the icon reads as "low fuel" at a glance.
+              tip_x = 32 + 18 * cos(205°) ≈ 15.69
+              tip_y = 36 + 18 * sin(205°) ≈ 28.39
+          Base width 3 (half-width 1.5) perpendicular to the needle
+          axis.
+        -->
+        <path
+            android:fillColor="#E7E9EE"
+            android:pathData="M 15.69 28.39 L 31.37 37.36 L 32.63 34.64 Z" />
+
+        <!-- Hub dot, brand accent -->
+        <path
+            android:fillColor="#FF5B3A"
+            android:pathData="M 32 36 m -2.6 0 a 2.6 2.6 0 1 0 5.2 0 a 2.6 2.6 0 1 0 -5.2 0 z" />
+
+        <!--
+          "E" label at the bottom-left: vertical bar plus three
+          horizontal arms. Stroke 1.6 keeps the letterform crisp
+          at launcher render sizes (the safe-zone scale + Pixel
+          downsample puts each stroke at ~1 device-px).
+        -->
+        <path
+            android:strokeColor="#E7E9EE"
+            android:strokeWidth="1.6"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M 10 40 L 10 50 M 10 40 L 14 40 M 10 45 L 13 45 M 10 50 L 14 50" />
+
+        <!-- "F" label at the bottom-right: vertical bar + 2 arms -->
+        <path
+            android:strokeColor="#E7E9EE"
+            android:strokeWidth="1.6"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M 50 40 L 50 50 M 50 40 L 54 40 M 50 45 L 53 45" />
+    </group>
+</vector>

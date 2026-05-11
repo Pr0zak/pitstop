@@ -82,6 +82,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Static launcher shortcut (#121): long-press the app
+                 icon to get "Add fillup", or drag it to the home
+                 screen as a single-cell shortcut. The shortcut's
+                 intent action is read in MainActivity.onCreate /
+                 onNewIntent to land on the Fuel tab. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <service
@@ -143,23 +151,6 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
-
-        <!-- 1x1 home-screen widget that taps through to the Fuel
-             tab to log a new fillup (#121). Exported=true is
-             required for AppWidgetProvider so the launcher can
-             instantiate it; the click intent goes back to our
-             own MainActivity via the ACTION_ADD_FILLUP action. -->
-        <receiver
-            android:name=".widget.AddFillupWidget"
-            android:exported="true"
-            android:label="@string/widget_add_fillup_label">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/widget_add_fillup_info" />
-        </receiver>
 
     </application>
 

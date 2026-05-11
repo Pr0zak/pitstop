@@ -60,9 +60,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // The Add-Fillup widget (#121) launches us with this action so
-        // we land directly on the Fuel tab. Other launch paths (icon
-        // tap, recents, deep link) get the default Home tab.
+        // The Add-Fillup launcher shortcut (#121) — long-press the app
+        // icon or use a home-screen shortcut — fires this action so we
+        // land directly on the Fuel tab. Other launch paths (icon tap,
+        // recents) get the default Home tab.
         val initialTab = if (intent?.action == ACTION_ADD_FILLUP) 3 else 0
         setContent {
             PitstopTheme {
@@ -79,7 +80,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Single-task launchMode means a widget tap on an already-
+    /** Single-task launchMode means a shortcut tap on an already-
      *  running app reuses this instance — we get the new intent
      *  here. Surface it to the composable so the pager scrolls. */
     override fun onNewIntent(intent: Intent) {
@@ -117,7 +118,7 @@ private fun PitstopRoot(
     val pagerState = rememberPagerState(initialPage = initialTab) { tabDestinations.size }
     val scope = rememberCoroutineScope()
 
-    // Route an onNewIntent deep link (widget tap on already-running
+    // Route an onNewIntent deep link (shortcut tap on already-running
     // app) to the right pager page. Clears the pending value so a
     // recompose doesn't repeat the scroll.
     val pendingTab = pendingTabFlow?.collectAsStateWithLifecycle()
