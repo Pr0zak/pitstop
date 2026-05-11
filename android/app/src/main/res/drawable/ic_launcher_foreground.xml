@@ -9,25 +9,24 @@
   visual bounding box in source coords is x [8, 56], y [9, 50] —
   width 48, height 41, center (32, 29.5).
 
-  Scale = 1.25, bbox-centered.
+  Scale = 1.35 with a 1.18 dp upward optical shift.
 
-  Filling the 66 dp safe-zone WIDTH (scale 1.375) makes the bbox
-  corners stick out past the inscribed safe-zone circle — the arc
-  endpoints at (15.03, 50) and (48.97, 50) are 26.61 source-units
-  from the bbox centre, which at scale 1.375 lands ~36.6 dp from
-  the canvas centre, past the 33 dp inscribed circle. The Pixel
-  mask is roughly that circle, so the bottom-left tick and the
-  redline corner read as clipped → the mark looks "off".
+  The Pixel launcher's circle mask has radius ~36 dp around the canvas
+  centre (72 dp visible diameter). The mark's extreme corners — the
+  cool-body arc start (15.03, 50) and the redline corner symmetric to
+  it — sit 26.61 source-units from the bbox centre. At scale 1.35
+  that's 26.61 × 1.35 = 35.92 dp from canvas centre, which just fits
+  inside the mask with ~0.1 dp margin. Larger scale starts clipping;
+  smaller looks "not cinched" against the visible circle edge.
 
-  Scale 1.25 keeps every corner inside the circle:
-      26.61 * 1.25 = 33.26 ≈ inscribed-circle radius
+  Translate is nudged 1.18 dp above bbox-centred so the painted ink —
+  concentrated in the upper half of the bbox because the U-shape
+  opens downward — sits closer to the visible circle centre instead
+  of leaving the mark reading as low/down inside the mask.
 
-  The 57.6 dp visible width gives ~4 dp breathing room on each
-  side, which removes the visual bias the previous over-scaled
-  version had.
-
-      translate_x = 54 - 32 * 1.25 = 14
-      translate_y = 54 - 29.5 * 1.25 = 17.125
+      translate_x = 54 - 32 * 1.35 = 10.8
+      translate_y_bbox = 54 - 29.5 * 1.35 = 14.175
+      translate_y      = 13.0  (= bbox_centred - 1.18 dp up)
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -36,10 +35,10 @@
     android:viewportHeight="108">
 
     <group
-        android:translateX="14"
-        android:translateY="17.125"
-        android:scaleX="1.25"
-        android:scaleY="1.25">
+        android:translateX="10.8"
+        android:translateY="13.0"
+        android:scaleX="1.35"
+        android:scaleY="1.35">
 
         <!-- Cool body arc: -135 deg to +95 deg, ink-on-bg -->
         <path

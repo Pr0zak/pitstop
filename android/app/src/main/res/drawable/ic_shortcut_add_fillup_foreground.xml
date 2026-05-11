@@ -7,21 +7,23 @@
   zone, small E and F labels TUCKED INSIDE the bbox so they survive
   the launcher's circular mask, and a brand-accent hub.
 
-  Layout note: previous version put E at source x=10 and F at x=54
-  (flush with the arc endpoints). At scale 1.5 the outer corners
-  (10, 50) and (54, 50) landed ~33.4 dp from the canvas centre —
-  outside the inscribed safe-zone circle (r=33) — so Pixel's mask
-  clipped them and the letters disappeared. Pulling the labels to
-  x[14, 18] (E) and x[46, 50] (F) drops the outer-corner radius to
-  25.46 source-units, which lets scale 1.29 fit everything inside
-  the inscribed circle:
-      25.46 * 1.29 = 32.84 ≈ inscribed-circle radius (33)
+  Layout note: E is at source x[14, 18] and F at x[46, 50] (both
+  pulled inward from the arc endpoints so the letterforms survive
+  the launcher's circular mask). The binding constraint is E's
+  bottom-left corner (14, 50) at radius 25.46 source-units from the
+  bbox centre. The Pixel launcher's mask radius is ~36 dp around
+  the canvas centre, so scale 1.4 just fits:
+      25.46 × 1.4 = 35.64 dp ≈ mask radius
 
   Source viewport 64x64, content bbox x[10, 54], y[14, 50], centre
-  (32, 32). Group transform places that centre at the canvas centre
-  (54, 54):
-      translate_x = 54 - 32 * 1.29 = 12.72
-      translate_y = 54 - 32 * 1.29 = 12.72
+  (32, 32). Group transform places the bbox centre near the canvas
+  centre, with a 2.2 dp upward optical shift so the dome's painted
+  mass (concentrated in the upper half) doesn't read as set-down
+  inside the visible circle:
+
+      translate_x = 54 - 32 * 1.4 = 9.2
+      translate_y_bbox = 54 - 32 * 1.4 = 9.2
+      translate_y      = 7.0  (= bbox_centred - 2.2 dp up)
 
   Angles below are SVG screen-space (CW from +X axis, +Y down). E
   is at 180°, top of dome at 270°, F at 0°. Needle sits at 205° —
@@ -34,10 +36,10 @@
     android:viewportHeight="108">
 
     <group
-        android:translateX="12.72"
-        android:translateY="12.72"
-        android:scaleX="1.29"
-        android:scaleY="1.29">
+        android:translateX="9.2"
+        android:translateY="7.0"
+        android:scaleX="1.4"
+        android:scaleY="1.4">
 
         <!-- Dome arc: E (180°) over the top (270°) to F (0°) -->
         <path
