@@ -4,22 +4,28 @@
 
   180° fuel-gauge dome: semicircle arc opening downward, with a red
   "low-fuel" zone at the E end, a white needle pointing into that
-  zone (visual prompt — time to fill up), small E and F labels at
-  the endpoints, and a brand-accent hub. Deliberately distinct from
-  the launcher's 270° tachometer sweep so the shortcut reads as a
-  different tool at a glance.
+  zone, small E and F labels TUCKED INSIDE the bbox so they survive
+  the launcher's circular mask, and a brand-accent hub.
 
-  Source viewport 64x64. Content bbox x[10, 54], y[14, 50] —
-  width 44, height 36, centre (32, 32). The group transform places
-  the bbox centre at the 108 dp canvas centre (54, 54) and scales
-  the content to fill the 66 dp safe-zone width:
+  Layout note: previous version put E at source x=10 and F at x=54
+  (flush with the arc endpoints). At scale 1.5 the outer corners
+  (10, 50) and (54, 50) landed ~33.4 dp from the canvas centre —
+  outside the inscribed safe-zone circle (r=33) — so Pixel's mask
+  clipped them and the letters disappeared. Pulling the labels to
+  x[14, 18] (E) and x[46, 50] (F) drops the outer-corner radius to
+  25.46 source-units, which lets scale 1.29 fit everything inside
+  the inscribed circle:
+      25.46 * 1.29 = 32.84 ≈ inscribed-circle radius (33)
 
-      translate_x = 54 - 32 * 1.5 = 6
-      translate_y = 54 - 32 * 1.5 = 6
+  Source viewport 64x64, content bbox x[10, 54], y[14, 50], centre
+  (32, 32). Group transform places that centre at the canvas centre
+  (54, 54):
+      translate_x = 54 - 32 * 1.29 = 12.72
+      translate_y = 54 - 32 * 1.29 = 12.72
 
-  All angles below are SVG screen-space (measured clockwise from
-  +X axis; +Y is down). E is at 180°, top of dome at 270°, F at 0°.
-  Needle sits at 205° — a touch past E, into the red zone.
+  Angles below are SVG screen-space (CW from +X axis, +Y down). E
+  is at 180°, top of dome at 270°, F at 0°. Needle sits at 205° —
+  just past E, into the red zone.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -28,10 +34,10 @@
     android:viewportHeight="108">
 
     <group
-        android:translateX="6"
-        android:translateY="6"
-        android:scaleX="1.5"
-        android:scaleY="1.5">
+        android:translateX="12.72"
+        android:translateY="12.72"
+        android:scaleX="1.29"
+        android:scaleY="1.29">
 
         <!-- Dome arc: E (180°) over the top (270°) to F (0°) -->
         <path
@@ -51,13 +57,11 @@
             android:pathData="M 10 36 A 22 22 0 0 1 16.44 20.44" />
 
         <!--
-          Triangular needle from hub (32, 36) to tip at 205° on a
-          radius-18 circle. The tip lands inside the red zone, so
-          the icon reads as "low fuel" at a glance.
+          Triangular needle from hub (32, 36) to a tip at 205° on
+          a radius-18 circle, landing inside the red zone:
               tip_x = 32 + 18 * cos(205°) ≈ 15.69
               tip_y = 36 + 18 * sin(205°) ≈ 28.39
-          Base width 3 (half-width 1.5) perpendicular to the needle
-          axis.
+          Half-width 1.5 perpendicular to the needle axis.
         -->
         <path
             android:fillColor="#E7E9EE"
@@ -69,24 +73,24 @@
             android:pathData="M 32 36 m -2.6 0 a 2.6 2.6 0 1 0 5.2 0 a 2.6 2.6 0 1 0 -5.2 0 z" />
 
         <!--
-          "E" label at the bottom-left: vertical bar plus three
-          horizontal arms. Stroke 1.6 keeps the letterform crisp
-          at launcher render sizes (the safe-zone scale + Pixel
-          downsample puts each stroke at ~1 device-px).
+          "E" label tucked inside the bbox left of the gauge centre.
+          Vertical bar + three arms; 10 dp tall in source so the
+          letterform survives the launcher downsample at typical
+          home-screen sizes.
         -->
         <path
             android:strokeColor="#E7E9EE"
-            android:strokeWidth="1.6"
+            android:strokeWidth="1.8"
             android:strokeLineCap="round"
             android:fillColor="#00000000"
-            android:pathData="M 10 40 L 10 50 M 10 40 L 14 40 M 10 45 L 13 45 M 10 50 L 14 50" />
+            android:pathData="M 14 40 L 14 50 M 14 40 L 18 40 M 14 45 L 17 45 M 14 50 L 18 50" />
 
-        <!-- "F" label at the bottom-right: vertical bar + 2 arms -->
+        <!-- "F" label, mirror of E without the bottom arm -->
         <path
             android:strokeColor="#E7E9EE"
-            android:strokeWidth="1.6"
+            android:strokeWidth="1.8"
             android:strokeLineCap="round"
             android:fillColor="#00000000"
-            android:pathData="M 50 40 L 50 50 M 50 40 L 54 40 M 50 45 L 53 45" />
+            android:pathData="M 46 40 L 46 50 M 46 40 L 50 40 M 46 45 L 49 45" />
     </group>
 </vector>

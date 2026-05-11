@@ -9,20 +9,25 @@
   visual bounding box in source coords is x [8, 56], y [9, 50] —
   width 48, height 41, center (32, 29.5).
 
-  Scale = 1.375 makes the mark width 48 * 1.375 = 66 — exactly the
-  66 dp safe-zone width. The bbox is centered: translate puts (32,
-  29.5) at the canvas center (54, 54). Margins inside the 66 dp
-  safe-zone circle are perfectly symmetric.
+  Scale = 1.25, bbox-centered.
 
-  Prior attempts that shifted ±3 px for "U-shape optical centering"
-  read as obviously off-balance on a real device — visible bias
-  toward whichever side the shift went. True bbox-centered is the
-  right call here; the U-shape's open bottom just means the icon
-  has more empty space at the bottom of the mark, not that the
-  mark should be repositioned.
+  Filling the 66 dp safe-zone WIDTH (scale 1.375) makes the bbox
+  corners stick out past the inscribed safe-zone circle — the arc
+  endpoints at (15.03, 50) and (48.97, 50) are 26.61 source-units
+  from the bbox centre, which at scale 1.375 lands ~36.6 dp from
+  the canvas centre, past the 33 dp inscribed circle. The Pixel
+  mask is roughly that circle, so the bottom-left tick and the
+  redline corner read as clipped → the mark looks "off".
 
-      translate_x = 54 - 32 * 1.375 = 10
-      translate_y = 54 - 29.5 * 1.375 = 13.44
+  Scale 1.25 keeps every corner inside the circle:
+      26.61 * 1.25 = 33.26 ≈ inscribed-circle radius
+
+  The 57.6 dp visible width gives ~4 dp breathing room on each
+  side, which removes the visual bias the previous over-scaled
+  version had.
+
+      translate_x = 54 - 32 * 1.25 = 14
+      translate_y = 54 - 29.5 * 1.25 = 17.125
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -31,10 +36,10 @@
     android:viewportHeight="108">
 
     <group
-        android:translateX="10"
-        android:translateY="13.44"
-        android:scaleX="1.375"
-        android:scaleY="1.375">
+        android:translateX="14"
+        android:translateY="17.125"
+        android:scaleX="1.25"
+        android:scaleY="1.25">
 
         <!-- Cool body arc: -135 deg to +95 deg, ink-on-bg -->
         <path
