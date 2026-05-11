@@ -204,6 +204,38 @@ watch(seriesVisible, (v) => {
   try { localStorage.setItem(SERIES_VIS_KEY, JSON.stringify(v)); } catch { /* ignore */ }
 }, { deep: true });
 
+// Median-filter slow-changing noisy metrics for display so the
+// timeline matches what the dashboard gauge does (heavy damping).
+// Currently just fuel_level — raw OBD reads the unsmoothed tank
+// float position, which can swing ±20% in seconds during sloshing.
+// Default ON; user can toggle to see the raw signal.
+const SMOOTHED_METRICS = new Set(["fuel_level"]);
+const SMOOTH_KEY = "pitstop_trip_smooth";
+const smoothingEnabled = ref<boolean>(localStorage.getItem(SMOOTH_KEY) !== "false");
+watch(smoothingEnabled, (v) => {
+  try { localStorage.setItem(SMOOTH_KEY, String(v)); } catch { /* ignore */ }
+});
+
+/** Rolling median with a centered window of size `windowSize`. Null
+ *  values are excluded from the window; if all values in the window
+ *  are null, output is null. Window must be odd; 5 = ~1 minute of
+ *  smoothing at fuel_level's typical 1-per-30s cadence. */
+function medianFilter(arr: (number | null)[], windowSize: number): (number | null)[] {
+  const half = Math.floor(windowSize / 2);
+  const out: (number | null)[] = new Array(arr.length).fill(null);
+  for (let i = 0; i < arr.length; i++) {
+    const win: number[] = [];
+    for (let j = Math.max(0, i - half); j <= Math.min(arr.length - 1, i + half); j++) {
+      const v = arr[j];
+      if (v != null) win.push(v);
+    }
+    if (win.length === 0) continue;
+    win.sort((a, b) => a - b);
+    out[i] = win[Math.floor(win.length / 2)];
+  }
+  return out;
+}
+
 const chart = computed<ChartData>(() => {
   if (!trip.value || !trip.value.samples || trip.value.samples.length === 0) return null;
   // Pivot long-form samples ({time, metric, value_num}) to wide form
@@ -294,6 +326,17 @@ const chart = computed<ChartData>(() => {
       else prev = arr[k];
     }
   });
+
+  // Apply rolling median to designated noisy metrics so the chart
+  // reads like a dashboard gauge rather than the raw float position.
+  // Toggleable via smoothingEnabled — when off, the raw signal shows.
+  if (smoothingEnabled.value) {
+    visible.forEach((s, i) => {
+      if (SMOOTHED_METRICS.has(s.metric)) {
+        arrays[i] = medianFilter(arrays[i], 5);
+      }
+    });
+  }
   const aligned: uPlot.AlignedData = [t, ...arrays] as uPlot.AlignedData;
   // Build the scales object: every distinct scale used by visible series.
   const scales: Record<string, { time?: boolean }> = { x: { time: true } };
@@ -846,7 +889,16 @@ async function saveMeta() {
           <div class="card">
             <header class="chart-head">
               <h3>Timeline</h3>
-              <button class="ghost" type="button" @click="resetZoom">Reset zoom</button>
+              <div class="head-tools">
+                <label
+                  class="smooth-toggle"
+                  title="Apply a rolling-median filter to fuel_level so the line reads like the dashboard gauge instead of the raw float (which slosh-jumps ±20% per second)"
+                >
+                  <input type="checkbox" v-model="smoothingEnabled" />
+                  Smooth fuel
+                </label>
+                <button class="ghost" type="button" @click="resetZoom">Reset zoom</button>
+              </div>
             </header>
             <div class="series-chips">
               <button
@@ -1186,6 +1238,22 @@ async function saveMeta() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.head-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+.smooth-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+.smooth-toggle input {
+  margin: 0;
 }
 .stats {
   display: grid;
