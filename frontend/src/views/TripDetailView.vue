@@ -460,13 +460,43 @@ const route2D = computed<[number, number][]>(() => {
  * Falls back to a single blue segment when speed data is absent
  * (legacy trips with no /route endpoint coverage).
  */
+/**
+ * Continuous speed → color heatmap. Maps speeds 0 m/s (red, stopped)
+ * → 36 m/s (≈80 mph, magenta) through the HSL spectrum red →
+ * orange → yellow → green → cyan → blue → magenta. Anchored at a
+ * fixed 0–36 m/s range so colors mean the same thing across trips
+ * (a city-speed segment is always orange/yellow regardless of the
+ * trip's max speed).
+ */
+const HEATMAP_MAX_MPS = 36;
+function speedColor(speedMps: number | null): string {
+  if (speedMps == null) return "#2f81f7";
+  const clamped = Math.max(0, Math.min(speedMps, HEATMAP_MAX_MPS));
+  const t = clamped / HEATMAP_MAX_MPS;
+  // HSL hue: red (0°) → magenta (300°). Skip the wrap back to red.
+  const hue = t * 300;
+  return `hsl(${hue.toFixed(0)}, 80%, 50%)`;
+}
+
+// Discrete bucket — kept for the speed-distribution donut card,
+// where 4 fixed labels (Stopped / City / Suburban / Highway) make
+// sense even though the route line itself uses the continuous map.
 function bucketColor(speedMps: number | null): string {
   if (speedMps == null) return "#2f81f7";
-  if (speedMps < 1) return "#ef4444";       // red — stopped
-  if (speedMps < 10) return "#f59e0b";      // amber — city
-  if (speedMps < 20) return "#22c55e";      // green — suburban
-  return "#2f81f7";                         // blue — highway
+  if (speedMps < 1) return "#ef4444";
+  if (speedMps < 10) return "#f59e0b";
+  if (speedMps < 20) return "#22c55e";
+  return "#2f81f7";
 }
+
+// User preference for the route map: heatmap (continuous color
+// per segment) vs plain (single accent line). Persisted across
+// reloads / revisits.
+const HEATMAP_KEY = "pitstop_route_heatmap";
+const heatmapEnabled = ref<boolean>(localStorage.getItem(HEATMAP_KEY) !== "false");
+watch(heatmapEnabled, (v) => {
+  try { localStorage.setItem(HEATMAP_KEY, String(v)); } catch { /* ignore */ }
+});
 
 // IMU hard-event markers for the route map (#111). Each event the
 // backend returns with a non-null lat/lon becomes a dot on the
@@ -494,6 +524,7 @@ const imuMapMarkers = computed<{ id: string; lng: number; lat: number; propertie
 const routeSegments = computed<{ coords: [number, number][]; color: string }[]>(() => {
   const points = routeData.value?.points;
   if (!points || points.length < 2) return [];
+  if (!heatmapEnabled.value) return [];   // fall back to plain `route` line
   const out: { coords: [number, number][]; color: string }[] = [];
   for (let i = 0; i < points.length - 1; i++) {
     out.push({
@@ -501,7 +532,7 @@ const routeSegments = computed<{ coords: [number, number][]; color: string }[]>(
         [points[i].lon, points[i].lat],
         [points[i + 1].lon, points[i + 1].lat],
       ],
-      color: bucketColor(points[i].speed_mps),
+      color: speedColor(points[i].speed_mps),
     });
   }
   return out;
@@ -839,11 +870,16 @@ async function saveMeta() {
                 :hover-marker="hoverGps"
                 :height="360"
               />
-              <div v-if="routeSegments.length" class="speed-legend">
-                <span class="dot" style="background:#ef4444"></span> stopped
-                <span class="dot" style="background:#f59e0b"></span> city
-                <span class="dot" style="background:#22c55e"></span> suburban
-                <span class="dot" style="background:#2f81f7"></span> highway
+              <div class="speed-legend">
+                <label class="toggle">
+                  <input type="checkbox" v-model="heatmapEnabled" />
+                  Heatmap
+                </label>
+                <template v-if="heatmapEnabled">
+                  <span class="muted small">0</span>
+                  <span class="heatmap-gradient" aria-hidden="true" />
+                  <span class="muted small">{{ Math.round(HEATMAP_MAX_MPS * 2.237) }} mph</span>
+                </template>
                 <span v-if="imuMapMarkers.length" class="muted small">
                   · {{ imuMapMarkers.length }} hard event{{ imuMapMarkers.length === 1 ? "" : "s" }}
                 </span>
@@ -1278,11 +1314,33 @@ async function saveMeta() {
 .speed-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.8rem;
+  gap: 0.6rem;
   margin-top: 0.5rem;
   font-size: 0.78rem;
   color: var(--c-muted);
   align-items: center;
+}
+.speed-legend .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  color: var(--c-text);
+}
+.heatmap-gradient {
+  display: inline-block;
+  width: 200px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    hsl(0, 80%, 50%),
+    hsl(60, 80%, 50%),
+    hsl(120, 80%, 50%),
+    hsl(180, 80%, 50%),
+    hsl(240, 80%, 50%),
+    hsl(300, 80%, 50%)
+  );
 }
 .speed-legend .dot,
 .bucket-list .dot {

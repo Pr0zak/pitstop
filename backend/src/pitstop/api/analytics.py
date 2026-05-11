@@ -30,18 +30,26 @@ AnalyticsWindow = Literal["month", "3m", "year", "all"]
 
 
 def _period_key(d: datetime | date, window: AnalyticsWindow) -> str:
+    """Bucket a date for the MPG / cost-per-mile trend charts.
+    Returns ISO-8601-parseable strings so the frontend can drop them
+    into Date.parse and get a real time axis.
+
+    Granularity by window:
+      month → YYYY-MM (one bucket for the recent month — KPI-style)
+      3m    → YYYY-MM (three monthly buckets across the quarter)
+      year  → YYYY-MM (twelve monthly buckets for the year view)
+      all   → YYYY     (yearly buckets across the full history)
+
+    Previously "year" returned just "YYYY" (single yearly point per
+    year — looked wrong on a 12-month view) and "all" returned the
+    literal "all", which the chart parsed as NaN → epoch 0 → year
+    1970.
+    """
     if isinstance(d, datetime):
         d = d.date()
-    if window == "month":
-        return d.strftime("%Y-%m")
-    if window == "3m":
-        # Group into calendar quarters.
-        q = (d.month - 1) // 3 + 1
-        return f"{d.year}-Q{q}"
-    if window == "year":
-        return f"{d.year}"
-    # "all" — everything in one bucket.
-    return "all"
+    if window == "all":
+        return f"{d.year:04d}"
+    return d.strftime("%Y-%m")
 
 
 def _window_cutoff(window: AnalyticsWindow) -> datetime | None:
