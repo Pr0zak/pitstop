@@ -199,5 +199,10 @@ app.include_router(live_ws.router)
 app.include_router(utils_api.router)
 app.include_router(logs_api.router)
 app.include_router(api_phone.router)
+# Drive batch ingest is mounted under BOTH /ingest/* (direct-to-backend
+# port 8000 callers) and /api/ingest/* (Caddy strips /api/ before
+# forwarding so the same routes match). Lets the phone use whichever
+# apiBaseUrl the user has configured without needing a Caddy in front.
 app.include_router(drive_ingest.router)
+app.include_router(drive_ingest.router, prefix="/api")
 app.include_router(admin.router)

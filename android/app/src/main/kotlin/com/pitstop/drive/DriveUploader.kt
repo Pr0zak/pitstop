@@ -77,11 +77,18 @@ class DriveUploader @Inject constructor(
                     return drained
                 }
                 Outcome.Failure -> {
+                    // Re-read so the log reflects the JUST-stored error
+                    // from this attempt, not the stale one from a prior
+                    // pass. Confused us during v0.1.103→104 debugging.
+                    val fresh = dao.oldestUnacked()
+                    val freshErr = if (fresh?.clientDriveUuid == row.clientDriveUuid) {
+                        fresh.lastError ?: "?"
+                    } else "?"
                     logs.warn(
                         "DriveUploader: drive rejected by server, skipping",
                         mapOf(
                             "client_drive_uuid" to row.clientDriveUuid,
-                            "last_error" to (row.lastError ?: "?"),
+                            "last_error" to freshErr,
                         ),
                     )
                 }
