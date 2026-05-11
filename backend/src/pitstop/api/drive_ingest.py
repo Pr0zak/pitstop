@@ -83,7 +83,10 @@ class ImuSampleIn(BaseModel):
 
 
 class DriveUploadIn(BaseModel):
-    vehicle_id: UUID
+    # Accept either a vehicle UUID or a slug (e.g. "pilot19"). The
+    # phone bridge service only knows the slug; resolving server-side
+    # avoids needing a vehicle-lookup round-trip from the phone.
+    vehicle_id: str
     started_at: datetime
     ended_at: datetime
     device_id: str | None = None
@@ -238,14 +241,25 @@ async def post_drive(
             )
 
     async with pool.acquire() as conn, conn.transaction():
-        # Verify the vehicle exists.
-        vrow = await conn.fetchrow(
-            "SELECT id FROM vehicles WHERE id = $1", body.vehicle_id
-        )
+        # Resolve vehicle_id which can be either a UUID or a slug.
+        # The phone bridge sends the slug; web/API callers send UUID.
+        try:
+            vehicle_uuid: UUID | None = UUID(body.vehicle_id)
+        except ValueError:
+            vehicle_uuid = None
+        if vehicle_uuid is not None:
+            vrow = await conn.fetchrow(
+                "SELECT id FROM vehicles WHERE id = $1", vehicle_uuid
+            )
+        else:
+            vrow = await conn.fetchrow(
+                "SELECT id FROM vehicles WHERE slug = $1", body.vehicle_id
+            )
         if vrow is None:
             raise HTTPException(
                 status_code=404, detail=f"vehicle {body.vehicle_id} not found"
             )
+        resolved_vehicle_id: UUID = vrow["id"]
 
         # Idempotency short-circuit.
         existing = await conn.fetchrow(
@@ -275,10 +289,10 @@ async def post_drive(
 
         # Bulk inserts first so compute_trip_stats sees the new data.
         await _bulk_insert_pid_readings(
-            conn, body.vehicle_id, body.pid_readings, body.imu_samples
+            conn, resolved_vehicle_id, body.pid_readings, body.imu_samples
         )
-        await _bulk_insert_gps_points(conn, body.vehicle_id, body.gps_points)
-        await _bulk_insert_engine_events(conn, body.vehicle_id, body.engine_events)
+        await _bulk_insert_gps_points(conn, resolved_vehicle_id, body.gps_points)
+        await _bulk_insert_engine_events(conn, resolved_vehicle_id, body.engine_events)
 
         # Trip UUID is the phone's client_drive_uuid (deterministic).
         # The deriver's UUID v5 scheme would produce a different ID
@@ -290,7 +304,7 @@ async def post_drive(
         trip_id = body.client_drive_uuid
 
         stats = await compute_trip_stats(
-            conn, trip_id, body.vehicle_id, body.started_at, body.ended_at,
+            conn, trip_id, resolved_vehicle_id, body.started_at, body.ended_at,
         )
 
         await conn.execute(
@@ -320,7 +334,7 @@ async def post_drive(
                 source = EXCLUDED.source,
                 incomplete = EXCLUDED.incomplete
             """,
-            trip_id, body.vehicle_id, body.started_at, body.ended_at,
+            trip_id, resolved_vehicle_id, body.started_at, body.ended_at,
             stats["duration_s"], stats["distance_km"],
             stats["max_rpm"], stats["max_speed_kph"],
             stats["avg_speed_kph"], stats["avg_coolant_c"],
