@@ -276,6 +276,24 @@ const chart = computed<ChartData>(() => {
       arrays[i].push(v == null ? null : s.transform(v));
     });
   }
+  // Forward-fill sparse series so they render as step lines instead
+  // of disappearing into the gaps between samples. uPlot breaks
+  // lines at nulls by default; a metric like fuel_level with one
+  // reading per 30s amongst 1Hz vehicle_speed timestamps would have
+  // ~96% null values and draw essentially nothing. Carrying the
+  // previous value forward gives a horizontal-step visualisation
+  // that's right for slow-changing metrics (fuel, coolant, oil,
+  // battery, ATF). Speed / RPM / throttle have a sample at almost
+  // every timestamp anyway so the no-op fill is harmless for them.
+  visible.forEach((s, i) => {
+    if (s.metric === "acceleration") return; // already null where expected
+    let prev: number | null = null;
+    const arr = arrays[i];
+    for (let k = 0; k < arr.length; k++) {
+      if (arr[k] == null) arr[k] = prev;
+      else prev = arr[k];
+    }
+  });
   const aligned: uPlot.AlignedData = [t, ...arrays] as uPlot.AlignedData;
   // Build the scales object: every distinct scale used by visible series.
   const scales: Record<string, { time?: boolean }> = { x: { time: true } };
