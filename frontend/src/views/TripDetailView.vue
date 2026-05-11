@@ -238,22 +238,55 @@ function medianFilter(arr: (number | null)[], windowSize: number): (number | nul
 
 const chart = computed<ChartData>(() => {
   if (!trip.value || !trip.value.samples || trip.value.samples.length === 0) return null;
-  // Pivot long-form samples ({time, metric, value_num}) to wide form
-  // keyed on bucket time. Backwards-compat: handle the old wide-form
-  // shape too in case an older API response sneaks in.
-  const buckets = new Map<number, Record<string, number | null>>();
-  for (const s of trip.value.samples as Array<{
+  type Sample = {
     time: string;
     metric?: string;
     value_num?: number | null;
     vehicle_speed?: number | null;
     engine_rpm?: number | null;
     coolant_temp?: number | null;
-  }>) {
+  };
+  const allSamples = trip.value.samples as Sample[];
+
+  // Pre-pass: for SMOOTHED_METRICS, take the raw sparse sample
+  // sequence (e.g. ~30 fuel_level samples over 17 min) and apply a
+  // rolling median to flatten the float-slosh chaos before it hits
+  // the wide-form pivot. Doing it AFTER forward-fill (the prior
+  // attempt) was a no-op because the fill creates plateau steps —
+  // median of 5 identical values is the same value, the chart still
+  // shows the unsmoothed jumps between plateaus. Smoothing the raw
+  // signal first means the plateaus themselves are calmer.
+  const smoothedByTs = new Map<string, Map<number, number>>();
+  if (smoothingEnabled.value) {
+    for (const metric of SMOOTHED_METRICS) {
+      const seq = allSamples
+        .filter((s) => s.metric === metric && s.value_num != null)
+        .sort((a, b) => a.time.localeCompare(b.time));
+      if (seq.length === 0) continue;
+      const vals = seq.map((s) => s.value_num as number);
+      const filtered = medianFilter(vals, 5);
+      const map = new Map<number, number>();
+      seq.forEach((s, idx) => {
+        const ts = Math.round((Date.parse(s.time) || 0) / 1000);
+        const v = filtered[idx];
+        if (v != null) map.set(ts, v);
+      });
+      smoothedByTs.set(metric, map);
+    }
+  }
+
+  // Pivot long-form samples ({time, metric, value_num}) to wide form
+  // keyed on bucket time. Backwards-compat: handle the old wide-form
+  // shape too in case an older API response sneaks in.
+  const buckets = new Map<number, Record<string, number | null>>();
+  for (const s of allSamples) {
     const ts = Math.round((Date.parse(s.time) || 0) / 1000);
     const slot = buckets.get(ts) ?? {};
     if (s.metric && s.value_num !== undefined && s.value_num !== null) {
-      slot[s.metric] = s.value_num;
+      // Substitute the smoothed value when we built one for this metric.
+      const smoothMap = smoothedByTs.get(s.metric);
+      const smoothed = smoothMap?.get(ts);
+      slot[s.metric] = smoothed ?? s.value_num;
     }
     if (s.vehicle_speed != null) slot["vehicle_speed"] = s.vehicle_speed;
     if (s.engine_rpm != null) slot["engine_rpm"] = s.engine_rpm;
@@ -327,16 +360,10 @@ const chart = computed<ChartData>(() => {
     }
   });
 
-  // Apply rolling median to designated noisy metrics so the chart
-  // reads like a dashboard gauge rather than the raw float position.
-  // Toggleable via smoothingEnabled — when off, the raw signal shows.
-  if (smoothingEnabled.value) {
-    visible.forEach((s, i) => {
-      if (SMOOTHED_METRICS.has(s.metric)) {
-        arrays[i] = medianFilter(arrays[i], 5);
-      }
-    });
-  }
+  // (Smoothing happens up-front on the raw sparse signal — see the
+  // smoothedByTs build above. Doing it here on the forward-filled
+  // arrays would no-op because the fill produces plateaus and a
+  // median of 5 identical values is the same value.)
   const aligned: uPlot.AlignedData = [t, ...arrays] as uPlot.AlignedData;
   // Build the scales object: every distinct scale used by visible series.
   const scales: Record<string, { time?: boolean }> = { x: { time: true } };
@@ -890,13 +917,15 @@ async function saveMeta() {
             <header class="chart-head">
               <h3>Timeline</h3>
               <div class="head-tools">
-                <label
-                  class="smooth-toggle"
-                  title="Apply a rolling-median filter to fuel_level so the line reads like the dashboard gauge instead of the raw float (which slosh-jumps ±20% per second)"
-                >
-                  <input type="checkbox" v-model="smoothingEnabled" />
-                  Smooth fuel
-                </label>
+                <button
+                  type="button"
+                  class="chip toggle-chip"
+                  :class="{ active: smoothingEnabled }"
+                  :title="smoothingEnabled
+                    ? 'Showing median-filtered fuel level (matches dashboard gauge). Click to see the raw OBD float signal.'
+                    : 'Showing raw OBD fuel_level (slosh-jumps ±20% per second). Click to enable median smoothing.'"
+                  @click="smoothingEnabled = !smoothingEnabled"
+                >Smooth fuel</button>
                 <button class="ghost" type="button" @click="resetZoom">Reset zoom</button>
               </div>
             </header>
@@ -1242,18 +1271,23 @@ async function saveMeta() {
 .head-tools {
   display: flex;
   align-items: center;
-  gap: 0.8rem;
+  gap: 0.5rem;
 }
-.smooth-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.78rem;
+.toggle-chip {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--c-border-soft);
+  background: var(--c-surface);
   color: var(--c-muted);
   cursor: pointer;
 }
-.smooth-toggle input {
-  margin: 0;
+.toggle-chip.active {
+  border-color: #f97316;
+  color: #f97316;
+}
+.toggle-chip:hover {
+  opacity: 0.85;
 }
 .stats {
   display: grid;
