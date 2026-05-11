@@ -6,9 +6,13 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.pitstop.log.LogBuffer
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -31,12 +35,17 @@ import javax.inject.Singleton
 class DriveSealer @Inject constructor(
     private val recorder: DriveRecorder,
     private val dao: PendingDriveDao,
+    private val uploader: DriveUploader,
     private val json: Json,
     private val logs: LogBuffer,
     @ApplicationContext private val context: Context,
 ) {
     private val _lastSealedAt = MutableStateFlow<Long?>(null)
     val lastSealedAt: StateFlow<Long?> = _lastSealedAt.asStateFlow()
+
+    /** Own scope for the immediate-drain kick. Survives across the
+     *  bridge service's restart since the singleton holds it. */
+    private val ownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * Seal the currently-open drive. Pulls from [DriveRecorder.close]
@@ -114,19 +123,23 @@ class DriveSealer @Inject constructor(
     }
 
     /**
-     * Enqueue a one-shot upload pass. The worker drains the queue
-     * until it hits a network error or runs out of rows; the
-     * periodic worker is the 4h backstop.
+     * Kick an immediate upload pass on our own scope. Previously this
+     * went through WorkManager.OneTimeWork but the kicks never
+     * actually executed — Hilt assisted-inject for the worker was
+     * silently failing despite the periodic worker's logs working.
+     * Direct scope.launch is more reliable for the "fire right after
+     * seal" case; the WorkManager periodic + on-demand "Sync now"
+     * button still call into the same [DriveUploader.drain].
      */
     fun kickWorker() {
-        val request = OneTimeWorkRequestBuilder<DriveUploadWorker>()
-            .addTag(DriveUploadWorker.TAG)
-            .build()
-        WorkManager.getInstance(context)
-            .enqueueUniqueWork(
-                DriveUploadWorker.UNIQUE_NAME,
-                ExistingWorkPolicy.KEEP,
-                request,
-            )
+        ownScope.launch {
+            runCatching { uploader.drain("kicked after seal") }
+                .onFailure { t ->
+                    logs.warn(
+                        "DriveSealer.kickWorker: drain threw",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
     }
 }
