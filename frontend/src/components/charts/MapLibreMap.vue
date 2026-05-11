@@ -133,7 +133,15 @@ onMounted(() => {
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
   map.on("load", () => {
-    if (props.route) applyRoute();
+    // Always call applyRoute on load so any data populated before
+    // the map finished initialising still draws. Previously this
+    // only fired when props.route was set, but trip detail uses
+    // props.routeSegments (speed-bucket-colored) which raced —
+    // the segments arrived before the map loaded, the watcher
+    // saw map?.loaded() === false and bailed, then the load
+    // handler didn't notice routeSegments either, so nothing
+    // ever rendered until the user re-triggered the watcher.
+    applyRoute();
     applyMarkers();
   });
 });

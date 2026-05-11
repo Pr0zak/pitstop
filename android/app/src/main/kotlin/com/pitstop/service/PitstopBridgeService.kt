@@ -120,12 +120,17 @@ class PitstopBridgeService : Service() {
         }
         // OBD-quiet watchdog: if engine_state has been On for ≥60s
         // with no fresh OBD frame, force engine_off and seal the
-        // drive. Catches the case where the WiCAN goes to sleep
-        // mid-trip (user parked, BLE drops) — the STOPPED-streak
-        // gate only fires when WiCAN is awake and responding STOPPED;
-        // an outright silent WiCAN never triggers it. Without this,
-        // a "drive A → 7-min parked → drive B" pattern gets sealed
-        // as one big buffer with bogus duration.
+        // drive. Catches the case where the WiCAN goes silent
+        // mid-trip (BLE drop / WiCAN power-management) — the
+        // STOPPED-streak gate only fires when WiCAN is awake and
+        // responding STOPPED; an outright silent WiCAN never
+        // triggers it.
+        //
+        // Honda i-stop (engine auto-shut at long red lights) is NOT
+        // a false-positive risk here — the Pilot's ECU stays awake
+        // during i-stop and the WiCAN keeps polling normally, so
+        // lastFrameAtMs keeps refreshing and the watchdog never
+        // fires for that case.
         scope.launch {
             val obdQuietThresholdMs = 60_000L
             while (isActive) {
