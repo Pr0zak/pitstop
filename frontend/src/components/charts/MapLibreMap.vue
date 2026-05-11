@@ -44,6 +44,44 @@ const OSM_STYLE = {
   layers: [{ id: "osm", type: "raster", source: "osm" }],
 } as unknown as maplibregl.StyleSpecification;
 
+// Carto's Dark Matter raster basemap. Free for non-commercial use,
+// no API key required. Attribution combines OSM + Carto per the
+// provider's terms.
+const DARK_STYLE = {
+  version: 8,
+  sources: {
+    dark: {
+      type: "raster",
+      tiles: [
+        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+      maxzoom: 19,
+    },
+  },
+  layers: [{ id: "dark", type: "raster", source: "dark" }],
+} as unknown as maplibregl.StyleSpecification;
+
+const MAP_DARK_KEY = "pitstop_map_dark";
+const darkMode = ref<boolean>(localStorage.getItem(MAP_DARK_KEY) === "true");
+function setDarkMode(v: boolean) {
+  darkMode.value = v;
+  try { localStorage.setItem(MAP_DARK_KEY, String(v)); } catch { /* ignore */ }
+  if (!map) return;
+  // map.setStyle wipes our route source / layers — re-add once the
+  // new style finishes loading.
+  map.setStyle(v ? DARK_STYLE : OSM_STYLE);
+  map.once("style.load", () => {
+    applyRoute();
+    applyMarkers();
+    applyHoverMarker();
+  });
+}
+
 function clearMarkers() {
   for (const m of markerInstances) m.remove();
   markerInstances = [];
@@ -153,7 +191,7 @@ onMounted(() => {
   if (!root.value) return;
   map = new maplibregl.Map({
     container: root.value,
-    style: OSM_STYLE,
+    style: darkMode.value ? DARK_STYLE : OSM_STYLE,
     center: props.initialCenter ?? [-74.006, 40.7128],
     zoom: props.initialZoom ?? 10,
   });
@@ -227,7 +265,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="map" :style="{ height: (height ?? 360) + 'px' }" />
+  <div class="map-wrap">
+    <div ref="root" class="map" :style="{ height: (height ?? 360) + 'px' }" />
+    <button
+      class="map-theme-toggle"
+      type="button"
+      :title="darkMode ? 'Switch to light basemap' : 'Switch to dark basemap'"
+      @click="setDarkMode(!darkMode)"
+    >{{ darkMode ? '☀' : '☾' }}</button>
+  </div>
 </template>
 
 <style scoped>
@@ -236,6 +282,31 @@ onBeforeUnmount(() => {
   border-radius: var(--r-md);
   overflow: hidden;
   border: 1px solid var(--c-border-soft);
+}
+.map-wrap {
+  position: relative;
+}
+.map-theme-toggle {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.map-theme-toggle:hover {
+  background: #f5f5f5;
 }
 </style>
 
