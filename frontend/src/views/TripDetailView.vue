@@ -672,10 +672,10 @@ const route2D = computed<[number, number][]>(() => {
 /**
  * Speed-bucketed polyline segments. Each segment is a 2-point
  * LineString colored by the speed at the segment's start.
- *   stopped (<1 m/s)        red    — traffic / parked / lights
+ *   stopped (<1 m/s)         red    — traffic / parked / lights
  *   city (1-10 m/s, ~2-22mph) amber — surface streets
- *   suburban (10-20, ~22-45) green — main arterials
- *   highway (20+, 45+ mph)    blue  — interstate
+ *   suburban (10-24.6, ~22-55) green — main arterials
+ *   highway (24.6+, 55+ mph)  blue  — interstate (matches /analytics/mpg-by-speed-class cutoff)
  * Falls back to a single blue segment when speed data is absent
  * (legacy trips with no /route endpoint coverage).
  */
@@ -704,8 +704,8 @@ function bucketColor(speedMps: number | null): string {
   if (speedMps == null) return "#2f81f7";
   if (speedMps < 1) return "#ef4444";
   if (speedMps < 10) return "#f59e0b";
-  if (speedMps < 20) return "#22c55e";
-  return "#2f81f7";
+  if (speedMps < 24.6) return "#22c55e";   // <55 mph
+  return "#2f81f7";                        // ≥55 mph highway
 }
 
 // User preference for the route map: heatmap (continuous color
@@ -763,19 +763,20 @@ interface SpeedBucket { label: string; color: string; seconds: number }
 const speedDistribution = computed<SpeedBucket[]>(() => {
   const points = routeData.value?.points;
   if (!points || points.length < 2) return [];
-  // Bucket thresholds in m/s: <1, <10, <20, ≥20.
-  // mph: <2, <22, <45, ≥45.
+  // Bucket thresholds in m/s: <1, <10, <24.6, ≥24.6.
+  // mph: <2, <22, <55, ≥55. The 55-mph highway cutoff matches the
+  // backend's /analytics/mpg-by-speed-class boundary.
   const buckets: SpeedBucket[] = [
     { label: "Stopped (<2 mph)",     color: "#ef4444", seconds: 0 },
     { label: "City (2–22 mph)",      color: "#f59e0b", seconds: 0 },
-    { label: "Suburban (22–45 mph)", color: "#22c55e", seconds: 0 },
-    { label: "Highway (>45 mph)",    color: "#2f81f7", seconds: 0 },
+    { label: "Suburban (22–55 mph)", color: "#22c55e", seconds: 0 },
+    { label: "Highway (≥55 mph)",    color: "#2f81f7", seconds: 0 },
   ];
   for (let i = 1; i < points.length; i++) {
     const dt = (Date.parse(points[i].t) - Date.parse(points[i - 1].t)) / 1000;
     if (!Number.isFinite(dt) || dt <= 0 || dt > 60) continue;
     const sp = points[i - 1].speed_mps ?? 0;
-    const idx = sp < 1 ? 0 : sp < 10 ? 1 : sp < 20 ? 2 : 3;
+    const idx = sp < 1 ? 0 : sp < 10 ? 1 : sp < 24.6 ? 2 : 3;
     buckets[idx].seconds += dt;
   }
   return buckets;

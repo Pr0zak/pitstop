@@ -331,7 +331,9 @@ private fun downsample(points: List<TimedPoint>, maxPoints: Int): List<TimedPoin
 
 /**
  * Trip-summary speed split mirroring the web's `speedDistribution`.
- * Buckets in m/s: stopped <1, city <10, suburban <20, highway >=20.
+ * Buckets in m/s: stopped <1, city <10, suburban <24.6, highway >=24.6
+ * (24.6 m/s ≈ 55 mph — the typical US highway threshold; matches the
+ * /analytics/mpg-by-speed-class backend cutoff).
  * Returns seconds in each bucket; empty when route is too sparse to
  * tell.
  */
@@ -362,8 +364,8 @@ internal fun speedDistribution(
         val idx = when {
             sp < 1 -> 0
             sp < 10 -> 1
-            sp < 20 -> 2
-            else -> 3
+            sp < 24.6 -> 2     // <55 mph
+            else -> 3          // highway: ≥55 mph
         }
         buckets[idx] = buckets[idx].copy(seconds = buckets[idx].seconds + dt)
     }
