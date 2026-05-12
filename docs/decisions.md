@@ -179,3 +179,73 @@ The analytics layer adds a thin `pid_readings_view` that picks the right tier pe
 4. Surface a "tier" stat next to "rows" + "size" on Settings → Storage.
 
 This ADR lays the policy. As of v0.1.64 the manual purge + auto-purge cron (Tasks #54 + #67) are sufficient for a single-vehicle-active fleet — implementation lands when the storage curve forces the issue.
+
+---
+
+## ADR-015 — Phone manual-sync mode
+
+**Context.** Phone bridge streams every OBD frame to MQTT in real-time during drives so the web dashboard + Home Assistant see live numbers. Two ongoing pain points:
+
+1. Cellular data + battery cost. A typical drive ships hundreds of MQTT publishes per minute over cellular plus the BLE↔MQTT bridging keeps the radio + CPU active continuously.
+2. The phone also seals + uploads the whole drive as a single HTTP batch at engine-off. So the same data is shipped twice (live stream + batch), and the batch alone is enough for trip-detail reconstruction.
+
+**Decision.** New Settings → Connectivity → "Manual-sync mode" toggle (default OFF, preserves existing behavior). When ON:
+
+- Phone bridge suppresses all outgoing MQTT publishes — metric stream, `bridge/<slug>/location`, `bridge/<slug>/engine_state`.
+- DriveSealer's post-seal auto-kick no-ops (no automatic HTTP upload after engine-off).
+- Periodic DriveUploadWorker no-ops (no background drain).
+- Local capture is unchanged: DriveBuffer + Live screen tiles + sealed-drive payload all flow normally.
+- "Sync now" button in History always works (it's the explicit manual path).
+- Bridge-state pill shows "Local-only" when the toggle is on and the bridge is otherwise connected.
+
+A persistent "Drives waiting to sync" notification fires when the local queue reaches 5 unacked drives. Ongoing/sticky, with a "Sync now" action button. Auto-cancels when queue drops below threshold.
+
+**Consequence.**
+- Manual-sync users save ~MB-per-drive on cellular + meaningful battery.
+- Their drives don't show up on the live web dashboard mid-drive — that's the conscious tradeoff.
+- WiCAN direct-publish from the driveway is unaffected (it's its own MQTT client over Wi-Fi).
+- The 5-drive threshold is hardcoded in `SyncReminderManager` for now; bump if forgetting-to-sync becomes a recurring problem.
+
+Shipped in v0.1.120.
+
+---
+
+## ADR-016 — Drive payload stored to disk, not the SQLite row
+
+**Context.** `PendingDrive` originally inlined the full sealed-drive JSON into `payloadJson TEXT NOT NULL`. Worked for small drives. At ~40 k frames / 5.7 MB it broke — Android's default SQLite CursorWindow caps row reads at ~2 MB, so `dao.oldestUnacked(): PendingDrive?` threw `IllegalStateException: Row too big to fit into CursorWindow` and the entire upload pass aborted. User had two genuinely unsynced drives sit stuck for hours because the oversized head row blocked smaller queued drives behind it.
+
+**Decision.** Payload moves to `${context.filesDir}/pending-drives/${uuid}.json`. The SQLite row keeps only metadata + `payloadFilePath: String?`. The upload pass queries a `PendingDriveMeta` projection that omits the legacy `payloadJson` column, then reads the file off disk for the HTTP body.
+
+Migration v1→v2 adds the `payloadFilePath` column. Legacy rows (path null, legacy inline JSON unreadable) get dropped on next sync — their data is already on the server via the streaming + deriver paths, so dropping them is safe.
+
+**Consequence.**
+- No more CursorWindow ceiling. Multi-hour drives upload cleanly.
+- One additional file write per drive seal — trivial compared to the MQTT publish cadence we already do.
+- Cleanup hook: file is deleted on successful upload ack.
+- `payloadJson` column stays NOT NULL (SQLite ALTER can't relax that without rebuilding the table); new rows write `""`.
+
+Shipped in v0.1.111.
+
+---
+
+## ADR-017 — BLE link state ≠ engine state
+
+**Context.** The phone bridge tracks two related but distinct facts:
+1. **BLE phase** — Idle / Scanning / Connecting / Connected / Disconnected / Error. Whether we can talk to the WiCAN device at all.
+2. **Engine state** — On / Off / Unknown. Whether the engine is running, per OBD responses + WiCAN LWT.
+
+These were conflated. The disconnect path cleared `engineState = Unknown` on every BLE drop, and the OBD-quiet watchdog didn't gate on BLE phase — so a 2-minute BLE flake mid-drive would: (a) clear engine state to Unknown, (b) prevent the watchdog from firing (it skipped when `state != On`), then (c) when BLE reconnected, the first OBD frame triggered `onEngineOnSignal()` whose guard said `state != On` → emit a fresh "engine on" event → DriveRecorder sealed the in-progress buffer as incomplete and opened a new one. One real drive turned into two stitched-together trips.
+
+**Decision.**
+
+1. **BLE disconnect does NOT touch engineState.** Phase becomes `Disconnected`; engine state is left to OBD-side signals (real frames + WiCAN STOPPED/LWT) to decide.
+2. **OBD-quiet watchdog requires `phase == Connected`.** A frame-age over the 60 s threshold during the reconnect loop means we can't talk to the WiCAN, NOT that the engine went off.
+3. **BLE-lost watchdog (15 min) seals stalled drives.** If the link has been NOT-Connected for 15 minutes while engineState is still On, declare engine-off with `kind="ble_lost"`. Covers the case where the car parks somewhere the WiCAN's BLE never comes back.
+
+**Consequence.**
+- Short BLE flakes (< 15 min) no longer split drives.
+- Long BLE losses still seal eventually (15 min, vs the previous "indefinitely until next engine_on").
+- One real-world hit retroactively merged via manual SQL (2026-05-12 trips 2748f573 + c996d9d3 → single 46-min row).
+- Trips marked `incomplete=true` from this bug class should be vanishingly rare going forward.
+
+Shipped in v0.1.120 (split fix) + v0.1.121 (BLE-lost watchdog).

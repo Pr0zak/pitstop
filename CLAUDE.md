@@ -29,6 +29,9 @@ Read [PLAN.md](./PLAN.md) and [docs/decisions.md](./docs/decisions.md) before ma
 - **WiCAN-side signals**: backend subscribes to `wican/<id>/can/status` (CAN bus presence) and `wican/<id>/status` (device LWT). Both translate to `engine_events` with `source='wican_lwt'`.
 - **Phone presence** (Task #77): `PresenceTracker` watches `CarConnection.type` (Android Auto active) + `BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED` (paired car BT). Combined `inCar` StateFlow drives adaptive BLE backoff (5s cap when in-car, 5min cap when parked + engine-off).
 - **Trip detection is post-processed** — `workers/trip_deriver.py` runs every 5 min, walks raw activity samples + engine_events, builds intervals, computes haversine distance with > 250 km/h velocity sanity filter, upserts trips with deterministic UUID v5 keyed on `(vehicle_id, started_at)`. Streaming `trip_detector.py` retired.
+- **Drive payload to disk, not SQLite** (ADR-016): `PendingDrive` row carries metadata + a file path; the actual JSON body lives at `${filesDir}/pending-drives/${uuid}.json`. Inlining into the SQLite row hit Android's ~2 MB CursorWindow limit on long drives.
+- **Phone manual-sync mode** (ADR-015): Settings toggle suppresses all phone-side MQTT publishes + auto-upload. Local capture and Live tiles still work; "Sync now" is the only path that ships data when on. Persistent ongoing notification fires at ≥5 queued drives.
+- **BLE phase ≠ engine state** (ADR-017): the phone tracks BLE link state and engine state independently. The OBD-quiet watchdog (60 s) only fires while `phase == Connected`; a separate BLE-lost watchdog (15 min) seals drives that end with a permanent BLE drop. Conflating these caused trip-splits across short BLE flakes (the 2026-05-12 incident).
 
 ## Key design decisions
 
@@ -39,6 +42,8 @@ Read [PLAN.md](./PLAN.md) and [docs/decisions.md](./docs/decisions.md) before ma
 - **Multi-vehicle from day one** — Pilot + Truck per the Fuelio import; SeaDoo to follow.
 - **Web/phone parity, server is source of truth** (ADR-013). Vue frontend and Android app must keep feature parity for shared workflows. The Android app is collect+ship+cache; never persists authoritative state. Both clients consume the same backend API contract — design endpoints first.
 - **Settings.update() never overwrites a stored secret with blank** (post-v0.1.83) — protects against the form-init race where a Save fired before disk values had loaded would silently wipe MQTT password / tokens. Explicit clears go through `clearSecret()`.
+- **Speed buckets share a 55-mph highway cutoff** between phone, web, and `/analytics/mpg-by-speed-class`. Stopped <2 mph, City 2–22 mph, Suburban 22–55 mph, Highway ≥55 mph (24.6 m/s).
+- **MPG aggregation must SELECT `is_missed`** (post-v0.1.118) — `compute_recomputed_mpg()` reads `row["is_missed"]` to skip the broken-chain case. Several `/analytics/*` endpoints' SELECT statements omitted the column and silently produced bogus MPG for any month containing a missed fillup.
 
 ## UI design workflow
 
@@ -58,7 +63,7 @@ When demonstrating with sample data, write it to `data/` (gitignored) or `/tmp/`
 
 ## Build phase
 
-Phase A + B + C complete + post-v1 work landed (bridge payload v2, post-processed trip derivation, phone presence detection, WiCAN broker subscription, layered engine-state detection). Tags shipped through v0.1.90. See git log for the running history; ADRs in [docs/decisions.md](./docs/decisions.md).
+Phase A + B + C complete + post-v1 work landed (bridge payload v2, post-processed trip derivation, phone presence detection, WiCAN broker subscription, layered engine-state detection). Tags shipped through v0.1.122. Recent landmarks: Android History detail screens with MapLibre routes (v0.1.113), on-disk drive payloads + queue unstall (v0.1.111), Home dashboard overhaul + active-DTCs panel (v0.1.116), manual-sync mode + sync-reminder notification (v0.1.120), trip-split fix + BLE-lost watchdog (v0.1.121), trip-detail Smooth chip phone+web (v0.1.121). See git log for the running history; ADRs in [docs/decisions.md](./docs/decisions.md).
 
 ## Repo
 
