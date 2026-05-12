@@ -41,6 +41,22 @@ data class Settings(
      * falls back to AA + engine_state alone.
      */
     val pairedCarBtMac: String? = null,
+    /**
+     * When true, the bridge suppresses every outgoing MQTT publish during
+     * drives (per-metric, location, engine_state) and the drive-upload
+     * pipeline (immediate kick after seal + periodic worker) becomes a
+     * no-op. Local capture continues: BridgeStateBus still drives the
+     * Live screen, DriveRecorder still batches sealed drives into the
+     * Room queue, the History tab's "Sync now" button still works.
+     *
+     * Use case: data-/battery-constrained driving where the user wants
+     * to upload manually over Wi-Fi later instead of streaming every
+     * sample over cellular.
+     *
+     * Default false preserves the existing always-stream behaviour for
+     * users who upgrade through this version without touching settings.
+     */
+    val manualSyncOnly: Boolean = false,
 )
 
 data class SettingsWithSecrets(

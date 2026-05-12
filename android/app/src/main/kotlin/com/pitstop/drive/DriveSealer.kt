@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -12,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -39,6 +41,7 @@ class DriveSealer @Inject constructor(
     private val uploader: DriveUploader,
     private val json: Json,
     private val logs: LogBuffer,
+    private val settings: SettingsRepository,
     @ApplicationContext private val context: Context,
 ) {
     private val _lastSealedAt = MutableStateFlow<Long?>(null)
@@ -146,10 +149,27 @@ class DriveSealer @Inject constructor(
      * Direct scope.launch is more reliable for the "fire right after
      * seal" case; the WorkManager periodic + on-demand "Sync now"
      * button still call into the same [DriveUploader.drain].
+     *
+     * When [force] is false (the default — used by the post-seal
+     * auto-kick) and the user has enabled manual-sync mode, this
+     * no-ops; drives stay in the local queue until an explicit user
+     * action calls back in with force=true (History "Sync now" button,
+     * notification "Sync now" action).
      */
-    fun kickWorker() {
+    fun kickWorker(force: Boolean = false, reason: String = "kicked after seal") {
         ownScope.launch {
-            runCatching { uploader.drain("kicked after seal") }
+            if (!force) {
+                val manualOnly = runCatching { settings.settings.first().manualSyncOnly }
+                    .getOrDefault(false)
+                if (manualOnly) {
+                    logs.info(
+                        "DriveSealer.kickWorker: manual-sync mode — drive sealed, " +
+                            "awaiting manual upload",
+                    )
+                    return@launch
+                }
+            }
+            runCatching { uploader.drain(reason) }
                 .onFailure { t ->
                     logs.warn(
                         "DriveSealer.kickWorker: drain threw",

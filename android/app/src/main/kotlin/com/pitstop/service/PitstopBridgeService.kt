@@ -80,6 +80,17 @@ class PitstopBridgeService : Service() {
     @Volatile private var pidsToPoll: List<Pid> = Pids.DEFAULT
     @Volatile private var vehicleSlug: String = ""
 
+    /**
+     * Cached snapshot of [com.pitstop.data.Settings.manualSyncOnly]. When
+     * true the publish gates ([publishOrBuffer], [publishJson]) become
+     * no-ops — local state-bus updates + drive-recorder capture still
+     * run so the Live screen + sealed drive payloads remain intact.
+     * Watched off the settings flow in [onCreate] so flipping the
+     * Settings toggle takes effect mid-drive without restarting the
+     * service.
+     */
+    @Volatile private var manualSyncOnly: Boolean = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private var wakeLock: android.os.PowerManager.WakeLock? = null
@@ -116,6 +127,22 @@ class PitstopBridgeService : Service() {
         scope.launch {
             presence.inCar.collect { v ->
                 stateBus.update { it.copy(inCar = v) }
+            }
+        }
+        // Watch the manual-sync setting. Cached in [manualSyncOnly] for
+        // the hot publish gate to read without hitting DataStore on
+        // every frame. Flipping the toggle in Settings takes effect
+        // mid-session — the service doesn't need to restart.
+        scope.launch {
+            settingsRepository.settings.collect { s ->
+                val prior = manualSyncOnly
+                manualSyncOnly = s.manualSyncOnly
+                if (prior != s.manualSyncOnly) {
+                    logBuffer.info(
+                        "manual-sync mode changed",
+                        mapOf("manual_sync_only" to s.manualSyncOnly),
+                    )
+                }
             }
         }
         // OBD-quiet watchdog: if engine_state has been On for ≥60s
@@ -626,8 +653,15 @@ class PitstopBridgeService : Service() {
      * [OfflineBuffer]. Return immediately — the buffer write is async so
      * we don't block sensor callbacks. Designed to be called from any
      * publish site (OBD parser, GPS handler, IMU tick).
+     *
+     * In manual-sync mode the call short-circuits before both the live
+     * publish AND the offline-buffer enqueue: the user explicitly asked
+     * us not to push this metric upstream right now, so don't queue it
+     * for an opportunistic drain either. DriveRecorder still has the
+     * frame in the sealed drive payload for the user-driven Sync now.
      */
     private fun publishOrBuffer(topic: String, payload: String) {
+        if (manualSyncOnly) return
         if (mqttPublisher.publish(topic, payload)) return
         scope.launch { offlineBuffer.enqueue(topic, payload) }
     }

@@ -64,9 +64,13 @@ class HistoryViewModel @Inject constructor(
         refresh()
     }
 
-    /** User tapped "Sync now". Enqueues an immediate upload pass. */
+    /**
+     * User tapped "Sync now". Enqueues an immediate upload pass.
+     * Passes `force=true` so the call ignores manual-sync mode — this
+     * button explicitly represents user intent to upload now.
+     */
     fun syncNow() {
-        driveSealer.kickWorker()
+        driveSealer.kickWorker(force = true, reason = "history-sync-now")
         logBuffer.info(
             "history: sync-now requested",
             mapOf("pending" to pendingCount.value),
