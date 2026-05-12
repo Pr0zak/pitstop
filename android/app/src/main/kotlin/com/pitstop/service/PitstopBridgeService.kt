@@ -164,6 +164,16 @@ class PitstopBridgeService : Service() {
                 kotlinx.coroutines.delay(10_000L)
                 val s = stateBus.status.value
                 if (s.engineState != EngineState.On) continue
+                // Watchdog only fires when BLE is actively Connected. If
+                // we're in the reconnect loop (Disconnected/Connecting),
+                // a frame-age over the threshold doesn't mean the ECU
+                // went quiet — it means we can't talk to the WiCAN at
+                // all. Sealing the drive here was the cause of the
+                // 2026-05-12 trip split: a BLE peer-terminate at 09:02
+                // followed by a 2-min reconnect window had the watchdog
+                // declare engine_off → reconnect emitted a fresh engine_on
+                // → DriveRecorder sealed the prior buffer as incomplete.
+                if (s.phase != BridgePhase.Connected) continue
                 val lastFrame = s.lastFrameAtMs ?: continue
                 val ageMs = System.currentTimeMillis() - lastFrame
                 if (lastFrame > 0 && ageMs > obdQuietThresholdMs) {
@@ -534,11 +544,15 @@ class PitstopBridgeService : Service() {
                 else -> "Disconnected — retrying in ${backoffSec}s"
             }
             updateNotification(msg)
+            // Don't reset engineState here. BLE state is independent
+            // of engine state — clearing to Unknown on every disconnect
+            // means the next reconnect's first frame is treated as a
+            // fresh "engine on" (the guard in onEngineOnSignal trips
+            // because state != On), which orphan-seals the in-progress
+            // drive and starts a new one. Trust the watchdog +
+            // explicit OBD STOPPED responses to flip engine state.
             stateBus.update {
-                it.copy(
-                    phase = BridgePhase.Disconnected,
-                    engineState = EngineState.Unknown,
-                )
+                it.copy(phase = BridgePhase.Disconnected)
             }
             // Wake early if presence flips to true mid-sleep — entering
             // the car is the strongest signal that a new BLE attempt is
