@@ -199,7 +199,11 @@ private fun PitstopRoot(
             // nested insets so each page's content sits between top + bottom
             // bars correctly.
             when (page) {
-                0 -> StatusScreen()
+                0 -> StatusScreen(
+                    onOpenHistory = {
+                        scope.launch { pagerState.animateScrollToPage(2) }
+                    },
+                )
                 1 -> LiveScreen()
                 2 -> HistoryScreen()
                 3 -> FuelAddScreen()

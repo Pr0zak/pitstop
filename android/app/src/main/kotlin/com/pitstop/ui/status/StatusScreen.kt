@@ -2,7 +2,6 @@ package com.pitstop.ui.status
 
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,48 +10,65 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.OpenInBrowser
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import com.pitstop.service.BridgePhase
-import com.pitstop.ui.components.PillState
-import com.pitstop.ui.components.StatusPill
-import kotlin.math.max
+import com.pitstop.ui.components.ActiveDtcsPanel
+import com.pitstop.ui.components.BridgeStatePill
+import com.pitstop.ui.components.CostPerMileCard
+import com.pitstop.ui.components.FuelHeroCards
+import com.pitstop.ui.components.MonthlySpendCard
+import com.pitstop.ui.components.MpgLifetimeCard
+import com.pitstop.ui.components.MpgYearChart
+import com.pitstop.ui.components.PitstopTopAppBar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/**
+ * Home dashboard. Layout (top→bottom):
+ *   1. TopAppBar: brand + bridge-state pill (replaces the old hero banner)
+ *   2. Active DTCs panel (only when non-empty)
+ *   3. Fuel hero cards 2×2
+ *   4. MPG · last 12 months (line chart with min/max + tap-to-inspect)
+ *   5. MPG lifetime (yearly bars + trend chip)
+ *   6. Cost per mile
+ *   7. Monthly fuel spend
+ *   8. Recent trips
+ *   9. Update-available card (conditional)
+ *  10. Footer (version / build)
+ *
+ * The bridge-state pill replaces the old `HeroStatusBanner` card —
+ * the user kept asking "why is this huge headline on the screen telling
+ * me what I can already see in the notification?" so we shrank it to a
+ * top-bar dot+label.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(
     viewModel: StatusViewModel = hiltViewModel(),
+    onOpenHistory: () -> Unit = {},
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -61,7 +77,17 @@ fun StatusScreen(
 
     Scaffold(
         topBar = {
-            com.pitstop.ui.components.PitstopTopAppBar(title = "Home")
+            PitstopTopAppBar(
+                title = "Home",
+                actions = {
+                    BridgeStatePill(
+                        phase = ui.status.phase,
+                        brokerConnected = ui.status.brokerConnected,
+                        engineState = ui.status.engineState,
+                        modifier = Modifier.padding(end = 12.dp),
+                    )
+                },
+            )
         },
     ) { padding ->
         PullToRefreshBox(
@@ -78,175 +104,92 @@ fun StatusScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // Fuel hero strip leads — the user wants their fuel state
-            // first thing on the screen (avg consumption, current gas
-            // price, this-month spend, miles since fill).
-            ui.hero?.let { hero ->
-                com.pitstop.ui.components.FuelHeroCards(data = hero)
-            }
-
-            // Bridge / broker state below the fuel cards. Still
-            // prominent because a broken bridge invalidates the data
-            // above, but no longer the eye-first element.
-            com.pitstop.ui.components.HeroStatusBanner(
-                phase = ui.status.phase,
-                brokerConnected = ui.status.brokerConnected,
-                engineState = ui.status.engineState,
-                vehicleName = ui.status.deviceName,
-            )
-
-            // Recent trips card — surfaces the last 5 drives so the
-            // user can spot anomalies at a glance without bouncing
-            // to the web.
-            ui.recentTrips?.takeIf { it.isNotEmpty() }?.let { trips ->
-                RecentTripsCard(trips = trips)
-            }
-
-            ui.update?.takeIf { it.isNewer }?.let { info ->
-                UpdateAvailableCard(
-                    info = info,
-                    onOpen = {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, info.releaseUrl.toUri())
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    },
-                )
-            }
-
-            // Bridge / broker / log details moved to the Settings tab —
-            // Home is now the dashboard surface only. The hero banner up
-            // top + fuel hero cards answer "is the bridge OK?" + "what's
-            // happening with my fuel?" The configure flow lives elsewhere.
-
-            ui.deepLinkUrl?.let { url ->
-                OutlinedButton(
-                    onClick = {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, url.toUri())
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Filled.OpenInBrowser, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Open Live in browser")
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // Active DTCs sit at the top — most urgent thing.
+                // Empty list → render nothing per spec.
+                ui.activeDtcs?.takeIf { it.isNotEmpty() }?.let { codes ->
+                    ActiveDtcsPanel(
+                        dtcs = codes,
+                        onOpen = { onOpenHistory() },
+                    )
                 }
-            }
 
-            // Footer — version + build identity. Useful at install
-            // troubleshooting time so the user can match what's on the
-            // phone against the GitHub release tag without digging into
-            // the OS app-info screen.
-            Spacer(Modifier.size(4.dp))
-            Text(
-                "pitstop  v${com.pitstop.BuildConfig.VERSION_NAME}  ·  build ${com.pitstop.BuildConfig.VERSION_CODE}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            Spacer(Modifier.size(20.dp))
-        }
-        }
-    }
-}
-
-@Composable
-private fun ServiceStateCard(
-    phase: BridgePhase,
-    deviceName: String?,
-    deviceMac: String?,
-    error: String?,
-    lastFrameMs: Long?,
-    metricsActive: Int,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
-) {
-    // Map bridge phase → design pill state. "Connected" is the only
-    // healthy state from the user's POV; scanning + connecting both
-    // count as in-progress (pulsing); disconnected + error read as
-    // hard offline since the bridge isn't producing telemetry.
-    val (statusText, pillState) = when (phase) {
-        BridgePhase.Idle -> "Idle" to PillState.Neutral
-        BridgePhase.Scanning -> "Scanning" to PillState.Connecting
-        BridgePhase.Connecting -> "Connecting" to PillState.Connecting
-        BridgePhase.Connected -> "Running" to PillState.Healthy
-        BridgePhase.Disconnected -> "Reconnecting" to PillState.Degraded
-        BridgePhase.Error -> "Error" to PillState.Offline
-    }
-    Card {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusPill(state = pillState, label = statusText)
-            }
-            error?.let {
-                Spacer(Modifier.height(4.dp))
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                deviceName ?: deviceMac ?: "(no BLE device configured)",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(
-                "Active metrics: $metricsActive  •  Last frame: ${formatRelative(lastFrameMs)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onStart, enabled = phase == BridgePhase.Idle || phase == BridgePhase.Error) {
-                    Text("Start")
+                // Fuel hero 2×2.
+                ui.hero?.let { hero ->
+                    FuelHeroCards(data = hero)
                 }
-                OutlinedButton(onClick = onStop, enabled = phase != BridgePhase.Idle) {
-                    Text("Stop")
-                }
-            }
-        }
-    }
-}
 
-@Composable
-private fun BrokerCard(
-    brokerInfo: String?,
-    connected: Boolean,
-    totalPublished: Long,
-    offlineBufferBytes: Long,
-) {
-    Card {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusPill(
-                    state = if (connected) PillState.Healthy else PillState.Offline,
-                    label = if (connected) "Broker connected" else "Broker offline",
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                brokerInfo ?: "(no broker configured)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "Published total: $totalPublished",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (offlineBufferBytes > 0) {
+                // MPG last 12 months — clarified line chart with axes
+                // + tooltip. Skipped when there's not enough data.
+                ui.mpgMonthly?.takeIf { it.size >= 2 }?.let { monthly ->
+                    MpgYearChart(points = monthly)
+                }
+
+                // Lifetime MPG — yearly bars + trend chip vs prior years.
+                ui.mpgYearly?.takeIf { it.size >= 2 }?.let { yearly ->
+                    MpgLifetimeCard(yearlyPoints = yearly)
+                }
+
+                // Cost per mile (lifetime number + last-12-mo bar chart).
+                ui.costPerMile?.takeIf { it.isNotEmpty() }?.let { cost ->
+                    CostPerMileCard(points = cost)
+                }
+
+                // Monthly fuel spend (last 12 months, current month
+                // highlighted).
+                ui.monthlySpend?.takeIf { it.size >= 2 }?.let { spend ->
+                    MonthlySpendCard(months = spend)
+                }
+
+                // Recent trips card.
+                ui.recentTrips?.takeIf { it.isNotEmpty() }?.let { trips ->
+                    RecentTripsCard(trips = trips)
+                }
+
+                // Update-available card (conditional).
+                ui.update?.takeIf { it.isNewer }?.let { info ->
+                    UpdateAvailableCard(
+                        info = info,
+                        onOpen = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, info.releaseUrl.toUri())
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        },
+                    )
+                }
+
+                ui.deepLinkUrl?.let { url ->
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, url.toUri())
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Filled.OpenInBrowser, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("Open Live in browser")
+                    }
+                }
+
+                Spacer(Modifier.size(4.dp))
                 Text(
-                    "Offline buffer: ${humanBytes(offlineBufferBytes)} queued",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary,
+                    "pitstop  v${com.pitstop.BuildConfig.VERSION_NAME}  ·  build ${com.pitstop.BuildConfig.VERSION_CODE}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
+                Spacer(Modifier.size(20.dp))
             }
         }
     }
@@ -281,44 +224,6 @@ private fun UpdateAvailableCard(
                 Text("Download v${info.latestVersion}")
             }
         }
-    }
-}
-
-private fun humanBytes(b: Long): String = when {
-    b < 1024 -> "$b B"
-    b < 1024 * 1024 -> "%.1f KB".format(b / 1024.0)
-    else -> "%.2f MB".format(b / 1024.0 / 1024.0)
-}
-
-@Composable
-private fun LogsRow(
-    buffered: Int,
-    lastFlushMs: Long?,
-    lastResult: String,
-) {
-    Card {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Logs  ·  buffered $buffered  ·  last flush ${formatRelative(lastFlushMs)}  ·  last result $lastResult",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-private fun formatRelative(tsMs: Long?): String {
-    if (tsMs == null) return "—"
-    val delta = max(0L, System.currentTimeMillis() - tsMs)
-    return when {
-        delta < 1_500 -> "just now"
-        delta < 60_000 -> "${delta / 1000}s ago"
-        else -> "${delta / 60_000}m ago"
     }
 }
 
