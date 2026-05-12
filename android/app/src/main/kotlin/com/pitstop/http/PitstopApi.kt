@@ -109,11 +109,61 @@ data class MpgPointDto(
     @SerialName("mpg") val mpg: Double? = null,
     @SerialName("miles") val miles: Double? = null,
     @SerialName("volume") val volume: Double? = null,
+    // Backend includes a fillup_count integer on every point. The hero's
+    // lifetime-MPG card weight-averages by this so months with one fill
+    // don't drag the lifetime number around. Nullable for safety against
+    // older backend builds.
+    @SerialName("fillup_count") val fillupCount: Int? = null,
 )
 
 @Serializable
 data class MpgTrendResponse(
     @SerialName("points") val points: List<MpgPointDto>,
+)
+
+// ── Cost-per-mile (monthly) ───────────────────────────────────────────
+// Sample payload from /analytics/cost-per-mi:
+//   { "points": [ { "period": "2026-04",
+//                   "cost_per_mi": 0.2119,
+//                   "miles": 759.0,
+//                   "total_cost": 160.82 }, ... ] }
+// `cost_per_mi` is null for any period where miles == 0 (the backend
+// won't divide by zero); the phone lifetime calc must still pick up
+// total_cost from those months. Note `total_cost` and `miles` come back
+// as Double from the backend even when whole-mile — declared as Double
+// to avoid the kotlinx-serialization type-mismatch trap.
+@Serializable
+data class CostPerMilePointDto(
+    @SerialName("period") val period: String,
+    @SerialName("cost_per_mi") val costPerMi: Double? = null,
+    @SerialName("miles") val miles: Double = 0.0,
+    @SerialName("total_cost") val totalCost: Double = 0.0,
+)
+
+@Serializable
+data class CostPerMileResponse(
+    @SerialName("points") val points: List<CostPerMilePointDto>,
+)
+
+// ── Monthly spend ─────────────────────────────────────────────────────
+// Sample payload from /analytics/monthly-spend:
+//   { "months": [ { "month": "2026-04",
+//                   "fuel": 160.82,
+//                   "service": 0.0,
+//                   "total": 160.82 }, ... ] }
+// Note the wrapper key is `months` (not `points`) and each row uses
+// `month` (not `period`) — diverges from every other analytics endpoint.
+@Serializable
+data class MonthlySpendPointDto(
+    @SerialName("month") val month: String,
+    @SerialName("fuel") val fuel: Double = 0.0,
+    @SerialName("service") val service: Double = 0.0,
+    @SerialName("total") val total: Double = 0.0,
+)
+
+@Serializable
+data class MonthlySpendResponse(
+    @SerialName("months") val months: List<MonthlySpendPointDto>,
 )
 
 interface PitstopApi {
@@ -166,6 +216,26 @@ interface PitstopApi {
         @Query("vehicle_id") vehicleId: String,
         @Query("window") window: String = "year",
     ): MpgTrendResponse
+
+    /**
+     * Monthly $/mi for the vehicle (all history). Backend returns
+     * `cost_per_mi=null` for months with miles=0 — see DTO note. The
+     * lifetime calc on the phone does the sum-cost / sum-miles itself.
+     */
+    @GET("api/analytics/cost-per-mi")
+    suspend fun getCostPerMile(
+        @Query("vehicle_id") vehicleId: String,
+    ): CostPerMileResponse
+
+    /**
+     * Monthly fuel + service spend (all history). The home card shows
+     * the last 12 months of `fuel` only — service is rolled into a
+     * separate maintenance card elsewhere.
+     */
+    @GET("api/analytics/monthly-spend")
+    suspend fun getMonthlySpend(
+        @Query("vehicle_id") vehicleId: String,
+    ): MonthlySpendResponse
 
     @GET("api/trips")
     suspend fun getTrips(
