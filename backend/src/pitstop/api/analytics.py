@@ -74,8 +74,14 @@ async def mpg_series(
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, Any]:
     async with pool.acquire() as conn:
+        # is_missed must be in the projection — compute_recomputed_mpg
+        # reads row["is_missed"] and the default-False fallback was
+        # silently letting missed fillups produce bogus MPG (e.g. a
+        # missed fill between two full fills shows up as ~2× normal
+        # because the distance covers two tanks but only one volume is
+        # recorded).
         rows = await conn.fetch(
-            "SELECT id, fillup_date, odo, fuel_volume, is_full "
+            "SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed "
             "FROM fillups WHERE vehicle_id = $1 ORDER BY fillup_date ASC",
             vehicle_id,
         )
@@ -475,7 +481,7 @@ async def mpg_overlay(
         )
         fills = await conn.fetch(
             """
-            SELECT id, fillup_date, odo, fuel_volume, is_full
+            SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed
               FROM fillups
              WHERE vehicle_id = $1
              ORDER BY fillup_date ASC
@@ -687,7 +693,7 @@ async def fuel_grade_breakdown(
     async with pool.acquire() as conn:
         fills = await conn.fetch(
             """
-            SELECT id, fillup_date, odo, fuel_volume, is_full,
+            SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed,
                    fuel_type, price_total, price_per_unit
               FROM fillups
              WHERE vehicle_id = $1
@@ -832,7 +838,7 @@ async def anomalies(
         # tagged fillups — too noisy).
         fills = await conn.fetch(
             """
-            SELECT id, fillup_date, odo, fuel_volume, is_full,
+            SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed,
                    weather_temp_c
               FROM fillups
              WHERE vehicle_id = $1
