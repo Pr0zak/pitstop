@@ -948,15 +948,19 @@ class PitstopBridgeService : Service() {
         // logs and over the wire while preserving driving accuracy.
         val latR = (lat * 1e5).toLong() / 1e5
         val lonR = (lon * 1e5).toLong() / 1e5
-        // Don't update the local state bus while parked either.
-        // Otherwise the Live screen shows GPS coords ticking up while
-        // the car is off, which is confusing — the screen should be
-        // blank between drives.
-        if (stateBus.status.value.engineState != EngineState.On) return
+        // Always feed the local state bus so the Live screen's GPS
+        // tiles populate whenever the phone has a fix — previously we
+        // gated this on engine-on, which meant the tiles were blank
+        // any time the user opened Live without driving.
         stateBus.publishMetric("gps_lat", latR)
         stateBus.publishMetric("gps_lon", lonR)
         if (loc.hasSpeed()) stateBus.publishMetric("gps_speed", loc.speed.toDouble())
         if (loc.hasAltitude()) stateBus.publishMetric("gps_alt", loc.altitude)
+
+        // MQTT publish stays engine-on-gated: we don't want gps_points
+        // littered with stationary noise from a phone sitting in the
+        // driveway, and the trip route polyline only covers driving.
+        if (stateBus.status.value.engineState != EngineState.On) return
 
         // Bridge payload v2: one /location row carries the whole fix
         // (lat/lon/alt/speed/heading/accuracy) with the original capture
