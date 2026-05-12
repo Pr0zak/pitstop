@@ -1,189 +1,102 @@
 {
-  "version": "1.0",
+  "version": "1.2",
   "name": "honda-pilot-2019",
-  "description": "2019 Honda Pilot Elite — generic profile (no VIN/plate). Standard OBD-II Mode 01 PIDs plus Honda Mode 22 ATF temp. Gear and TPMS PIDs are stub-only and need to be filled in from a community-shared profile.",
+  "description": "2019 Honda Pilot — generic profile (no VIN/plate/MAC/MQTT/WiFi). Designed to be uploaded to a WiCAN with its Standard PIDs scan enabled. The single active custom entry is _hdr_reset, which restores the ELM header to broadcast at the end of each AutoPID cycle so the std PIDs continue to work. Mode 22 customs (ATF temp, gear, TPMS, AWD torque) are listed as stubs — they are gateway-blocked on the 2019 Elite trim that was used to verify this profile (see notes). Other Pilot trims/years may have Mode 22 reachable; if so, the canonical forum config for ATF temp is `222201` to PCM 0x7E0 with formula `(B5*9/5)-40` (verify the byte offset against your own bisect).",
   "protocol": "ISO15765-4 11-bit @ 500kbaud",
+  "notes": [
+    "WiCAN expression parser uses byte-index tokens B0..BN (unsigned) and S0..SN (signed). Torque-style 'AA' / 'AB' / single-letter aliases fail on custom Mode 22 PIDs.",
+    "AutoPID round-robin does not auto-restore the ELM header between PIDs. Always include _hdr_reset (or another broadcast-init PID) as the last entry so the std PIDs cycle keeps working.",
+    "Mode 22 access on Honda Pilots varies by year/trim/gateway firmware. Verified 2026-05-12 that ALL Mode 22 DIDs return NO DATA on a 2019 Pilot Elite — gateway only forwards Mode 01. Other Pilot trims/years may differ.",
+    "Memory of a previously 'working' atf_temp_f config using DID 0x3083 to TCM 0x7E1 with formula `(B6*9/5)-40` was a false positive: 0x62 is the Mode 22 positive-response echo byte (98 decimal → 136.4°F via that formula), present at the same position in every successful Mode 22 response regardless of actual data.",
+    "The Pilot V6 PCM uses Honda-extended Mode 01 PIDs 0x66 (MAF), 0x67 (coolant), 0x68 (IAT) — NOT the simple-format SAE PIDs 0x10, 0x05, 0x0F. Adding 0F as a custom returns NO DATA. Stick with 66/67/68 and let wican_aliases.py rewrite them to canonical names."
+  ],
   "pids": [
     {
-      "name": "engine_rpm",
-      "pid": "010C",
-      "expression": "((A*256)+B)/4",
-      "type": "decimal",
-      "period": 1000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 9000,
-      "unit": "rpm"
-    },
-    {
-      "name": "vehicle_speed",
-      "pid": "010D",
-      "expression": "A",
-      "type": "decimal",
-      "period": 1000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 220,
-      "unit": "kph"
-    },
-    {
-      "name": "throttle_position",
-      "pid": "0111",
-      "expression": "(A*100)/255",
-      "type": "decimal",
-      "period": 1000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 100,
-      "unit": "percent"
-    },
-    {
-      "name": "control_module_voltage",
-      "pid": "0142",
-      "expression": "((A*256)+B)/1000",
-      "type": "decimal",
-      "period": 1000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 18,
-      "unit": "volt"
-    },
-    {
-      "name": "coolant_temp",
-      "pid": "0105",
-      "expression": "A-40",
-      "type": "decimal",
-      "period": 5000,
-      "send_to": "MQTT",
-      "min": -40,
-      "max": 215,
-      "unit": "celsius"
-    },
-    {
       "name": "intake_air_temp",
-      "pid": "010F",
-      "expression": "A-40",
+      "pid": "0168",
+      "init": "ATSH7DF\rATCRA",
+      "expression": "B5-40",
       "type": "decimal",
       "period": 5000,
       "send_to": "MQTT",
       "min": -40,
       "max": 215,
-      "unit": "celsius"
+      "unit": "celsius",
+      "notes": "Honda V6 IAT (PID 0x68 dual-sensor). Polled as a CUSTOM Mode 01 PID rather than letting WiCAN's std-PID decoder handle it — the firmware's MQTT publish path for 0x68 emits the supported-bitmap byte (0x01) instead of the actual temp byte, yielding constant -39°C. Bisect confirmed the response layout: B5 holds sensor 1 temp (°C+40 encoded). DO NOT re-enable '68-IntakeAirTempSens1' in std_pids — it'll publish wrong data."
     },
     {
-      "name": "maf_air_flow",
-      "pid": "0110",
-      "expression": "((A*256)+B)/100",
+      "name": "_hdr_reset",
+      "pid": "0100",
+      "init": "ATSH7DF\rATCRA",
+      "expression": "B0",
       "type": "decimal",
       "period": 5000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 655,
-      "unit": "g/s"
-    },
-    {
-      "name": "engine_load",
-      "pid": "0104",
-      "expression": "(A*100)/255",
-      "type": "decimal",
-      "period": 5000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 100,
-      "unit": "percent"
-    },
-    {
-      "name": "fuel_level",
-      "pid": "012F",
-      "expression": "(A*100)/255",
-      "type": "decimal",
-      "period": 5000,
-      "send_to": "MQTT",
-      "min": 0,
-      "max": 100,
-      "unit": "percent"
-    },
-    {
-      "name": "engine_oil_temp",
-      "pid": "015C",
-      "expression": "A-40",
-      "type": "decimal",
-      "period": 5000,
-      "send_to": "MQTT",
-      "min": -40,
-      "max": 210,
-      "unit": "celsius"
-    },
-    {
-      "name": "atf_temp_f",
-      "pid": "2201",
-      "init": "220001",
-      "expression": "(AA*9/5)-40",
-      "type": "decimal",
-      "period": 5000,
-      "send_to": "MQTT",
-      "min": -40,
-      "max": 350,
-      "unit": "fahrenheit",
-      "notes": "Honda Mode 22 — auto-trans fluid temp. °C variant: AA-40."
-    },
-    {
-      "name": "fuel_status",
-      "pid": "0103",
-      "expression": "A",
-      "type": "decimal",
-      "period": 20000,
       "send_to": "MQTT",
       "min": 0,
       "max": 255,
       "unit": "bitfield",
-      "notes": "1=open loop (cold), 2=closed loop, 4=open loop (load), 8=open loop (fault), 16=closed-loop with O2 fault."
-    },
+      "notes": "Sends a Mode 01 PID 0x00 (supported-PIDs bitmap) on broadcast 0x7DF to restore the ELM header between AutoPID cycles. The value is discarded — only the init side-effect matters. Must be the last entry in the AutoPID pids array."
+    }
+  ],
+  "std_pids_recommended": [
+    "01-MonitorStatus",
+    "03-FuelSystemStatus",
+    "04-CalcEngineLoad",
+    "06-ShortFuelTrimBank1",
+    "07-LongFuelTrimBank1",
+    "08-ShortFuelTrimBank2",
+    "09-LongFuelTrimBank2",
+    "0B-IntakeManiAbsPress",
+    "0C-EngineRPM",
+    "0D-VehicleSpeed",
+    "0E-TimingAdvance",
+    "11-ThrottlePosition",
+    "1F-TimeSinceEngStart",
+    "21-DistanceMILOn",
+    "2F-FuelTankLevel",
+    "31-DistanceSinceCodeClear",
+    "33-AbsBaroPres",
+    "42-ControlModuleVolt",
+    "43-AbsLoadValue",
+    "45-RelThrottlePos",
+    "62-ActualEngTorqPct",
+    "63-EngRefTorq",
+    "66-MAFSensorA",
+    "67-EngineCoolantTemp1",
+    "68-IntakeAirTempSens1",
+    "9D-EngineFuelRate",
+    "A6-Odometer"
+  ],
+  "std_pids_avoid": {
+    "0F-IntakeAirTemp, 10-MAFAirFlowRate, 05-EngineCoolantTemp": "Honda V6 PCM does NOT support the simple-format Mode 01 PIDs — they return NO DATA. Honda uses bank-specific PIDs 66/67/68 instead. Backend wican_aliases.py maps those to the canonical names.",
+    "46-AmbientAirTemp, 5C-EngineOilTemp, 5A-RelAccelPedalPos, 4D-TimeRunMILOn, 61-DriversDemandPercentTorque": "Not exposed by the Pilot's PCM. Verified 2026-05-12 — return NO DATA whether added as std or custom Mode 01.",
+    "68-IntakeAirTempSens1": "WiCAN firmware bug — MQTT publish path emits byte 0 (bitmap = 0x01) instead of byte 1 (temp), yielding constant -39°C. Use the custom Mode 01 PID 0168 with expression B5-40 (defined above in 'pids') instead.",
+    "68-IntakeAirTempSens2, 66-MAFSensorB, 67-EngineCoolantTemp2": "Sensor 2 / Bank B variants — usually sentinel 'no sensor' on this engine. Sensor 1 / A holds the real value.",
+    "55-ShortSecOxyTrimBank3, 56-LongSecOxyTrimBank3, 57-ShortSecOxyTrimBank4, 58-LongSecOxyTrimBank4": "Banks 3 and 4 don't exist on the V6 — always NO DATA. Disable to reduce poll cycle time."
+  },
+  "stub_pids": [
     {
-      "name": "stft_b1",
-      "pid": "0106",
-      "expression": "((A-128)*100)/128",
-      "type": "decimal",
-      "period": 20000,
-      "send_to": "MQTT",
-      "min": -100,
-      "max": 100,
-      "unit": "percent"
-    },
-    {
-      "name": "ltft_b1",
-      "pid": "0107",
-      "expression": "((A-128)*100)/128",
-      "type": "decimal",
-      "period": 20000,
-      "send_to": "MQTT",
-      "min": -100,
-      "max": 100,
-      "unit": "percent"
-    },
-    {
-      "name": "fuel_rate",
-      "pid": "015E",
-      "expression": "((A*256)+B)/20",
+      "name": "atf_temp_f",
+      "pid": "222201",
+      "init": "ATSH7DF\rATCRA",
+      "expression": "(B5*9/5)-40",
       "type": "decimal",
       "period": 5000,
       "send_to": "MQTT",
-      "min": 0,
-      "max": 200,
-      "unit": "l/h",
-      "notes": "Reported by some Pilot trims; falls back to MAF-derived estimate when missing."
-    }
-  ],
-  "stub_pids": [
+      "min": -40,
+      "max": 300,
+      "unit": "fahrenheit",
+      "notes": "Forum-canonical config for ATF temp on Honda Pilot ZF 9HP. Sent to broadcast 0x7DF, expects a positive Mode 22 response with the temp byte at the first data position (B5 in WiCAN indexing, after the 4-byte header and mode-echo). NOT VERIFIED on the test vehicle (2019 Pilot Elite): the gateway blocks all Mode 22 responses there. Other Pilot trims/years may answer."
+    },
     {
       "name": "gear",
       "pid": "TBD",
-      "notes": "Honda Mode 22 — exact PID and byte index needs to be transcribed from a community-shared 2019 Pilot profile (see Piloteers forum threads in docs/research/honda-pilot-pids.md)."
+      "notes": "Current gear position. Honda exposes via Mode 22 to the TCM on some platforms. Gateway-blocked on the test 2019 Elite — try other DIDs / different trims to verify."
     },
     {
       "name": "tpms_pressure_fl",
       "pid": "TBD",
-      "notes": "Honda Mode 22 — 2-byte int per tire, scale TBD. Same caveat as gear."
+      "notes": "Tire pressure per corner. Honda exposes via Mode 22 on body/gateway ECUs. Gateway-blocked on the test 2019 Elite."
     },
     {
       "name": "tpms_pressure_fr",
@@ -196,6 +109,11 @@
     {
       "name": "tpms_pressure_rr",
       "pid": "TBD"
+    },
+    {
+      "name": "ivtm4_torque_split",
+      "pid": "TBD",
+      "notes": "i-VTM4 AWD torque distribution (front/rear/left/right). Honda exposes via Mode 22 to a chassis ECU. Gateway-blocked on the test 2019 Elite."
     }
   ]
 }

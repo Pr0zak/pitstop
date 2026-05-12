@@ -197,7 +197,6 @@ fun LiveScreen(
                 title = "Fuel system",
                 tiles = listOf(
                     TileSpec("Fuel level", "fuel_level", "%", 0),
-                    TileSpec("ATF temp", "atf_temp_f", "°F", 0),
                     TileSpec("STFT B1", "stft_b1", "%", 1),
                     TileSpec("LTFT B1", "ltft_b1", "%", 1),
                     TileSpec("STFT B2", "stft_b2", "%", 1),

@@ -152,8 +152,6 @@ const TRIP_SERIES: TripSeries[] = [
   { metric: "fuel_level",             label: "Fuel (%)",         stroke: "#f97316", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
   { metric: "control_module_voltage", label: "Battery (V)",      stroke: "#facc15", scale: "volt",   axisLabel: "V",     transform: (v) => v,            defaultVisible: false },
   { metric: "intake_air_temp",        label: "Intake (°F)",      stroke: "#94a3b8", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
-  { metric: "engine_oil_temp",        label: "Oil (°F)",         stroke: "#f87171", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
-  { metric: "atf_temp_f",             label: "ATF (°F)",         stroke: "#dc2626", scale: "temp",   axisLabel: "°F",    transform: (v) => v,            defaultVisible: false },
   // Derived series — computed below from successive vehicle_speed
   // samples (dv/dt → m/s², converted to g). Won't be found in
   // pid_readings; the chart loop synthesises the column.

@@ -609,6 +609,5 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
     TripMetricDef("engine_load", "Load %", Color(0xFFEAB308), "%"),
     TripMetricDef("coolant_temp", "Coolant (°C)", Color(0xFFEF4444), "°C"),
     TripMetricDef("fuel_level", "Fuel %", Color(0xFF22C55E), "%"),
-    TripMetricDef("atf_temp_f", "ATF (°F)", Color(0xFFA855F7), "°F"),
     TripMetricDef("throttle_position", "Throttle %", Color(0xFF14B8A6), "%"),
 )

@@ -123,8 +123,6 @@ const speed = computed(() => num("vehicle_speed"));
 
 // Engine health
 const coolant = computed(() => num("coolant_temp"));
-const oilTemp = computed(() => num("engine_oil_temp"));
-const atf = computed(() => num("atf_temp_f"));
 const voltage = computed(() => num("control_module_voltage"));
 const fuelLvl = computed(() => num("fuel_level"));
 
@@ -146,7 +144,6 @@ const ltftB2 = computed(() => num("ltft_b2"));
 const iat = computed(() => num("intake_air_temp"));
 const map = computed(() => num("intake_manifold_pressure"));
 const baro = computed(() => num("barometric_pressure"));
-const ambient = computed(() => num("ambient_air_c"));
 const timing = computed(() => num("timing_advance"));
 
 // Trip context
@@ -263,14 +260,6 @@ function trimClass(v: number | null): string {
             <div class="big">{{ fmtTempC(coolant) }}</div>
           </div>
           <div class="card tile">
-            <h3>Oil temp</h3>
-            <div class="big">{{ fmtTempC(oilTemp) }}</div>
-          </div>
-          <div class="card tile">
-            <h3>ATF temp</h3>
-            <div class="big">{{ atf != null ? atf.toFixed(0) + " °F" : "—" }}</div>
-          </div>
-          <div class="card tile">
             <h3>Battery</h3>
             <div class="big">
               {{ voltage != null ? voltage.toFixed(2) + " V" : "—" }}
@@ -363,10 +352,6 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Intake air</h3>
             <div class="big">{{ fmtTempC(iat) }}</div>
-          </div>
-          <div class="card tile">
-            <h3>Ambient</h3>
-            <div class="big">{{ fmtTempC(ambient) }}</div>
           </div>
           <div class="card tile">
             <h3>MAP</h3>

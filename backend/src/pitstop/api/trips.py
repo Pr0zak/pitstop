@@ -134,8 +134,7 @@ async def get_trip(
                                   'throttle_position', 'maf_air_flow',
                                   'manifold_pressure', 'engine_load',
                                   'control_module_voltage', 'fuel_level',
-                                  'intake_air_temp', 'engine_oil_temp',
-                                  'atf_temp_f',
+                                  'intake_air_temp',
                                   -- IMU axes for cornering / bumps / hard-event
                                   -- markers (Task #111). avg() over the bucket
                                   -- gives a centroid that visualises persistent

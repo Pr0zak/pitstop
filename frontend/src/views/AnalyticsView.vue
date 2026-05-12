@@ -65,30 +65,6 @@ const tempCoolantQ = useAsync(
       : Promise.resolve([]),
   [vehicleId, window],
 );
-const tempOilQ = useAsync(
-  () =>
-    vehicleId.value
-      ? api.aggregateReadings({
-          vehicle_id: vehicleId.value,
-          metric: "oil_temp",
-          from: fromIso.value,
-          bucket: "day",
-        })
-      : Promise.resolve([]),
-  [vehicleId, window],
-);
-const tempAtfQ = useAsync(
-  () =>
-    vehicleId.value
-      ? api.aggregateReadings({
-          vehicle_id: vehicleId.value,
-          metric: "atf_temp_f",
-          from: fromIso.value,
-          bucket: "day",
-        })
-      : Promise.resolve([]),
-  [vehicleId, window],
-);
 
 const dtcsQ = useAsync(
   () =>
@@ -102,8 +78,6 @@ watch(vehicleId, () => {
   void mpgQ.reload();
   void rpmQ.reload();
   void tempCoolantQ.reload();
-  void tempOilQ.reload();
-  void tempAtfQ.reload();
   void dtcsQ.reload();
 });
 
@@ -172,8 +146,6 @@ const tempChart = computed(() => {
   const series: { points: typeof tempCoolantQ.data.value; label: string; color: string }[] =
     [
       { points: tempCoolantQ.data.value, label: "Coolant", color: "#d29922" },
-      { points: tempOilQ.data.value, label: "Oil", color: "#f85149" },
-      { points: tempAtfQ.data.value, label: "ATF", color: "#2f81f7" },
     ];
   const all = series.filter((s) => s.points && s.points.length > 0);
   if (all.length === 0) return null;

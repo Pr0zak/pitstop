@@ -50,11 +50,19 @@ WICAN_TO_CANONICAL: dict[str, str] = {
     "56-LongSecOxyTrimBank1": "ltft_sec_b1",
     "57-ShortSecOxyTrimBank2": "stft_sec_b2",
     "58-LongSecOxyTrimBank2": "ltft_sec_b2",
-    # Honda dual-sensor variants — prefer Sensor1/A as the canonical when
-    # both are present, since the Mode 01 PID (05/0F/10) is the same value
-    # the dashboard uses anyway. Sensor2/B stay under WiCAN names.
+    # Honda dual-sensor variants — Sensor1/A maps to canonical for coolant
+    # and MAF where WiCAN's std-PID decoder is byte-correct.
+    #
+    # 68-IntakeAirTempSens1 is DELIBERATELY NOT aliased: WiCAN-PRO firmware
+    # v4.49 Beta-06 has a confirmed decoder bug on the MQTT publish path for
+    # PID 0x68 — it emits the supported-sensors bitmap byte (0x01) instead of
+    # the temperature byte, yielding a constant -39°C. The UI Test button
+    # reads the right byte (~69°C plausible) but MQTT publishes -39 on every
+    # poll. Bisect on 2026-05-12 confirmed the response layout via custom
+    # Mode 01 PID 0168 — sensor 1 temp is at byte index B5 (after PCI+length
+    # +mode-echo+PID-echo+bitmap). Use a custom PID named `intake_air_temp`
+    # with PID 0168 and expression `B5-40` instead.
     "67-EngineCoolantTemp1": "coolant_temp",
-    "68-IntakeAirTempSens1": "intake_air_temp",
     "66-MAFSensorA": "maf_air_flow",
     # WiCAN's reserved synthetic key — drop it; pitstop has its own ts.
     "timestamp": "_drop_",

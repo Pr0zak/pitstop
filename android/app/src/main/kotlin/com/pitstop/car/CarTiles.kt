@@ -21,7 +21,6 @@ object CarTileCatalog {
         CarTileSpec("vehicle_speed", "Speed", "kph", 0),
         CarTileSpec("coolant_temp", "Coolant", "°C", 0),
         CarTileSpec("intake_air_temp", "Intake", "°C", 0),
-        CarTileSpec("oil_temp", "Oil", "°C", 0),
         CarTileSpec("engine_load", "Eng load", "%", 0),
         CarTileSpec("throttle_position", "Throttle", "%", 0),
         CarTileSpec("maf_air_flow", "MAF", "g/s", 1),
@@ -29,7 +28,6 @@ object CarTileCatalog {
         CarTileSpec("run_time_since_start", "Run time", "s", 0),
         // ── Fuel system ───────────────────────────────────────────
         CarTileSpec("fuel_level", "Fuel", "%", 0),
-        CarTileSpec("atf_temp_f", "ATF", "°F", 0),
         CarTileSpec("stft_b1", "STFT B1", "%", 1),
         CarTileSpec("ltft_b1", "LTFT B1", "%", 1),
         CarTileSpec("stft_b2", "STFT B2", "%", 1),
@@ -47,8 +45,9 @@ object CarTileCatalog {
     )
 
     val DEFAULT_DIAG: List<String> = listOf(
-        "atf_temp_f", "throttle_position", "maf_air_flow",
+        "throttle_position", "maf_air_flow",
         "run_time_since_start", "stft_b1", "ltft_b1",
+        "stft_b2",
     )
 
     fun byKey(key: String): CarTileSpec? = ALL.firstOrNull { it.key == key }

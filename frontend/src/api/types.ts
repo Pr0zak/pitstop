@@ -141,8 +141,6 @@ export interface TripSample {
   vehicle_speed?: number | null;
   engine_rpm?: number | null;
   coolant_temp?: number | null;
-  atf_temp_f?: number | null;
-  oil_temp?: number | null;
   throttle_position?: number | null;
   fuel_level?: number | null;
   control_module_voltage?: number | null;
