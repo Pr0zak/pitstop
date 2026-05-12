@@ -250,6 +250,7 @@ internal data class TimedPoint(val tMillis: Long, val value: Double)
 internal fun pivotSamples(
     samples: List<com.pitstop.http.TripSampleDto>,
     maxPoints: Int = 500,
+    smoothWindow: Int = 1,
 ): Map<String, MetricSeries> {
     val byMetric = mutableMapOf<String, MutableList<TimedPoint>>()
     for (s in samples) {
@@ -262,8 +263,48 @@ internal fun pivotSamples(
     }
     return byMetric.mapValues { (metric, pts) ->
         pts.sortBy { it.tMillis }
-        MetricSeries(metric, downsample(pts, maxPoints))
+        // Apply spike-removal first (rolling median) so the
+        // averaging downsample doesn't carry outliers forward into
+        // its bucket means. Layering order is intentional:
+        // median → downsample.
+        val smoothed = rollingMedian(pts, smoothWindow)
+        MetricSeries(metric, downsample(smoothed, maxPoints))
     }
+}
+
+/**
+ * Rolling-median spike filter. For each index `i`, replaces its
+ * value with the median of values in `[i - W/2, i + W/2]` clipped to
+ * the bounds of the input. The point timestamp is preserved as-is so
+ * the chart's x-axis still reflects real capture time.
+ *
+ * Operates on array indices — gaps in time are not bridged. The
+ * caller has already sorted by time when this runs from pivotSamples.
+ * `window <= 1` returns the input unchanged.
+ */
+internal fun rollingMedian(points: List<TimedPoint>, window: Int): List<TimedPoint> {
+    if (window <= 1 || points.size < 2) return points
+    val half = window / 2
+    val n = points.size
+    val out = ArrayList<TimedPoint>(n)
+    // Reusable scratch buffer; we copy slice values and sort to find
+    // the median. Window sizes top out at ~15 so this is negligible.
+    val scratch = DoubleArray(window)
+    for (i in 0 until n) {
+        val lo = max(0, i - half)
+        val hi = min(n - 1, i + half)
+        val len = hi - lo + 1
+        for (k in 0 until len) scratch[k] = points[lo + k].value
+        // Partial sort: only the first `len` slots matter.
+        java.util.Arrays.sort(scratch, 0, len)
+        val median = if (len % 2 == 1) {
+            scratch[len / 2]
+        } else {
+            (scratch[len / 2 - 1] + scratch[len / 2]) / 2.0
+        }
+        out += TimedPoint(points[i].tMillis, median)
+    }
+    return out
 }
 
 private fun downsample(points: List<TimedPoint>, maxPoints: Int): List<TimedPoint> {

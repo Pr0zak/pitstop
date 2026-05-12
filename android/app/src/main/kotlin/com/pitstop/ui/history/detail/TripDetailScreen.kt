@@ -81,7 +81,23 @@ private fun Loaded(
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
     modifier: Modifier,
 ) {
-    val seriesMap = remember(trip.samples) { pivotSamples(trip.samples) }
+    // Default the smoothing level once per trip: long captures
+    // (> 300 samples in any series) get Medium out of the gate
+    // because they're the ones that look noisy on a narrow screen.
+    // Short trips render fine raw, so default to Off.
+    val maxSeriesSize = remember(trip.samples) {
+        trip.samples
+            .groupingBy { it.metric }
+            .eachCount()
+            .values
+            .maxOrNull() ?: 0
+    }
+    var smoothLevel by remember(trip.samples) {
+        mutableStateOf(if (maxSeriesSize > 300) SmoothLevel.Medium else SmoothLevel.Off)
+    }
+    val seriesMap = remember(trip.samples, smoothLevel) {
+        pivotSamples(trip.samples, smoothWindow = smoothLevel.windowSize)
+    }
     val availableMetrics = remember(seriesMap) {
         TRIP_METRICS.filter { seriesMap[it.metric]?.points?.isNotEmpty() == true }
     }
@@ -154,6 +170,8 @@ private fun Loaded(
                                 visibleMetrics + m
                             }
                         },
+                        smoothLevel = smoothLevel,
+                        onCycleSmooth = { smoothLevel = smoothLevel.next() },
                     )
                     val display = remember(visibleMetrics, seriesMap) {
                         availableMetrics
@@ -449,6 +467,8 @@ private fun SeriesChipRow(
     available: List<TripMetricDef>,
     visible: Set<String>,
     onToggle: (String) -> Unit,
+    smoothLevel: SmoothLevel,
+    onCycleSmooth: () -> Unit,
 ) {
     androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier.fillMaxWidth(),
@@ -468,6 +488,48 @@ private fun SeriesChipRow(
                 ),
             )
         }
+        // Smooth chip — cycles Off → Light → Medium → Heavy → Off.
+        // Sits at the end of the row so the series toggles read
+        // left-to-right first, like the web frontend.
+        val smoothOn = smoothLevel != SmoothLevel.Off
+        AssistChip(
+            onClick = onCycleSmooth,
+            label = {
+                Text(
+                    "Smooth (${smoothLevel.label})",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = if (smoothOn) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                labelColor = if (smoothOn) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            ),
+        )
+    }
+}
+
+/**
+ * Chart smoothing level. Maps directly to a rolling-median window
+ * size that `pivotSamples` applies before the existing downsample.
+ * Stored in-memory per-trip; doesn't need to outlive the screen.
+ */
+internal enum class SmoothLevel(val label: String, val windowSize: Int) {
+    Off("Off", 1),
+    Light("Light", 3),
+    Medium("Medium", 7),
+    Heavy("Heavy", 15);
+
+    fun next(): SmoothLevel {
+        val values = entries
+        return values[(ordinal + 1) % values.size]
     }
 }
 
