@@ -91,7 +91,11 @@ data class FillupDto(
     @SerialName("city") val city: String? = null,
     @SerialName("lat") val lat: Double? = null,
     @SerialName("lon") val lon: Double? = null,
-    @SerialName("station_id") val stationId: String? = null,
+    // Backend serves station_id as an integer from the Fuelio import
+    // (e.g. 63692). Typing this as String? caused a kotlinx-serialization
+    // type-mismatch that broke /fillups deserialisation entirely — Home
+    // hero + History list both went blank in v0.1.113.
+    @SerialName("station_id") val stationId: Long? = null,
     @SerialName("fuel_type") val fuelType: Int? = null,
     @SerialName("notes") val notes: String? = null,
     @SerialName("weather_temp_c") val weatherTempC: Double? = null,
