@@ -1,5 +1,6 @@
 package com.pitstop.ui.history
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,16 +13,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,67 +40,193 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
 import com.pitstop.http.TripDto
 import com.pitstop.ui.components.PitstopTopAppBar
+import com.pitstop.ui.history.detail.DtcDetailScreen
+import com.pitstop.ui.history.detail.FillupDetailScreen
+import com.pitstop.ui.history.detail.TripDetailScreen
+import java.net.URLEncoder
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+/**
+ * History tab — root surface owns its own NavHost so drilling into a
+ * detail screen doesn't break the bottom NavigationBar. Routes:
+ *   list                  – the three subtabs (Trips/Fillups/DTCs)
+ *   trip/{id}             – TripDetailScreen
+ *   fillup/{id}           – FillupDetailScreen
+ *   dtc/{code}?vehicleId= – DTCDetailScreen
+ *
+ * The TopAppBar swaps between the brand title (on list) and a back
+ * arrow + section title (on detail). The bottom NavigationBar is
+ * owned by MainActivity's Scaffold so it stays put across detail
+ * transitions.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(
+fun HistoryScreen() {
+    val nav = rememberNavController()
+    val current = nav.currentBackStackEntryAsState().value
+    val onListRoute = current?.destination?.route == ROUTE_LIST ||
+        current?.destination?.route == null
+    val titleForRoute = when (current?.destination?.route?.substringBefore('/')) {
+        "trip" -> "Trip"
+        "fillup" -> "Fillup"
+        "dtc" -> "DTC"
+        else -> null
+    }
+
+    Scaffold(
+        topBar = {
+            if (onListRoute) {
+                PitstopTopAppBar()
+            } else {
+                CenterAlignedTopAppBar(
+                    title = {
+                        Text(
+                            titleForRoute ?: "",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { nav.popBackStack() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                    ),
+                    windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+                )
+            }
+        },
+    ) { padding ->
+        NavHost(
+            navController = nav,
+            startDestination = ROUTE_LIST,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            composable(ROUTE_LIST) {
+                HistoryListScreen(
+                    onOpenTrip = { id -> nav.navigate("trip/$id") },
+                    onOpenFillup = { id -> nav.navigate("fillup/$id") },
+                    onOpenDtcCode = { code, vehicleId ->
+                        val encoded = URLEncoder.encode(code, "UTF-8")
+                        nav.navigate("dtc/$encoded?vehicleId=$vehicleId")
+                    },
+                )
+            }
+            composable(
+                route = "trip/{id}",
+                arguments = listOf(
+                    androidx.navigation.navArgument("id") {
+                        type = androidx.navigation.NavType.StringType
+                    },
+                ),
+            ) {
+                TripDetailScreen(
+                    onOpenDtc = { code, vehicleId ->
+                        val encoded = URLEncoder.encode(code, "UTF-8")
+                        nav.navigate("dtc/$encoded?vehicleId=$vehicleId")
+                    },
+                )
+            }
+            composable(
+                route = "fillup/{id}",
+                arguments = listOf(
+                    androidx.navigation.navArgument("id") {
+                        type = androidx.navigation.NavType.StringType
+                    },
+                ),
+            ) {
+                FillupDetailScreen()
+            }
+            composable(
+                route = "dtc/{code}?vehicleId={vehicleId}",
+                arguments = listOf(
+                    androidx.navigation.navArgument("code") {
+                        type = androidx.navigation.NavType.StringType
+                    },
+                    androidx.navigation.navArgument("vehicleId") {
+                        type = androidx.navigation.NavType.StringType
+                        defaultValue = ""
+                    },
+                ),
+            ) {
+                DtcDetailScreen()
+            }
+        }
+    }
+}
+
+private const val ROUTE_LIST = "list"
+
+/**
+ * The original three-subtab list view, now lifted into its own
+ * composable so the History root can host both it and the detail
+ * destinations under a single NavHost. The viewModel is hoisted via
+ * Hilt — it's still tied to the History root entry, so switching to
+ * a detail and back doesn't reload the list.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryListScreen(
+    onOpenTrip: (id: String) -> Unit,
+    onOpenFillup: (id: String) -> Unit,
+    onOpenDtcCode: (code: String, vehicleId: String) -> Unit,
     viewModel: HistoryViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val pendingCount by viewModel.pendingCount.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(0) }
 
-    Scaffold(topBar = { PitstopTopAppBar() }) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
-            // Pending drive upload queue — appears only when there's
-            // something to ship. Surfaces queue size + "Sync now"
-            // button so the user knows what's parked locally.
-            if (pendingCount > 0) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "$pendingCount drive${if (pendingCount == 1) "" else "s"} pending upload",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    AssistChip(
-                        onClick = { viewModel.syncNow() },
-                        label = { Text("Sync now") },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        ),
-                    )
-                }
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (pendingCount > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "$pendingCount drive${if (pendingCount == 1) "" else "s"} pending upload",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                AssistChip(
+                    onClick = { viewModel.syncNow() },
+                    label = { Text("Sync now") },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    ),
+                )
             }
-            SecondaryTabRow(selectedTabIndex = selectedTab) {
-                listOf("Trips", "Fillups", "DTCs").forEachIndexed { i, label ->
-                    Tab(
-                        selected = selectedTab == i,
-                        onClick = { selectedTab = i },
-                        text = { Text(label) },
-                    )
-                }
+        }
+        SecondaryTabRow(selectedTabIndex = selectedTab) {
+            listOf("Trips", "Fillups", "DTCs").forEachIndexed { i, label ->
+                Tab(
+                    selected = selectedTab == i,
+                    onClick = { selectedTab = i },
+                    text = { Text(label) },
+                )
             }
-            when (selectedTab) {
-                0 -> TripsList(state = ui.trips, onRefresh = viewModel::refresh)
-                1 -> FillupsList(state = ui.fillups, onRefresh = viewModel::refresh)
-                2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh)
-            }
+        }
+        when (selectedTab) {
+            0 -> TripsList(state = ui.trips, onRefresh = viewModel::refresh, onOpen = onOpenTrip)
+            1 -> FillupsList(state = ui.fillups, onRefresh = viewModel::refresh, onOpen = onOpenFillup)
+            2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh, onOpen = onOpenDtcCode)
         }
     }
 }
@@ -128,9 +261,17 @@ private fun <T> keyOf(value: T): Any = when (value) {
 }
 
 @Composable
-private fun TripsList(state: HistoryListState<TripDto>, onRefresh: () -> Unit) {
+private fun TripsList(
+    state: HistoryListState<TripDto>,
+    onRefresh: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
     ListSurface(state = state, onRefresh = onRefresh, emptyMessage = "No trips yet — take a drive.") { trip ->
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpen(trip.id) },
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -174,9 +315,17 @@ private fun TripsList(state: HistoryListState<TripDto>, onRefresh: () -> Unit) {
 }
 
 @Composable
-private fun FillupsList(state: HistoryListState<FillupDto>, onRefresh: () -> Unit) {
+private fun FillupsList(
+    state: HistoryListState<FillupDto>,
+    onRefresh: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
     ListSurface(state = state, onRefresh = onRefresh, emptyMessage = "No fillups yet.") { f ->
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpen(f.id) },
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -217,9 +366,17 @@ private fun FillupsList(state: HistoryListState<FillupDto>, onRefresh: () -> Uni
 }
 
 @Composable
-private fun DtcsList(state: HistoryListState<DtcDto>, onRefresh: () -> Unit) {
+private fun DtcsList(
+    state: HistoryListState<DtcDto>,
+    onRefresh: () -> Unit,
+    onOpen: (code: String, vehicleId: String) -> Unit,
+) {
     ListSurface(state = state, onRefresh = onRefresh, emptyMessage = "No active DTCs — clean bill of health.") { dtc ->
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpen(dtc.code, dtc.vehicleId) },
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -149,6 +149,11 @@ dependencies {
     // GPS
     implementation(libs.play.services.location)
 
+    // MapLibre — route polyline on the trip-detail screen (#122).
+    // Same tile + style vocab as the web frontend, so a "voyager"
+    // style URL renders identically across surfaces.
+    implementation(libs.maplibre.android)
+
     // Android Auto (AndroidX Car App library)
     implementation(libs.androidx.car.app)
     implementation(libs.androidx.car.app.projected)
