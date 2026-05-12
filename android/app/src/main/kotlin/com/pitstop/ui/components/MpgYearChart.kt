@@ -43,13 +43,19 @@ import kotlin.math.roundToInt
  * and (because the backend's `window=year` returns *month* buckets, not
  * a 12-month rolling) the title was a lie.
  *
- * This component takes the raw `MpgPointDto` list (period is "YYYY-MM"
- * for the monthly window) and renders:
+ * The raw monthly series is too noisy to read — a single partial fillup
+ * can spike one month from 18 to 33 mpg and squash everything else into
+ * a flat ribbon. We render a 3-month rolling median instead, which
+ * preserves the trend shape while killing single-point spikes. Each
+ * smoothed value is `median(points[i-1], points[i], points[i+1])`,
+ * with the edges using a shorter window.
+ *
+ * Layout:
  *   - title: "MPG · last 12 months"
- *   - min/max y-axis labels at the left edge of the plot
- *   - first/last period labels at the bottom edge (e.g. "May 25" → "May 26")
- *   - tap or drag to show a vertical guide + value bubble
- *   - subtitle: "{n} months · {min}–{max} mpg"
+ *   - min/max y-axis labels at the left edge of the plot (smoothed)
+ *   - first/last period labels at the bottom edge
+ *   - tap or drag to show a vertical guide + smoothed-value bubble
+ *   - subtitle: "3-mo rolling median · {min}–{max} mpg"
  */
 @Composable
 fun MpgYearChart(
@@ -59,6 +65,7 @@ fun MpgYearChart(
     val cleaned = remember(points) {
         points.filter { (it.mpg ?: 0.0) > 0 }.takeLast(12)
     }
+    val smoothed = remember(cleaned) { rollingMedian(cleaned, window = 3) }
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -72,7 +79,7 @@ fun MpgYearChart(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (cleaned.size < 2) {
+            if (smoothed.size < 2) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Not enough data",
@@ -81,11 +88,11 @@ fun MpgYearChart(
                 )
                 return@Column
             }
-            val minMpg = cleaned.minOf { it.mpg!! }
-            val maxMpg = cleaned.maxOf { it.mpg!! }
+            val minMpg = smoothed.minOf { it.mpg!! }
+            val maxMpg = smoothed.maxOf { it.mpg!! }
             Spacer(Modifier.height(8.dp))
             MpgLineCanvas(
-                points = cleaned,
+                points = smoothed,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(120.dp),
@@ -100,23 +107,50 @@ fun MpgYearChart(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = formatPeriodShort(cleaned.first().period),
+                    text = formatPeriodShort(smoothed.first().period),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = formatPeriodShort(cleaned.last().period),
+                    text = formatPeriodShort(smoothed.last().period),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                "${cleaned.size} months  ·  ${"%.1f".format(minMpg)}–${"%.1f".format(maxMpg)} mpg",
+                "3-mo rolling median  ·  ${"%.1f".format(minMpg)}–${"%.1f".format(maxMpg)} mpg",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * Replace each point's mpg with the median of itself and its
+ * `window/2` neighbours on either side. Edge points use shorter
+ * windows — index 0 uses median(0, 1), the last index uses
+ * median(n-2, n-1). Period strings are preserved unchanged.
+ */
+private fun rollingMedian(points: List<MpgPointDto>, window: Int): List<MpgPointDto> {
+    if (points.size < 2) return points
+    val half = window / 2
+    return points.mapIndexed { i, p ->
+        val lo = (i - half).coerceAtLeast(0)
+        val hi = (i + half).coerceAtMost(points.lastIndex)
+        val slice = points.subList(lo, hi + 1).mapNotNull { it.mpg }
+        if (slice.isEmpty()) {
+            p
+        } else {
+            val sorted = slice.sorted()
+            val median = if (sorted.size % 2 == 1) {
+                sorted[sorted.size / 2]
+            } else {
+                (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2.0
+            }
+            p.copy(mpg = median)
         }
     }
 }
