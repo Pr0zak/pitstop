@@ -1,12 +1,18 @@
 package com.pitstop.ui.history.detail
 
 import android.content.Context
+import android.util.Log
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -23,19 +29,31 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.Style
 
+private const val TAG = "PitstopMap"
+
 /**
  * Compose wrapper for MapLibre's native MapView, rendering a trip's
  * GPS polyline. The line is drawn as multiple short LineString
  * features, each colored by the speed at the segment's start —
  * mirrors `routeSegments` in the web TripDetailView.
  *
- * Style URL: Carto Voyager (matches the web's default basemap). The
- * style is fetched on first display, then cached by the MapLibre
- * runtime.
+ * Style URL: Carto Voyager (matches the web's default basemap).
  *
- * MapLibre's `getMapAsync` callback must outlive recompositions; we
- * key the AndroidView so the same MapView instance is reused and only
- * the polyline GeoJSON is swapped on point change.
+ * Two non-obvious things matter here:
+ *
+ *   1. MapLibre.getInstance(context) must complete BEFORE MapView is
+ *      constructed — it pulls up the renderer's storage paths and
+ *      worker pool. Originally this was in a LaunchedEffect, which
+ *      runs *after* the synchronous `remember { MapView(context) }`
+ *      and crashed the trip-detail screen.
+ *   2. The MapView's id must not be set to android.R.id.content;
+ *      that's the host Activity's content frame and collides at
+ *      findViewById time. Letting MapView keep its default
+ *      auto-generated id is fine.
+ *
+ * If MapLibre fails to init or the MapView throws during construction
+ * we fall back to a plain "Map unavailable" placeholder so the rest
+ * of the trip-detail screen still renders.
  */
 @Composable
 fun MapLibreRouteView(
@@ -45,42 +63,54 @@ fun MapLibreRouteView(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // MapLibre's static init pulls the renderer + storage paths up.
-    // Safe to call multiple times — the SDK no-ops after the first.
-    LaunchedEffect(Unit) {
-        MapLibre.getInstance(context)
+    // Synchronous static init — must run before MapView is built.
+    // Safe to call multiple times; the SDK no-ops after the first.
+    val initOk = remember(context.applicationContext) {
+        runCatching { MapLibre.getInstance(context.applicationContext) }
+            .onFailure { Log.w(TAG, "MapLibre.getInstance failed", it) }
+            .isSuccess
     }
 
+    if (!initOk) {
+        MapUnavailableFallback(modifier)
+        return
+    }
+
+    // remember() persists the MapView across recomposition. Build it
+    // inside runCatching so a constructor-time failure doesn't kill
+    // the entire detail screen — we just render the fallback.
     val mapView = remember {
-        // We construct the MapView before the lifecycle is attached so
-        // we can drive it manually below — the AndroidView factory hook
-        // doesn't dispatch onCreate/onStart/onResume for us.
-        MapView(context).apply {
-            id = android.R.id.content // unique enough for our single
-            // map instance — avoids the "duplicate id" issue when the
-            // same composable is re-entered after backstack pop.
-        }
+        runCatching { MapView(context) }
+            .onFailure { Log.w(TAG, "MapView construction failed", it) }
+            .getOrNull()
+    }
+
+    if (mapView == null) {
+        MapUnavailableFallback(modifier)
+        return
     }
 
     // Mirror the host composable's lifecycle into the MapView so it
-    // pauses tile downloads when the user switches tabs / backgrounds.
+    // pauses tile downloads on tab switch / background.
     DisposableEffect(lifecycleOwner, mapView) {
-        mapView.onCreate(null)
-        mapView.onStart()
+        runCatching { mapView.onCreate(null) }
+        runCatching { mapView.onStart() }
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                Lifecycle.Event.ON_STOP -> mapView.onStop()
-                else -> Unit
+            runCatching {
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                    Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                    Lifecycle.Event.ON_STOP -> mapView.onStop()
+                    else -> Unit
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onPause()
-            mapView.onStop()
-            mapView.onDestroy()
+            runCatching { mapView.onPause() }
+            runCatching { mapView.onStop() }
+            runCatching { mapView.onDestroy() }
         }
     }
 
@@ -89,37 +119,50 @@ fun MapLibreRouteView(
             modifier = Modifier.fillMaxSize(),
             factory = { mapView },
             update = { view ->
-                view.getMapAsync { map ->
-                    setupMap(map, points, context)
-                }
+                runCatching {
+                    view.getMapAsync { map ->
+                        runCatching { setupMap(map, points) }
+                            .onFailure { Log.w(TAG, "setupMap failed", it) }
+                    }
+                }.onFailure { Log.w(TAG, "getMapAsync failed", it) }
             },
+        )
+    }
+}
+
+@Composable
+private fun MapUnavailableFallback(modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .wrapContentSize(Alignment.Center),
+    ) {
+        Text(
+            "Map unavailable",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
 private const val SOURCE_ROUTE = "pitstop-route"
 private const val LAYER_ROUTE = "pitstop-route-layer"
-// Carto's Voyager style — matches the web frontend's default base
-// map. Same vector tiles + glyphs MapLibre's GL renderer expects.
+// Carto's Voyager style — matches the web frontend's default basemap.
 private const val STYLE_URL =
     "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
 
 private fun setupMap(
     map: MapLibreMap,
     points: List<RoutePointDto>,
-    context: Context,
 ) {
-    map.setStyle(STYLE_URL) { style ->
-        renderRoute(map, style, points)
-    }
-    // Don't let map drags eat parent scroll on a phone — the user
-    // expects vertical scroll to keep working when they swipe down
-    // over the map area. MapLibre's default gesture set captures
-    // verticals; turn off scroll, keep pinch + tap to engage if the
-    // user explicitly wants to explore the route.
     map.uiSettings.isLogoEnabled = false
     map.uiSettings.isAttributionEnabled = true
     map.uiSettings.isCompassEnabled = false
+
+    map.setStyle(STYLE_URL) { style ->
+        runCatching { renderRoute(map, style, points) }
+            .onFailure { Log.w(TAG, "renderRoute failed", it) }
+    }
 }
 
 private fun renderRoute(
@@ -131,10 +174,7 @@ private fun renderRoute(
 
     // Build a FeatureCollection of 2-point LineStrings, one per
     // segment, with a `color` property set from the speed at the
-    // segment's start. We pre-render the color string so the style
-    // can use "case" on the `color` literal — simpler than the web's
-    // continuous expression, which doesn't translate 1:1 to the
-    // MapLibre Android style spec without hex arithmetic.
+    // segment's start.
     val featuresJson = StringBuilder("{\"type\":\"FeatureCollection\",\"features\":[")
     for (i in 0 until points.size - 1) {
         val a = points[i]
@@ -153,8 +193,6 @@ private fun renderRoute(
         SOURCE_ROUTE,
         featuresJson.toString(),
     )
-    // Remove any prior source/layer when reusing the same MapView for
-    // a different trip. style.getSource() returns null if absent.
     style.getLayer(LAYER_ROUTE)?.let { style.removeLayer(it) }
     style.getSource(SOURCE_ROUTE)?.let { style.removeSource(it) }
     style.addSource(source)
@@ -175,7 +213,6 @@ private fun renderRoute(
     }
     style.addLayer(layer)
 
-    // Frame the camera around the polyline bounding box.
     val builder = LatLngBounds.Builder()
     for (p in points) builder.include(LatLng(p.lat, p.lon))
     val bounds = try {
