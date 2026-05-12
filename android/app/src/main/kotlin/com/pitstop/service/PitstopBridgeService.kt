@@ -160,39 +160,60 @@ class PitstopBridgeService : Service() {
         // fires for that case.
         scope.launch {
             val obdQuietThresholdMs = 60_000L
+            // BLE-lost threshold: if the link has been Disconnected /
+            // Connecting / Error for this long while a drive buffer is
+            // open, declare the drive over and seal it. Without this,
+            // a drive that ended with the car going to sleep where
+            // the BLE never comes back stays open until the next
+            // "engine on" event triggers orphan recovery — could be
+            // hours / days. 15 min is well past typical BLE flake
+            // durations (the 2026-05-12 split case was ~2 min) and
+            // short enough that the user's drive list reflects reality
+            // within a coffee break.
+            val bleLostThresholdMs = 15L * 60L * 1000L
             while (isActive) {
                 kotlinx.coroutines.delay(10_000L)
                 val s = stateBus.status.value
                 if (s.engineState != EngineState.On) continue
-                // Watchdog only fires when BLE is actively Connected. If
-                // we're in the reconnect loop (Disconnected/Connecting),
-                // a frame-age over the threshold doesn't mean the ECU
-                // went quiet — it means we can't talk to the WiCAN at
-                // all. Sealing the drive here was the cause of the
-                // 2026-05-12 trip split: a BLE peer-terminate at 09:02
-                // followed by a 2-min reconnect window had the watchdog
-                // declare engine_off → reconnect emitted a fresh engine_on
-                // → DriveRecorder sealed the prior buffer as incomplete.
-                if (s.phase != BridgePhase.Connected) continue
                 val lastFrame = s.lastFrameAtMs ?: continue
                 val ageMs = System.currentTimeMillis() - lastFrame
-                if (lastFrame > 0 && ageMs > obdQuietThresholdMs) {
-                    logBuffer.info(
-                        "engine off (OBD-quiet watchdog)",
-                        mapOf("frame_age_ms" to ageMs),
-                    )
-                    val tMs = System.currentTimeMillis()
-                    stateBus.update {
-                        it.copy(
-                            engineState = EngineState.Off,
-                            engineStateChangedAtMs = tMs,
-                        )
-                    }
-                    publishEngineState("off", tMs)
-                    stateBus.clearMetrics()
-                    val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
-                    driveSealer.seal(tMs, deviceId, kind = "quiet")
+                // OBD-quiet path: BLE is alive but the ECU isn't
+                // answering. Restricted to phase=Connected — a frame-age
+                // over the 60s threshold during the reconnect loop just
+                // means we can't talk to the WiCAN, NOT that the engine
+                // went off. The 2026-05-12 trip split traced back to
+                // this guard being absent.
+                val obdQuiet = s.phase == BridgePhase.Connected &&
+                    lastFrame > 0 && ageMs > obdQuietThresholdMs
+                // BLE-lost path: we can't talk to the WiCAN at all and
+                // the link has been down long enough that a continuing
+                // drive is implausible. Seal as kind=ble_lost so the
+                // trip's metadata is honest about why it cut off where
+                // it did.
+                val bleLost = s.phase != BridgePhase.Connected &&
+                    lastFrame > 0 && ageMs > bleLostThresholdMs
+                if (!obdQuiet && !bleLost) continue
+                val reason = if (bleLost) "ble_lost" else "quiet"
+                val message = if (bleLost) {
+                    "engine off (BLE-lost watchdog)"
+                } else {
+                    "engine off (OBD-quiet watchdog)"
                 }
+                logBuffer.info(
+                    message,
+                    mapOf("frame_age_ms" to ageMs, "phase" to s.phase.name),
+                )
+                val tMs = System.currentTimeMillis()
+                stateBus.update {
+                    it.copy(
+                        engineState = EngineState.Off,
+                        engineStateChangedAtMs = tMs,
+                    )
+                }
+                publishEngineState("off", tMs)
+                stateBus.clearMetrics()
+                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                driveSealer.seal(tMs, deviceId, kind = reason)
             }
         }
         logBuffer.info("bridge service created")
