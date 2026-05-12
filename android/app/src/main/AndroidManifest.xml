@@ -142,6 +142,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- Handles the "Sync now" action button on the sync-reminder
+             notification. Not exported — only our own app fires it
+             via the PendingIntent in SyncReminderManager. -->
+        <receiver
+            android:name=".notif.SyncReminderReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

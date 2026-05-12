@@ -7,6 +7,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.pitstop.drive.scheduleDriveUploads
 import com.pitstop.log.LogBuffer
+import com.pitstop.notif.SyncReminderManager
 import com.pitstop.update.scheduleUpdateChecks
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -16,6 +17,7 @@ class PitstopApp : Application(), Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var logBuffer: LogBuffer
+    @Inject lateinit var syncReminderManager: SyncReminderManager
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -36,6 +38,12 @@ class PitstopApp : Application(), Configuration.Provider {
         // cases where the immediate kick missed (Doze, process
         // death between seal and worker schedule).
         scheduleDriveUploads(this)
+        // Start the persistent sync-reminder observer. Watches the
+        // unacked drive queue; posts a sticky notification once it
+        // reaches SyncReminderManager.THRESHOLD drives. Especially
+        // useful in manual-sync mode where the queue otherwise grows
+        // silently.
+        syncReminderManager.start()
     }
 
     /**
@@ -92,10 +100,27 @@ class PitstopApp : Application(), Configuration.Provider {
             setShowBadge(true)
         }
         nm.createNotificationChannel(updatesChannel)
+        // Drive sync reminder — fires when the unacked drive queue
+        // backs up. Low importance + no sound/vibration so it's an
+        // ambient nudge, not a disruptive alert; the notification
+        // itself is setOngoing so the user can't accidentally swipe
+        // it away while drives are still pending.
+        val syncReminderChannel = NotificationChannel(
+            SYNC_REMINDER_CHANNEL_ID,
+            "Drive sync reminders",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "Reminds you when local drive recordings are waiting to upload"
+            setShowBadge(true)
+            enableVibration(false)
+            setSound(null, null)
+        }
+        nm.createNotificationChannel(syncReminderChannel)
     }
 
     companion object {
         const val BRIDGE_CHANNEL_ID = "pitstop_bridge"
         const val UPDATES_CHANNEL_ID = "pitstop_updates"
+        const val SYNC_REMINDER_CHANNEL_ID = "drive_sync_reminder"
     }
 }

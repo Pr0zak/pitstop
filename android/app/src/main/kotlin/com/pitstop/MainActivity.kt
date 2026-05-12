@@ -64,7 +64,15 @@ class MainActivity : ComponentActivity() {
         // icon or use a home-screen shortcut — fires this action so we
         // land directly on the Fuel tab. Other launch paths (icon tap,
         // recents) get the default Home tab.
-        val initialTab = if (intent?.action == ACTION_ADD_FILLUP) 3 else 0
+        //
+        // ACTION_SYNC_DRIVES is fired by the SyncReminderManager
+        // notification body tap — land on History (tab 2) so the user
+        // can see the queued drives + tap "Sync now".
+        val initialTab = when (intent?.action) {
+            ACTION_ADD_FILLUP -> 3
+            ACTION_SYNC_DRIVES -> 2
+            else -> 0
+        }
         setContent {
             PitstopTheme {
                 Surface(
@@ -85,13 +93,15 @@ class MainActivity : ComponentActivity() {
      *  here. Surface it to the composable so the pager scrolls. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == ACTION_ADD_FILLUP) {
-            pendingTabIndex.value = 3
+        when (intent.action) {
+            ACTION_ADD_FILLUP -> pendingTabIndex.value = 3
+            ACTION_SYNC_DRIVES -> pendingTabIndex.value = 2
         }
     }
 
     companion object {
         const val ACTION_ADD_FILLUP = "com.pitstop.action.ADD_FILLUP"
+        const val ACTION_SYNC_DRIVES = "com.pitstop.action.SYNC_DRIVES"
     }
 }
 
