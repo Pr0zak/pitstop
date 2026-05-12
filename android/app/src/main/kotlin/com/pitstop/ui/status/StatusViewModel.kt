@@ -61,6 +61,10 @@ data class StatusUiState(
     val monthlySpend: List<MonthlySpendPointDto>? = null,
     /** /dtcs?active_only=true — empty list when nothing active. */
     val activeDtcs: List<DtcDto>? = null,
+    /** Mirrors [com.pitstop.data.Settings.manualSyncOnly]; the
+     *  BridgeStatePill flips to a "Local-only" badge when this is on
+     *  AND the bridge is otherwise running. */
+    val manualSyncOnly: Boolean = false,
 )
 
 @HiltViewModel
@@ -315,6 +319,7 @@ class StatusViewModel @Inject constructor(
                 costPerMile = cost,
                 monthlySpend = spend,
                 activeDtcs = dtcs,
+                manualSyncOnly = bridge.settings.manualSyncOnly,
             )
         }.stateIn(
             scope = viewModelScope,

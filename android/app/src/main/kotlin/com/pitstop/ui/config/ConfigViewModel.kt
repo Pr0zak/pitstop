@@ -44,6 +44,7 @@ data class ConfigFormState(
     val aaTilesHome: List<String> = emptyList(),
     val aaTilesDiag: List<String> = emptyList(),
     val unitSystem: String = "imperial",
+    val manualSyncOnly: Boolean = false,
     val saved: Boolean = false,
 )
 
@@ -139,6 +140,7 @@ class ConfigViewModel @Inject constructor(
                 bleDeviceMac = secrets.settings.bleDeviceMac,
                 bleDeviceName = secrets.settings.bleDeviceName,
                 verboseLogging = secrets.settings.verboseLogging,
+                manualSyncOnly = secrets.settings.manualSyncOnly,
             )
             _formReady.value = true
         }
@@ -209,6 +211,7 @@ class ConfigViewModel @Inject constructor(
                     aaTilesHome = f.aaTilesHome,
                     aaTilesDiag = f.aaTilesDiag,
                     unitSystem = f.unitSystem,
+                    manualSyncOnly = f.manualSyncOnly,
                 ),
                 mqttPassword = f.mqttPassword,
                 ingestToken = f.ingestToken,

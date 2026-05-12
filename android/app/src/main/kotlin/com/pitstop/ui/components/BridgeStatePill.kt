@@ -32,9 +32,21 @@ fun BridgeStatePill(
     phase: BridgePhase,
     brokerConnected: Boolean,
     engineState: EngineState = EngineState.Unknown,
+    manualSyncOnly: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val (label, dot) = when (phase) {
+    // Real-error and Idle states always win over the LocalOnly badge —
+    // we never want to mask a misconfigured bridge behind "Local-only".
+    // Engine-off / asleep / reconnecting still take precedence so the
+    // user can see why no data is flowing right now.
+    val showLocalOnly = manualSyncOnly && phase in setOf(
+        BridgePhase.Scanning,
+        BridgePhase.Connecting,
+        BridgePhase.Connected,
+    ) && engineState != EngineState.Off
+    val (label, dot) = if (showLocalOnly) {
+        "Local-only" to PillTone.LocalOnly
+    } else when (phase) {
         BridgePhase.Idle -> "Idle" to PillTone.Neutral
         BridgePhase.Scanning -> "Scanning" to PillTone.Amber
         BridgePhase.Connecting -> "Connecting" to PillTone.Amber
@@ -69,6 +81,14 @@ fun BridgeStatePill(
             MaterialTheme.colorScheme.outlineVariant,
             MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // Slate / grey-blue: visually distinct from Neutral so the user
+        // can see at a glance that the bridge is running but data is
+        // being held locally.
+        PillTone.LocalOnly -> Triple(
+            Color(0x1A8AA4C9),
+            Color(0x4D8AA4C9),
+            Color(0xFF8AA4C9),
+        )
     }
     Row(
         modifier = modifier
@@ -91,4 +111,4 @@ fun BridgeStatePill(
     }
 }
 
-private enum class PillTone { Green, Amber, Red, Neutral }
+private enum class PillTone { Green, Amber, Red, Neutral, LocalOnly }

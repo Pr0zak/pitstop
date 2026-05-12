@@ -84,6 +84,7 @@ fun StatusScreen(
                         phase = ui.status.phase,
                         brokerConnected = ui.status.brokerConnected,
                         engineState = ui.status.engineState,
+                        manualSyncOnly = ui.manualSyncOnly,
                         modifier = Modifier.padding(end = 12.dp),
                     )
                 },

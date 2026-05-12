@@ -136,6 +136,11 @@ fun ConfigScreen(
                 onPick = { viewModel.pickDevice(it) },
             )
 
+            ConnectivitySection(
+                manualSyncOnly = form.manualSyncOnly,
+                onChange = { v -> viewModel.update { it.copy(manualSyncOnly = v) } },
+            )
+
             MqttBrokerSection(
                 form = form,
                 brokerConnected = brokerConnected,
@@ -346,6 +351,40 @@ private fun MqttBrokerSection(
             value = form.mqttPassword,
             onValueChange = { v -> update { it.copy(mqttPassword = v) } },
         )
+    }
+}
+
+// ── Connectivity ──────────────────────────────────────────────────
+
+/**
+ * Manual-sync mode toggle. When ON the bridge keeps capturing OBD +
+ * GPS + IMU locally (Live screen still updates, drives still seal to
+ * the Room queue) but every outgoing MQTT publish is suppressed and
+ * the post-seal auto-upload is disabled. Drives wait in the queue
+ * until the user explicitly hits "Sync now" in History or the
+ * persistent reminder notification.
+ */
+@Composable
+private fun ConnectivitySection(
+    manualSyncOnly: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    SettingsSection(
+        title = "Connectivity",
+        description = "Saves cellular data and battery. Drives won't appear in the live dashboard until you sync.",
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Manual-sync mode", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (manualSyncOnly) "Captures locally; tap Sync to upload"
+                    else "Streams every metric to the broker during drives",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = manualSyncOnly, onCheckedChange = onChange)
+        }
     }
 }
 
