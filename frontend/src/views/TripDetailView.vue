@@ -204,23 +204,113 @@ watch(seriesVisible, (v) => {
   try { localStorage.setItem(SERIES_VIS_KEY, JSON.stringify(v)); } catch { /* ignore */ }
 }, { deep: true });
 
-// Median-filter slow-changing noisy metrics for display so the
-// timeline matches what the dashboard gauge does (heavy damping).
-// Currently just fuel_level — raw OBD reads the unsmoothed tank
-// float position, which can swing ±20% in seconds during sloshing.
-// Default ON; user can toggle to see the raw signal.
-const SMOOTHED_METRICS = new Set(["fuel_level"]);
-const SMOOTH_KEY = "pitstop_trip_smooth";
-const smoothingEnabled = ref<boolean>(localStorage.getItem(SMOOTH_KEY) !== "false");
-watch(smoothingEnabled, (v) => {
-  try { localStorage.setItem(SMOOTH_KEY, String(v)); } catch { /* ignore */ }
+// Per-trip chart smoothing (Task #127). Applies a rolling median
+// filter to every visible metric BEFORE the forward-fill + wide-form
+// pivot step. Generalisation of the old fuel-only smoother — fuel
+// level was the original motivator (tank-float slosh ±20% per second)
+// but speed, throttle, RPM etc. all benefit from a light filter for
+// readability on long zoomed-out timelines.
+//
+// Four discrete levels keyed on a window size; "off" returns raw
+// values unchanged. Window sizes operate on array indices, not time,
+// so denser series (1 Hz vehicle_speed) get more aggressive temporal
+// smoothing than sparser ones (~1-per-30s fuel_level) at the same
+// level — that's the intent, since dense series have more noise to
+// suppress.
+type SmoothLevel = "off" | "light" | "medium" | "heavy";
+const SMOOTH_LEVELS: Record<SmoothLevel, number> = {
+  off: 1,
+  light: 3,
+  medium: 7,
+  heavy: 15,
+};
+const SMOOTH_LEVEL_ORDER: SmoothLevel[] = ["off", "light", "medium", "heavy"];
+const SMOOTH_LEVEL_LABEL: Record<SmoothLevel, string> = {
+  off: "Off",
+  light: "Light",
+  medium: "Medium",
+  heavy: "Heavy",
+};
+const SMOOTH_LEVEL_KEY = "pitstop_trip_smooth_level";
+const SMOOTH_LEGACY_KEY = "pitstop_trip_smooth";
+
+/** Initial smoothing level. Resolution order:
+ *  1. New key (pitstop_trip_smooth_level) if present.
+ *  2. Migration: old boolean key — true → "medium", false → "off".
+ *  3. Auto: "medium" when any per-metric raw sample count > 300,
+ *     otherwise "off" (short drives default to raw).
+ */
+function initialSmoothLevel(samples: Array<{ metric?: string; value_num?: number | null }>): SmoothLevel {
+  try {
+    const stored = localStorage.getItem(SMOOTH_LEVEL_KEY);
+    if (stored && stored in SMOOTH_LEVELS) return stored as SmoothLevel;
+    const legacy = localStorage.getItem(SMOOTH_LEGACY_KEY);
+    if (legacy != null) {
+      const migrated: SmoothLevel = legacy === "false" ? "off" : "medium";
+      localStorage.setItem(SMOOTH_LEVEL_KEY, migrated);
+      localStorage.removeItem(SMOOTH_LEGACY_KEY);
+      return migrated;
+    }
+  } catch { /* ignore */ }
+  // Auto-pick based on density.
+  const counts = new Map<string, number>();
+  for (const s of samples) {
+    if (s.metric && s.value_num != null) {
+      counts.set(s.metric, (counts.get(s.metric) ?? 0) + 1);
+    }
+  }
+  for (const n of counts.values()) {
+    if (n > 300) return "medium";
+  }
+  return "off";
+}
+
+// Resolve persisted level synchronously up-front (covers cases 1 + 2
+// from initialSmoothLevel — stored new key, or legacy migration). If
+// nothing is stored, leave it "off" and let the trip-loaded watcher
+// auto-pick a default once we know the sample density.
+function storedSmoothLevel(): SmoothLevel | null {
+  try {
+    const stored = localStorage.getItem(SMOOTH_LEVEL_KEY);
+    if (stored && stored in SMOOTH_LEVELS) return stored as SmoothLevel;
+    const legacy = localStorage.getItem(SMOOTH_LEGACY_KEY);
+    if (legacy != null) {
+      const migrated: SmoothLevel = legacy === "false" ? "off" : "medium";
+      localStorage.setItem(SMOOTH_LEVEL_KEY, migrated);
+      localStorage.removeItem(SMOOTH_LEGACY_KEY);
+      return migrated;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+const initialStored = storedSmoothLevel();
+const smoothLevel = ref<SmoothLevel>(initialStored ?? "off");
+// `smoothInitialized` flips once either (a) a stored level was found
+// at setup, or (b) the trip has resolved and we've auto-picked. After
+// that, every change is treated as user intent and persisted.
+let smoothInitialized = initialStored !== null;
+watch(trip, (t) => {
+  if (smoothInitialized || !t) return;
+  smoothLevel.value = initialSmoothLevel((t.samples ?? []) as Array<{ metric?: string; value_num?: number | null }>);
+  smoothInitialized = true;
+}, { immediate: true });
+watch(smoothLevel, (v) => {
+  if (!smoothInitialized) return;
+  try { localStorage.setItem(SMOOTH_LEVEL_KEY, v); } catch { /* ignore */ }
 });
+function cycleSmoothLevel() {
+  const idx = SMOOTH_LEVEL_ORDER.indexOf(smoothLevel.value);
+  smoothLevel.value = SMOOTH_LEVEL_ORDER[(idx + 1) % SMOOTH_LEVEL_ORDER.length];
+}
 
 /** Rolling median with a centered window of size `windowSize`. Null
  *  values are excluded from the window; if all values in the window
- *  are null, output is null. Window must be odd; 5 = ~1 minute of
- *  smoothing at fuel_level's typical 1-per-30s cadence. */
+ *  are null, output is null. `windowSize` of 1 short-circuits and
+ *  returns the input untouched. Operates on array indices (not time
+ *  gaps), so cadence determines how much temporal smoothing a given
+ *  window gives a series. */
 function medianFilter(arr: (number | null)[], windowSize: number): (number | null)[] {
+  if (windowSize <= 1) return arr.slice();
   const half = Math.floor(windowSize / 2);
   const out: (number | null)[] = new Array(arr.length).fill(null);
   for (let i = 0; i < arr.length; i++) {
@@ -248,28 +338,60 @@ const chart = computed<ChartData>(() => {
   };
   const allSamples = trip.value.samples as Sample[];
 
-  // Pre-pass: for SMOOTHED_METRICS, take the raw sparse sample
-  // sequence (e.g. ~30 fuel_level samples over 17 min) and apply a
-  // rolling median to flatten the float-slosh chaos before it hits
-  // the wide-form pivot. Doing it AFTER forward-fill (the prior
-  // attempt) was a no-op because the fill creates plateau steps —
-  // median of 5 identical values is the same value, the chart still
-  // shows the unsmoothed jumps between plateaus. Smoothing the raw
-  // signal first means the plateaus themselves are calmer.
+  // Pre-pass: take each metric's raw sparse sample sequence and apply
+  // a rolling median filter BEFORE the wide-form pivot. Doing it on
+  // the raw signal (not the forward-filled wide table) is the whole
+  // point — forward-fill creates plateau steps, and the median of
+  // identical values is the same value. Smoothing the raw sequence
+  // first means the plateaus themselves are calmer, which is what
+  // actually shows up on the chart at zoom-out.
+  //
+  // Window comes from the user's smoothing level. Off = window 1 =
+  // identity (the per-metric loop below short-circuits because
+  // medianFilter just slices when window <= 1, so the substitution
+  // map ends up matching the raw values exactly).
+  const window = SMOOTH_LEVELS[smoothLevel.value];
   const smoothedByTs = new Map<string, Map<number, number>>();
-  if (smoothingEnabled.value) {
-    for (const metric of SMOOTHED_METRICS) {
-      const seq = allSamples
-        .filter((s) => s.metric === metric && s.value_num != null)
-        .sort((a, b) => a.time.localeCompare(b.time));
-      if (seq.length === 0) continue;
-      const vals = seq.map((s) => s.value_num as number);
-      const filtered = medianFilter(vals, 5);
-      const map = new Map<number, number>();
-      seq.forEach((s, idx) => {
+  if (window > 1) {
+    // Collect every metric that actually has raw long-form samples
+    // in this trip; smooth each one independently.
+    const seqsByMetric = new Map<string, Array<{ ts: number; v: number }>>();
+    for (const s of allSamples) {
+      if (!s.metric || s.value_num == null) continue;
+      const ts = Math.round((Date.parse(s.time) || 0) / 1000);
+      if (!Number.isFinite(ts)) continue;
+      const list = seqsByMetric.get(s.metric);
+      const entry = { ts, v: s.value_num as number };
+      if (list) list.push(entry);
+      else seqsByMetric.set(s.metric, [entry]);
+    }
+    // Also fold in wide-form values (older API responses include
+    // vehicle_speed / engine_rpm / coolant_temp directly on each
+    // sample row alongside the long-form rows). Without this, the
+    // wide-form columns would overwrite the smoothed long-form ones
+    // in the pivot loop below.
+    const wideMetrics = ["vehicle_speed", "engine_rpm", "coolant_temp"] as const;
+    for (const wm of wideMetrics) {
+      if (seqsByMetric.has(wm)) continue;
+      const seq: Array<{ ts: number; v: number }> = [];
+      for (const s of allSamples as Array<{ time: string } & Record<string, unknown>>) {
+        const raw = s[wm];
+        if (typeof raw !== "number") continue;
         const ts = Math.round((Date.parse(s.time) || 0) / 1000);
+        if (!Number.isFinite(ts)) continue;
+        seq.push({ ts, v: raw });
+      }
+      if (seq.length >= 2) seqsByMetric.set(wm, seq);
+    }
+    for (const [metric, seq] of seqsByMetric) {
+      if (seq.length < 2) continue;
+      seq.sort((a, b) => a.ts - b.ts);
+      const vals = seq.map((x) => x.v);
+      const filtered = medianFilter(vals, window);
+      const map = new Map<number, number>();
+      seq.forEach((x, idx) => {
         const v = filtered[idx];
-        if (v != null) map.set(ts, v);
+        if (v != null) map.set(x.ts, v);
       });
       smoothedByTs.set(metric, map);
     }
@@ -288,9 +410,18 @@ const chart = computed<ChartData>(() => {
       const smoothed = smoothMap?.get(ts);
       slot[s.metric] = smoothed ?? s.value_num;
     }
-    if (s.vehicle_speed != null) slot["vehicle_speed"] = s.vehicle_speed;
-    if (s.engine_rpm != null) slot["engine_rpm"] = s.engine_rpm;
-    if (s.coolant_temp != null) slot["coolant_temp"] = s.coolant_temp;
+    if (s.vehicle_speed != null) {
+      const sm = smoothedByTs.get("vehicle_speed")?.get(ts);
+      slot["vehicle_speed"] = sm ?? s.vehicle_speed;
+    }
+    if (s.engine_rpm != null) {
+      const sm = smoothedByTs.get("engine_rpm")?.get(ts);
+      slot["engine_rpm"] = sm ?? s.engine_rpm;
+    }
+    if (s.coolant_temp != null) {
+      const sm = smoothedByTs.get("coolant_temp")?.get(ts);
+      slot["coolant_temp"] = sm ?? s.coolant_temp;
+    }
     buckets.set(ts, slot);
   }
   const sortedTs = Array.from(buckets.keys()).sort((a, b) => a - b);
@@ -360,10 +491,10 @@ const chart = computed<ChartData>(() => {
     }
   });
 
-  // (Smoothing happens up-front on the raw sparse signal — see the
-  // smoothedByTs build above. Doing it here on the forward-filled
-  // arrays would no-op because the fill produces plateaus and a
-  // median of 5 identical values is the same value.)
+  // (Smoothing happens up-front on each metric's raw sparse signal —
+  // see the smoothedByTs build above. Doing it here on the
+  // forward-filled arrays would no-op because the fill produces
+  // plateaus and a median of N identical values is the same value.)
   const aligned: uPlot.AlignedData = [t, ...arrays] as uPlot.AlignedData;
   // Build the scales object: every distinct scale used by visible series.
   const scales: Record<string, { time?: boolean }> = { x: { time: true } };
@@ -919,13 +1050,13 @@ async function saveMeta() {
               <div class="head-tools">
                 <button
                   type="button"
-                  class="chip toggle-chip"
-                  :class="{ active: smoothingEnabled }"
-                  :title="smoothingEnabled
-                    ? 'Showing median-filtered fuel level (matches dashboard gauge). Click to see the raw OBD float signal.'
-                    : 'Showing raw OBD fuel_level (slosh-jumps ±20% per second). Click to enable median smoothing.'"
-                  @click="smoothingEnabled = !smoothingEnabled"
-                >Smooth fuel</button>
+                  class="chip toggle-chip smooth-chip"
+                  :class="{ active: smoothLevel !== 'off' }"
+                  :title="`Rolling median over each series (window ${SMOOTH_LEVELS[smoothLevel]} samples). Click to cycle Off → Light → Medium → Heavy.`"
+                  @click="cycleSmoothLevel"
+                >
+                  Smooth <span class="muted small">({{ SMOOTH_LEVEL_LABEL[smoothLevel] }})</span>
+                </button>
                 <button class="ghost" type="button" @click="resetZoom">Reset zoom</button>
               </div>
             </header>
@@ -1288,6 +1419,19 @@ async function saveMeta() {
 }
 .toggle-chip:hover {
   opacity: 0.85;
+}
+.smooth-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+.smooth-chip .muted.small {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+.smooth-chip.active .muted.small {
+  color: inherit;
+  opacity: 1;
 }
 .stats {
   display: grid;
