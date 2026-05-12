@@ -37,6 +37,7 @@ import kotlin.math.sin
 fun PitstopTopAppBar(
     @Suppress("UNUSED_PARAMETER") title: String? = null,
     scrollBehavior: TopAppBarScrollBehavior? = null,
+    actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
 ) {
     // Per Material 3 guidance: when bottom NavigationBar already labels
     // the active destination, the TopAppBar's screen title is redundant.
@@ -65,6 +66,7 @@ fun PitstopTopAppBar(
                 )
             }
         },
+        actions = actions,
         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
             containerColor = MaterialTheme.colorScheme.background,
             scrolledContainerColor = MaterialTheme.colorScheme.surface,
