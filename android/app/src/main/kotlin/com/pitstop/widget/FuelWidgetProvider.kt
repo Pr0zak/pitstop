@@ -68,7 +68,10 @@ class FuelWidgetProvider : AppWidgetProvider() {
         // never sits blank between the host calling onUpdate and the
         // network round-trip resolving.
         ids.forEach { id ->
-            manager.updateAppWidget(id, buildRemoteViews(context, pct = null, sub = "loading…"))
+            manager.updateAppWidget(
+                id,
+                buildRemoteViews(context, manager, id, pct = null, sub = "loading…"),
+            )
         }
 
         val entry = EntryPointAccessors.fromApplication(
@@ -83,10 +86,24 @@ class FuelWidgetProvider : AppWidgetProvider() {
             }
             withContext(Dispatchers.Main) {
                 ids.forEach { id ->
-                    manager.updateAppWidget(id, buildRemoteViews(context, pct, sub))
+                    manager.updateAppWidget(id, buildRemoteViews(context, manager, id, pct, sub))
                 }
             }
         }
+    }
+
+    /** Called by the launcher when the user resizes the widget. Re-render
+     *  so the subtitle visibility (gated on widget height) tracks the new
+     *  dimensions immediately rather than waiting for the next 30-min
+     *  tick. */
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        manager: AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: android.os.Bundle,
+    ) {
+        super.onAppWidgetOptionsChanged(context, manager, appWidgetId, newOptions)
+        onUpdate(context, manager, intArrayOf(appWidgetId))
     }
 
     /** Resolve the active vehicle, pull its latest fuel reading, format
@@ -115,13 +132,34 @@ class FuelWidgetProvider : AppWidgetProvider() {
         return pct to sub
     }
 
-    /** Build the RemoteViews bundle: gauge bitmap, subtitle, tap-to-open
-     *  pending intent. Rebuilt fresh each render because RemoteViews
-     *  can't be mutated after dispatch. */
-    private fun buildRemoteViews(context: Context, pct: Double?, sub: String): RemoteViews {
+    /** Build the RemoteViews bundle: gauge bitmap, conditional subtitle,
+     *  tap-to-open pending intent. Rebuilt fresh each render because
+     *  RemoteViews can't be mutated after dispatch.
+     *
+     *  Subtitle visibility is gated on widget height — at 1×1 (~70 dp)
+     *  there's no vertical room, so the row hides; once the user
+     *  resizes to 1×2 or 2×2 (≥110 dp tall) the gallons + age text
+     *  comes back in. The "FUEL" label is baked into the gauge bitmap
+     *  itself so it's visible at every size. */
+    private fun buildRemoteViews(
+        context: Context,
+        manager: AppWidgetManager,
+        widgetId: Int,
+        pct: Double?,
+        sub: String,
+    ): RemoteViews {
+        val options = manager.getAppWidgetOptions(widgetId)
+        val minHeightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
+        // 100 dp threshold: 1×1 ~70dp / 1×2 ~110dp / 2×2 ~150dp.
+        val showSubtitle = minHeightDp >= 100
         return RemoteViews(context.packageName, R.layout.fuel_widget).apply {
             setImageViewBitmap(R.id.widget_gauge, renderGauge(pct))
-            setTextViewText(R.id.widget_subtitle, sub)
+            if (showSubtitle) {
+                setViewVisibility(R.id.widget_subtitle, android.view.View.VISIBLE)
+                setTextViewText(R.id.widget_subtitle, sub)
+            } else {
+                setViewVisibility(R.id.widget_subtitle, android.view.View.GONE)
+            }
             setOnClickPendingIntent(R.id.widget_root, openAppPendingIntent(context))
         }
     }
@@ -164,13 +202,19 @@ private const val GAUGE_START_ANGLE = 135f
 private const val GAUGE_SWEEP_MAX = 270f
 private const val GAUGE_STROKE = 18f
 
-/** Render a 270° arc gauge (open at the bottom) with the percentage
- *  centered. Color steps from red <15% → amber <30% → green elsewhere.
- *  Returns a fresh ARGB_8888 bitmap the caller can hand to RemoteViews. */
+/** Render a 270° arc gauge (open at the bottom) using the full bitmap.
+ *  Inside the ring, two stacked text rows: small "FUEL" label above
+ *  centre, big percentage just below. Designed so the entire radial
+ *  gauge stays legible at 1×1 (~140 px rendered). Color steps from red
+ *  <15% → amber <30% → green elsewhere. Returns a fresh ARGB_8888
+ *  bitmap the caller can hand to RemoteViews. */
 private fun renderGauge(pct: Double?): Bitmap {
     val size = GAUGE_PX
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
+
+    // Full-bitmap gauge — no top reservation; both label and percentage
+    // sit inside the ring's open interior.
     val cx = size / 2f
     val cy = size / 2f
     val radius = size / 2f - GAUGE_STROKE / 2f - 4f
@@ -199,15 +243,28 @@ private fun renderGauge(pct: Double?): Bitmap {
         canvas.drawArc(rect, GAUGE_START_ANGLE, sweep, false, fgPaint)
     }
 
+    // "FUEL" label — sits just above centre, inside the ring.
+    val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#9CA3AF")
+        textSize = 22f
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        letterSpacing = 0.18f
+    }
+    canvas.drawText("FUEL", cx, cy - 22f, labelPaint)
+
+    // Percentage — big, monospace, just below centre so the ascender
+    // tops sit right under the FUEL baseline. The exact offset
+    // (~+textSize/2.4) lands the digits visually centred in the lower
+    // half of the ring.
     val centerText = pct?.let { "${it.toInt()}%" } ?: "—"
     val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = 60f
+        textSize = 56f
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
     }
-    val textY = cy + textPaint.textSize / 3f
-    canvas.drawText(centerText, cx, textY, textPaint)
+    canvas.drawText(centerText, cx, cy + textPaint.textSize / 2.4f, textPaint)
 
     return bitmap
 }
