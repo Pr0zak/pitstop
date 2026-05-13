@@ -32,4 +32,8 @@
     <string name="shortcut_add_fillup_short">Add fillup</string>
     <string name="shortcut_add_fillup_long">Log a new fill-up</string>
     <string name="shortcut_add_fillup_disabled">Open Pitstop to add a fillup</string>
+
+    <!-- Fuel-level home-screen widget -->
+    <string name="fuel_widget_description">Fuel-level gauge for the configured pitstop vehicle.</string>
+    <string name="fuel_widget_gauge_desc">Fuel level gauge</string>
 </resources>

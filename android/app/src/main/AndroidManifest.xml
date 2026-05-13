@@ -149,6 +149,23 @@
             android:name=".notif.SyncReminderReceiver"
             android:exported="false" />
 
+        <!-- Fuel-level home-screen widget (v0.1.124). Provider draws a
+             270° arc gauge to a bitmap on each onUpdate; the same code
+             path also handles in-app refresh broadcasts via
+             FuelWidgetProvider.refreshWidgets(). Exported so the
+             launcher can bind and render it. -->
+        <receiver
+            android:name=".widget.FuelWidgetProvider"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/fuel_widget_info" />
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

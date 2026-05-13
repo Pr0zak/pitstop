@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AppWidget provider config for the fuel-level gauge widget.
+     - 2x2 cell footprint (110dp minimum each side; launcher rounds up).
+     - updatePeriodMillis: 30min is Android's floor for free-form updates.
+       In-app refreshes call FuelWidgetProvider.refreshWidgets to update
+       more frequently when the user is actively using the app.
+     - resizeMode none — keep it square / gauge-shaped. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:initialLayout="@layout/fuel_widget"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="110dp"
+    android:resizeMode="none"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen"
+    android:previewLayout="@layout/fuel_widget"
+    android:description="@string/fuel_widget_description" />
