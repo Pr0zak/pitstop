@@ -67,7 +67,10 @@ const DARK_STYLE = {
 } as unknown as maplibregl.StyleSpecification;
 
 const MAP_DARK_KEY = "pitstop_map_dark";
-const darkMode = ref<boolean>(localStorage.getItem(MAP_DARK_KEY) === "true");
+// Default to dark; respect explicit "false" if the user toggled to light.
+// (Earlier default was "false unless explicit true"; flipped 2026-05-12 to
+// match the phone app's dark-by-default trip-detail map.)
+const darkMode = ref<boolean>(localStorage.getItem(MAP_DARK_KEY) !== "false");
 function setDarkMode(v: boolean) {
   darkMode.value = v;
   try { localStorage.setItem(MAP_DARK_KEY, String(v)); } catch { /* ignore */ }

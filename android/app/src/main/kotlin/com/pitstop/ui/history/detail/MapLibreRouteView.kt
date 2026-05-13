@@ -147,9 +147,11 @@ private fun MapUnavailableFallback(modifier: Modifier) {
 
 private const val SOURCE_ROUTE = "pitstop-route"
 private const val LAYER_ROUTE = "pitstop-route-layer"
-// Carto's Voyager style — matches the web frontend's default basemap.
+// Carto's Dark Matter style — both phone and web default to dark for the
+// trip-detail map (2026-05-12). Web has a runtime toggle (☀/☾ button) that
+// persists per-browser via localStorage; phone is fixed dark for now.
 private const val STYLE_URL =
-    "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+    "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 
 private fun setupMap(
     map: MapLibreMap,

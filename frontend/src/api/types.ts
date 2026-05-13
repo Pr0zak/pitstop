@@ -27,7 +27,19 @@ export interface Vehicle {
   // server-augmented fields (if available)
   last_seen_at?: string | null;
   last_metric?: string | null;
-  latest?: Record<string, number | string | null> | null;
+  /** Per-metric snapshot from vehicle_state.latest JSONB. Keyed by canonical
+   *  metric name (e.g. "fuel_level"). Each entry has the value at the
+   *  moment we last saw a reading for that metric. Empty/null when the
+   *  vehicle has never reported. */
+  latest?: Record<
+    string,
+    {
+      time: string;
+      source: string;
+      value_num?: number | null;
+      value_text?: string | null;
+    }
+  > | null;
   // Lifetime odometer reading from the freshest pid_readings entry
   // (or fillup history when no live data). Stored canonically in km;
   // convert at render time per the user's preferred units.

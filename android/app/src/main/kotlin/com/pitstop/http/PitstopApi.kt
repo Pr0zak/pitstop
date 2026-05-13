@@ -73,6 +73,18 @@ data class VehicleDto(
     @SerialName("tank1_capacity") val tank1Capacity: Double? = null,
     @SerialName("last_seen_at") val lastSeenAt: String? = null,
     @SerialName("last_metric") val lastMetric: String? = null,
+    /** Per-metric latest reading from vehicle_state.latest JSONB.
+     *  Keyed by canonical metric name (e.g. "fuel_level", "coolant_temp").
+     *  Empty map when the vehicle has never reported. */
+    @SerialName("latest") val latest: Map<String, LatestReadingDto> = emptyMap(),
+)
+
+@Serializable
+data class LatestReadingDto(
+    @SerialName("time") val time: String,
+    @SerialName("source") val source: String,
+    @SerialName("value_num") val valueNum: Double? = null,
+    @SerialName("value_text") val valueText: String? = null,
 )
 
 @Serializable

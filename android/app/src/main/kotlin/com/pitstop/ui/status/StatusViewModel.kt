@@ -181,8 +181,9 @@ class StatusViewModel @Inject constructor(
             // load (no separate fetches). MPG sparkline source flips
             // from the year sparkline (now handled by MpgYearChart)
             // to a 90-day rolling derived from `monthly`.
+            val vehicle = vehicles.firstOrNull { it.id == vehicleId }
             if (fillups != null && monthly != null) {
-                heroData.value = buildHeroData(fillups, monthly.points)
+                heroData.value = buildHeroData(fillups, monthly.points, vehicle)
             }
         }
     }
@@ -190,6 +191,7 @@ class StatusViewModel @Inject constructor(
     private fun buildHeroData(
         fillups: List<com.pitstop.http.FillupDto>,
         monthly: List<MpgPointDto>,
+        vehicle: com.pitstop.http.VehicleDto?,
     ): HeroCardData {
         val mpgs = monthly.mapNotNull { it.mpg }.filter { it > 0 }
         val avgMpg = if (mpgs.isNotEmpty()) mpgs.takeLast(3).average() else null
@@ -208,11 +210,18 @@ class StatusViewModel @Inject constructor(
         val monthCost = monthFills.mapNotNull { it.priceTotal }.sum()
         val monthCount = monthFills.size
 
-        val liveOdoMi = bridgeStateBus.latestByMetric.value["odometer"]?.value
-            ?.let { it * 0.621371 }
-        val milesSinceFill = if (liveOdoMi != null && latest?.odo != null) {
-            (liveOdoMi - latest.odo).coerceAtLeast(0.0)
+        // Fuel level + estimated gallons + reading age, sourced from the
+        // /vehicles endpoint's vehicle_state.latest JSONB (no separate
+        // request — already in hand). The fuel_level value is whatever the
+        // PCM reported on the most recent OBD-II poll; the timestamp lets
+        // us flag stale readings ("3h ago") vs live ("live").
+        val fuelEntry = vehicle?.latest?.get("fuel_level")
+        val fuelLevelPct = fuelEntry?.valueNum
+        val tankCapacityGal = vehicle?.tank1Capacity?.takeIf { it > 0 }
+        val fuelGallons = if (fuelLevelPct != null && tankCapacityGal != null) {
+            tankCapacityGal * fuelLevelPct / 100.0
         } else null
+        val fuelLevelAge = fuelEntry?.time?.let { formatReadingAge(it) }
 
         return HeroCardData(
             avgConsumptionMpg = avgMpg,
@@ -220,7 +229,9 @@ class StatusViewModel @Inject constructor(
             ppgDeltaPct = ppgDelta,
             monthCost = monthCost,
             monthCount = monthCount,
-            milesSinceFill = milesSinceFill,
+            fuelLevelPct = fuelLevelPct,
+            fuelGallons = fuelGallons,
+            fuelLevelAge = fuelLevelAge,
             // mpgSeries field is now unused by the FuelHeroCards card
             // (the year sparkline moved into its own MpgYearChart), but
             // we keep the field populated for source-compat. Empty if
@@ -228,6 +239,21 @@ class StatusViewModel @Inject constructor(
             mpgSeries = monthly.mapNotNull { it.mpg },
         )
     }
+
+    /** Convert an ISO 8601 UTC timestamp into a short relative-time string
+     *  ("live" / "Nm ago" / "Nh ago" / "Nd ago") for hero-card subtitles.
+     *  Returns null if parsing fails. */
+    private fun formatReadingAge(isoTime: String): String? = runCatching {
+        val readingInstant = java.time.OffsetDateTime.parse(isoTime).toInstant()
+        val ageSec = java.time.Duration.between(readingInstant, java.time.Instant.now()).seconds
+        when {
+            ageSec < 0 -> "live"
+            ageSec < 90 -> "live"
+            ageSec < 3600 -> "${ageSec / 60}m ago"
+            ageSec < 86_400 -> "${ageSec / 3600}h ago"
+            else -> "${ageSec / 86_400}d ago"
+        }
+    }.getOrNull()
 
     private fun clearHomeData() {
         heroData.value = null

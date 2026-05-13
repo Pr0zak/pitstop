@@ -117,6 +117,19 @@ function toNum(v: unknown): number | null {
   return null;
 }
 
+/** Convert an ISO 8601 UTC timestamp into a short relative-time string
+ *  ("live" / "Nm ago" / "Nh ago" / "Nd ago") for hero-card subtitles.
+ *  Mirrors the phone-side helper in StatusViewModel.formatReadingAge. */
+function formatReadingAge(isoTime: string): string | null {
+  const ms = Date.parse(isoTime);
+  if (!Number.isFinite(ms)) return null;
+  const ageSec = Math.floor((Date.now() - ms) / 1000);
+  if (ageSec < 90) return "live";
+  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
+  if (ageSec < 86_400) return `${Math.floor(ageSec / 3600)}h ago`;
+  return `${Math.floor(ageSec / 86_400)}d ago`;
+}
+
 const heroData = computed(() => {
   const fillups = (heroFillupsQ.data.value?.items ?? []) as HeroFillup[];
   const mpgPoints = mpgTrendQ.data.value?.points ?? [];
@@ -150,16 +163,21 @@ const heroData = computed(() => {
     (f.fillup_date ?? "").startsWith(thisMonth),
   ).length;
 
-  // Miles-since-last-fill: prefer the persisted vehicles.latest_odo_km
-  // (refreshed every 5min by the trip deriver) over the per-metric
-  // vehicle_state cache, which is often stale or missing the odometer
-  // reading. Falls back to the legacy live-OBD path for vehicles that
-  // haven't received the v0.1.96 deriver pass yet.
-  const liveOdoKm = vehicles.selectedVehicle?.latest_odo_km ?? num("odometer");
-  const milesSinceFill =
-    liveOdoKm != null && latest?.odo != null
-      ? Math.max(0, liveOdoKm * 0.621371 - latest.odo)
+  // Fuel level + estimated gallons + reading age — sourced from
+  // vehicle_state.latest (JSONB blob already on the /vehicles payload).
+  // Matches the phone hero card's framing (FuelHeroCards.kt). Replaces the
+  // earlier "miles since last fill / range" card for cross-client parity.
+  const fuelEntry = vehicles.selectedVehicle?.latest?.fuel_level ?? null;
+  const fuelLevelPct =
+    fuelEntry?.value_num != null && Number.isFinite(fuelEntry.value_num)
+      ? fuelEntry.value_num
       : null;
+  const tankCapacityGal = vehicles.selectedVehicle?.tank1_capacity ?? null;
+  const fuelGallons =
+    fuelLevelPct != null && tankCapacityGal != null && tankCapacityGal > 0
+      ? (tankCapacityGal * fuelLevelPct) / 100
+      : null;
+  const fuelLevelAge = fuelEntry?.time ? formatReadingAge(fuelEntry.time) : null;
 
   // EIA region-avg comparison. Pulls the most-recent week's $/gal for
   // the configured region; computes a % delta vs the user's latest
@@ -193,7 +211,9 @@ const heroData = computed(() => {
     ppgDelta,
     monthCost,
     monthCount,
-    milesSinceFill,
+    fuelLevelPct,
+    fuelGallons,
+    fuelLevelAge,
     hasLatest: !!latest,
     eiaLatest,
     ppgVsRegion,
@@ -465,15 +485,17 @@ function dismissAnomaly(fingerprint: string) {
           </div>
         </div>
         <div class="card hero">
-          <h3>Since last fill</h3>
+          <h3>Fuel level</h3>
           <div class="hero-value">
-            <span class="big">{{ heroData.milesSinceFill != null ? heroData.milesSinceFill.toFixed(0) : '—' }}</span>
-            <span class="unit">mi</span>
+            <span class="big">{{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) : '—' }}</span>
+            <span class="unit">%</span>
           </div>
           <div class="hero-sub muted">
-            {{ heroData.milesSinceFill != null && heroData.mpg90 != null
-              ? '~' + (heroData.mpg90 - heroData.milesSinceFill / 16 * 0.5).toFixed(0) + ' mi range'
-              : 'live odo vs last fillup' }}
+            {{ heroData.fuelGallons != null && heroData.fuelLevelAge
+              ? heroData.fuelGallons.toFixed(1) + ' gal · ' + heroData.fuelLevelAge
+              : heroData.fuelGallons != null
+                ? heroData.fuelGallons.toFixed(1) + ' gal'
+                : heroData.fuelLevelAge ?? '—' }}
           </div>
         </div>
         <div class="card hero">

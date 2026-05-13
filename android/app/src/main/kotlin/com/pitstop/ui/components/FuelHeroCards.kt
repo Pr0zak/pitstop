@@ -36,7 +36,15 @@ data class HeroCardData(
     val ppgDeltaPct: Double?,
     val monthCost: Double,
     val monthCount: Int,
-    val milesSinceFill: Double?,
+    /** Current fuel level as a percentage (0-100) from the latest
+     *  pid_readings sample. Null when no reading is available. */
+    val fuelLevelPct: Double?,
+    /** Estimated gallons remaining = tank capacity × (fuel_level / 100).
+     *  Null when either tank capacity or fuel_level is unknown. */
+    val fuelGallons: Double?,
+    /** Relative-time text for the fuel_level reading age (e.g. "live",
+     *  "3h ago"). Empty/null when no reading. */
+    val fuelLevelAge: String?,
     val mpgSeries: List<Double>,
 )
 
@@ -93,10 +101,19 @@ fun FuelHeroCards(
             )
             HeroCard(
                 modifier = Modifier.weight(1f),
-                title = "Since last fill",
-                value = data.milesSinceFill?.let { "%.0f".format(it) } ?: "—",
-                unit = "mi",
-                sub = "live odo vs last",
+                title = "Fuel level",
+                value = data.fuelLevelPct?.let { "%.0f".format(it) } ?: "—",
+                unit = "%",
+                sub = run {
+                    val gal = data.fuelGallons?.let { "%.1f gal".format(it) }
+                    val age = data.fuelLevelAge
+                    when {
+                        gal != null && age != null -> "$gal · $age"
+                        gal != null -> gal
+                        age != null -> age
+                        else -> "—"
+                    }
+                },
             )
         }
 
