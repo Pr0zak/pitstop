@@ -63,7 +63,7 @@ When demonstrating with sample data, write it to `data/` (gitignored) or `/tmp/`
 
 ## Build phase
 
-Phase A + B + C complete + post-v1 work landed (bridge payload v2, post-processed trip derivation, phone presence detection, WiCAN broker subscription, layered engine-state detection). Tags shipped through v0.1.122. Recent landmarks: Android History detail screens with MapLibre routes (v0.1.113), on-disk drive payloads + queue unstall (v0.1.111), Home dashboard overhaul + active-DTCs panel (v0.1.116), manual-sync mode + sync-reminder notification (v0.1.120), trip-split fix + BLE-lost watchdog (v0.1.121), trip-detail Smooth chip phone+web (v0.1.121). See git log for the running history; ADRs in [docs/decisions.md](./docs/decisions.md).
+Phase A + B + C complete + post-v1 work landed (bridge payload v2, post-processed trip derivation, phone presence detection, WiCAN broker subscription, layered engine-state detection). Tags shipped through v0.1.123. Recent landmarks: Android History detail screens with MapLibre routes (v0.1.113), on-disk drive payloads + queue unstall (v0.1.111), Home dashboard overhaul + active-DTCs panel (v0.1.116), manual-sync mode + sync-reminder notification (v0.1.120), trip-split fix + BLE-lost watchdog (v0.1.121), trip-detail Smooth chip phone+web (v0.1.121), fuel-level hero card + dark-default trip-detail map + WiCAN PID 0x68 firmware-bug workaround for Pilot V6 IAT (v0.1.123 — see ADR-018). See git log for the running history; ADRs in [docs/decisions.md](./docs/decisions.md).
 
 ## Repo
 

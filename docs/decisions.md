@@ -249,3 +249,40 @@ These were conflated. The disconnect path cleared `engineState = Unknown` on eve
 - Trips marked `incomplete=true` from this bug class should be vanishingly rare going forward.
 
 Shipped in v0.1.120 (split fix) + v0.1.121 (BLE-lost watchdog).
+
+---
+
+## ADR-018 — WiCAN PID 0x68 firmware bug: poll IAT as a custom Mode 01 PID
+
+**Context.** Honda V6 PCMs (incl. 2019 Pilot) expose intake air temp only via SAE J1979 PID `0x68` (dual-sensor variant), not the simple-format `0x0F`. Trying to use `0x0F` as a custom PID returns NO DATA from this PCM. WiCAN-PRO firmware v4.49 Beta-06 has a confirmed decoder bug for std PID `0x68` on its MQTT publish path: it emits byte 0 of the response (the supported-sensors bitmap = `0x01`) instead of byte 1 (the actual temp). Applied to the `A-40` formula that yields a constant `-39 °C` regardless of real intake air temp. The UI Test button on the same device reads byte 1 correctly (~69 °C plausible), so the bug is in the publish path, not the bus query.
+
+Bisect confirmed via custom Mode 01 PID `0168` with byte probes B0..B8 over MQTT:
+
+```
+B0 = 0x10  (ISO-TP First Frame indicator)
+B1 = 0x09  (length)
+B2 = 0x41  (Mode 01 positive response echo, 0x01 + 0x40)
+B3 = 0x68  (PID echo)
+B4 = 0x01  (sensors-supported bitmap)
+B5 = sensor 1 temp byte (108 raw observed = 68 °C)
+B6 = sensor 2 (absent on V6, 0)
+B7-B8 = padding / next-frame leakage
+```
+
+A second long-running rabbit-hole: the previous "verified" ATF temp config from memory (`223083` to TCM `7E1`, expression `(B6*9/5)-40`) turned out to be a false positive — `B6 = 0x62 = 98 → 136.4 °F` was the Mode 22 positive-response echo byte, present at the same position in EVERY successful Mode 22 response regardless of actual data. Bisect confirmed all bytes of that response are static; the TCM doesn't return temperature there.
+
+**Decision.**
+
+1. **IAT comes from a custom Mode 01 PID, not a std PID.** Profile `honda-pilot-2019.json` declares `intake_air_temp` as a custom PID with `pid: "0168"`, `init: "ATSH7DF\rATCRA"`, `expression: "B5-40"`, `unit: "celsius"`. Naming it `intake_air_temp` directly (canonical snake_case) bypasses the alias map — values land in `pid_readings` as canonical.
+2. **`68-IntakeAirTempSens1 → intake_air_temp` alias removed** from `backend/src/pitstop/workers/wican_aliases.py`. Defense against accidental re-enable (e.g. WiCAN's Standard PIDs scan auto-discovers `68/1` again on a factory-reset device) — without the alias, even if `68/1` ends up polled, its broken `-39` value lands under the hex-prefixed name and never poisons the canonical IAT.
+3. **Mode 22 documented as gateway-blocked on 2019 Pilot Elite.** ATF temp / current gear / TPMS / i-VTM4 AWD torque split — all return NO DATA via any DID we tried (`222201`, `223083`, `22F186`, `22F190`, `22D101..D107`, on every reachable header `7E0/7E1/7E2/7E5/7E6/7DF`). Honda's on-board gateway only forwards Mode 01 broadcast queries on this trim. Removed UI surfaces (LiveView/AnalyticsView/TripDetailView, CarTiles/LiveScreen/TripDetailScreen on Android) that referenced these unreachable metrics so dashboards stop showing perpetually-empty tiles.
+
+**Consequence.**
+
+- IAT flows correctly as `intake_air_temp` with non-constant values that track engine heat-soak (verified 68 °C warm idle, will rise/fall with airflow during driving).
+- One less alias-map entry on the backend; alias map docs explain the firmware bug + workaround so a future Claude doesn't re-add the broken mapping.
+- Loss of access to ATF / gear / TPMS / AWD-torque on this specific car is permanent until either: Honda releases a firmware update that opens Mode 22, the user buys an aftermarket scanner with manufacturer access, or a different CAN bus tap is built that bypasses the gateway. None of these are in scope.
+- The "verified working" memory entry was corrected; future sessions won't repeat the false-positive bisect on `223083`.
+- Forum reports of `222201` working on some Pilot trims are not generalizable — the public `honda-pilot-2019.json` profile keeps the canonical config in `stub_pids` as a starting point for other owners while making explicit it didn't work on the test vehicle.
+
+Shipped in v0.1.123.
