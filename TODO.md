@@ -1,6 +1,6 @@
 # pitstop — Pending Work
 
-Live pending-work index. Last refreshed 2026-05-14 after shipping **v0.1.126**.
+Live pending-work index. Last refreshed 2026-05-14 after shipping **v0.1.127** + the CI Node-24 actions bump.
 
 Numeric task IDs in the harness are session-scoped. Use the **mnemonics** below as durable identifiers. To resume, open Claude Code in `/home/spider/pitstop` and say `rehydrate from TODO.md` — it'll re-instantiate via `TaskCreate` with the right `blockedBy` edges.
 
@@ -8,31 +8,22 @@ The original Phase A/B/C build plan (tasks #1–#29, repo scaffold through HA pl
 
 ---
 
-## #CI — GitHub Actions Node version refresh (1 task · low-priority, deadline-driven)
+## #VERIFY — phone install + new UI verification (1 task · user-side)
 
-CI workflows still use Node 20-based actions. GitHub forces Node 24 on June 2nd, 2026 and removes Node 20 entirely on September 16th, 2026. The v0.1.126 build emitted deprecation warnings for `actions/checkout@v4`, `actions/setup-java@v4`, `android-actions/setup-android@v3`, `gradle/actions/setup-gradle@v4`, `softprops/action-gh-release@v2`, plus the Docker action family (`docker/build-push-action@v6`, `docker/login-action@v3`, `docker/metadata-action@v5`, `docker/setup-buildx-action@v3`).
-
-| Mnemonic | Subject | Blocked by |
-|---|---|---|
-| CI-1 | Bump GitHub Actions to Node 24-compatible versions in `.github/workflows/*.yml` | — |
-
-Open the workflow files, check each action's latest version on its README, bump. No code change required.
-
----
-
-## #VERIFY — v0.1.126 phone install + new UI verification (1 task · user-side)
-
-v0.1.126 ships two phone-only behaviour changes that need a real install + tap to validate end-to-end:
+v0.1.126/v0.1.127 ship three phone-only behaviour changes that need a real install + tap to validate end-to-end:
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| VERIFY-1 | Install v0.1.126 APK via in-app self-update; confirm (a) Settings → manual-sync toggle persists the moment it flips (a `manual_sync_only=true` line shows up in the logs without a Save tap), and (b) History → Sync now chip flips to "Syncing…" with a spinner during the drain, then "Synced N drive(s)" briefly before returning to Idle | — |
+| VERIFY-1 | Install v0.1.127 APK via in-app self-update; confirm (a) Settings → manual-sync toggle persists the moment it flips (a `manual_sync_only=true` line shows up in the logs without a Save tap), (b) History → Sync now chip flips to "Syncing…" with a spinner during the drain, then "Synced N drive(s)" briefly before returning to Idle, and (c) the launcher icon + Add-Fillup shortcut sit centered in the Pixel-launcher circular mask with no visible black above the dial | — |
 
 Code-side gates were exercised on debug build at `compile-clean` only — the only way to confirm the UX feels right is a real device install.
 
 ---
 
 ## Recently closed (last session)
+
+- **CI-1 — Node 24 actions bump (2026-05-14)** — every workflow action that emitted a deprecation warning on the v0.1.127 build is now pinned to a Node-24 major: `actions/checkout@v6`, `actions/setup-java@v5`, `android-actions/setup-android@v4`, `gradle/actions/setup-gradle@v5` (NOT v6 — caching component split out into a commercial library there), `softprops/action-gh-release@v3`, `docker/setup-buildx-action@v4`, `docker/login-action@v4`, `docker/metadata-action@v6`, `docker/build-push-action@v7`. CI on `main` is now warning-free.
+- **Icon optical centering (2026-05-14, v0.1.127)** — both adaptive-icon foregrounds (launcher + Add-Fillup shortcut) had under-corrected optical upward shifts: 1.18 dp and 2.2 dp respectively, leaving black-mask gap visible above the dial on Pixel-launcher circular masks. Bumped to 4.18 dp and 5.2 dp (translateY 13.0→10.0 and 7.0→4.0). Both still fit inside the 36 dp mask radius and the 21–87 dp safe zone.
 
 - **VERIFY-1/v0.1.123** — phone APK installed; the phone is currently running v0.1.125 build 227 per uploaded `client_logs`, so this task is implicitly superseded.
 - **VERIFY-2/v0.1.123** — `intake_air_temp` shows plausible values via the WiCAN custom-PID workaround; broker tail on 2026-05-14 captured a `wican/pilot19/pid` retained message with `intake_air_temp: 33` (~91 °F idle/cooled), well clear of the broken-bitmap –39 °C value.
