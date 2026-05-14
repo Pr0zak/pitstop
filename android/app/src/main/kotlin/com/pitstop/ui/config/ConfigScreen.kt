@@ -51,15 +51,24 @@ import com.pitstop.ui.components.StatusPill
 import kotlin.math.max
 
 /**
- * Settings — Material 3 system-app style. Sections in priority order:
+ * Settings — Material 3 system-app style. Sections grouped by access
+ * frequency; cold-config rows collapse by default so the daily-use
+ * surfaces don't get buried by scroll.
  *
+ *   ── always expanded (top) ──
  *   Bridge service     start/stop, live phase pill, last frame age
  *   OBD device         BLE picker (current pick + scan)
  *   MQTT broker        URL, user, password — with live connected pill
- *   Vehicle            vehicle slug for the bridge
+ *   Connectivity       manual-sync toggle + status
+ *
+ *   ── collapsed by default (set once at first config) ──
  *   Pitstop server     API base URL + ingest/query tokens
+ *   Vehicle            vehicle slug for the bridge
+ *   Display            imperial / metric units
  *   Logs               verbose toggle, buffered count, manual flush
- *   App                version + build code
+ *
+ *   ── always expanded (bottom anchor) ──
+ *   App                version + build code + check-for-updates
  *
  * The "fuel-card" / Bridge-state widgets that used to live on Home now
  * live in this view. Home is the dashboard; here is where you configure.
@@ -108,11 +117,7 @@ fun ConfigScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            DisplaySection(
-                unitSystem = form.unitSystem,
-                onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
-            )
-
+            // ── always expanded: daily-use surfaces ──
             BridgeServiceSection(
                 phase = bridge.phase,
                 deviceName = bridge.deviceName,
@@ -136,11 +141,6 @@ fun ConfigScreen(
                 onPick = { viewModel.pickDevice(it) },
             )
 
-            ConnectivitySection(
-                manualSyncOnly = form.manualSyncOnly,
-                onChange = { v -> viewModel.setManualSyncOnly(v) },
-            )
-
             MqttBrokerSection(
                 form = form,
                 brokerConnected = brokerConnected,
@@ -149,14 +149,25 @@ fun ConfigScreen(
                 update = { transform -> viewModel.update(transform) },
             )
 
+            ConnectivitySection(
+                manualSyncOnly = form.manualSyncOnly,
+                onChange = { v -> viewModel.setManualSyncOnly(v) },
+            )
+
+            // ── collapsed by default: set once at first config ──
+            PitstopServerSection(
+                form = form,
+                update = { transform -> viewModel.update(transform) },
+            )
+
             VehicleSection(
                 slug = form.vehicleSlug,
                 onSlugChange = { v -> viewModel.update { it.copy(vehicleSlug = v) } },
             )
 
-            PitstopServerSection(
-                form = form,
-                update = { transform -> viewModel.update(transform) },
+            DisplaySection(
+                unitSystem = form.unitSystem,
+                onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
             )
 
             LogsSection(
@@ -167,6 +178,7 @@ fun ConfigScreen(
                 onFlush = { viewModel.flushLogsNow() },
             )
 
+            // ── bottom anchor: version + check-for-updates ──
             val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
             val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
             AppSection(
@@ -395,6 +407,8 @@ private fun VehicleSection(slug: String, onSlugChange: (String) -> Unit) {
     SettingsSection(
         title = "Vehicle",
         description = "MQTT topic id this bridge publishes under. Must match a vehicle on the server (mapped via Settings → Devices).",
+        collapsible = true,
+        initiallyExpanded = false,
     ) {
         OutlinedTextField(
             value = slug,
@@ -417,6 +431,8 @@ private fun PitstopServerSection(
     SettingsSection(
         title = "Pitstop server",
         description = "Reads use the Query token, writes use the Ingest token. Get both from ~/.pitstop-deploy-secrets.txt on the host.",
+        collapsible = true,
+        initiallyExpanded = false,
     ) {
         OutlinedTextField(
             value = form.apiBaseUrl,
@@ -449,7 +465,11 @@ private fun LogsSection(
     onVerboseChange: (Boolean) -> Unit,
     onFlush: () -> Unit,
 ) {
-    SettingsSection(title = "Logs") {
+    SettingsSection(
+        title = "Logs",
+        collapsible = true,
+        initiallyExpanded = false,
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Verbose logging", style = MaterialTheme.typography.titleSmall)
@@ -488,6 +508,8 @@ private fun DisplaySection(
     SettingsSection(
         title = "Display",
         description = "Imperial converts °C → °F, kPa → psi, g/s → lb/min, m → ft. Metric leaves canonical OBD units as-is.",
+        collapsible = true,
+        initiallyExpanded = false,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             UnitChip(label = "Imperial", selected = unitSystem == "imperial", onClick = { onChange("imperial") })
