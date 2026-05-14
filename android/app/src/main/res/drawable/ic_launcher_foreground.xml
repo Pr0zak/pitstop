@@ -9,7 +9,7 @@
   visual bounding box in source coords is x [8, 56], y [9, 50] —
   width 48, height 41, center (32, 29.5).
 
-  Scale = 1.35 with a 1.18 dp upward optical shift.
+  Scale = 1.35 with a 4.18 dp upward optical shift.
 
   The Pixel launcher's circle mask has radius ~36 dp around the canvas
   centre (72 dp visible diameter). The mark's extreme corners — the
@@ -19,14 +19,16 @@
   inside the mask with ~0.1 dp margin. Larger scale starts clipping;
   smaller looks "not cinched" against the visible circle edge.
 
-  Translate is nudged 1.18 dp above bbox-centred so the painted ink —
-  concentrated in the upper half of the bbox because the U-shape
-  opens downward — sits closer to the visible circle centre instead
-  of leaving the mark reading as low/down inside the mask.
+  Translate is nudged 4.18 dp above bbox-centred so the painted ink —
+  concentrated in the upper half of the bbox because the U-shape opens
+  downward — sits at the visible circle centre instead of reading as
+  low inside the mask. Earlier 1.18 dp shift was visibly under-corrected
+  on the Pixel launcher; the black mask gap above the dial looked
+  larger than the gap below.
 
       translate_x = 54 - 32 * 1.35 = 10.8
       translate_y_bbox = 54 - 29.5 * 1.35 = 14.175
-      translate_y      = 13.0  (= bbox_centred - 1.18 dp up)
+      translate_y      = 10.0  (= bbox_centred - 4.18 dp up)
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -36,7 +38,7 @@
 
     <group
         android:translateX="10.8"
-        android:translateY="13.0"
+        android:translateY="10.0"
         android:scaleX="1.35"
         android:scaleY="1.35">
 

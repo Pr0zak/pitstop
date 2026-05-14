@@ -17,13 +17,16 @@
 
   Source viewport 64x64, content bbox x[10, 54], y[14, 50], centre
   (32, 32). Group transform places the bbox centre near the canvas
-  centre, with a 2.2 dp upward optical shift so the dome's painted
-  mass (concentrated in the upper half) doesn't read as set-down
-  inside the visible circle:
+  centre, with a 5.2 dp upward optical shift so the dome's painted
+  mass (concentrated in the upper half — arc rim + E/F labels are
+  packed up top while the lower half is sparse) sits at the visible
+  circle centre instead of reading as set-down inside the mask.
+  Earlier 2.2 dp shift was visibly under-corrected on the Pixel
+  launcher.
 
       translate_x = 54 - 32 * 1.4 = 9.2
       translate_y_bbox = 54 - 32 * 1.4 = 9.2
-      translate_y      = 7.0  (= bbox_centred - 2.2 dp up)
+      translate_y      = 4.0  (= bbox_centred - 5.2 dp up)
 
   Angles below are SVG screen-space (CW from +X axis, +Y down). E
   is at 180°, top of dome at 270°, F at 0°. Needle sits at 205° —
@@ -37,7 +40,7 @@
 
     <group
         android:translateX="9.2"
-        android:translateY="7.0"
+        android:translateY="4.0"
         android:scaleX="1.4"
         android:scaleY="1.4">
 
