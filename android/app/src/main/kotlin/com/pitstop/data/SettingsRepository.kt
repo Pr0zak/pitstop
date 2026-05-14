@@ -135,4 +135,12 @@ class SettingsRepository @Inject constructor(
     suspend fun clearSecret(key: String) {
         secretStore.write(key, "")
     }
+
+    /** Focused setter so the manual-sync toggle in Settings can persist
+     *  the instant the switch flips, instead of waiting on the bulk
+     *  Save button. Booleans don't carry the secret-clobber risk that
+     *  [update] guards against, so a narrow edit is safe. */
+    suspend fun setManualSyncOnly(value: Boolean) {
+        context.dataStore.edit { it[Keys.manualSyncOnly] = value }
+    }
 }

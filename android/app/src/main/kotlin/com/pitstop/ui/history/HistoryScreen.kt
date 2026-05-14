@@ -190,10 +190,11 @@ private fun HistoryListScreen(
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val pendingCount by viewModel.pendingCount.collectAsStateWithLifecycle()
+    val syncState by viewModel.syncState.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(0) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (pendingCount > 0) {
+        if (pendingCount > 0 || syncState !is SyncState.Idle) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -201,13 +202,38 @@ private fun HistoryListScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val statusText = when (val s = syncState) {
+                    SyncState.Idle ->
+                        "$pendingCount drive${if (pendingCount == 1) "" else "s"} pending upload"
+                    SyncState.InProgress -> "Syncing…"
+                    is SyncState.Done ->
+                        if (s.uploaded == 0 && s.remaining == 0) "All up to date"
+                        else "Synced ${s.uploaded} drive${if (s.uploaded == 1) "" else "s"}" +
+                            if (s.remaining > 0) " · ${s.remaining} left" else ""
+                    is SyncState.Failed -> "Sync failed: ${s.message}"
+                }
                 Text(
-                    text = "$pendingCount drive${if (pendingCount == 1) "" else "s"} pending upload",
+                    text = statusText,
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val inProgress = syncState is SyncState.InProgress
                 AssistChip(
-                    onClick = { viewModel.syncNow() },
-                    label = { Text("Sync now") },
+                    onClick = { if (!inProgress) viewModel.syncNow() },
+                    enabled = !inProgress,
+                    label = {
+                        if (inProgress) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(modifier = Modifier.size(8.dp))
+                                Text("Syncing…")
+                            }
+                        } else {
+                            Text("Sync now")
+                        }
+                    },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                     ),

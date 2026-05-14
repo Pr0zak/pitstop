@@ -168,6 +168,22 @@ class ConfigViewModel @Inject constructor(
         _form.value = transform(_form.value).copy(saved = false)
     }
 
+    /** Auto-persist the manual-sync toggle. Skips the Save-button dance —
+     *  a user in v0.1.125 flipped it on without tapping Save and drives
+     *  kept auto-uploading because the disk value stayed false. */
+    fun setManualSyncOnly(value: Boolean) {
+        _form.value = _form.value.copy(manualSyncOnly = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setManualSyncOnly(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: manualSyncOnly auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
     fun pickDevice(device: ScannedDevice) {
         _form.value = _form.value.copy(
             bleDeviceMac = device.mac,

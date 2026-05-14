@@ -138,7 +138,7 @@ fun ConfigScreen(
 
             ConnectivitySection(
                 manualSyncOnly = form.manualSyncOnly,
-                onChange = { v -> viewModel.update { it.copy(manualSyncOnly = v) } },
+                onChange = { v -> viewModel.setManualSyncOnly(v) },
             )
 
             MqttBrokerSection(

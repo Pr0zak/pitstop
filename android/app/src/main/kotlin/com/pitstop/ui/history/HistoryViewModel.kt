@@ -3,7 +3,7 @@ package com.pitstop.ui.history
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.data.SettingsRepository
-import com.pitstop.drive.DriveSealer
+import com.pitstop.drive.DriveUploader
 import com.pitstop.drive.PendingDriveDao
 import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
@@ -13,6 +13,7 @@ import com.pitstop.log.LogBuffer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,17 +40,29 @@ data class HistoryUiState(
     val dtcs: HistoryListState<DtcDto> = HistoryListState(),
 )
 
+/** Surfaced to the History header so the Sync-now chip can show progress
+ *  instead of disappearing into a fire-and-forget kick. */
+sealed class SyncState {
+    data object Idle : SyncState()
+    data object InProgress : SyncState()
+    data class Done(val uploaded: Int, val remaining: Int) : SyncState()
+    data class Failed(val message: String) : SyncState()
+}
+
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     private val api: PitstopApi,
     private val settings: SettingsRepository,
     private val logBuffer: LogBuffer,
     private val pendingDao: PendingDriveDao,
-    private val driveSealer: DriveSealer,
+    private val driveUploader: DriveUploader,
 ) : ViewModel() {
 
     private val _ui = MutableStateFlow(HistoryUiState())
     val ui: StateFlow<HistoryUiState> = _ui.asStateFlow()
+
+    private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
+    val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
 
     /**
      * Live count of unacked drives in the local queue (#117). Drives
@@ -65,16 +78,41 @@ class HistoryViewModel @Inject constructor(
     }
 
     /**
-     * User tapped "Sync now". Enqueues an immediate upload pass.
-     * Passes `force=true` so the call ignores manual-sync mode — this
-     * button explicitly represents user intent to upload now.
+     * User tapped "Sync now". Runs the drain on [viewModelScope] so the
+     * UI can show progress (chip → "Syncing…" → "Synced N drive(s)"),
+     * rather than the previous fire-and-forget kickWorker call which
+     * left the user with no visual feedback that anything had happened.
+     * This path explicitly represents user intent, so it ignores
+     * manual-sync mode.
      */
     fun syncNow() {
-        driveSealer.kickWorker(force = true, reason = "history-sync-now")
+        if (_syncState.value is SyncState.InProgress) return
+        val startUnacked = pendingCount.value
+        _syncState.value = SyncState.InProgress
         logBuffer.info(
             "history: sync-now requested",
-            mapOf("pending" to pendingCount.value),
+            mapOf("pending" to startUnacked),
         )
+        viewModelScope.launch {
+            runCatching { driveUploader.drain("history-sync-now") }
+                .onSuccess { uploaded ->
+                    val remaining = runCatching { pendingDao.unackedCount() }.getOrDefault(0)
+                    _syncState.value = SyncState.Done(uploaded = uploaded, remaining = remaining)
+                    delay(SYNC_DISMISS_MS)
+                    if (_syncState.value is SyncState.Done) _syncState.value = SyncState.Idle
+                }
+                .onFailure { t ->
+                    val msg = t.message ?: t::class.java.simpleName
+                    logBuffer.warn("history: sync-now drain failed", mapOf("err" to msg))
+                    _syncState.value = SyncState.Failed(msg)
+                    delay(SYNC_DISMISS_MS)
+                    if (_syncState.value is SyncState.Failed) _syncState.value = SyncState.Idle
+                }
+        }
+    }
+
+    private companion object {
+        const val SYNC_DISMISS_MS = 4_000L
     }
 
     /** Reload all three lists in parallel. Each list manages its own
