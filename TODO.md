@@ -8,6 +8,16 @@ The original Phase A/B/C build plan (tasks #1–#29, repo scaffold through HA pl
 
 ---
 
+## #SETTINGS — phone Settings screen restructure (1 task)
+
+The Settings screen scrolls long because every section is fully expanded by default, even ones the user touches once at first-config (server URL, tokens). Restructure so daily-use surfaces sit at the top, rarely-touched config collapses, and the version/check-for-updates anchor sits at the bottom.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| SETTINGS-1 | Collapsible sections in `ConfigScreen.kt`: top (always expanded) — Bridge service, BLE device, Broker, Connectivity (manual-sync + status). Collapsed by default — Pitstop server (API URL + tokens), Vehicle, Display, Logs. Bottom (always visible) — App (version + check-for-updates). Implement by extending `SettingsSection` with an optional `collapsible: Boolean` + `initiallyExpanded: Boolean` and a header tap-target; keep collapse state local to each section unless persistence is later requested. | — |
+
+---
+
 ## #VERIFY — phone install + new UI verification (1 task · user-side)
 
 v0.1.126/v0.1.127 ship three phone-only behaviour changes that need a real install + tap to validate end-to-end:
