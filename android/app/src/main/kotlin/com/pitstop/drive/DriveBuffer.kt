@@ -13,9 +13,9 @@ import java.util.concurrent.atomic.AtomicLong
  * serialised into a [PendingDrive] row.
  *
  * Concurrency: data is appended from many threads (BLE callback,
- * GPS handler, IMU tick) so the append paths use lock-free queues +
- * atomic counters. Read-and-freeze happens on a single coroutine
- * dispatched by [DriveSealer]; the buffer is single-consumer there.
+ * GPS handler) so the append paths use lock-free queues + atomic
+ * counters. Read-and-freeze happens on a single coroutine dispatched
+ * by [DriveSealer]; the buffer is single-consumer there.
  */
 class DriveBuffer(
     val vehicleId: String,
@@ -24,7 +24,6 @@ class DriveBuffer(
     private val pidReadings = ConcurrentLinkedQueue<PidSample>()
     private val gpsPoints = ConcurrentLinkedQueue<GpsSample>()
     private val engineEvents = ConcurrentLinkedQueue<EngineEvent>()
-    private val imuSamples = ConcurrentLinkedQueue<ImuSample>()
     private val totalFrames = AtomicLong(0)
 
     fun addPid(t: Long, metric: String, valueNum: Double?, valueText: String? = null) {
@@ -47,19 +46,6 @@ class DriveBuffer(
 
     fun addEngineEvent(t: Long, kind: String) {
         engineEvents.add(EngineEvent(t, kind))
-        totalFrames.incrementAndGet()
-    }
-
-    fun addImu(
-        t: Long,
-        ax: Double?,
-        ay: Double?,
-        az: Double?,
-        gx: Double?,
-        gy: Double?,
-        gz: Double?,
-    ) {
-        imuSamples.add(ImuSample(t, ax, ay, az, gx, gy, gz))
         totalFrames.incrementAndGet()
     }
 
@@ -97,11 +83,6 @@ class DriveBuffer(
                     it.speedMps, it.headingDeg, it.accuracyM,
                 )
             },
-            imuSamples = imuSamples.map {
-                ImuSampleDto(
-                    isoMillis(it.t), it.ax, it.ay, it.az, it.gx, it.gy, it.gz,
-                )
-            },
         )
     }
 
@@ -117,11 +98,6 @@ class DriveBuffer(
     )
 
     private data class EngineEvent(val t: Long, val kind: String)
-
-    private data class ImuSample(
-        val t: Long, val ax: Double?, val ay: Double?, val az: Double?,
-        val gx: Double?, val gy: Double?, val gz: Double?,
-    )
 
     companion object {
         /**
@@ -161,7 +137,6 @@ data class DriveUploadDto(
     @SerialName("engine_events") val engineEvents: List<EngineEventDto>,
     @SerialName("pid_readings") val pidReadings: List<PidReadingDto>,
     @SerialName("gps_points") val gpsPoints: List<GpsPointDto>,
-    @SerialName("imu_samples") val imuSamples: List<ImuSampleDto>,
 )
 
 @Serializable
@@ -187,17 +162,6 @@ data class GpsPointDto(
     @SerialName("speed_mps") val speedMps: Double? = null,
     @SerialName("heading_deg") val headingDeg: Double? = null,
     @SerialName("accuracy_m") val accuracyM: Double? = null,
-)
-
-@Serializable
-data class ImuSampleDto(
-    @SerialName("t") val t: String,
-    @SerialName("accel_x") val ax: Double? = null,
-    @SerialName("accel_y") val ay: Double? = null,
-    @SerialName("accel_z") val az: Double? = null,
-    @SerialName("gyro_x") val gx: Double? = null,
-    @SerialName("gyro_y") val gy: Double? = null,
-    @SerialName("gyro_z") val gz: Double? = null,
 )
 
 @Serializable

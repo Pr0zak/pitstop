@@ -338,24 +338,6 @@ export async function mpgOverlay(
   return r.data;
 }
 
-export interface HardEventsDay { date: string; count: number }
-export interface HardEvents {
-  total: number;
-  rate_per_100mi: number | null;
-  threshold_mps2: number;
-  window_days: number;
-  series: HardEventsDay[];
-}
-export async function getHardEvents(
-  vehicleId: string,
-  days = 90,
-): Promise<HardEvents> {
-  const r = await apiQuery.get<HardEvents>("/analytics/hard-events", {
-    params: { vehicle_id: vehicleId, days },
-  });
-  return r.data;
-}
-
 export interface EngineHoursPoint {
   month: string;
   cumulative_hours: number;

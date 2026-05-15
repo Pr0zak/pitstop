@@ -224,42 +224,6 @@ private fun Loaded(
             }
         }
 
-        if (trip.imuEvents.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Hard events",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        AssistChip(
-                            onClick = {},
-                            label = { Text("${trip.imuEvents.size} flagged") },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                labelColor = MaterialTheme.colorScheme.onErrorContainer,
-                            ),
-                        )
-                        val peakG = trip.imuEvents.maxOf { it.magnitude } / 9.81
-                        AssistChip(
-                            onClick = {},
-                            label = { Text("peak %.2fg".format(peakG)) },
-                        )
-                    }
-                }
-            }
-        }
-
         if (trip.dtcs.isNotEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),

@@ -266,8 +266,6 @@ class PitstopBridgeService : Service() {
             // GPS: parallel to the BLE/MQTT path. If permission is missing
             // we log + skip; the bridge still publishes OBD telemetry.
             startGpsUpdates()
-            // IMU: accel + gyro at 5 Hz on the same lifecycle.
-            startImuUpdates()
             val secrets = settingsRepository.current()
             val s = secrets.settings
             vehicleSlug = s.vehicleSlug.ifBlank { "vehicle" }
@@ -869,142 +867,7 @@ class PitstopBridgeService : Service() {
         runCatching { lm?.removeUpdates(listener) }
     }
 
-    // -------- IMU publishing (Task #41) --------
-    //
-    // Subscribes to TYPE_LINEAR_ACCELERATION (gravity-stripped m/s²) and
-    // TYPE_GYROSCOPE (rad/s) and republishes every 200 ms (5 Hz):
-    //   bridge/<slug>/accel_x, accel_y, accel_z
-    //   bridge/<slug>/gyro_x, gyro_y, gyro_z
-    // Sensor callbacks fire much faster than 5 Hz on most phones — we keep
-    // only the freshest sample between ticks. This keeps the broker stream
-    // bounded (~30 messages/s combined with GPS) without loading-up
-    // post-drive analysis pipelines.
-
-    private var imuListener: android.hardware.SensorEventListener? = null
-    private var lastAccel: FloatArray? = null
-    private var lastGyro: FloatArray? = null
-    private var imuPublishJob: kotlinx.coroutines.Job? = null
-
-    private fun startImuUpdates() {
-        val sm = getSystemService(SENSOR_SERVICE) as? android.hardware.SensorManager
-        if (sm == null) {
-            logBuffer.warn("imu: SensorManager unavailable")
-            return
-        }
-        val accel = sm.getDefaultSensor(android.hardware.Sensor.TYPE_LINEAR_ACCELERATION)
-        val gyro = sm.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE)
-        if (accel == null && gyro == null) {
-            logBuffer.warn("imu: device has neither linear-accel nor gyro sensor")
-            return
-        }
-        val listener = object : android.hardware.SensorEventListener {
-            override fun onSensorChanged(event: android.hardware.SensorEvent) {
-                when (event.sensor.type) {
-                    android.hardware.Sensor.TYPE_LINEAR_ACCELERATION ->
-                        lastAccel = event.values.copyOf(3)
-                    android.hardware.Sensor.TYPE_GYROSCOPE ->
-                        lastGyro = event.values.copyOf(3)
-                }
-            }
-            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
-        }
-        imuListener = listener
-        // SENSOR_DELAY_GAME = ~20 ms; we throttle to 5 Hz on the publish side.
-        accel?.let {
-            sm.registerListener(listener, it, android.hardware.SensorManager.SENSOR_DELAY_GAME)
-        }
-        gyro?.let {
-            sm.registerListener(listener, it, android.hardware.SensorManager.SENSOR_DELAY_GAME)
-        }
-        imuPublishJob = scope.launch {
-            while (scope.isActive) {
-                kotlinx.coroutines.delay(200L)
-                publishImuFrame()
-            }
-        }
-        logBuffer.info(
-            "imu: updates started",
-            mapOf("accel" to (accel != null), "gyro" to (gyro != null)),
-        )
-    }
-
-    private fun stopImuUpdates() {
-        val sm = getSystemService(SENSOR_SERVICE) as? android.hardware.SensorManager
-        imuListener?.let { runCatching { sm?.unregisterListener(it) } }
-        imuListener = null
-        imuPublishJob?.cancel()
-        imuPublishJob = null
-        lastAccel = null
-        lastGyro = null
-    }
-
-    // IMU motion floor — below these magnitudes the values are sensor
-    // noise on a phone sitting on a desk or in a parked car. We always
-    // mirror the sample to BridgeStateBus (so on-phone Live view still
-    // shows zeros) but don't bother publishing to MQTT.
-    private val imuAccelNoiseMs2 = 0.15f      // ~1.5% of g
-    private val imuGyroNoiseRadS = 0.05f      // ~3°/s
-
-    private fun publishImuFrame() {
-        val slug = vehicleSlug
-        if (slug.isBlank()) return
-
-        // Gate the firehose: only ship to the broker when the engine is
-        // Gate every IMU update — local state bus, MQTT publish, and
-        // drive recorder — on engine_state=On. While parked at home /
-        // WiCAN asleep / out of the car this saves ~30 useless rows/s
-        // going into pid_readings AND prevents the Live screen from
-        // showing the phone's own accelerometer noise while sitting on
-        // a table.
-        if (stateBus.status.value.engineState != EngineState.On) return
-        val publishToBroker = true
-
-        // Compose one IMU sample for the drive recorder per tick.
-        // Recorder takes both accel + gyro together so the per-sample
-        // timestamp lines up — analytics that pair the two axes get
-        // the same instant of data, instead of two stagger-ed rows.
-        val tImu = System.currentTimeMillis()
-        val a = lastAccel
-        val g = lastGyro
-        if (a != null || g != null) {
-            driveRecorder.current()?.addImu(
-                t = tImu,
-                ax = a?.get(0)?.toDouble(),
-                ay = a?.get(1)?.toDouble(),
-                az = a?.get(2)?.toDouble(),
-                gx = g?.get(0)?.toDouble(),
-                gy = g?.get(1)?.toDouble(),
-                gz = g?.get(2)?.toDouble(),
-            )
-        }
-        a?.let {
-            stateBus.publishMetric("accel_x", it[0].toDouble())
-            stateBus.publishMetric("accel_y", it[1].toDouble())
-            stateBus.publishMetric("accel_z", it[2].toDouble())
-            // Skip publishing if the phone is essentially still — even
-            // during a drive, idling at a red light produces all-zero
-            // samples that just bloat the DB.
-            val mag = kotlin.math.sqrt((it[0] * it[0] + it[1] * it[1] + it[2] * it[2]).toDouble())
-            if (publishToBroker && mag >= imuAccelNoiseMs2) {
-                publishOrBuffer("bridge/$slug/accel_x", v2EnvelopeStr("%.3f".format(it[0])))
-                publishOrBuffer("bridge/$slug/accel_y", v2EnvelopeStr("%.3f".format(it[1])))
-                publishOrBuffer("bridge/$slug/accel_z", v2EnvelopeStr("%.3f".format(it[2])))
-            }
-        }
-        g?.let {
-            stateBus.publishMetric("gyro_x", it[0].toDouble())
-            stateBus.publishMetric("gyro_y", it[1].toDouble())
-            stateBus.publishMetric("gyro_z", it[2].toDouble())
-            val mag = kotlin.math.sqrt((it[0] * it[0] + it[1] * it[1] + it[2] * it[2]).toDouble())
-            if (publishToBroker && mag >= imuGyroNoiseRadS) {
-                publishOrBuffer("bridge/$slug/gyro_x", v2EnvelopeStr("%.3f".format(it[0])))
-                publishOrBuffer("bridge/$slug/gyro_y", v2EnvelopeStr("%.3f".format(it[1])))
-                publishOrBuffer("bridge/$slug/gyro_z", v2EnvelopeStr("%.3f".format(it[2])))
-            }
-        }
-    }
-
-    // Track when we last accepted a GPS-provider fix so we can ignore
+// Track when we last accepted a GPS-provider fix so we can ignore
     // network-provider noise that fires alongside it. Network locations
     // are based on cell + Wi-Fi triangulation and routinely return stale
     // points kilometres from the real position — polluting gps_points
@@ -1093,7 +956,6 @@ class PitstopBridgeService : Service() {
             runCatching { settingsRepository.setBridgeAutoStart(false) }
         }
         stopGpsUpdates()
-        stopImuUpdates()
         pollJob?.cancel()
         pollJob = null
         bleManager?.disconnectDevice()

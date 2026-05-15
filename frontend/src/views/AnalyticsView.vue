@@ -180,32 +180,6 @@ const tempChart = computed(() => {
   return { aligned: cols, opts };
 });
 
-// Hard accel/brake events from IMU (Task #95).
-const hardQ = useAsync(
-  () =>
-    vehicleId.value
-      ? api.getHardEvents(vehicleId.value, 90)
-      : Promise.resolve(null as api.HardEvents | null),
-  [vehicleId],
-);
-const hardSpark = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
-  const pts = hardQ.data.value?.series ?? [];
-  if (pts.length < 2) return null;
-  const t = pts.map((p) => Math.round((Date.parse(p.date) || 0) / 1000));
-  const y = pts.map((p) => p.count);
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 160,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "events/day" }],
-    series: [
-      {},
-      { label: "Hard events", stroke: "#ef4444", width: 1.4, fill: "rgba(239,68,68,0.18)" },
-    ],
-  };
-  return { aligned: [t, y], opts };
-});
-
 // Engine hours vs miles (Task #96). Backend walks
 // time_since_engine_start, sums per-cycle maxes, and pairs each
 // month with the odometer high-water mark.
@@ -458,25 +432,6 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
           <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
           <div v-else-if="!tempChart" class="muted">No temperature readings.</div>
           <UPlotChart v-else :data="tempChart.aligned" :options="tempChart.opts" />
-        </section>
-
-        <section v-if="hardSpark || (hardQ.data.value && hardQ.data.value.total > 0)" class="card">
-          <header class="head-inline">
-            <h3>Hard events</h3>
-            <span v-if="hardQ.data.value" class="muted small">
-              {{ hardQ.data.value.total }} in 90 d
-              <span v-if="hardQ.data.value.rate_per_100mi != null">
-                · {{ hardQ.data.value.rate_per_100mi.toFixed(1) }} / 100 mi
-              </span>
-              · |a| &gt; {{ hardQ.data.value.threshold_mps2 }} m/s²
-            </span>
-          </header>
-          <UPlotChart v-if="hardSpark" :data="hardSpark.aligned" :options="hardSpark.opts" />
-          <p class="muted small">
-            Counts each 1-second bucket where the IMU's linear-acceleration magnitude
-            exceeds the threshold. Captures hard braking, hard acceleration, sharp
-            cornering, or pothole hits regardless of phone orientation.
-          </p>
         </section>
 
         <section v-if="hoursChart" class="card">

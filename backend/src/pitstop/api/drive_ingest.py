@@ -72,16 +72,6 @@ class GpsPointIn(BaseModel):
     accuracy_m: float | None = None
 
 
-class ImuSampleIn(BaseModel):
-    t: datetime
-    accel_x: float | None = None
-    accel_y: float | None = None
-    accel_z: float | None = None
-    gyro_x: float | None = None
-    gyro_y: float | None = None
-    gyro_z: float | None = None
-
-
 class DriveUploadIn(BaseModel):
     # Accept either a vehicle UUID or a slug (e.g. "pilot19"). The
     # phone bridge service only knows the slug; resolving server-side
@@ -96,7 +86,10 @@ class DriveUploadIn(BaseModel):
     engine_events: list[EngineEventIn] = Field(default_factory=list)
     pid_readings: list[PidReadingIn] = Field(default_factory=list)
     gps_points: list[GpsPointIn] = Field(default_factory=list)
-    imu_samples: list[ImuSampleIn] = Field(default_factory=list)
+    # imu_samples was removed in DISK-3. Accept the field silently
+    # from older APKs (model_config below allows extras) but don't
+    # parse or store it — the column was dropped from pid_readings'
+    # ingest path because we no longer write IMU data anywhere.
 
 
 class DriveUploadOut(BaseModel):
@@ -118,7 +111,6 @@ def _frame_count(body: DriveUploadIn) -> int:
         len(body.pid_readings)
         + len(body.gps_points)
         + len(body.engine_events)
-        + len(body.imu_samples)
     )
 
 
@@ -126,12 +118,8 @@ async def _bulk_insert_pid_readings(
     conn: asyncpg.Connection,
     vehicle_id: UUID,
     rows: list[PidReadingIn],
-    imu: list[ImuSampleIn],
 ) -> None:
-    """Insert pid_readings rows. IMU samples are flattened into
-    one pid_readings row per axis (accel_x/y/z, gyro_x/y/z) for
-    backwards-compat with the existing analytics that read from
-    pid_readings (e.g. #95 hard-events).
+    """Insert pid_readings rows.
 
     ON CONFLICT DO NOTHING — the bridge stream may have shipped the
     same data in real time. Phone batch is authoritative on tie.
@@ -139,12 +127,6 @@ async def _bulk_insert_pid_readings(
     records: list[tuple[Any, ...]] = []
     for r in rows:
         records.append((r.t, vehicle_id, r.metric, r.value_num, r.value_text, "phone_batch"))
-    for s in imu:
-        for axis in ("accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"):
-            v = getattr(s, axis)
-            if v is None:
-                continue
-            records.append((s.t, vehicle_id, axis, float(v), None, "phone_batch"))
     if not records:
         return
     # asyncpg's copy_records_to_table is the fastest bulk insert
@@ -289,7 +271,7 @@ async def post_drive(
 
         # Bulk inserts first so compute_trip_stats sees the new data.
         await _bulk_insert_pid_readings(
-            conn, resolved_vehicle_id, body.pid_readings, body.imu_samples
+            conn, resolved_vehicle_id, body.pid_readings
         )
         await _bulk_insert_gps_points(conn, resolved_vehicle_id, body.gps_points)
         await _bulk_insert_engine_events(conn, resolved_vehicle_id, body.engine_events)

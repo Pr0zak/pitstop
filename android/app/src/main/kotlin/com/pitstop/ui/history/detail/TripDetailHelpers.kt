@@ -212,17 +212,7 @@ internal fun tripNarrative(trip: TripDetailDto): String {
         parts += "peaked at ${kphToMph(trip.maxSpeedKph).roundToInt()} mph"
     }
 
-    // 6) Hard IMU events. The web defers this to a side card but on
-    // a phone screen it's worth surfacing inline — those events are
-    // the most-likely "interesting bit" about an otherwise routine
-    // commute and motivate clicking into the detail in the first
-    // place.
-    val hardEvents = trip.imuEvents.size
-    if (hardEvents > 0) {
-        parts += "$hardEvents hard event${if (hardEvents == 1) "" else "s"}"
-    }
-
-    // 7) DTCs.
+    // 6) DTCs.
     val dtcs = trip.dtcs.size
     if (dtcs > 0) parts += "$dtcs DTC${if (dtcs == 1) "" else "s"} fired"
 

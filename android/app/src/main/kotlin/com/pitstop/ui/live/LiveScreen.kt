@@ -39,7 +39,6 @@ import com.pitstop.ui.components.StatusPill
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
 /**
  * Tile spec — what label, which metric key, what unit, optional formatter.
@@ -230,34 +229,6 @@ fun LiveScreen(
                 metrics = metrics,
             )
 
-            // ── IMU (phone accel + gyro, magnitude vectors) ──────────
-            val accelMag = vectorMag(metrics, "accel_x", "accel_y", "accel_z")
-            val gyroMag = vectorMag(metrics, "gyro_x", "gyro_y", "gyro_z")
-            if (accelMag != null || gyroMag != null) {
-                LiveSection(
-                    title = "Motion",
-                    tiles = emptyList(),
-                    metrics = metrics,
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SmallTile(
-                            label = "|Accel|",
-                            value = accelMag,
-                            unit = "m/s²",
-                            digits = 2,
-                            modifier = Modifier.weight(1f),
-                        )
-                        SmallTile(
-                            label = "|Gyro|",
-                            value = gyroMag,
-                            unit = "rad/s",
-                            digits = 3,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-            }
-
             if (metrics.isEmpty()) {
                 Text(
                     "No live data yet — start the bridge service from Settings.",
@@ -398,20 +369,6 @@ private fun SmallTile(
             }
         }
     }
-}
-
-private fun vectorMag(
-    metrics: Map<String, MetricSample>,
-    x: String, y: String, z: String,
-): Double? {
-    val xv = metrics[x]?.value
-    val yv = metrics[y]?.value
-    val zv = metrics[z]?.value
-    if (xv == null && yv == null && zv == null) return null
-    val xx = xv ?: 0.0
-    val yy = yv ?: 0.0
-    val zz = zv ?: 0.0
-    return sqrt(xx * xx + yy * yy + zz * zz)
 }
 
 private fun bleStatusOf(phase: com.pitstop.service.BridgePhase): Pair<String, PillState> =

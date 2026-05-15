@@ -334,7 +334,7 @@ data class TripMergeRequest(
 /**
  * Full trip payload returned by `/api/trips/{id}`. Mirrors the
  * `TripDetail` Pydantic schema the web frontend consumes plus the
- * derived bundles (`samples`, `dtcs`, `imu_events`, `odo_*`,
+ * derived bundles (`samples`, `dtcs`, `odo_*`,
  * weather, ...). Unknown keys are ignored at the Json layer.
  */
 @kotlinx.serialization.Serializable
@@ -365,7 +365,6 @@ data class TripDetailDto(
     @kotlinx.serialization.SerialName("odo_end_km") val odoEndKm: Double? = null,
     val samples: List<TripSampleDto> = emptyList(),
     val dtcs: List<TripDtcDto> = emptyList(),
-    @kotlinx.serialization.SerialName("imu_events") val imuEvents: List<ImuEventDto> = emptyList(),
 )
 
 @kotlinx.serialization.Serializable
@@ -381,14 +380,6 @@ data class TripDtcDto(
     val code: String,
     @kotlinx.serialization.SerialName("seen_at") val seenAt: String,
     val description: String? = null,
-)
-
-@kotlinx.serialization.Serializable
-data class ImuEventDto(
-    val t: String,
-    val magnitude: Double,
-    val lat: Double? = null,
-    val lon: Double? = null,
 )
 
 @kotlinx.serialization.Serializable

@@ -135,13 +135,7 @@ async def get_trip(
                                   'throttle_position', 'maf_air_flow',
                                   'manifold_pressure', 'engine_load',
                                   'control_module_voltage', 'fuel_level',
-                                  'intake_air_temp',
-                                  -- IMU axes for cornering / bumps / hard-event
-                                  -- markers (Task #111). avg() over the bucket
-                                  -- gives a centroid that visualises persistent
-                                  -- motion in each second.
-                                  'accel_x', 'accel_y', 'accel_z',
-                                  'gyro_x', 'gyro_y', 'gyro_z')
+                                  'intake_air_temp')
                    AND value_num IS NOT NULL
                  GROUP BY 1, 2
                  ORDER BY 1 ASC
@@ -207,65 +201,6 @@ async def get_trip(
             """,
             row["vehicle_id"], started, ended,
         )
-        # Hard-event IMU markers (Task #111). 1-second buckets of
-        # accel_x/y/z avg → magnitude; emit one row per bucket where
-        # |a| > threshold. Pair with the nearest gps_point for
-        # map-marker rendering. Threshold matches #95's tuning
-        # (5 m/s² ≈ 0.5g on linear acceleration).
-        imu_event_rows = await conn.fetch(
-            """
-            WITH bucketed AS (
-                SELECT time_bucket(make_interval(secs => 1), time) AS t,
-                       metric,
-                       avg(value_num) AS v
-                  FROM pid_readings
-                 WHERE vehicle_id = $1
-                   AND metric IN ('accel_x', 'accel_y', 'accel_z')
-                   AND time BETWEEN $2 AND $3
-                   AND value_num IS NOT NULL
-                 GROUP BY 1, 2
-            ),
-            pivoted AS (
-                SELECT t,
-                       max(CASE WHEN metric = 'accel_x' THEN v END) AS ax,
-                       max(CASE WHEN metric = 'accel_y' THEN v END) AS ay,
-                       max(CASE WHEN metric = 'accel_z' THEN v END) AS az
-                  FROM bucketed
-                 GROUP BY t
-            )
-            SELECT t,
-                   sqrt(COALESCE(ax, 0)^2 + COALESCE(ay, 0)^2 + COALESCE(az, 0)^2)
-                       AS magnitude
-              FROM pivoted
-             WHERE sqrt(COALESCE(ax, 0)^2 + COALESCE(ay, 0)^2 + COALESCE(az, 0)^2)
-                       > 5.0
-             ORDER BY t ASC
-            """,
-            row["vehicle_id"], started, ended,
-        )
-        # Join each event to its nearest gps_point within ±5 s for
-        # the map marker. Lateral join is expensive at scale but
-        # the event list is small (a handful per trip at most).
-        event_locs: list[dict[str, Any]] = []
-        for ev in imu_event_rows:
-            gps = await conn.fetchrow(
-                """
-                SELECT lat, lon
-                  FROM gps_points
-                 WHERE vehicle_id = $1
-                   AND time BETWEEN $2::timestamptz - interval '5 seconds'
-                                AND $2::timestamptz + interval '5 seconds'
-                 ORDER BY abs(extract(epoch FROM (time - $2::timestamptz)))
-                 LIMIT 1
-                """,
-                row["vehicle_id"], ev["t"],
-            )
-            event_locs.append({
-                "t": ev["t"],
-                "magnitude": round(float(ev["magnitude"]), 2),
-                "lat": float(gps["lat"]) if gps else None,
-                "lon": float(gps["lon"]) if gps else None,
-            })
     out["odo_start_km"] = float(odo_start) if odo_start is not None else None
     out["odo_end_km"] = float(odo_end) if odo_end is not None else None
     out["dtcs"] = [
@@ -277,7 +212,6 @@ async def get_trip(
         }
         for d in dtc_rows
     ]
-    out["imu_events"] = event_locs
     return out
 
 

@@ -276,9 +276,6 @@ class TripDetail(TripOut):
     odo_end_km: float | None = None
     # DTCs that first fired during this trip's window. (Task #110)
     dtcs: list[dict[str, Any]] = Field(default_factory=list)
-    # Hard IMU events: 1-second buckets where |linear-accel| > 5 m/s²,
-    # paired with the nearest gps_point for map markers. (Task #111)
-    imu_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
