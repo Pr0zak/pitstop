@@ -181,11 +181,13 @@ fun ConfigScreen(
             // ── bottom anchor: version + check-for-updates ──
             val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
             val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
+            val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
             AppSection(
                 checking = checkingUpdate,
                 latestVersionFound = latestUpdate?.latestVersion,
                 latestIsNewer = latestUpdate?.isNewer == true,
                 hasApkAsset = latestUpdate?.apkUrl != null,
+                downloadState = downloadState,
                 onCheck = { viewModel.checkForUpdates() },
                 onDownload = { viewModel.downloadAndInstall() },
             )
@@ -533,6 +535,7 @@ private fun AppSection(
     latestVersionFound: String?,
     latestIsNewer: Boolean,
     hasApkAsset: Boolean,
+    downloadState: com.pitstop.update.DownloadState,
     onCheck: () -> Unit,
     onDownload: () -> Unit,
 ) {
@@ -587,20 +590,60 @@ private fun AppSection(
         }
         if (latestIsNewer && latestVersionFound != null) {
             Spacer(Modifier.size(8.dp))
+            val inProgress = downloadState is com.pitstop.update.DownloadState.InProgress
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (hasApkAsset) "v$latestVersionFound is ready to install."
-                    else "v$latestVersionFound has no APK asset on the release page.",
+                    when {
+                        downloadState is com.pitstop.update.DownloadState.Complete ->
+                            "v$latestVersionFound downloaded — installer opening."
+                        downloadState is com.pitstop.update.DownloadState.Failed ->
+                            "Download failed: ${downloadState.reason}. Tap to retry."
+                        hasApkAsset -> "v$latestVersionFound is ready to install."
+                        else -> "v$latestVersionFound has no APK asset on the release page."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 Button(
                     onClick = onDownload,
-                    enabled = hasApkAsset,
+                    enabled = hasApkAsset && !inProgress,
                 ) {
-                    Text("Download & install")
+                    Text(if (inProgress) "Downloading…" else "Download & install")
                 }
+            }
+            // In-app progress bar (UPDATE-1). System notification still
+            // shows globally; this gives the user a clear "yes, bytes
+            // are moving" indicator without leaving Settings.
+            if (inProgress) {
+                val s = downloadState as com.pitstop.update.DownloadState.InProgress
+                Spacer(Modifier.size(8.dp))
+                val fraction = if (s.totalBytes > 0) {
+                    (s.bytesSoFar.toFloat() / s.totalBytes.toFloat()).coerceIn(0f, 1f)
+                } else null
+                if (fraction != null) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { fraction },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 4.dp),
+                    )
+                } else {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 4.dp),
+                    )
+                }
+                Spacer(Modifier.size(4.dp))
+                Text(
+                    text = if (s.totalBytes > 0)
+                        "${humanBytes(s.bytesSoFar)} / ${humanBytes(s.totalBytes)}" +
+                            (fraction?.let { " · ${(it * 100).toInt()}%" } ?: "")
+                    else humanBytes(s.bytesSoFar),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

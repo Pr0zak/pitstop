@@ -79,6 +79,12 @@ class ConfigViewModel @Inject constructor(
     private val _latestUpdate = MutableStateFlow<UpdateInfo?>(null)
     val latestUpdate: StateFlow<UpdateInfo?> = _latestUpdate.asStateFlow()
 
+    /** Live download-progress mirror from [UpdateInstaller]. Pass-through
+     *  so the App section can render an in-app progress bar instead of
+     *  relying on the system notification alone. */
+    val downloadState: StateFlow<com.pitstop.update.DownloadState> =
+        updateInstaller.downloadState
+
     /** Live "buffered: N" count for the toggle's helper line. */
     val bufferedCount: StateFlow<Int> = logBuffer.bufferedCount
 
