@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -222,6 +223,9 @@ class StatusViewModel @Inject constructor(
             tankCapacityGal * fuelLevelPct / 100.0
         } else null
         val fuelLevelAge = fuelEntry?.time?.let { formatReadingAge(it) }
+        val fuelLevelTimestampMs = fuelEntry?.time?.let {
+            runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
+        }
 
         return HeroCardData(
             avgConsumptionMpg = avgMpg,
@@ -232,6 +236,8 @@ class StatusViewModel @Inject constructor(
             fuelLevelPct = fuelLevelPct,
             fuelGallons = fuelGallons,
             fuelLevelAge = fuelLevelAge,
+            fuelLevelTimestampMs = fuelLevelTimestampMs,
+            tank1CapacityGal = tankCapacityGal,
             // mpgSeries field is now unused by the FuelHeroCards card
             // (the year sparkline moved into its own MpgYearChart), but
             // we keep the field populated for source-compat. Empty if
@@ -245,15 +251,22 @@ class StatusViewModel @Inject constructor(
      *  Returns null if parsing fails. */
     private fun formatReadingAge(isoTime: String): String? = runCatching {
         val readingInstant = java.time.OffsetDateTime.parse(isoTime).toInstant()
-        val ageSec = java.time.Duration.between(readingInstant, java.time.Instant.now()).seconds
-        when {
+        formatReadingAgeMs(readingInstant.toEpochMilli())
+    }.getOrNull()
+
+    /** Same as [formatReadingAge] but takes a raw epoch-ms timestamp — used
+     *  by the local-in-process override path which works in epoch ms
+     *  directly off [com.pitstop.service.MetricSample.tsMs]. */
+    private fun formatReadingAgeMs(tsMs: Long): String {
+        val ageSec = (System.currentTimeMillis() - tsMs) / 1000
+        return when {
             ageSec < 0 -> "live"
             ageSec < 90 -> "live"
             ageSec < 3600 -> "${ageSec / 60}m ago"
             ageSec < 86_400 -> "${ageSec / 3600}h ago"
             else -> "${ageSec / 86_400}d ago"
         }
-    }.getOrNull()
+    }
 
     private fun clearHomeData() {
         heroData.value = null
@@ -277,6 +290,30 @@ class StatusViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Hero card augmented with the latest in-process fuel_level sample
+     * from BridgeStateBus. publishMetric fires on every BLE poll
+     * regardless of manualSyncOnly, so this path stays fresh even when
+     * MQTT publishes are suppressed and /vehicles is hours behind.
+     */
+    private val augmentedHero: StateFlow<HeroCardData?> = combine(
+        heroData,
+        bridgeStateBus.latestByMetric.map { it["fuel_level"] },
+    ) { hero, local ->
+        if (hero == null) return@combine null
+        if (local == null) return@combine hero
+        val serverTs = hero.fuelLevelTimestampMs
+        if (serverTs != null && local.tsMs <= serverTs) return@combine hero
+        val tank = hero.tank1CapacityGal
+        val gallons = if (tank != null) tank * local.value / 100.0 else hero.fuelGallons
+        hero.copy(
+            fuelLevelPct = local.value,
+            fuelGallons = gallons,
+            fuelLevelAge = formatReadingAgeMs(local.tsMs),
+            fuelLevelTimestampMs = local.tsMs,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val uiState: StateFlow<StatusUiState> =
         combine(
             // First five — the bridge / settings / logs / update group.
@@ -291,7 +328,7 @@ class StatusViewModel @Inject constructor(
             },
             updateInfo,
             updateChecking,
-            heroData,
+            augmentedHero,
             recentTrips,
             mpgMonthly,
             mpgYearly,

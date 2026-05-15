@@ -45,6 +45,15 @@ data class HeroCardData(
     /** Relative-time text for the fuel_level reading age (e.g. "live",
      *  "3h ago"). Empty/null when no reading. */
     val fuelLevelAge: String?,
+    /** UTC epoch ms of the fuel_level reading source. Lets the local
+     *  in-process metric (via BridgeStateBus) override the server's
+     *  value when it's fresher — the key UX fix for manual-sync mode
+     *  where bridge publishes are suppressed and /vehicles lags. */
+    val fuelLevelTimestampMs: Long? = null,
+    /** Tank capacity in gallons, carried so the local-override path can
+     *  recompute fuelGallons from a fresher fuelLevelPct without
+     *  re-deriving from vehicle config. */
+    val tank1CapacityGal: Double? = null,
     val mpgSeries: List<Double>,
 )
 
