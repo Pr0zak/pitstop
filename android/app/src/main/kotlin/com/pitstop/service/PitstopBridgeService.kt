@@ -280,6 +280,10 @@ class PitstopBridgeService : Service() {
                     "verbose_logging" to s.verboseLogging,
                 ),
             )
+            // Kick the fuel widget on every bridge start so a fresh
+            // user session doesn't have to wait 30 min for the OS tick
+            // to refresh stale data.
+            widgetRefresher.refreshFuelWidget()
 
             stateBus.update {
                 it.copy(

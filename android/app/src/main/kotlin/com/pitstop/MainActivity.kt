@@ -60,6 +60,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Belt-and-suspenders fuel-widget refresh. Opening the app is
+        // the user's strongest "fix this thing" signal; if the widget
+        // got stuck on a failed onUpdate after an APK install (Hilt
+        // not ready, no network, etc.) and is now waiting for the next
+        // 30-min OS tick, we unstick it here.
+        com.pitstop.widget.FuelWidgetProvider.refreshWidgets(this)
         // The Add-Fillup launcher shortcut (#121) — long-press the app
         // icon or use a home-screen shortcut — fires this action so we
         // land directly on the Fuel tab. Other launch paths (icon tap,

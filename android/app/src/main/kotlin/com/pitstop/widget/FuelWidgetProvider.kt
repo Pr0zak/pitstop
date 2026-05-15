@@ -16,6 +16,7 @@ import com.pitstop.MainActivity
 import com.pitstop.R
 import com.pitstop.data.SettingsRepository
 import com.pitstop.http.PitstopApi
+import com.pitstop.log.LogBuffer
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -57,6 +58,7 @@ class FuelWidgetProvider : AppWidgetProvider() {
     interface WidgetEntryPoint {
         fun api(): PitstopApi
         fun settings(): SettingsRepository
+        fun logBuffer(): LogBuffer
     }
 
     override fun onUpdate(
@@ -77,13 +79,25 @@ class FuelWidgetProvider : AppWidgetProvider() {
         val entry = EntryPointAccessors.fromApplication(
             context.applicationContext, WidgetEntryPoint::class.java,
         )
+        entry.logBuffer().info(
+            "fuel widget onUpdate",
+            mapOf("count" to ids.size),
+        )
         // SupervisorJob: one failure (e.g. /vehicles 401) shouldn't crash
         // the whole onUpdate handler. We just leave the widget showing
         // whatever it had last.
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             val (pct, sub) = runCatching { fetchFuel(entry) }.getOrElse { exc ->
+                entry.logBuffer().warn(
+                    "fuel widget fetch threw",
+                    mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
+                )
                 null to (exc.message?.take(24) ?: "err")
             }
+            entry.logBuffer().info(
+                "fuel widget fetch result",
+                mapOf("pct" to (pct ?: -1.0), "sub" to sub),
+            )
             withContext(Dispatchers.Main) {
                 ids.forEach { id ->
                     manager.updateAppWidget(id, buildRemoteViews(context, manager, id, pct, sub))
