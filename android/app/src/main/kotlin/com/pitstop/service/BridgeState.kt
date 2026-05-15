@@ -1,7 +1,11 @@
 package com.pitstop.service
 
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import javax.inject.Inject
@@ -73,6 +77,22 @@ class BridgeStateBus @Inject constructor() {
 
     private val _latestByMetric = MutableStateFlow<Map<String, MetricSample>>(emptyMap())
     val latestByMetric: StateFlow<Map<String, MetricSample>> = _latestByMetric.asStateFlow()
+
+    /**
+     * External signal that an immediate BLE reconnect attempt is now
+     * worth trying — e.g. WiCAN just came online via MQTT, so the
+     * adaptive backoff loop should stop sleeping and try BLE now.
+     * One-shot fire-and-forget; new subscribers don't replay.
+     */
+    private val _wakeEvents = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val wakeEvents: SharedFlow<Unit> = _wakeEvents.asSharedFlow()
+
+    fun wakeUp() {
+        _wakeEvents.tryEmit(Unit)
+    }
 
     fun update(transform: (BridgeStatus) -> BridgeStatus) {
         _status.update(transform)

@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import javax.inject.Inject
@@ -80,6 +81,21 @@ class WiCanSubscriber @Inject constructor(
                 }
                 handleMessage(topic, payload)
             }
+
+            // Second subscription: WiCAN publishes its CAN-bus presence
+            // to `wican/<device_id>/can/status` keyed by device MAC (NOT
+            // vehicle slug). When the user starts their car after the
+            // BLE backoff has stretched out to 60+ seconds, the WiCAN
+            // boots and posts `{"status":"online"}` — that's our wake
+            // signal to break the backoff and try BLE now. Wildcard on
+            // device id since the phone only knows the BLE MAC and the
+            // two aren't identical. False-positives (another WiCAN
+            // somewhere else flipping online) just trigger a BLE attempt
+            // that fails harmlessly.
+            mqttPublisher.subscribe("wican/+/can/status") { topic, payload, isRetain ->
+                if (isRetain) return@subscribe
+                handleCanStatus(topic, payload)
+            }
         }
     }
 
@@ -110,6 +126,19 @@ class WiCanSubscriber @Inject constructor(
             val canonical = canonicalName(key) ?: continue
             val num = numericValue(value) ?: continue
             stateBus.publishMetric(canonical, num)
+        }
+    }
+
+    private fun handleCanStatus(topic: String, payload: ByteArray) {
+        val text = runCatching { String(payload, Charsets.UTF_8) }.getOrNull() ?: return
+        val obj = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return
+        val status = (obj["status"] as? JsonPrimitive)?.contentOrNull?.lowercase() ?: return
+        if (status == "online") {
+            logBuffer.info(
+                "wican CAN online via MQTT — waking BLE backoff",
+                mapOf("topic" to topic),
+            )
+            stateBus.wakeUp()
         }
     }
 

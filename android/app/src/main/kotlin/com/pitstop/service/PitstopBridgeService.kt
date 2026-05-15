@@ -36,7 +36,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -522,20 +525,26 @@ class PitstopBridgeService : Service() {
 
             val baseSec = (1 shl reconnectAttempt.coerceAtMost(5)).coerceAtMost(30)
             reconnectAttempt += 1
-            // Adaptive backoff (Task #77):
+            // Adaptive backoff (Task #77, BLE-1):
             //   - in car (AA up or paired-car BT connected) → aggressive
             //     5s cap. WiCAN is near, may be waking from sleep, we
             //     want the first frame ASAP so the trip opens correctly.
             //   - parked (engine off & ≥3 attempts with zero frames) →
-            //     stretch cap to 5 min. WiCAN sleeps after voltage drops;
-            //     hammering BLE while it's asleep just burns battery and
-            //     doesn't wake it (wake is voltage-based, not CAN-based).
+            //     stretch cap to 60 s. WiCAN sleeps after voltage drops;
+            //     hammering BLE while it's asleep burns battery. Was
+            //     300 s in v0.1.129 but that meant a user returning to
+            //     the car had to wait up to 5 minutes for BLE to retry —
+            //     unacceptable when the AA/paired-BT presence signals
+            //     aren't firing. The `stateBus.wakeEvents` MQTT path
+            //     (WiCAN publishes `can/status: online` on boot) breaks
+            //     the sleep early on the LAN; the 60 s cap is the
+            //     belt-and-suspenders backup for the cellular case.
             //   - else → existing exponential 1→30s.
             val priorEngine = stateBus.status.value.engineState
             val inCar = stateBus.status.value.inCar
             val backoffSec = when {
                 inCar -> baseSec.coerceAtMost(5)
-                priorEngine == EngineState.Off && reconnectAttempt >= 3 -> 300
+                priorEngine == EngineState.Off && reconnectAttempt >= 3 -> 60
                 else -> baseSec
             }
             // After 4 consecutive misses (~30s+), tell the log shipper we're in a long
@@ -575,11 +584,17 @@ class PitstopBridgeService : Service() {
             stateBus.update {
                 it.copy(phase = BridgePhase.Disconnected)
             }
-            // Wake early if presence flips to true mid-sleep — entering
-            // the car is the strongest signal that a new BLE attempt is
-            // worthwhile right now.
+            // Wake early on EITHER of two signals:
+            //   - presence.inCar flips true (AA / paired-car BT detected)
+            //   - stateBus.wakeEvents fires (WiCanSubscriber saw
+            //     `wican/<id>/can/status: online` on MQTT — the WiCAN
+            //     just powered up because the user started the car).
+            // Whichever fires first breaks the sleep and we retry BLE.
             kotlinx.coroutines.withTimeoutOrNull(backoffSec * 1_000L) {
-                presence.inCar.first { it }
+                merge(
+                    presence.inCar.filter { it }.map { },
+                    stateBus.wakeEvents,
+                ).first()
             }
         }
     }
