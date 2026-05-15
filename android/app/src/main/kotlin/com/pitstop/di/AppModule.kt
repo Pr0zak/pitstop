@@ -39,7 +39,17 @@ object AppModule {
             },
         )
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        // Drive uploads can carry multi-MB JSON payloads (20k+ frames is
+        // routine) and the server holds the request while writing the
+        // hypertable inserts. The previous 20 s read + 10 s write defaults
+        // were tripping on long drives — the server completed the upload
+        // but the client gave up reading the response, then retried and
+        // the next request came back with duplicate=true once the server
+        // re-acked the existing row. Looks like "Sync failed" to the user
+        // but the data was already in. Bumped to 60 s on both axes so the
+        // happy-path completes inside the timeout.
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
     @Provides
