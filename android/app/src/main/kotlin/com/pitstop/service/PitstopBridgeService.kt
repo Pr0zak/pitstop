@@ -69,6 +69,7 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var wicanSubscriber: com.pitstop.mqtt.WiCanSubscriber
     @Inject lateinit var driveRecorder: com.pitstop.drive.DriveRecorder
     @Inject lateinit var driveSealer: com.pitstop.drive.DriveSealer
+    @Inject lateinit var widgetRefresher: com.pitstop.widget.WidgetRefresher
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bleManager: WiCanBleManager? = null
@@ -690,6 +691,11 @@ class PitstopBridgeService : Service() {
         }
 
         stateBus.publishMetric(pid.name, value)
+        // Home-screen fuel widget reads from the server's /vehicles
+        // endpoint — without an explicit refresh kick, it only updates
+        // on Android's 30-min `updatePeriodMillis` floor (and Doze can
+        // stretch even that). Rate-limited to 1 refresh per 30 s.
+        if (pid.name == "fuel_level") widgetRefresher.refreshFuelWidget()
         val topic = "bridge/${vehicleSlug}/${pid.name}"
         publishOrBuffer(topic, v2Envelope(value))
         // Mirror into the drive recorder so the canonical batch

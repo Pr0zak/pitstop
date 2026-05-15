@@ -3,6 +3,7 @@ package com.pitstop.mqtt
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import com.pitstop.service.BridgeStateBus
+import com.pitstop.widget.WidgetRefresher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,7 @@ class WiCanSubscriber @Inject constructor(
     private val stateBus: BridgeStateBus,
     private val settings: SettingsRepository,
     private val logBuffer: LogBuffer,
+    private val widgetRefresher: WidgetRefresher,
 ) {
 
     private val ownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -126,6 +128,10 @@ class WiCanSubscriber @Inject constructor(
             val canonical = canonicalName(key) ?: continue
             val num = numericValue(value) ?: continue
             stateBus.publishMetric(canonical, num)
+            // Mirror to the home-screen widget so it doesn't sit stale
+            // between Android's 30-min updatePeriodMillis ticks. Rate
+            // limit lives in WidgetRefresher itself.
+            if (canonical == "fuel_level") widgetRefresher.refreshFuelWidget()
         }
     }
 
