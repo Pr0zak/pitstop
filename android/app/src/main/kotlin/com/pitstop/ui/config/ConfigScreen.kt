@@ -370,11 +370,11 @@ private fun MqttBrokerSection(
 
 /**
  * Manual-sync mode toggle. When ON the bridge keeps capturing OBD +
- * GPS + IMU locally (Live screen still updates, drives still seal to
- * the Room queue) but every outgoing MQTT publish is suppressed and
- * the post-seal auto-upload is disabled. Drives wait in the queue
- * until the user explicitly hits "Sync now" in History or the
- * persistent reminder notification.
+ * GPS locally (Live screen still updates, drives still seal to the
+ * Room queue) but every outgoing MQTT publish is suppressed and the
+ * post-seal auto-upload is disabled. Drives wait in the queue until
+ * the user explicitly hits "Sync now" in History or the persistent
+ * reminder notification.
  */
 @Composable
 private fun ConnectivitySection(

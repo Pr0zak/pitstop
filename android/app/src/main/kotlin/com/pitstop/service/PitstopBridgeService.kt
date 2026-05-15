@@ -95,6 +95,14 @@ class PitstopBridgeService : Service() {
      */
     @Volatile private var manualSyncOnly: Boolean = false
 
+    /**
+     * Last successful (or attempted) publish time per metric for the
+     * manual-mode beacon allowlist. We update on every attempt rather
+     * than only on success so a temporarily-unreachable broker doesn't
+     * cause a burst once it comes back.
+     */
+    private val lastBeaconAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private var wakeLock: android.os.PowerManager.WakeLock? = null
@@ -710,16 +718,34 @@ class PitstopBridgeService : Service() {
      * Try a live publish; on failure (no connection) push to the on-disk
      * [OfflineBuffer]. Return immediately — the buffer write is async so
      * we don't block sensor callbacks. Designed to be called from any
-     * publish site (OBD parser, GPS handler, IMU tick).
+     * publish site (OBD parser, GPS handler).
      *
      * In manual-sync mode the call short-circuits before both the live
      * publish AND the offline-buffer enqueue: the user explicitly asked
      * us not to push this metric upstream right now, so don't queue it
      * for an opportunistic drain either. DriveRecorder still has the
      * frame in the sealed drive payload for the user-driven Sync now.
+     *
+     * Exception (WIDGET-3): metrics in [MANUAL_MODE_BEACON_METRICS] still
+     * publish at low rate even in manual-sync mode so server-rendered
+     * surfaces (home-screen fuel widget) don't sit stale for the whole
+     * drive. Beacons are best-effort — if MQTT isn't connected we drop
+     * them rather than buffering, because the user opted out of bulk
+     * streaming and the eventual Sync-now upload will carry the full
+     * history anyway.
      */
     private fun publishOrBuffer(topic: String, payload: String) {
-        if (manualSyncOnly) return
+        if (manualSyncOnly) {
+            val metric = topic.substringAfterLast('/')
+            if (metric !in MANUAL_MODE_BEACON_METRICS) return
+            val now = System.currentTimeMillis()
+            val last = lastBeaconAtMs[metric] ?: 0L
+            if (now - last < MANUAL_MODE_BEACON_MS) return
+            lastBeaconAtMs[metric] = now
+            // Best-effort live publish only; no offline-buffer fallback.
+            mqttPublisher.publish(topic, payload)
+            return
+        }
         if (mqttPublisher.publish(topic, payload)) return
         scope.launch { offlineBuffer.enqueue(topic, payload) }
     }
@@ -1013,6 +1039,16 @@ class PitstopBridgeService : Service() {
     companion object {
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.pitstop.bridge.STOP"
+
+        /**
+         * Metrics that still publish to MQTT even when manual-sync mode
+         * is on, rate-limited to one frame per [MANUAL_MODE_BEACON_MS].
+         * Keeps server-rendered surfaces (home-screen fuel widget) live
+         * during a drive without violating "no bulk streaming." Add new
+         * names sparingly — every beacon costs cellular bytes.
+         */
+        private val MANUAL_MODE_BEACON_METRICS = setOf("fuel_level")
+        private const val MANUAL_MODE_BEACON_MS = 60_000L
 
         fun startIntent(context: Context): Intent =
             Intent(context, PitstopBridgeService::class.java)

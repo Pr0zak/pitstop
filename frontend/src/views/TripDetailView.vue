@@ -156,7 +156,6 @@ const TRIP_SERIES: TripSeries[] = [
   // samples (dv/dt → m/s², converted to g). Won't be found in
   // pid_readings; the chart loop synthesises the column.
   { metric: "acceleration",           label: "Accel (g)",        stroke: "#fb923c", scale: "accel",  axisLabel: "g",     transform: (v) => v,            defaultVisible: false },
-  // IMU axes — raw linear-acceleration (m/s², gravity-stripped) and
 ];
 
 // Metrics in TRIP_SERIES that are computed in the frontend rather

@@ -51,8 +51,7 @@ import kotlin.math.roundToInt
  *      avg coolant / weather snapshot)
  *   4. Series toggle chips + line chart
  *   5. Route map (when GPS points are present)
- *   6. IMU hard-event chips
- *   7. DTC list (tap → DTCDetailScreen via the supplied callback)
+ *   6. DTC list (tap → DTCDetailScreen via the supplied callback)
  */
 @Composable
 fun TripDetailScreen(
