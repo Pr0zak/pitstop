@@ -1,4 +1,4 @@
-"""Trips endpoints — list/get/update/delete + sampled detail."""
+"""Trips endpoints — list/get/update/delete/merge + sampled detail."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi import Path as FastAPIPath
+from pydantic import BaseModel, Field
 
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
@@ -377,3 +378,134 @@ async def delete_trip(
         result = await conn.execute("DELETE FROM trips WHERE id = $1", trip_id)
     if result.endswith(" 0"):
         raise HTTPException(status_code=404, detail="trip not found")
+
+
+class TripMergeRequest(BaseModel):
+    other_trip_id: UUID = Field(
+        ..., description="Second trip to merge into the path-parameter trip."
+    )
+
+
+@router.post(
+    "/{trip_id}/merge",
+    response_model=TripOut,
+    dependencies=[Depends(require_ingest_token)],
+)
+async def merge_trips(
+    body: TripMergeRequest,
+    trip_id: UUID = FastAPIPath(...),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Manually combine two trips into one. The earlier trip (by
+    started_at) absorbs the later trip; the later trip's row is
+    deleted. Stat columns are recombined: distance_km / fuel_used_l /
+    dtc_count / idle_s sum, max_rpm / max_speed_kph take the max, and
+    avg_speed_kph / avg_coolant_c are re-weighted by each leg's
+    duration. ended_at moves to the later trip's ended_at; duration_s
+    becomes the elapsed time across both legs (gap included).
+
+    `source` is set to `manual_merge` so trip_deriver.py treats the
+    combined range as off-limits and doesn't re-split it on the next
+    cycle.
+
+    Both trips must belong to the same vehicle. Trips already on a
+    `manual_merge` row can be merged again (chains are allowed).
+    """
+    if body.other_trip_id == trip_id:
+        raise HTTPException(status_code=400, detail="cannot merge a trip with itself")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                f"SELECT {_TRIP_COLS} FROM trips WHERE id = ANY($1::uuid[]) FOR UPDATE",
+                [trip_id, body.other_trip_id],
+            )
+            if len(rows) != 2:
+                raise HTTPException(status_code=404, detail="one or both trips not found")
+            if rows[0]["vehicle_id"] != rows[1]["vehicle_id"]:
+                raise HTTPException(status_code=400, detail="trips belong to different vehicles")
+            # Order by started_at — earlier trip absorbs later.
+            earlier, later = sorted(rows, key=lambda r: r["started_at"])
+            new_started = earlier["started_at"]
+            new_ended = later["ended_at"] or earlier["ended_at"]
+            new_duration_s = int((new_ended - new_started).total_seconds())
+
+            def _sum(a, b):
+                if a is None and b is None:
+                    return None
+                return (a or 0) + (b or 0)
+
+            def _max(a, b):
+                if a is None:
+                    return b
+                if b is None:
+                    return a
+                return max(a, b)
+
+            def _wavg(a_val, a_dur, b_val, b_dur):
+                a = (a_val, a_dur) if a_val is not None and a_dur else None
+                b = (b_val, b_dur) if b_val is not None and b_dur else None
+                if a is None and b is None:
+                    return None
+                if a is None:
+                    return b[0]
+                if b is None:
+                    return a[0]
+                total = a[1] + b[1]
+                if total <= 0:
+                    return None
+                return float(a[0] * a[1] + b[0] * b[1]) / total
+
+            distance_km = _sum(earlier["distance_km"], later["distance_km"])
+            fuel_used_l = _sum(earlier["fuel_used_l"], later["fuel_used_l"])
+            dtc_count = (earlier["dtc_count"] or 0) + (later["dtc_count"] or 0)
+            idle_s = _sum(earlier["idle_s"], later["idle_s"])
+            max_rpm = _max(earlier["max_rpm"], later["max_rpm"])
+            max_speed_kph = _max(earlier["max_speed_kph"], later["max_speed_kph"])
+            avg_speed_kph = _wavg(
+                earlier["avg_speed_kph"], earlier["duration_s"],
+                later["avg_speed_kph"], later["duration_s"],
+            )
+            avg_coolant_c = _wavg(
+                earlier["avg_coolant_c"], earlier["duration_s"],
+                later["avg_coolant_c"], later["duration_s"],
+            )
+            # Delete the later trip first to free the row, then update
+            # the earlier one. Order matters only if both happen to
+            # share an id (impossible since we checked != above).
+            await conn.execute("DELETE FROM trips WHERE id = $1", later["id"])
+            updated = await conn.fetchrow(
+                f"""
+                UPDATE trips SET
+                    ended_at = $2,
+                    duration_s = $3,
+                    distance_km = $4,
+                    max_rpm = $5,
+                    max_speed_kph = $6,
+                    avg_speed_kph = $7,
+                    avg_coolant_c = $8,
+                    fuel_used_l = $9,
+                    dtc_count = $10,
+                    idle_s = $11,
+                    source = 'manual_merge'
+                  WHERE id = $1
+                RETURNING {_TRIP_COLS}
+                """,
+                earlier["id"], new_ended, new_duration_s,
+                distance_km, max_rpm, max_speed_kph,
+                avg_speed_kph, avg_coolant_c, fuel_used_l,
+                dtc_count, idle_s,
+            )
+            log.info(
+                "trips merged",
+                extra={
+                    "kept_id": str(earlier["id"]),
+                    "dropped_id": str(later["id"]),
+                    "vehicle_id": str(earlier["vehicle_id"]),
+                    "new_started_at": new_started.isoformat(),
+                    "new_ended_at": new_ended.isoformat(),
+                    "new_duration_s": new_duration_s,
+                },
+            )
+    if updated is None:
+        raise HTTPException(status_code=500, detail="merge produced no row")
+    return _row_to_trip(updated)

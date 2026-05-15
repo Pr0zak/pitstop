@@ -1,6 +1,9 @@
 package com.pitstop.ui.history
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,15 +18,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Tab
@@ -250,7 +258,20 @@ private fun HistoryListScreen(
             }
         }
         when (selectedTab) {
-            0 -> TripsList(state = ui.trips, onRefresh = viewModel::refresh, onOpen = onOpenTrip)
+            0 -> {
+                val tripSelection by viewModel.tripSelection.collectAsStateWithLifecycle()
+                val mergeState by viewModel.mergeState.collectAsStateWithLifecycle()
+                TripsList(
+                    state = ui.trips,
+                    onRefresh = viewModel::refresh,
+                    onOpen = onOpenTrip,
+                    selection = tripSelection,
+                    mergeState = mergeState,
+                    onToggleSelect = viewModel::toggleTripSelection,
+                    onCancelSelection = viewModel::exitTripSelection,
+                    onMerge = viewModel::mergeSelectedTrips,
+                )
+            }
             1 -> FillupsList(state = ui.fillups, onRefresh = viewModel::refresh, onOpen = onOpenFillup)
             2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh, onOpen = onOpenDtcCode)
         }
@@ -286,56 +307,149 @@ private fun <T> keyOf(value: T): Any = when (value) {
     else -> value as Any
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun TripsList(
     state: HistoryListState<TripDto>,
     onRefresh: () -> Unit,
     onOpen: (String) -> Unit,
+    selection: TripSelection,
+    mergeState: MergeState,
+    onToggleSelect: (String) -> Unit,
+    onCancelSelection: () -> Unit,
+    onMerge: () -> Unit,
 ) {
-    ListSurface(state = state, onRefresh = onRefresh, emptyMessage = "No trips yet — take a drive.") { trip ->
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onOpen(trip.id) },
-        ) {
-            Column(
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Action bar: shown when selection mode is active OR a merge
+        // toast is in flight. Long-press a trip card to enter selection
+        // mode, then tap a second one and hit Merge.
+        if (selection.mode || mergeState !is MergeState.Idle) {
+            TripSelectionBar(
+                selection = selection,
+                mergeState = mergeState,
+                onCancel = onCancelSelection,
+                onMerge = onMerge,
+            )
+        }
+        ListSurface(
+            state = state,
+            onRefresh = onRefresh,
+            emptyMessage = "No trips yet — take a drive.",
+        ) { trip ->
+            val isSelected = trip.id in selection.ids
+            Card(
+                border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surface,
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .combinedClickable(
+                        onClick = {
+                            if (selection.mode) onToggleSelect(trip.id) else onOpen(trip.id)
+                        },
+                        onLongClick = { onToggleSelect(trip.id) },
+                    ),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(
-                        text = formatTripDate(trip.startedAt),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    val mi = trip.distanceKm?.let { it * 0.621371 }
-                    Text(
-                        text = mi?.let { "%.1f mi".format(it) } ?: "—",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                val parts = buildList {
-                    trip.durationS?.let {
-                        add(if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (selection.mode) {
+                            Icon(
+                                imageVector = if (isSelected) Icons.Filled.Check else Icons.Filled.Close,
+                                contentDescription = if (isSelected) "Selected" else "Tap to select",
+                                tint = if (isSelected)
+                                    MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outlineVariant,
+                                modifier = Modifier
+                                    .padding(end = 10.dp)
+                                    .size(20.dp),
+                            )
+                        }
+                        Text(
+                            text = formatTripDate(trip.startedAt),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        val mi = trip.distanceKm?.let { it * 0.621371 }
+                        Text(
+                            text = mi?.let { "%.1f mi".format(it) } ?: "—",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
                     }
-                    trip.maxSpeedKph?.let { add("max %.0f mph".format(it * 0.621371)) }
-                    trip.maxRpm?.let { add("%.0f rpm".format(it)) }
-                    if (trip.dtcCount > 0) add("${trip.dtcCount} DTC")
-                }
-                if (parts.isNotEmpty()) {
-                    Text(
-                        text = parts.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    val parts = buildList {
+                        trip.durationS?.let {
+                            add(if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s")
+                        }
+                        trip.maxSpeedKph?.let { add("max %.0f mph".format(it * 0.621371)) }
+                        trip.maxRpm?.let { add("%.0f rpm".format(it)) }
+                        if (trip.dtcCount > 0) add("${trip.dtcCount} DTC")
+                    }
+                    if (parts.isNotEmpty()) {
+                        Text(
+                            text = parts.joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TripSelectionBar(
+    selection: TripSelection,
+    mergeState: MergeState,
+    onCancel: () -> Unit,
+    onMerge: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val label = when (mergeState) {
+            MergeState.Idle -> when (selection.ids.size) {
+                0 -> "Long-press a trip to select"
+                1 -> "1 selected · pick one more to merge"
+                else -> "${selection.ids.size} selected"
+            }
+            MergeState.InProgress -> "Merging…"
+            is MergeState.Done -> "Trips merged"
+            is MergeState.Failed -> "Merge failed: ${mergeState.message}"
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        if (selection.mode && mergeState is MergeState.Idle) {
+            OutlinedButton(onClick = onCancel) { Text("Cancel") }
+            Spacer(modifier = Modifier.size(8.dp))
+            Button(
+                onClick = onMerge,
+                enabled = selection.ids.size == 2,
+            ) { Text("Merge") }
+        }
+        if (mergeState is MergeState.InProgress) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+            )
         }
     }
 }

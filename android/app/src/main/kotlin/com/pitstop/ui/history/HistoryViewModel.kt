@@ -9,6 +9,7 @@ import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
 import com.pitstop.http.PitstopApi
 import com.pitstop.http.TripDto
+import com.pitstop.http.TripMergeRequest
 import com.pitstop.log.LogBuffer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
@@ -49,6 +50,24 @@ sealed class SyncState {
     data class Failed(val message: String) : SyncState()
 }
 
+/** Multi-select state for the Trips list — drives the merge-two-trips
+ *  UX. When `mode` is true the trip cards toggle on tap instead of
+ *  opening detail, and the selection action bar appears at the top of
+ *  the list. Capped at 2 selections because merge takes exactly two. */
+data class TripSelection(
+    val mode: Boolean = false,
+    val ids: Set<String> = emptySet(),
+)
+
+/** Surfaced to the Trips list action bar while a manual merge is in
+ *  flight (and briefly after) so the user gets feedback. */
+sealed class MergeState {
+    data object Idle : MergeState()
+    data object InProgress : MergeState()
+    data class Done(val keptTripId: String) : MergeState()
+    data class Failed(val message: String) : MergeState()
+}
+
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     private val api: PitstopApi,
@@ -63,6 +82,12 @@ class HistoryViewModel @Inject constructor(
 
     private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+
+    private val _tripSelection = MutableStateFlow(TripSelection())
+    val tripSelection: StateFlow<TripSelection> = _tripSelection.asStateFlow()
+
+    private val _mergeState = MutableStateFlow<MergeState>(MergeState.Idle)
+    val mergeState: StateFlow<MergeState> = _mergeState.asStateFlow()
 
     /**
      * Live count of unacked drives in the local queue (#117). Drives
@@ -111,8 +136,64 @@ class HistoryViewModel @Inject constructor(
         }
     }
 
+    /** Toggle a trip in/out of the merge selection. First selection
+     *  flips the list into selection mode. Capped at 2; further taps
+     *  on unselected trips are ignored until the user clears one. */
+    fun toggleTripSelection(tripId: String) {
+        _tripSelection.update { sel ->
+            if (tripId in sel.ids) {
+                val newIds = sel.ids - tripId
+                TripSelection(mode = newIds.isNotEmpty(), ids = newIds)
+            } else if (sel.ids.size >= 2) {
+                sel
+            } else {
+                sel.copy(mode = true, ids = sel.ids + tripId)
+            }
+        }
+    }
+
+    fun exitTripSelection() {
+        _tripSelection.value = TripSelection()
+    }
+
+    /** Fire POST /trips/{kept}/merge for the two selected trips.
+     *  Successful merge refreshes the list, drops selection mode, and
+     *  briefly shows a Done banner. */
+    fun mergeSelectedTrips() {
+        val sel = _tripSelection.value
+        if (sel.ids.size != 2) return
+        if (_mergeState.value is MergeState.InProgress) return
+        val ids = sel.ids.toList()
+        val keep = ids[0]
+        val other = ids[1]
+        _mergeState.value = MergeState.InProgress
+        logBuffer.info(
+            "trip merge requested",
+            mapOf("a" to keep, "b" to other),
+        )
+        viewModelScope.launch {
+            runCatching { api.mergeTrips(keep, TripMergeRequest(otherTripId = other)) }
+                .onSuccess { merged ->
+                    logBuffer.info("trip merge accepted", mapOf("kept" to merged.id))
+                    _mergeState.value = MergeState.Done(merged.id)
+                    _tripSelection.value = TripSelection()
+                    refresh()
+                    delay(MERGE_DISMISS_MS)
+                    if (_mergeState.value is MergeState.Done) _mergeState.value = MergeState.Idle
+                }
+                .onFailure { t ->
+                    val msg = t.message ?: t::class.java.simpleName
+                    logBuffer.warn("trip merge failed", mapOf("err" to msg))
+                    _mergeState.value = MergeState.Failed(msg)
+                    delay(MERGE_DISMISS_MS)
+                    if (_mergeState.value is MergeState.Failed) _mergeState.value = MergeState.Idle
+                }
+        }
+    }
+
     private companion object {
         const val SYNC_DISMISS_MS = 4_000L
+        const val MERGE_DISMISS_MS = 3_000L
     }
 
     /** Reload all three lists in parallel. Each list manages its own

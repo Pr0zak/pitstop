@@ -270,6 +270,18 @@ interface PitstopApi {
     @GET("api/trips/{id}")
     suspend fun getTripDetail(@Path("id") id: String): TripDetailDto
 
+    /**
+     * Manually merge two trips into one (MERGE-1). The earlier of the
+     * two (by `started_at`) absorbs the later; the server returns the
+     * kept trip with `source = "manual_merge"`. The other row is
+     * deleted server-side.
+     */
+    @POST("api/trips/{id}/merge")
+    suspend fun mergeTrips(
+        @Path("id") id: String,
+        @Body body: TripMergeRequest,
+    ): TripDto
+
     @GET("api/trips/{id}/route")
     suspend fun getTripRoute(@Path("id") id: String): TripRouteDto
 
@@ -312,6 +324,11 @@ data class TripDto(
     @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
     @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
     val category: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class TripMergeRequest(
+    @kotlinx.serialization.SerialName("other_trip_id") val otherTripId: String,
 )
 
 /**

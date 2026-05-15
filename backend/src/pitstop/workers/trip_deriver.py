@@ -247,16 +247,19 @@ async def _derive_for_vehicle(
     if not samples:
         return 0
 
-    # Skip ranges that already have a phone-sourced trip (#119).
-    # The phone owns drive boundaries for any vehicle with a bridge;
-    # this deriver only fills in legacy gaps (pre-pivot data) and
-    # WiCAN-only driveway sessions.
-    phone_ranges = await conn.fetch(
+    # Skip ranges that already have a trip we mustn't touch:
+    #   - phone-sourced trips (#119) — the phone owns drive boundaries
+    #     for any vehicle with a bridge; this deriver only fills in
+    #     legacy gaps and WiCAN-only driveway sessions.
+    #   - manual_merge trips (MERGE-1) — the user explicitly combined
+    #     two drives via POST /trips/{id}/merge; re-deriving the gap
+    #     would just split them back apart.
+    skip_ranges = await conn.fetch(
         """
         SELECT started_at, ended_at
           FROM trips
          WHERE vehicle_id = $1
-           AND source = 'phone_batch'
+           AND source IN ('phone_batch', 'manual_merge')
            AND ended_at >= $2
          ORDER BY started_at
         """,
@@ -264,21 +267,21 @@ async def _derive_for_vehicle(
     )
 
     def _in_skip_range(t: datetime) -> bool:
-        # Linear scan — phone_ranges is small (10s of rows in 24h
+        # Linear scan — skip_ranges is small (10s of rows in 24h
         # lookback even at peak driving).
-        for r in phone_ranges:
+        for r in skip_ranges:
             if r["started_at"] <= t <= r["ended_at"]:
                 return True
         return False
 
-    if phone_ranges:
+    if skip_ranges:
         samples = [s for s in samples if not _in_skip_range(s.time)]
         if not samples:
             log.info(
-                "deriver: all samples in phone-sourced ranges, skipping",
+                "deriver: all samples in skip ranges, skipping",
                 extra={
                     "vehicle_id": str(vehicle_id),
-                    "skip_ranges": len(phone_ranges),
+                    "skip_ranges": len(skip_ranges),
                 },
             )
             return 0
@@ -329,15 +332,17 @@ async def _derive_for_vehicle(
 
     touched = 0
     for iv in intervals:
-        # Defense in depth — if an interval *overlaps* a phone-sourced
-        # trip (the phone may have closed slightly past our last sample
-        # but the next sample is from the deriver's path), drop it.
+        # Defense in depth — if an interval *overlaps* a protected
+        # range (phone-sourced or manually-merged trip), drop it. The
+        # phone may have closed slightly past our last sample, or a
+        # manual_merge may have absorbed a gap the deriver still wants
+        # to slot a trip into.
         if any(
             r["started_at"] < iv.ended_at and r["ended_at"] > iv.started_at
-            for r in phone_ranges
+            for r in skip_ranges
         ):
             log.warning(
-                "deriver: interval overlaps phone-sourced trip, skipping",
+                "deriver: interval overlaps protected trip, skipping",
                 extra={
                     "vehicle_id": str(vehicle_id),
                     "interval_started": iv.started_at.isoformat(),
