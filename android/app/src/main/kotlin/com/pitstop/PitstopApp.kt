@@ -9,6 +9,7 @@ import com.pitstop.drive.scheduleDriveUploads
 import com.pitstop.log.LogBuffer
 import com.pitstop.notif.SyncReminderManager
 import com.pitstop.update.scheduleUpdateChecks
+import com.pitstop.widget.scheduleFuelWidgetRefresh
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -33,6 +34,11 @@ class PitstopApp : Application(), Configuration.Provider {
         // job stays scheduled across reboots via WorkManager's
         // persistence layer.
         scheduleUpdateChecks(this)
+        // Fuel-widget refresh backstop (WIDGET-5). 15-min periodic via
+        // WorkManager — survives Doze deferral of the AppWidget
+        // `updatePeriodMillis` ticker so the widget can't sit stale
+        // for hours when the app's closed.
+        scheduleFuelWidgetRefresh(this)
         // Drive-upload backstop (#117). Per-drive immediate kicks
         // come from DriveSealer; this 4 h periodic catches edge
         // cases where the immediate kick missed (Doze, process
