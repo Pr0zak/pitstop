@@ -150,12 +150,19 @@ object Pids {
         ThrottlePosition,
         CoolantTemp,
         ControlModuleVoltage,
-        IntakeAirTemp,
         FuelLevel,
         EngineLoad,
         ManifoldPressure,
-        MafAirFlow,
-        RunTimeSinceStart,
         StftB1, LtftB1, StftB2, LtftB2,
+        // Honda V6 PCM does NOT answer the simple-format Mode 01
+        // PIDs 0x0F (intake_air_temp), 0x10 (maf_air_flow),
+        // 0x1F (run_time_since_start) — they always come back
+        // "NO DATA". The WiCAN dongle's AutoPID handles the
+        // Honda-extended equivalents (0x66/67/68 etc.) and ships
+        // them via WiFi MQTT; WiCanSubscriber fans them into the
+        // BridgeStateBus. Polling the std-PID forms over BLE just
+        // wastes round-robin slots that could go to fuel_level +
+        // friends, and each NO DATA used to wrongly nudge the
+        // engine-state counter (OBD-1).
     )
 }

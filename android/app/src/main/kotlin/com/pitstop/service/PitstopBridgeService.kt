@@ -103,6 +103,14 @@ class PitstopBridgeService : Service() {
      */
     private val lastBeaconAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /** Last PID the round-robin scheduler wrote to the WiCAN. Used so
+     *  that when a NO DATA / STOPPED / UNABLE TO CONNECT response comes
+     *  back, we can log which PID it was for instead of dropping it
+     *  silently (OBD-1). Not load-bearing — if the response arrives
+     *  out-of-order or two responses overlap, the log line may name
+     *  the wrong PID; that's a hint, not a guarantee. */
+    @Volatile private var lastSentPid: com.pitstop.obd.Pid? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private var wakeLock: android.os.PowerManager.WakeLock? = null
@@ -626,6 +634,7 @@ class PitstopBridgeService : Service() {
                 .minByOrNull { nextDue[it.name] ?: 0L }
 
             if (due != null) {
+                lastSentPid = due
                 bleManager?.writeCommand(due.command())
                 nextDue[due.name] = t + due.periodMs
             }
@@ -663,16 +672,24 @@ class PitstopBridgeService : Service() {
         val parsed = ObdResponseParser.parse(frameText.toByteArray(Charsets.US_ASCII))
         if (parsed == null) {
             val trimmed = frameText.trim()
-            // WiCAN's "STOPPED" / "NO DATA" / "UNABLE TO CONNECT" responses are
-            // not parser errors — they're the device telling us the engine is
-            // off. Surface that as an engine-state change instead of spamming
-            // /debug with warn-level "obd parse failed" lines, and skip the
-            // log entirely (parser already filters these from real frames).
+            // WiCAN's "STOPPED" / "NO DATA" / "UNABLE TO CONNECT" responses
+            // are not parser errors — they're the device telling us either
+            // (a) the engine is off, or (b) the PCM doesn't support the PID
+            // we just asked about. We log which PID was outstanding so a
+            // future case like fuel_level silently disappearing from a
+            // drive is diagnosable from client_logs (OBD-1).
             val upper = trimmed.uppercase()
             val isEngineOffSignal = upper.startsWith("STOPPED") ||
                 upper.startsWith("NO DATA") ||
                 upper.startsWith("UNABLE TO CONNECT")
             if (isEngineOffSignal) {
+                logBuffer.info(
+                    "obd no-data response",
+                    mapOf(
+                        "response" to upper.take(20),
+                        "last_pid" to (lastSentPid?.name ?: "?"),
+                    ),
+                )
                 onEngineOffSignal()
                 return
             }
