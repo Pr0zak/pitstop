@@ -1,17 +1,23 @@
 package com.pitstop.di
 
+import android.content.Context
+import com.pitstop.http.CacheRewriteInterceptor
+import com.pitstop.http.OfflineCacheInterceptor
 import com.pitstop.http.PitstopApi
 import com.pitstop.http.PitstopAuthInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
+import okhttp3.Cache
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -30,14 +36,25 @@ object AppModule {
     @Provides
     @Singleton
     fun provideOkHttpClient(
+        @ApplicationContext context: Context,
         authInterceptor: PitstopAuthInterceptor,
+        offlineCacheInterceptor: OfflineCacheInterceptor,
+        cacheRewriteInterceptor: CacheRewriteInterceptor,
     ): OkHttpClient = OkHttpClient.Builder()
+        // 50 MB on-disk HTTP cache (CACHE-1). Every successful GET goes
+        // through cacheRewriteInterceptor (network layer) which forces
+        // a cacheable Cache-Control header, then OfflineCacheInterceptor
+        // (application layer) serves it back when the network is
+        // unreachable. Writes are passed through untouched.
+        .cache(Cache(File(context.cacheDir, "pitstop-http"), 50L * 1024L * 1024L))
+        .addInterceptor(offlineCacheInterceptor)
         .addInterceptor(authInterceptor)
         .addInterceptor(
             HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.BASIC
             },
         )
+        .addNetworkInterceptor(cacheRewriteInterceptor)
         .connectTimeout(10, TimeUnit.SECONDS)
         // Drive uploads can carry multi-MB JSON payloads (20k+ frames is
         // routine) and the server holds the request while writing the
