@@ -285,6 +285,17 @@ interface PitstopApi {
     @GET("api/trips/{id}/route")
     suspend fun getTripRoute(@Path("id") id: String): TripRouteDto
 
+    /**
+     * Combined-trips polyline trace for the heatmap (MAP-2). Returns
+     * ordered [lat, lon, speed_mps, epoch_seconds] tuples; server-side
+     * stride downsampling caps at `max_points`.
+     */
+    @GET("api/analytics/route-trace")
+    suspend fun getRouteTrace(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("max_points") maxPoints: Int = 25_000,
+    ): RouteTraceDto
+
     @GET("api/fillups/{id}")
     suspend fun getFillupDetail(@Path("id") id: String): FillupDto
 
@@ -329,6 +340,18 @@ data class TripDto(
 @kotlinx.serialization.Serializable
 data class TripMergeRequest(
     @kotlinx.serialization.SerialName("other_trip_id") val otherTripId: String,
+)
+
+/** Response shape for /api/analytics/route-trace. Each point is the
+ *  raw 4-tuple [lat, lon, speed_mps, epoch_seconds] so we can decode
+ *  via the kotlinx.serialization JsonArray reader without making a
+ *  per-point DTO per-allocation. */
+@kotlinx.serialization.Serializable
+data class RouteTraceDto(
+    val total: Int,
+    val stride: Int,
+    val count: Int,
+    val points: List<List<Double>>,
 )
 
 /**

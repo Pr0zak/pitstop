@@ -72,6 +72,21 @@ internal fun speedColor(speedMps: Double?): Int {
 
 private const val HEATMAP_MAX_MPS = 36.0
 
+/**
+ * Density tiers for the combined-trips heatmap (MAP-2). Returns an
+ * ARGB Int. Each polyline segment is coloured by how many GPS fixes
+ * fell in the same ~11 m cell as the segment-start, mirroring the
+ * web frontend's discrete colour ramp.
+ */
+internal fun densityColor(visitCount: Int): Int = when {
+    visitCount <= 1 -> 0xFF475569.toInt()  // slate — rare
+    visitCount <= 3 -> 0xFF06B6D4.toInt()  // cyan — occasional
+    visitCount <= 8 -> 0xFF22C55E.toInt()  // green — regular
+    visitCount <= 20 -> 0xFFEAB308.toInt() // yellow — frequent
+    visitCount <= 50 -> 0xFFF97316.toInt() // orange — commute
+    else -> 0xFFEF4444.toInt()             // red — heavy
+}
+
 private fun hslToRgb(h: Float, s: Float, l: Float): Int {
     val c = (1 - kotlin.math.abs(2 * l - 1)) * s
     val hh = h / 60f

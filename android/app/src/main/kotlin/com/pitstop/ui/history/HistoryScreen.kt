@@ -249,7 +249,7 @@ private fun HistoryListScreen(
             }
         }
         SecondaryTabRow(selectedTabIndex = selectedTab) {
-            listOf("Trips", "Fillups", "DTCs").forEachIndexed { i, label ->
+            listOf("Trips", "Fillups", "DTCs", "Heatmap").forEachIndexed { i, label ->
                 Tab(
                     selected = selectedTab == i,
                     onClick = { selectedTab = i },
@@ -274,6 +274,7 @@ private fun HistoryListScreen(
             }
             1 -> FillupsList(state = ui.fillups, onRefresh = viewModel::refresh, onOpen = onOpenFillup)
             2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh, onOpen = onOpenDtcCode)
+            3 -> com.pitstop.ui.history.heatmap.HeatmapTab()
         }
     }
 }
