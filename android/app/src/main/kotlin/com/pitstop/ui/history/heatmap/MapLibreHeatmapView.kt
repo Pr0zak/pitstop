@@ -78,6 +78,13 @@ fun MapLibreHeatmapView(
         return
     }
 
+    // Per-MapView mutable state: tracks whether we've initialised the
+    // style, whether fit-bounds has run once, and the last data
+    // reference. Lets us reuse the existing layer for mode toggles
+    // (no style reload → camera stays put) and for data refreshes
+    // (just swap the GeoJSON source).
+    val mapState = remember { HeatmapMapState() }
+
     DisposableEffect(lifecycleOwner, mapView) {
         runCatching { mapView.onCreate(null) }
         runCatching { mapView.onStart() }
@@ -107,13 +114,20 @@ fun MapLibreHeatmapView(
             update = { view ->
                 runCatching {
                     view.getMapAsync { map ->
-                        runCatching { setupMap(map, points, mode) }
-                            .onFailure { Log.w(TAG, "setupMap failed", it) }
+                        runCatching { applyToMap(map, points, mode, mapState) }
+                            .onFailure { Log.w(TAG, "applyToMap failed", it) }
                     }
                 }.onFailure { Log.w(TAG, "getMapAsync failed", it) }
             },
         )
     }
+}
+
+/** Per-MapView state. Survives recompositions via `remember { ... }`. */
+private class HeatmapMapState {
+    var styleLoaded: Boolean = false
+    var lastPointsRef: List<List<Double>>? = null
+    var fittedBounds: Boolean = false
 }
 
 @Composable
@@ -137,25 +151,59 @@ private const val STYLE_URL =
     "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 private const val MAX_GAP_S = 30L
 
-private fun setupMap(
+/**
+ * Single entrypoint called on every recomposition. Branches based on
+ * whether the style has been loaded and whether the data reference
+ * has changed — preserves the user's pan/zoom across mode toggles
+ * and data refreshes by avoiding unnecessary style reloads.
+ */
+private fun applyToMap(
     map: MapLibreMap,
     points: List<List<Double>>,
     mode: HeatmapMode,
+    state: HeatmapMapState,
 ) {
     map.uiSettings.isLogoEnabled = false
     map.uiSettings.isAttributionEnabled = true
     map.uiSettings.isCompassEnabled = false
-    map.setStyle(STYLE_URL) { style ->
-        runCatching { renderHeatmap(map, style, points, mode) }
-            .onFailure { Log.w(TAG, "renderHeatmap failed", it) }
+
+    if (!state.styleLoaded) {
+        // First time only — load the style asynchronously, then plant
+        // the layer in the load callback.
+        map.setStyle(STYLE_URL) { style ->
+            state.styleLoaded = true
+            runCatching { rebuildLayer(map, style, points, mode, state) }
+                .onFailure { Log.w(TAG, "rebuildLayer (initial) failed", it) }
+        }
+        return
+    }
+
+    val style = map.style ?: return  // style being reloaded; skip
+    val pointsChanged = points !== state.lastPointsRef
+    val hasLayer = style.getLayer(LAYER) != null
+    if (pointsChanged || !hasLayer) {
+        runCatching { rebuildLayer(map, style, points, mode, state) }
+            .onFailure { Log.w(TAG, "rebuildLayer failed", it) }
+    } else {
+        // Same data, just a mode toggle — swap the line-color
+        // expression on the existing layer. Camera + zoom stay put.
+        runCatching { applyMode(style, mode) }
+            .onFailure { Log.w(TAG, "applyMode failed", it) }
     }
 }
 
-private fun renderHeatmap(
+private fun applyMode(style: Style, mode: HeatmapMode) {
+    val layer = style.getLayer(LAYER) as? LineLayer ?: return
+    val attr = if (mode == HeatmapMode.Density) "densityColor" else "speedColor"
+    layer.setProperties(PropertyFactory.lineColor(Expression.get(attr)))
+}
+
+private fun rebuildLayer(
     map: MapLibreMap,
     style: Style,
     points: List<List<Double>>,
     mode: HeatmapMode,
+    state: HeatmapMapState,
 ) {
     if (points.size < 2) return
 
@@ -204,18 +252,27 @@ private fun renderHeatmap(
     }
     style.addLayer(layer)
 
-    val builder = LatLngBounds.Builder()
-    for (p in points) builder.include(LatLng(p[0], p[1]))
-    val bounds = try {
-        builder.build()
-    } catch (_: Throwable) {
-        map.cameraPosition = CameraPosition.Builder()
-            .target(LatLng(points.first()[0], points.first()[1]))
-            .zoom(11.0)
-            .build()
-        return
+    state.lastPointsRef = points
+
+    // Only fit-bounds the first time we render non-empty data. After
+    // that we leave the camera alone so mode toggles + refreshes
+    // don't yank the user's view back.
+    if (!state.fittedBounds) {
+        val builder = LatLngBounds.Builder()
+        for (p in points) builder.include(LatLng(p[0], p[1]))
+        val bounds = try {
+            builder.build()
+        } catch (_: Throwable) {
+            map.cameraPosition = CameraPosition.Builder()
+                .target(LatLng(points.first()[0], points.first()[1]))
+                .zoom(11.0)
+                .build()
+            state.fittedBounds = true
+            return
+        }
+        map.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds, 60))
+        state.fittedBounds = true
     }
-    map.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds, 60))
 }
 
 /** Encode 4-decimal lat/lon into a single Long for fast HashMap keying.
