@@ -96,6 +96,81 @@ async def heatmap(
     }
 
 
+@router.get("/route-trace", dependencies=[Depends(require_query_token)])
+async def route_trace(
+    vehicle_id: UUID = Query(...),
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None),
+    max_points: int = Query(default=25_000, ge=500, le=100_000),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Ordered GPS points across all trips for the combined-trips heatmap
+    (MAP-3). Returns `[lat, lon, speed_mps, t]` tuples in time order so
+    the frontend can break the stream into polyline segments at time
+    gaps (>30 s = new trip) and render per-segment speed-colored lines.
+
+    Polyline overlap naturally encodes density: a road driven once
+    shows as a single faint line, a road driven 100 times is 100
+    overlapping lines that alpha-blend to opaque. No per-cell
+    normalisation needed.
+
+    Server-side stride downsampling caps the response at `max_points`.
+    For most fleets this preserves the route shape because adjacent
+    GPS fixes are sub-meter apart and dropping every other one is
+    visually lossless.
+    """
+    args: list[Any] = [vehicle_id]
+    where = ["vehicle_id = $1", "lat IS NOT NULL", "lon IS NOT NULL"]
+    if from_ is not None:
+        args.append(from_)
+        where.append(f"time >= ${len(args)}")
+    if to is not None:
+        args.append(to)
+        where.append(f"time <= ${len(args)}")
+
+    # Get total first so the client can show "downsampled N→M".
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(
+            f"SELECT count(*) FROM gps_points WHERE {' AND '.join(where)}",
+            *args,
+        ) or 0
+
+        stride = max(1, total // max_points)
+        # row_number() over time order, keep every Nth row. Cheap on a
+        # time-ordered hypertable index — Timescale plans this as a
+        # streaming index scan rather than a sort.
+        stride_idx = len(args) + 1
+        args.append(stride)
+        sql = f"""
+            SELECT lat, lon, speed_mps, extract(epoch FROM time)::bigint AS t
+              FROM (
+                SELECT lat, lon, speed_mps, time,
+                       row_number() OVER (ORDER BY time) AS rn
+                  FROM gps_points
+                 WHERE {' AND '.join(where)}
+              ) g
+             WHERE rn % ${stride_idx} = 0
+             ORDER BY time
+        """
+        rows = await conn.fetch(sql, *args)
+
+    points = [
+        [
+            float(r["lat"]),
+            float(r["lon"]),
+            float(r["speed_mps"]) if r["speed_mps"] is not None else 0.0,
+            int(r["t"]),
+        ]
+        for r in rows
+    ]
+    return {
+        "total": int(total),
+        "stride": stride,
+        "count": len(points),
+        "points": points,
+    }
+
+
 def _period_key(d: datetime | date, window: AnalyticsWindow) -> str:
     """Bucket a date for the MPG / cost-per-mile trend charts.
     Returns ISO-8601-parseable strings so the frontend can drop them

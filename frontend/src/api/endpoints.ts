@@ -358,6 +358,34 @@ export async function getHeatmap(
   return r.data;
 }
 
+// Combined-trips polyline trace (MAP-3). Returns every Nth ordered GPS
+// fix so the frontend can break the stream into per-trip polyline
+// segments and render them with per-segment colour. Polyline overlap
+// gives free density visualization — drawing the same road 50 times at
+// low opacity makes it saturated.
+export interface RouteTracePoint {
+  // [lat, lon, speed_mps, epoch_seconds]
+  0: number;
+  1: number;
+  2: number;
+  3: number;
+}
+export interface RouteTraceResponse {
+  total: number;
+  stride: number;
+  count: number;
+  points: [number, number, number, number][];
+}
+export async function getRouteTrace(
+  vehicleId: string,
+  maxPoints = 25000,
+): Promise<RouteTraceResponse> {
+  const r = await apiQuery.get<RouteTraceResponse>("/analytics/route-trace", {
+    params: { vehicle_id: vehicleId, max_points: maxPoints },
+  });
+  return r.data;
+}
+
 export interface EngineHoursPoint {
   month: string;
   cumulative_hours: number;
