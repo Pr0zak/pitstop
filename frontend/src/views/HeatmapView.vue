@@ -67,6 +67,24 @@ function speedColor(speedMps: number): string {
   return `hsl(${hue.toFixed(0)}, 80%, 50%)`;
 }
 
+// Discrete tiers for visit-count density. Each polyline segment is
+// coloured by how many GPS fixes landed in the same ~11m cell as the
+// segment-start. Heavy commute corridors hit the high tiers; one-off
+// detours sit at the bottom.
+function densityColor(count: number): string {
+  if (count <= 1) return "#475569";   // slate — rare (1 fix)
+  if (count <= 3) return "#06b6d4";   // cyan — occasional
+  if (count <= 8) return "#22c55e";   // green — regular
+  if (count <= 20) return "#eab308";  // yellow — frequent
+  if (count <= 50) return "#f97316";  // orange — commute
+  return "#ef4444";                   // red — heavy
+}
+
+// Round lat/lon to 4 decimals (~11 m cells) for visit-count keying.
+function cellKey(lat: number, lon: number): string {
+  return `${lat.toFixed(4)}|${lon.toFixed(4)}`;
+}
+
 function setDarkMode(v: boolean) {
   darkMode.value = v;
   try { localStorage.setItem(MAP_DARK_KEY, String(v)); } catch { /* ignore */ }
@@ -95,20 +113,33 @@ function applyData() {
   // Break the ordered point stream into segments where consecutive
   // timestamps are >30 s apart (= new trip / engine off / pause).
   // Build one short LineString feature per consecutive pair so each
-  // segment can carry its own color when in speed mode.
+  // segment can carry its own color (one for speed, one for density).
   const points = data.value.points;
   const MAX_GAP_S = 30;
+
+  // Pre-pass: count visits per ~11 m cell so density mode can colour
+  // each segment by how often the user has driven through it. With
+  // stride-downsampled data this slightly under-counts in absolute
+  // terms but the relative tiers stay correct.
+  const counts = new Map<string, number>();
+  for (const p of points) {
+    const k = cellKey(p[0], p[1]);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
   const features: GeoJSON.Feature[] = [];
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
     const b = points[i + 1];
     if (b[3] - a[3] > MAX_GAP_S) continue;  // gap → new trip
+    const visitCount = counts.get(cellKey(a[0], a[1])) ?? 1;
     features.push({
       type: "Feature",
       properties: {
-        // Use the segment-start speed; with stride-downsampled data
-        // it's representative of the second-or-two of travel.
-        color: speedColor(a[2]),
+        // Two colour attributes — the active one swaps on toggle.
+        speedColor: speedColor(a[2]),
+        densityColor: densityColor(visitCount),
+        visits: visitCount,
       },
       geometry: {
         type: "LineString",
@@ -135,11 +166,9 @@ function applyData() {
       source: "trace",
       layout: { "line-join": "round", "line-cap": "round" },
       paint: {
-        // Density: warm uniform colour at low opacity so overlaps
-        // brighten naturally. Speed: per-feature colour from the
-        // properties.color attribute.
-        "line-color": ["get", "color"],
-        "line-opacity": 0.5,
+        // Initial colour overridden immediately by applyMode below.
+        "line-color": ["get", "densityColor"],
+        "line-opacity": 0.78,
         "line-width": [
           "interpolate", ["linear"], ["zoom"],
           10, 1.2, 14, 2.5, 16, 4.0,
@@ -167,14 +196,16 @@ function applyData() {
 
 function applyMode() {
   if (!map?.getLayer("trace")) return;
-  if (mode.value === "density") {
-    // Uniform warm colour, low opacity → overlap = density.
-    map.setPaintProperty("trace", "line-color", "#f97316");
-    map.setPaintProperty("trace", "line-opacity", 0.18);
-  } else {
-    map.setPaintProperty("trace", "line-color", ["get", "color"] as unknown as maplibregl.ExpressionSpecification);
-    map.setPaintProperty("trace", "line-opacity", 0.7);
-  }
+  const attr = mode.value === "density" ? "densityColor" : "speedColor";
+  map.setPaintProperty(
+    "trace",
+    "line-color",
+    ["get", attr] as unknown as maplibregl.ExpressionSpecification,
+  );
+  // Density tiers are discrete and self-explanatory; speed is a hue
+  // ramp where overlap can mislead. Both get the same opacity for
+  // consistency — higher than the previous density-overlap trick.
+  map.setPaintProperty("trace", "line-opacity", 0.78);
 }
 
 watch(mode, applyMode);
@@ -233,14 +264,23 @@ watch(vehicleId, () => {
         <span class="muted small">fast (~80 mph)</span>
       </div>
       <div v-else class="legend">
-        <span class="muted small">rare</span>
-        <span class="ramp ramp-density"></span>
-        <span class="muted small">often-driven</span>
+        <span class="muted small">1×</span>
+        <span class="swatch" style="background:#475569"></span>
+        <span class="swatch" style="background:#06b6d4"></span>
+        <span class="muted small">3</span>
+        <span class="swatch" style="background:#22c55e"></span>
+        <span class="muted small">8</span>
+        <span class="swatch" style="background:#eab308"></span>
+        <span class="muted small">20</span>
+        <span class="swatch" style="background:#f97316"></span>
+        <span class="muted small">50</span>
+        <span class="swatch" style="background:#ef4444"></span>
+        <span class="muted small">50+ visits</span>
       </div>
       <p class="muted small caption">
         Each pair of consecutive GPS fixes is one polyline segment.
         <span v-if="mode === 'density'">
-          Every segment is the same colour at low opacity, so roads driven 50 times look 50× brighter than one-off detours.
+          Segment colour = how many GPS fixes fell in the same ~11 m cell. Slate / cyan are rare; orange / red are commute corridors.
         </span>
         <span v-else>
           Per-segment colour from continuous speed (matches the trip-detail map).
@@ -334,6 +374,12 @@ watch(vehicleId, () => {
 .ramp-density {
   background: linear-gradient(to right,
     rgba(249,115,22,0.05), rgba(249,115,22,0.4), rgba(249,115,22,0.85), #f97316);
+}
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
 }
 .caption {
   margin: 0;
