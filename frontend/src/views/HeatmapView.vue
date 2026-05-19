@@ -119,9 +119,15 @@ function applyData() {
   const fc: GeoJSON.FeatureCollection = { type: "FeatureCollection", features };
 
   const src = map.getSource("trace") as maplibregl.GeoJSONSource | undefined;
-  if (src) {
+  const hasLayer = !!map.getLayer("trace");
+  if (src && hasLayer) {
     src.setData(fc);
   } else {
+    // After setStyle(), MapLibre's default diff=true keeps custom
+    // sources alive but wipes layers — so a source can exist without
+    // a layer. Drop whichever survived and rebuild both cleanly.
+    if (map.getLayer("trace")) map.removeLayer("trace");
+    if (map.getSource("trace")) map.removeSource("trace");
     map.addSource("trace", { type: "geojson", data: fc });
     map.addLayer({
       id: "trace",
