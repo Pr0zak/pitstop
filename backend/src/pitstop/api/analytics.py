@@ -27,6 +27,73 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 AnalyticsWindow = Literal["month", "3m", "year", "all"]
+HeatmapMetric = Literal["density", "speed"]
+
+
+@router.get("/heatmap", dependencies=[Depends(require_query_token)])
+async def heatmap(
+    vehicle_id: UUID = Query(...),
+    metric: HeatmapMetric = Query(default="density"),
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Aggregated GPS points across all trips for a vehicle (MAP-1).
+
+    Used by the web frontend's combined-trips heatmap. Server-side
+    rounding to 4 decimals (~11 m precision) so repeated drives down
+    the same road collapse into one cell with a weight equal to the
+    number of times the user has been there. LIMIT 30k cells keeps the
+    response under ~1 MB even for years of data.
+
+    Metric switches the weight:
+      density → count(*) (how many times we've been here)
+      speed   → avg(speed_mps) (how fast we typically move through)
+
+    Future metrics (RPM, fuel_rate, engine_load) require joining
+    gps_points to pid_readings on the time axis; out of scope for v1.
+    """
+    args: list[Any] = [vehicle_id]
+    where = ["vehicle_id = $1", "lat IS NOT NULL", "lon IS NOT NULL"]
+    if from_ is not None:
+        args.append(from_)
+        where.append(f"time >= ${len(args)}")
+    if to is not None:
+        args.append(to)
+        where.append(f"time <= ${len(args)}")
+
+    # Pick the aggregate per the metric — density (count) vs avg speed.
+    # Both share the same group_by; the SELECT list flips.
+    agg_sql = (
+        "count(*)::bigint AS weight"
+        if metric == "density"
+        else "avg(speed_mps) AS weight"
+    )
+    speed_filter = "" if metric == "density" else " AND speed_mps IS NOT NULL"
+
+    sql = f"""
+        SELECT round(lat::numeric, 4)::float8 AS lat,
+               round(lon::numeric, 4)::float8 AS lon,
+               {agg_sql}
+          FROM gps_points
+         WHERE {' AND '.join(where)}{speed_filter}
+         GROUP BY 1, 2
+         ORDER BY 3 DESC
+         LIMIT 30000
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args)
+
+    # Compact array-of-arrays — smaller payload than rows of objects.
+    points = [
+        [r["lat"], r["lon"], float(r["weight"]) if r["weight"] is not None else 0.0]
+        for r in rows
+    ]
+    return {
+        "metric": metric,
+        "count": len(points),
+        "points": points,
+    }
 
 
 def _period_key(d: datetime | date, window: AnalyticsWindow) -> str:

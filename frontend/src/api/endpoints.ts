@@ -338,6 +338,26 @@ export async function mpgOverlay(
   return r.data;
 }
 
+// Combined-trips heatmap (MAP-1). Each point is [lat, lon, weight]
+// where weight is count(*) for the density metric or avg(speed_mps)
+// for the speed metric — server-side rounded to 4 decimals (~11 m)
+// and grouped, capped at 30k cells per response.
+export type HeatmapMetric = "density" | "speed";
+export interface HeatmapResponse {
+  metric: HeatmapMetric;
+  count: number;
+  points: [number, number, number][];
+}
+export async function getHeatmap(
+  vehicleId: string,
+  metric: HeatmapMetric = "density",
+): Promise<HeatmapResponse> {
+  const r = await apiQuery.get<HeatmapResponse>("/analytics/heatmap", {
+    params: { vehicle_id: vehicleId, metric },
+  });
+  return r.data;
+}
+
 export interface EngineHoursPoint {
   month: string;
   cumulative_hours: number;
