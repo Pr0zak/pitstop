@@ -82,61 +82,96 @@ function applyData() {
   if (!map || !data.value) return;
   const points = data.value.points;
   if (!points.length) {
-    // No data — make sure the previous layer is removed if present.
     if (map.getLayer("heat")) map.removeLayer("heat");
     if (map.getSource("heat")) map.removeSource("heat");
     return;
   }
 
-  // Compute weight bounds so we can normalise into [0, 1].
-  // For density, the long tail of low counts gets crushed by a single
-  // big value; use the 95th percentile instead of max so the colour
-  // ramp covers the routine commute, not just the rare hotspot.
+  // Render each cell as a small colored circle, not a Gaussian-blurred
+  // heatmap. The heatmap layer aggregates by density-per-pixel no matter
+  // what weight you give it, so speed and density looked identical
+  // (everywhere you drive, points overlap enough times to saturate the
+  // colour ramp). Circles let the per-cell value drive the colour directly.
+
+  // For density: p95 cap keeps one outlier (driveway = 200+ visits) from
+  // washing everything else out.
   const weights = points.map((p) => p[2]).filter((w) => Number.isFinite(w));
   weights.sort((a, b) => a - b);
   const p95 = weights[Math.floor(weights.length * 0.95)] || 1;
+  const isSpeed = data.value.metric === "speed";
 
   const features = {
     type: "FeatureCollection" as const,
     features: points.map((p, i) => ({
       type: "Feature" as const,
       id: i,
-      properties: { weight: Math.min(1, p[2] / p95) },
+      properties: {
+        // Density: 0..1 normalised. Speed: raw m/s for direct colour
+        // mapping (color stops below use m/s).
+        weight: isSpeed ? p[2] : Math.min(1, p[2] / p95),
+      },
       geometry: { type: "Point" as const, coordinates: [p[1], p[0]] },
     })),
   };
 
+  const colorExpr = isSpeed
+    ? // Speed (m/s → mph rough markers): 0 stopped, 5 (~11 mph) city
+      // crawl, 11 (~25 mph) neighborhood, 18 (~40 mph) arterial,
+      // 25 (~56 mph) highway threshold, 32 (~72 mph) full highway.
+      [
+        "interpolate", ["linear"], ["get", "weight"],
+        0,  "#475569",   // slate (stopped)
+        5,  "#06b6d4",   // cyan
+        11, "#22c55e",   // green
+        18, "#eab308",   // yellow
+        25, "#f97316",   // orange
+        32, "#ef4444",   // red
+      ]
+    : // Density (normalised 0..1): same green-amber-orange-red ramp.
+      [
+        "interpolate", ["linear"], ["get", "weight"],
+        0.0, "#22c55e",
+        0.3, "#eab308",
+        0.6, "#f97316",
+        1.0, "#ef4444",
+      ];
+
+  const radiusExpr = isSpeed
+    ? // Speed: fixed cell radius — we want the route lines clearly
+      // visible without overlap-blur.
+      [
+        "interpolate", ["linear"], ["zoom"],
+        10, 2.0, 14, 3.0, 16, 4.5,
+      ]
+    : // Density: scale modestly with weight so frequent corridors fatten
+      // up and rare segments stay slim.
+      [
+        "interpolate", ["linear"], ["zoom"],
+        10, ["+", 1.5, ["*", 2.5, ["get", "weight"]]],
+        14, ["+", 2.5, ["*", 4.0, ["get", "weight"]]],
+        16, ["+", 3.5, ["*", 6.0, ["get", "weight"]]],
+      ];
+
   const src = map.getSource("heat") as maplibregl.GeoJSONSource | undefined;
   if (src) {
     src.setData(features as unknown as GeoJSON.FeatureCollection);
+    if (map.getLayer("heat")) {
+      map.setPaintProperty("heat", "circle-color", colorExpr as unknown as maplibregl.ExpressionSpecification);
+      map.setPaintProperty("heat", "circle-radius", radiusExpr as unknown as maplibregl.ExpressionSpecification);
+    }
   } else {
     map.addSource("heat", { type: "geojson", data: features as unknown as GeoJSON.FeatureCollection });
     map.addLayer({
       id: "heat",
-      type: "heatmap",
+      type: "circle",
       source: "heat",
       paint: {
-        // 0..1 weight per feature → scale into the heatmap engine
-        "heatmap-weight": ["get", "weight"],
-        "heatmap-intensity": [
-          "interpolate", ["linear"], ["zoom"],
-          // boost intensity at high zoom so individual cells light up
-          // when you're zoomed in close.
-          8, 1, 16, 3,
-        ],
-        "heatmap-radius": [
-          "interpolate", ["linear"], ["zoom"],
-          8, 6, 12, 14, 16, 26,
-        ],
-        "heatmap-opacity": 0.85,
-        "heatmap-color": [
-          "interpolate", ["linear"], ["heatmap-density"],
-          0, "rgba(0,0,0,0)",
-          0.2, "rgba(34,197,94,0.55)",   // green — cold
-          0.45, "rgba(250,204,21,0.7)",  // amber — warm
-          0.7, "rgba(249,115,22,0.85)",  // orange
-          1, "rgba(239,68,68,1)",        // red — hot
-        ],
+        "circle-color": colorExpr as unknown as maplibregl.ExpressionSpecification,
+        "circle-radius": radiusExpr as unknown as maplibregl.ExpressionSpecification,
+        "circle-opacity": 0.85,
+        "circle-stroke-width": 0,
+        // Blending so overlapping cells in density brighten the line.
+        "circle-blur": 0.05,
       },
     });
   }
@@ -212,11 +247,36 @@ watch([vehicleId, metric], () => {
       </div>
     </header>
     <div ref="root" class="map"></div>
-    <p class="muted small caption">
-      Grid-aggregated to ~11 m cells (4 decimal lat/lon).
-      <span v-if="metric === 'density'">Color intensity = how often you've driven through each cell (95th-percentile normalised).</span>
-      <span v-else>Color intensity = average speed through each cell (m/s).</span>
-    </p>
+    <div class="legend-row">
+      <div v-if="metric === 'speed'" class="legend">
+        <span class="muted small">slower</span>
+        <span class="swatch" style="background:#475569"></span>
+        <span class="muted small">0</span>
+        <span class="swatch" style="background:#06b6d4"></span>
+        <span class="muted small">11</span>
+        <span class="swatch" style="background:#22c55e"></span>
+        <span class="muted small">25</span>
+        <span class="swatch" style="background:#eab308"></span>
+        <span class="muted small">40</span>
+        <span class="swatch" style="background:#f97316"></span>
+        <span class="muted small">55</span>
+        <span class="swatch" style="background:#ef4444"></span>
+        <span class="muted small">72 mph</span>
+      </div>
+      <div v-else class="legend">
+        <span class="muted small">rare</span>
+        <span class="swatch" style="background:#22c55e"></span>
+        <span class="swatch" style="background:#eab308"></span>
+        <span class="swatch" style="background:#f97316"></span>
+        <span class="swatch" style="background:#ef4444"></span>
+        <span class="muted small">most-driven</span>
+      </div>
+      <p class="muted small caption">
+        Grid-aggregated to ~11 m cells (4 decimal lat/lon).
+        <span v-if="metric === 'density'">Cell color + size = how often you've driven through (95th-percentile normalised).</span>
+        <span v-else>Cell color = average speed through that cell.</span>
+      </p>
+    </div>
   </div>
 </template>
 
@@ -281,5 +341,22 @@ watch([vehicleId, metric], () => {
 }
 .small {
   font-size: 0.85rem;
+}
+.legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
 }
 </style>
