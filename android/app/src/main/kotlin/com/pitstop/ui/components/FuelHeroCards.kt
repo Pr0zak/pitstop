@@ -1,10 +1,17 @@
 package com.pitstop.ui.components
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -15,19 +22,27 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * Phone-side mirror of the web Overview hero strip (frontend OverviewView.vue).
- * Same four metrics, same instrument-cluster type treatment, derived from the
- * same /fillups + /analytics/mpg payloads.
+ * Same four metrics, derived from the same /fillups + /analytics/mpg payloads.
  *
- * On the phone we render a 2×2 grid (two rows of two cards) instead of the web
- * single-row strip — fits the 412 dp Pixel viewport without horizontal scroll.
+ * On the phone we render a 2×2 grid; the Fuel level cell is an analog-style arc
+ * gauge (tick marks, E/F endpoints, color-coded fill) so it reads at a glance
+ * like a dashboard fuel gauge and stands out against the text-only siblings.
  */
 
 data class HeroCardData(
@@ -36,23 +51,10 @@ data class HeroCardData(
     val ppgDeltaPct: Double?,
     val monthCost: Double,
     val monthCount: Int,
-    /** Current fuel level as a percentage (0-100) from the latest
-     *  pid_readings sample. Null when no reading is available. */
     val fuelLevelPct: Double?,
-    /** Estimated gallons remaining = tank capacity × (fuel_level / 100).
-     *  Null when either tank capacity or fuel_level is unknown. */
     val fuelGallons: Double?,
-    /** Relative-time text for the fuel_level reading age (e.g. "live",
-     *  "3h ago"). Empty/null when no reading. */
     val fuelLevelAge: String?,
-    /** UTC epoch ms of the fuel_level reading source. Lets the local
-     *  in-process metric (via BridgeStateBus) override the server's
-     *  value when it's fresher — the key UX fix for manual-sync mode
-     *  where bridge publishes are suppressed and /vehicles lags. */
     val fuelLevelTimestampMs: Long? = null,
-    /** Tank capacity in gallons, carried so the local-override path can
-     *  recompute fuelGallons from a fresher fuelLevelPct without
-     *  re-deriving from vehicle config. */
     val tank1CapacityGal: Double? = null,
     val mpgSeries: List<Double>,
 )
@@ -62,12 +64,8 @@ fun FuelHeroCards(
     data: HeroCardData,
     modifier: Modifier = Modifier,
 ) {
-    // No internal horizontal padding — the host screen owns padding.
-    // (Earlier this card hard-coded `.padding(horizontal = 16.dp)` which
-    // forced StatusScreen to apply a negative compensating pad. Removed.)
     Column(
-        modifier = modifier
-            .fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -93,42 +91,29 @@ fun FuelHeroCards(
                 } ?: "—",
                 subColor = data.ppgDeltaPct?.let { delta ->
                     when {
-                        delta > 0.5 -> Color(0xFFFF3A2E) // danger when current is more expensive
-                        delta < -0.5 -> Color(0xFF4ADE80) // success when cheaper
+                        delta > 0.5 -> Color(0xFFFF3A2E)
+                        delta < -0.5 -> Color(0xFF4ADE80)
                         else -> null
                     }
                 },
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.height(IntrinsicSize.Max),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             HeroCard(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
                 title = "This month",
                 value = "$%.2f".format(data.monthCost),
                 unit = "",
                 sub = "${data.monthCount} fillup${if (data.monthCount == 1) "" else "s"}",
             )
-            HeroCard(
-                modifier = Modifier.weight(1f),
-                title = "Fuel level",
-                value = data.fuelLevelPct?.let { "%.0f".format(it) } ?: "—",
-                unit = "%",
-                sub = run {
-                    val gal = data.fuelGallons?.let { "%.1f gal".format(it) }
-                    val age = data.fuelLevelAge
-                    when {
-                        gal != null && age != null -> "$gal · $age"
-                        gal != null -> gal
-                        age != null -> age
-                        else -> "—"
-                    }
-                },
+            FuelGaugeCard(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                data = data,
             )
         }
-
-        // The old "MPG (year)" sparkline was pulled out of this card —
-        // it lives in MpgYearChart with proper axis labels + tooltip
-        // and is wired in StatusScreen below the 2×2 grid.
     }
 }
 
@@ -184,3 +169,149 @@ private fun HeroCard(
     }
 }
 
+@Composable
+private fun FuelGaugeCard(
+    modifier: Modifier = Modifier,
+    data: HeroCardData,
+) {
+    val pct = data.fuelLevelPct
+    val pctF = (pct ?: 0.0).coerceIn(0.0, 100.0).toFloat()
+    val fillColor = when {
+        pct == null -> MaterialTheme.colorScheme.outline
+        pct < 15 -> Color(0xFFFF3A2E)
+        pct < 35 -> Color(0xFFFFB020)
+        else -> Color(0xFF4ADE80)
+    }
+    val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+    val onSurfaceVariantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val borderColor = fillColor.copy(alpha = 0.55f)
+
+    Card(
+        modifier = modifier.border(
+            width = 1.5.dp,
+            color = borderColor,
+            shape = RoundedCornerShape(12.dp),
+        ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                "Fuel level",
+                style = MaterialTheme.typography.labelMedium,
+                color = onSurfaceVariantColor,
+            )
+            Spacer(Modifier.size(4.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(76.dp),
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val strokeW = 8.dp.toPx()
+                    val pad = strokeW / 2f + 4.dp.toPx()
+                    val maxDiamByWidth = size.width - pad * 2
+                    val maxDiamByHeight = (size.height - pad) * 2f
+                    val diameter = minOf(maxDiamByWidth, maxDiamByHeight)
+                    val cx = size.width / 2f
+                    val cy = size.height - pad
+                    val topLeft = Offset(cx - diameter / 2f, cy - diameter / 2f)
+                    val arcSize = Size(diameter, diameter)
+
+                    val sweep = 180f
+                    val start = 180f
+
+                    drawArc(
+                        color = trackColor,
+                        startAngle = start,
+                        sweepAngle = sweep,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokeW, cap = StrokeCap.Round),
+                    )
+                    drawArc(
+                        color = fillColor,
+                        startAngle = start,
+                        sweepAngle = sweep * pctF / 100f,
+                        useCenter = false,
+                        topLeft = topLeft,
+                        size = arcSize,
+                        style = Stroke(width = strokeW, cap = StrokeCap.Round),
+                    )
+
+                    val rOuter = diameter / 2f - strokeW - 1.dp.toPx()
+                    val rInner = rOuter - 4.dp.toPx()
+                    for (i in 0..4) {
+                        val ang = (start + sweep * i / 4f) * (PI.toFloat() / 180f)
+                        val s = sin(ang.toDouble()).toFloat()
+                        val c = cos(ang.toDouble()).toFloat()
+                        drawLine(
+                            color = tickColor,
+                            start = Offset(cx + rOuter * c, cy + rOuter * s),
+                            end = Offset(cx + rInner * c, cy + rInner * s),
+                            strokeWidth = 1.5.dp.toPx(),
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        pct?.let { "${it.toInt()}%" } ?: "—",
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            letterSpacing = (-1.0).sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = onSurfaceColor,
+                    )
+                }
+
+                Text(
+                    "E",
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 2.dp),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = onSurfaceVariantColor,
+                )
+                Text(
+                    "F",
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 2.dp),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = onSurfaceVariantColor,
+                )
+            }
+
+            Text(
+                run {
+                    val gal = data.fuelGallons?.let { "%.1f gal".format(it) }
+                    val age = data.fuelLevelAge
+                    when {
+                        gal != null && age != null -> "$gal · $age"
+                        gal != null -> gal
+                        age != null -> age
+                        else -> "—"
+                    }
+                },
+                modifier = Modifier.padding(top = 4.dp),
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+                color = onSurfaceVariantColor,
+            )
+        }
+    }
+}
