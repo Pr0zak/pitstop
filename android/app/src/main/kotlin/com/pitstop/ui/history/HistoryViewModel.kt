@@ -41,6 +41,24 @@ data class HistoryUiState(
     val dtcs: HistoryListState<DtcDto> = HistoryListState(),
 )
 
+/** Sort orders for the Trips list (TRIPS-1). Default is RecentFirst —
+ *  what the server returns. Other orders are computed client-side
+ *  from the cached page. */
+enum class TripSortOrder { RecentFirst, FurthestFirst, FastestFirst, LongestFirst }
+
+/** Source-filter chips for the Trips list. */
+enum class TripSourceFilter { All, Phone, ManualMerge, Other }
+
+/** Relative date bucket for group headers. */
+enum class TripGroupKey(val label: String) {
+    Today("Today"),
+    Yesterday("Yesterday"),
+    Past7Days("Past 7 days"),
+    Past30Days("Past 30 days"),
+    ThisYear("This year"),
+    Older("Older"),
+}
+
 /** Surfaced to the History header so the Sync-now chip can show progress
  *  instead of disappearing into a fire-and-forget kick. */
 sealed class SyncState {
@@ -88,6 +106,14 @@ class HistoryViewModel @Inject constructor(
 
     private val _mergeState = MutableStateFlow<MergeState>(MergeState.Idle)
     val mergeState: StateFlow<MergeState> = _mergeState.asStateFlow()
+
+    private val _tripSort = MutableStateFlow(TripSortOrder.RecentFirst)
+    val tripSort: StateFlow<TripSortOrder> = _tripSort.asStateFlow()
+    fun setTripSort(o: TripSortOrder) { _tripSort.value = o }
+
+    private val _tripSourceFilter = MutableStateFlow(TripSourceFilter.All)
+    val tripSourceFilter: StateFlow<TripSourceFilter> = _tripSourceFilter.asStateFlow()
+    fun setTripSourceFilter(f: TripSourceFilter) { _tripSourceFilter.value = f }
 
     /**
      * Live count of unacked drives in the local queue (#117). Drives
@@ -283,4 +309,54 @@ class HistoryViewModel @Inject constructor(
             }
         }
     }
+}
+
+// ── Trip-grouping helpers (TRIPS-1) ─────────────────────────────────
+
+/** Relative-date bucket label for a trip's started_at. */
+fun bucketFor(
+    startedAtIso: String,
+    now: java.time.LocalDate = java.time.LocalDate.now(),
+): TripGroupKey {
+    val t = runCatching { java.time.OffsetDateTime.parse(startedAtIso).toLocalDate() }
+        .getOrNull() ?: return TripGroupKey.Older
+    val daysAgo = java.time.temporal.ChronoUnit.DAYS.between(t, now)
+    return when {
+        daysAgo <= 0L -> TripGroupKey.Today
+        daysAgo == 1L -> TripGroupKey.Yesterday
+        daysAgo <= 7L -> TripGroupKey.Past7Days
+        daysAgo <= 30L -> TripGroupKey.Past30Days
+        t.year == now.year -> TripGroupKey.ThisYear
+        else -> TripGroupKey.Older
+    }
+}
+
+/** Apply filter + sort, then group by relative-date bucket. Returns
+ *  the buckets in display order (Today first), each with its
+ *  already-sorted items. Empty buckets are omitted. */
+fun groupAndSortTrips(
+    trips: List<com.pitstop.http.TripDto>,
+    sort: TripSortOrder,
+    filter: TripSourceFilter,
+): List<Pair<TripGroupKey, List<com.pitstop.http.TripDto>>> {
+    val filtered = trips.filter { t ->
+        when (filter) {
+            TripSourceFilter.All -> true
+            TripSourceFilter.Phone -> t.source == "phone_batch"
+            TripSourceFilter.ManualMerge -> t.source == "manual_merge"
+            TripSourceFilter.Other -> t.source != "phone_batch" && t.source != "manual_merge"
+        }
+    }
+    val comparator: Comparator<com.pitstop.http.TripDto> = when (sort) {
+        TripSortOrder.RecentFirst -> compareByDescending { it.startedAt }
+        TripSortOrder.FurthestFirst -> compareByDescending { it.distanceKm ?: 0.0 }
+        TripSortOrder.FastestFirst -> compareByDescending { it.maxSpeedKph ?: 0.0 }
+        TripSortOrder.LongestFirst -> compareByDescending { it.durationS ?: 0 }
+    }
+    val byBucket = filtered.groupBy { bucketFor(it.startedAt) }
+    return TripGroupKey.entries
+        .mapNotNull { key ->
+            val items = byBucket[key]?.sortedWith(comparator)
+            if (items.isNullOrEmpty()) null else key to items
+        }
 }

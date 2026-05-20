@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -261,6 +262,8 @@ private fun HistoryListScreen(
             0 -> {
                 val tripSelection by viewModel.tripSelection.collectAsStateWithLifecycle()
                 val mergeState by viewModel.mergeState.collectAsStateWithLifecycle()
+                val tripSort by viewModel.tripSort.collectAsStateWithLifecycle()
+                val tripFilter by viewModel.tripSourceFilter.collectAsStateWithLifecycle()
                 TripsList(
                     state = ui.trips,
                     onRefresh = viewModel::refresh,
@@ -270,6 +273,10 @@ private fun HistoryListScreen(
                     onToggleSelect = viewModel::toggleTripSelection,
                     onCancelSelection = viewModel::exitTripSelection,
                     onMerge = viewModel::mergeSelectedTrips,
+                    sort = tripSort,
+                    sourceFilter = tripFilter,
+                    onSortChange = viewModel::setTripSort,
+                    onFilterChange = viewModel::setTripSourceFilter,
                 )
             }
             1 -> FillupsList(state = ui.fillups, onRefresh = viewModel::refresh, onOpen = onOpenFillup)
@@ -319,7 +326,7 @@ private fun <T> keyOf(value: T): Any = when (value) {
     else -> value as Any
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun TripsList(
     state: HistoryListState<TripDto>,
@@ -330,11 +337,12 @@ private fun TripsList(
     onToggleSelect: (String) -> Unit,
     onCancelSelection: () -> Unit,
     onMerge: () -> Unit,
+    sort: TripSortOrder,
+    sourceFilter: TripSourceFilter,
+    onSortChange: (TripSortOrder) -> Unit,
+    onFilterChange: (TripSourceFilter) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Action bar: shown when selection mode is active OR a merge
-        // toast is in flight. Long-press a trip card to enter selection
-        // mode, then tap a second one and hit Merge.
         if (selection.mode || mergeState !is MergeState.Idle) {
             TripSelectionBar(
                 selection = selection,
@@ -343,78 +351,220 @@ private fun TripsList(
                 onMerge = onMerge,
             )
         }
-        ListSurface(
-            state = state,
+        // Sort + source-filter controls (TRIPS-1). Filter chips run
+        // horizontally; sort menu sits at the right.
+        TripsFilterBar(sort, sourceFilter, onSortChange, onFilterChange)
+
+        val groups = remember(state.data, sort, sourceFilter) {
+            groupAndSortTrips(state.data, sort, sourceFilter)
+        }
+
+        androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+            isRefreshing = state.loading,
             onRefresh = onRefresh,
-            emptyMessage = "No trips yet — take a drive.",
-        ) { trip ->
-            val isSelected = trip.id in selection.ids
-            Card(
-                border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isSelected)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surface,
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .combinedClickable(
-                        onClick = {
-                            if (selection.mode) onToggleSelect(trip.id) else onOpen(trip.id)
-                        },
-                        onLongClick = { onToggleSelect(trip.id) },
-                    ),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when {
+                state.loading && state.data.isEmpty() -> CenteredSpinner()
+                state.error != null && state.data.isEmpty() ->
+                    CenteredText("Couldn't load: ${state.error}")
+                groups.isEmpty() -> CenteredText(
+                    if (state.data.isEmpty()) "No trips yet — take a drive."
+                    else "No trips match this filter.",
+                )
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (selection.mode) {
-                            Icon(
-                                imageVector = if (isSelected) Icons.Filled.Check else Icons.Filled.Close,
-                                contentDescription = if (isSelected) "Selected" else "Tap to select",
-                                tint = if (isSelected)
-                                    MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.outlineVariant,
-                                modifier = Modifier
-                                    .padding(end = 10.dp)
-                                    .size(20.dp),
-                            )
+                    for ((key, items) in groups) {
+                        stickyHeader(key = "header-${key.name}") {
+                            TripGroupHeader(label = key.label, count = items.size)
                         }
-                        Text(
-                            text = formatTripDate(trip.startedAt),
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        val mi = trip.distanceKm?.let { it * 0.621371 }
-                        Text(
-                            text = mi?.let { "%.1f mi".format(it) } ?: "—",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                    val parts = buildList {
-                        trip.durationS?.let {
-                            add(if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s")
+                        items(items, key = { it.id }) { trip ->
+                            TripCard(trip, selection, onOpen, onToggleSelect)
                         }
-                        trip.maxSpeedKph?.let { add("max %.0f mph".format(it * 0.621371)) }
-                        trip.maxRpm?.let { add("%.0f rpm".format(it)) }
-                        if (trip.dtcCount > 0) add("${trip.dtcCount} DTC")
-                    }
-                    if (parts.isNotEmpty()) {
-                        Text(
-                            text = parts.joinToString(" · "),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TripsFilterBar(
+    sort: TripSortOrder,
+    filter: TripSourceFilter,
+    onSortChange: (TripSortOrder) -> Unit,
+    onFilterChange: (TripSourceFilter) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        val filterLabel: (TripSourceFilter) -> String = {
+            when (it) {
+                TripSourceFilter.All -> "All"
+                TripSourceFilter.Phone -> "Phone"
+                TripSourceFilter.ManualMerge -> "Merged"
+                TripSourceFilter.Other -> "Other"
+            }
+        }
+        for (f in TripSourceFilter.entries) {
+            androidx.compose.material3.FilterChip(
+                selected = f == filter,
+                onClick = { onFilterChange(f) },
+                label = { Text(filterLabel(f), style = MaterialTheme.typography.labelSmall) },
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        TripSortMenu(sort, onSortChange)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TripSortMenu(
+    sort: TripSortOrder,
+    onSortChange: (TripSortOrder) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = when (sort) {
+        TripSortOrder.RecentFirst -> "Recent"
+        TripSortOrder.FurthestFirst -> "Distance"
+        TripSortOrder.FastestFirst -> "Top speed"
+        TripSortOrder.LongestFirst -> "Duration"
+    }
+    Box {
+        OutlinedButton(onClick = { open = true }) {
+            Text("Sort: $label", style = MaterialTheme.typography.labelSmall)
+        }
+        androidx.compose.material3.DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            for (o in TripSortOrder.entries) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = {
+                        Text(
+                            when (o) {
+                                TripSortOrder.RecentFirst -> "Most recent"
+                                TripSortOrder.FurthestFirst -> "Longest distance"
+                                TripSortOrder.FastestFirst -> "Fastest top speed"
+                                TripSortOrder.LongestFirst -> "Longest duration"
+                            },
+                        )
+                    },
+                    onClick = {
+                        onSortChange(o)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TripGroupHeader(label: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun TripCard(
+    trip: TripDto,
+    selection: TripSelection,
+    onOpen: (String) -> Unit,
+    onToggleSelect: (String) -> Unit,
+) {
+    val isSelected = trip.id in selection.ids
+    Card(
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surface,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {
+                    if (selection.mode) onToggleSelect(trip.id) else onOpen(trip.id)
+                },
+                onLongClick = { onToggleSelect(trip.id) },
+            ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (selection.mode) {
+                    Icon(
+                        imageVector = if (isSelected) Icons.Filled.Check else Icons.Filled.Close,
+                        contentDescription = if (isSelected) "Selected" else "Tap to select",
+                        tint = if (isSelected)
+                            MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier
+                            .padding(end = 10.dp)
+                            .size(20.dp),
+                    )
+                }
+                Text(
+                    text = formatTripDate(trip.startedAt),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                val mi = trip.distanceKm?.let { it * 0.621371 }
+                Text(
+                    text = mi?.let { "%.1f mi".format(it) } ?: "—",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            val parts = buildList {
+                trip.durationS?.let {
+                    add(if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s")
+                }
+                trip.maxSpeedKph?.let { add("max %.0f mph".format(it * 0.621371)) }
+                trip.maxRpm?.let { add("%.0f rpm".format(it)) }
+                if (trip.dtcCount > 0) add("${trip.dtcCount} DTC")
+            }
+            if (parts.isNotEmpty()) {
+                Text(
+                    text = parts.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

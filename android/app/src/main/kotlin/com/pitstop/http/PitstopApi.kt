@@ -335,6 +335,11 @@ data class TripDto(
     @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
     @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
     val category: String? = null,
+    /** Provenance — "phone_batch" (post-drive HTTP batch), "deriver"
+     *  (server-derived from raw activity), or "manual_merge" (user
+     *  combined two trips via MERGE-1). Surfaced in the History tab
+     *  source-filter chips (TRIPS-1). */
+    val source: String? = null,
 )
 
 @kotlinx.serialization.Serializable

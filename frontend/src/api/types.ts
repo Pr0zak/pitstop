@@ -109,6 +109,10 @@ export interface Trip {
   weather_precip_mm?: number | null;
   weather_wind_kph?: number | null;
   weather_code?: number | null;
+  /** Provenance for the source-filter UI (TRIPS-2). "phone_batch"
+   *  (post-drive HTTP batch), "deriver" (server-derived from raw
+   *  activity), or "manual_merge" (user combined trips). */
+  source?: string | null;
   /** @deprecated use distance_km */ distance_mi?: number | null;
   /** @deprecated use max_speed_kph */ max_speed?: number | null;
   /** @deprecated use fuel_used_l */ fuel_used?: number | null;

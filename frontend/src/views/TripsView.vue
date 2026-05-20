@@ -22,6 +22,44 @@ const offset = ref(0);
 
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 
+// Client-side sort + source filter (TRIPS-2). Apply over the
+// currently-loaded page; for narrow date windows the server-side
+// from/to handles bigger ranges efficiently.
+type SortOrder = "recent" | "distance" | "speed" | "duration";
+type SrcFilter = "all" | "phone_batch" | "manual_merge" | "other";
+const sort = ref<SortOrder>("recent");
+const srcFilter = ref<SrcFilter>("all");
+
+// Relative-date bucket for group headers.
+type GroupKey =
+  | "today" | "yesterday" | "past7" | "past30" | "thisYear" | "older";
+const GROUP_LABEL: Record<GroupKey, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  past7: "Past 7 days",
+  past30: "Past 30 days",
+  thisYear: "This year",
+  older: "Older",
+};
+function bucketFor(iso: string): GroupKey {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return "older";
+  const now = new Date();
+  const msPerDay = 24 * 3600 * 1000;
+  const dayStart = (d: Date) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x.getTime();
+  };
+  const daysAgo = Math.floor((dayStart(now) - dayStart(t)) / msPerDay);
+  if (daysAgo <= 0) return "today";
+  if (daysAgo === 1) return "yesterday";
+  if (daysAgo <= 7) return "past7";
+  if (daysAgo <= 30) return "past30";
+  if (t.getFullYear() === now.getFullYear()) return "thisYear";
+  return "older";
+}
+
 function isoOrUndef(s: string): string | undefined {
   return s ? new Date(s).toISOString() : undefined;
 }
@@ -62,6 +100,41 @@ function reset() {
   void reload();
 }
 
+// Filter + sort + group the current page (TRIPS-2). Always shown
+// across whatever from/to range the server delivered.
+const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: import("@/api/types").Trip[] }>>(() => {
+  const items = data.value?.items ?? [];
+  const filtered = items.filter((t) => {
+    if (srcFilter.value === "all") return true;
+    if (srcFilter.value === "phone_batch") return t.source === "phone_batch";
+    if (srcFilter.value === "manual_merge") return t.source === "manual_merge";
+    return t.source !== "phone_batch" && t.source !== "manual_merge";
+  });
+  const cmp = (a: import("@/api/types").Trip, b: import("@/api/types").Trip): number => {
+    switch (sort.value) {
+      case "distance": return (b.distance_km ?? 0) - (a.distance_km ?? 0);
+      case "speed": return (b.max_speed_kph ?? 0) - (a.max_speed_kph ?? 0);
+      case "duration": return (b.duration_s ?? 0) - (a.duration_s ?? 0);
+      default:
+        return new Date(b.started_at).getTime() - new Date(a.started_at).getTime();
+    }
+  };
+  const byKey = new Map<GroupKey, import("@/api/types").Trip[]>();
+  for (const t of filtered) {
+    const k = bucketFor(t.started_at);
+    let list = byKey.get(k);
+    if (!list) {
+      list = [];
+      byKey.set(k, list);
+    }
+    list.push(t);
+  }
+  const order: GroupKey[] = ["today", "yesterday", "past7", "past30", "thisYear", "older"];
+  return order
+    .map((k) => ({ key: k, label: GROUP_LABEL[k], items: (byKey.get(k) ?? []).sort(cmp) }))
+    .filter((g) => g.items.length > 0);
+});
+
 // Per-purpose rollup over the currently visible page (Task #94).
 // Untagged trips collapse into a single "—" bucket so the user can
 // see how much of their drive history is uncategorised at a glance.
@@ -94,6 +167,27 @@ const purposeRollup = computed<PurposeRow[]>(() => {
           <span class="lbl">To</span>
           <input type="date" v-model="toDate" />
         </label>
+        <div class="chip-row" role="tablist" aria-label="Source filter">
+          <button
+            v-for="opt in (['all','phone_batch','manual_merge','other'] as const)"
+            :key="opt"
+            type="button"
+            class="chip"
+            :class="{ active: srcFilter === opt }"
+            @click="srcFilter = opt"
+          >
+            {{ opt === 'all' ? 'All' : opt === 'phone_batch' ? 'Phone' : opt === 'manual_merge' ? 'Merged' : 'Other' }}
+          </button>
+        </div>
+        <label class="sort">
+          <span class="lbl">Sort</span>
+          <select v-model="sort">
+            <option value="recent">Most recent</option>
+            <option value="distance">Longest distance</option>
+            <option value="speed">Fastest top speed</option>
+            <option value="duration">Longest duration</option>
+          </select>
+        </label>
         <button type="button" class="ghost" @click="reset">Reset</button>
       </div>
     </header>
@@ -124,7 +218,14 @@ const purposeRollup = computed<PurposeRow[]>(() => {
         </ul>
       </div>
 
-      <div class="card no-pad">
+      <div v-if="groupedTrips.length === 0" class="card">
+        <p class="muted">No trips match the current filter.</p>
+      </div>
+      <div v-for="group in groupedTrips" :key="group.key" class="card no-pad">
+        <header class="group-head">
+          <span class="group-label">{{ group.label }}</span>
+          <span class="muted small">{{ group.items.length }}</span>
+        </header>
         <table class="data">
           <thead>
             <tr>
@@ -140,7 +241,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
           </thead>
           <tbody>
             <tr
-              v-for="t in data.items"
+              v-for="t in group.items"
               :key="t.id"
               class="clickable"
               @click="open(t.id)"
@@ -251,5 +352,51 @@ const purposeRollup = computed<PurposeRow[]>(() => {
 }
 .small {
   font-size: 0.78rem;
+}
+.chip-row {
+  display: inline-flex;
+  gap: 4px;
+}
+.chip {
+  background: var(--c-surface-soft, #1e1c2a);
+  border: 1px solid var(--c-border-soft, #2a2d33);
+  border-radius: 999px;
+  color: var(--c-text, #e7e9ee);
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--c-accent, #f97316);
+  color: white;
+  border-color: var(--c-accent, #f97316);
+}
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sort select {
+  background: var(--c-surface-soft, #1e1c2a);
+  border: 1px solid var(--c-border-soft, #2a2d33);
+  border-radius: 6px;
+  color: var(--c-text);
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--c-border-soft, #2a2d33);
+}
+.group-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--c-accent, #f97316);
+  flex: 1;
 }
 </style>
