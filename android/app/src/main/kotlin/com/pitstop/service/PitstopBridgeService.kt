@@ -186,11 +186,19 @@ class PitstopBridgeService : Service() {
             // a drive that ended with the car going to sleep where
             // the BLE never comes back stays open until the next
             // "engine on" event triggers orphan recovery — could be
-            // hours / days. 15 min is well past typical BLE flake
-            // durations (the 2026-05-12 split case was ~2 min) and
-            // short enough that the user's drive list reflects reality
-            // within a coffee break.
-            val bleLostThresholdMs = 15L * 60L * 1000L
+            // hours / days.
+            //
+            // Was 15 min originally, picked to safely outlast the
+            // 2-minute BLE flap from 2026-05-12. User reported the
+            // stale "engine on" state was annoying for 15 min after
+            // parking when BLE refuses to come back. Dropped to 3 min:
+            // still safely past any historical mid-drive flap, and
+            // the engine-off state flips ~3 min after you park
+            // instead of 15. The trade-off is that a >3 min BLE
+            // flap mid-drive will split the trip — but the
+            // manual-merge UI (MERGE-1) makes that recoverable in two
+            // taps.
+            val bleLostThresholdMs = 3L * 60L * 1000L
             while (isActive) {
                 kotlinx.coroutines.delay(10_000L)
                 val s = stateBus.status.value
