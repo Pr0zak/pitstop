@@ -111,6 +111,46 @@ export interface ServerVersion {
   git_sha: string;
   build_time: string;
 }
+/** Latest release on GitHub. Direct fetch — no auth, no apiQuery
+ *  client, no token. Used by the sidebar to compare to the deployed
+ *  /version and surface an "update available" badge (UX-2). */
+export interface GithubRelease {
+  tag_name: string;
+  html_url: string;
+  published_at: string;
+}
+export async function getLatestGithubRelease(): Promise<GithubRelease | null> {
+  try {
+    const r = await fetch("https://api.github.com/repos/Pr0zak/pitstop/releases/latest", {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!r.ok) return null;
+    return await r.json() as GithubRelease;
+  } catch {
+    return null;
+  }
+}
+
+/** Compare semver-ish "vX.Y.Z" strings. Returns negative if a<b,
+ *  zero if equal, positive if a>b. Non-numeric segments compare
+ *  lexically. */
+export function compareVersions(a: string, b: string): number {
+  const norm = (v: string) => v.replace(/^v/i, "").split(".");
+  const A = norm(a);
+  const B = norm(b);
+  for (let i = 0; i < Math.max(A.length, B.length); i++) {
+    const ai = parseInt(A[i] ?? "0", 10);
+    const bi = parseInt(B[i] ?? "0", 10);
+    if (Number.isNaN(ai) || Number.isNaN(bi)) {
+      const cmp = (A[i] ?? "").localeCompare(B[i] ?? "");
+      if (cmp !== 0) return cmp;
+      continue;
+    }
+    if (ai !== bi) return ai - bi;
+  }
+  return 0;
+}
+
 export async function getVersion(): Promise<ServerVersion> {
   // /version is unauthenticated — include skipAuth via raw axios.
   const r = await apiQuery.get<ServerVersion>("/version");

@@ -279,6 +279,7 @@ private fun HistoryListScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun <T> ListSurface(
     state: HistoryListState<T>,
@@ -286,17 +287,27 @@ private fun <T> ListSurface(
     emptyMessage: String,
     item: @Composable (T) -> Unit,
 ) {
-    when {
-        state.loading && state.data.isEmpty() -> CenteredSpinner()
-        state.error != null && state.data.isEmpty() ->
-            CenteredText("Couldn't load: ${state.error}")
-        state.data.isEmpty() -> CenteredText(emptyMessage)
-        else -> LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(state.data, key = { keyOf(it) }) { item(it) }
+    // Wrap in PullToRefreshBox so users can drag-down to re-fetch
+    // server-backed data — same pattern the home dashboard uses.
+    // state.loading doubles as the refreshing indicator: it's true
+    // during initial load AND during user-driven refreshes.
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+        isRefreshing = state.loading,
+        onRefresh = onRefresh,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        when {
+            state.loading && state.data.isEmpty() -> CenteredSpinner()
+            state.error != null && state.data.isEmpty() ->
+                CenteredText("Couldn't load: ${state.error}")
+            state.data.isEmpty() -> CenteredText(emptyMessage)
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.data, key = { keyOf(it) }) { item(it) }
+            }
         }
     }
 }

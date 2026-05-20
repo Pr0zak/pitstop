@@ -28,11 +28,21 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
+@androidx.compose.material3.ExperimentalMaterial3Api
 @Composable
 fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
 
+    // Pull-to-refresh wraps the whole column — drag down from the
+    // mode-toggle row to force a fresh /api/analytics/route-trace
+    // fetch. Map gestures inside the map widget still work normally
+    // because the pull gesture only fires from above-the-top scroll.
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+        isRefreshing = state.loading,
+        onRefresh = { viewModel.refresh() },
+        modifier = Modifier.fillMaxSize(),
+    ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // Controls + count
         Row(
@@ -139,6 +149,7 @@ fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
             )
         }
     }
+    } // PullToRefreshBox
 }
 
 @Composable

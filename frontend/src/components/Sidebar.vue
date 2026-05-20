@@ -27,10 +27,24 @@ import {
   DEFAULT_LOGO,
   type LogoName,
 } from "@/components/logos/PitstopLogos";
-import { getVersion } from "@/api/endpoints";
+import { getVersion, getLatestGithubRelease, compareVersions } from "@/api/endpoints";
 
 const serverVersion = ref<string | null>(null);
 const serverSha = ref<string | null>(null);
+const latestVersion = ref<string | null>(null);
+const latestUrl = ref<string | null>(null);
+
+// True only when the deployed server is strictly behind the latest
+// GitHub release (UX-2). Stays false when the comparison can't be
+// made (offline, GitHub rate-limit, dev build "v0.0.0-…").
+const updateAvailable = computed<boolean>(() => {
+  const cur = serverVersion.value;
+  const latest = latestVersion.value;
+  if (!cur || !latest) return false;
+  if (cur.startsWith("0.0.0") || cur === "dev") return false;
+  return compareVersions(cur, latest) < 0;
+});
+
 async function loadVersion() {
   try {
     const v = await getVersion();
@@ -38,6 +52,13 @@ async function loadVersion() {
     serverSha.value = v.git_sha;
   } catch {
     /* ignore — /version isn't critical */
+  }
+}
+async function loadLatestRelease() {
+  const r = await getLatestGithubRelease();
+  if (r) {
+    latestVersion.value = r.tag_name.replace(/^v/i, "");
+    latestUrl.value = r.html_url;
   }
 }
 
@@ -59,6 +80,7 @@ function onLogoChanged(e: Event) {
 onMounted(() => {
   loadLogo();
   void loadVersion();
+  void loadLatestRelease();
   window.addEventListener("pitstop-logo-changed", onLogoChanged);
 });
 onBeforeUnmount(() => {
@@ -164,6 +186,16 @@ const widthVar = computed(() =>
       >
         {{ serverVersion }}
       </span>
+      <a
+        v-if="updateAvailable && latestUrl"
+        :href="latestUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="update-badge"
+        :title="`v${latestVersion} is available — hard-refresh after the CT pulls the new image`"
+      >
+        ↑ v{{ latestVersion }}
+      </a>
       <a
         href="https://github.com/Pr0zak/pitstop"
         target="_blank"
@@ -325,6 +357,21 @@ nav.nav-secondary {
 }
 .footer .github-link:hover {
   color: var(--c-ink0);
+}
+.footer .update-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--c-accent, #f97316);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+.footer .update-badge:hover {
+  filter: brightness(1.1);
 }
 .collapse {
   margin: 0.5rem;
