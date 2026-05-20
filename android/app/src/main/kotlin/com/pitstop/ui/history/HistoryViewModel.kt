@@ -49,6 +49,12 @@ enum class TripSortOrder { RecentFirst, FurthestFirst, FastestFirst, LongestFirs
 /** Source-filter chips for the Trips list. */
 enum class TripSourceFilter { All, Phone, ManualMerge, Other }
 
+/** Sort orders for the Fillups list (FILLUPS-1). */
+enum class FillupSortOrder { RecentFirst, HighestCost, MostFuel, BestMpg, HighestPpg }
+
+/** Full / partial filter chip for fillups. */
+enum class FillupFilter { All, Full, Partial }
+
 /** Relative date bucket for group headers. */
 enum class TripGroupKey(val label: String) {
     Today("Today"),
@@ -114,6 +120,14 @@ class HistoryViewModel @Inject constructor(
     private val _tripSourceFilter = MutableStateFlow(TripSourceFilter.All)
     val tripSourceFilter: StateFlow<TripSourceFilter> = _tripSourceFilter.asStateFlow()
     fun setTripSourceFilter(f: TripSourceFilter) { _tripSourceFilter.value = f }
+
+    private val _fillupSort = MutableStateFlow(FillupSortOrder.RecentFirst)
+    val fillupSort: StateFlow<FillupSortOrder> = _fillupSort.asStateFlow()
+    fun setFillupSort(o: FillupSortOrder) { _fillupSort.value = o }
+
+    private val _fillupFilter = MutableStateFlow(FillupFilter.All)
+    val fillupFilter: StateFlow<FillupFilter> = _fillupFilter.asStateFlow()
+    fun setFillupFilter(f: FillupFilter) { _fillupFilter.value = f }
 
     /**
      * Live count of unacked drives in the local queue (#117). Drives
@@ -354,6 +368,37 @@ fun groupAndSortTrips(
         TripSortOrder.LongestFirst -> compareByDescending { it.durationS ?: 0 }
     }
     val byBucket = filtered.groupBy { bucketFor(it.startedAt) }
+    return TripGroupKey.entries
+        .mapNotNull { key ->
+            val items = byBucket[key]?.sortedWith(comparator)
+            if (items.isNullOrEmpty()) null else key to items
+        }
+}
+
+// ── Fillup grouping helpers (FILLUPS-1) ─────────────────────────────
+
+/** Reuses [TripGroupKey] buckets — both trips and fillups are
+ *  relative-date-grouped the same way. */
+fun groupAndSortFillups(
+    fillups: List<com.pitstop.http.FillupDto>,
+    sort: FillupSortOrder,
+    filter: FillupFilter,
+): List<Pair<TripGroupKey, List<com.pitstop.http.FillupDto>>> {
+    val filtered = fillups.filter { f ->
+        when (filter) {
+            FillupFilter.All -> true
+            FillupFilter.Full -> f.isFull
+            FillupFilter.Partial -> !f.isFull
+        }
+    }
+    val comparator: Comparator<com.pitstop.http.FillupDto> = when (sort) {
+        FillupSortOrder.RecentFirst -> compareByDescending { it.fillupDate }
+        FillupSortOrder.HighestCost -> compareByDescending { it.priceTotal ?: 0.0 }
+        FillupSortOrder.MostFuel -> compareByDescending { it.fuelVolume ?: 0.0 }
+        FillupSortOrder.BestMpg -> compareByDescending { it.mpg ?: 0.0 }
+        FillupSortOrder.HighestPpg -> compareByDescending { it.pricePerUnit ?: 0.0 }
+    }
+    val byBucket = filtered.groupBy { bucketFor(it.fillupDate) }
     return TripGroupKey.entries
         .mapNotNull { key ->
             val items = byBucket[key]?.sortedWith(comparator)

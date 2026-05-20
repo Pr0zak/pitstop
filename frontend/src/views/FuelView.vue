@@ -293,6 +293,64 @@ function changeSort(k: SortKey) {
   }
 }
 
+// Full/partial filter + date-bucket grouping (FILLUPS-2). Mirrors the
+// pattern in TripsView: filter chips above the table, sections per
+// relative-date bucket. Sort still controlled by clicking column
+// headers — those operations are independent.
+type FillupFilter = "all" | "full" | "partial";
+const fillupFilter = ref<FillupFilter>("all");
+
+type GroupKey = "today" | "yesterday" | "past7" | "past30" | "thisYear" | "older";
+const GROUP_LABEL: Record<GroupKey, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  past7: "Past 7 days",
+  past30: "Past 30 days",
+  thisYear: "This year",
+  older: "Older",
+};
+function fillupBucket(iso: string | null | undefined): GroupKey {
+  if (!iso) return "older";
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return "older";
+  const now = new Date();
+  const msPerDay = 24 * 3600 * 1000;
+  const dayStart = (d: Date) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x.getTime();
+  };
+  const daysAgo = Math.floor((dayStart(now) - dayStart(t)) / msPerDay);
+  if (daysAgo <= 0) return "today";
+  if (daysAgo === 1) return "yesterday";
+  if (daysAgo <= 7) return "past7";
+  if (daysAgo <= 30) return "past30";
+  if (t.getFullYear() === now.getFullYear()) return "thisYear";
+  return "older";
+}
+
+const groupedFillups = computed<Array<{ key: GroupKey; label: string; items: Fillup[] }>>(() => {
+  const items = sortedFillups.value.filter((f) => {
+    if (fillupFilter.value === "all") return true;
+    if (fillupFilter.value === "full") return f.is_full !== false;
+    return f.is_full === false;
+  });
+  const byKey = new Map<GroupKey, Fillup[]>();
+  for (const f of items) {
+    const k = fillupBucket(f.fillup_date as string | null | undefined);
+    let list = byKey.get(k);
+    if (!list) {
+      list = [];
+      byKey.set(k, list);
+    }
+    list.push(f);
+  }
+  const order: GroupKey[] = ["today", "yesterday", "past7", "past30", "thisYear", "older"];
+  return order
+    .map((k) => ({ key: k, label: GROUP_LABEL[k], items: byKey.get(k) ?? [] }))
+    .filter((g) => g.items.length > 0);
+});
+
 // Modal
 const showModal = ref(false);
 const editing = ref<Partial<Fillup> | null>(null);
@@ -795,7 +853,31 @@ const mpgVsTempChart = computed(() => {
         <div v-else-if="!fillupsQ.data.value || fillupsQ.data.value.items.length === 0" class="card">
           <p class="muted">No fillups yet. Import your Fuelio history or add one manually.</p>
         </div>
-        <div v-else class="card no-pad">
+        <div class="filter-bar">
+          <div class="chip-row" role="tablist" aria-label="Fillup filter">
+            <button
+              v-for="opt in (['all','full','partial'] as const)"
+              :key="opt"
+              type="button"
+              class="chip"
+              :class="{ active: fillupFilter === opt }"
+              @click="fillupFilter = opt"
+            >
+              {{ opt === 'all' ? 'All' : opt === 'full' ? 'Full' : 'Partial' }}
+            </button>
+          </div>
+          <span class="muted small">
+            Click column headers to sort
+          </span>
+        </div>
+        <div v-if="groupedFillups.length === 0" class="card">
+          <p class="muted">No fillups match the current filter.</p>
+        </div>
+        <div v-for="group in groupedFillups" :key="group.key" class="card no-pad">
+          <header class="group-head">
+            <span class="group-label">{{ group.label }}</span>
+            <span class="muted small">{{ group.items.length }}</span>
+          </header>
           <table class="data">
             <thead>
               <tr>
@@ -812,7 +894,7 @@ const mpgVsTempChart = computed(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="f in sortedFillups" :key="f.id">
+              <tr v-for="f in group.items" :key="f.id">
                 <td>{{ fmtDate(f.fillup_date) }}</td>
                 <td>{{ fmtOdo(f.odo) }}</td>
                 <td>
@@ -837,16 +919,6 @@ const mpgVsTempChart = computed(() => {
                   <span v-else class="muted">—</span>
                 </td>
                 <td>
-                  <!--
-                    MPG cell: prefer the API's recomputed value (handles
-                    chain rule across partial/missed fillups). When that
-                    is null (first row of a chain, partial preceded by a
-                    missed, exclude_distance set, etc.), fall back to
-                    the user-reported value Fuelio carried in the CSV
-                    so the user always sees a number when one exists.
-                    Fallback is rendered italic + muted so the user can
-                    tell which source the cell is from.
-                  -->
                   <strong v-if="f.mpg != null">{{ fmtMpg(f.mpg) }}</strong>
                   <span
                     v-else-if="f.mpg_reported != null && f.mpg_reported > 0"
@@ -1293,5 +1365,45 @@ const mpgVsTempChart = computed(() => {
   .chart-card.wide {
     grid-column: auto;
   }
+}
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px 0;
+  flex-wrap: wrap;
+}
+.chip-row {
+  display: inline-flex;
+  gap: 4px;
+}
+.chip {
+  background: var(--c-surface-soft, #1e1c2a);
+  border: 1px solid var(--c-border-soft, #2a2d33);
+  border-radius: 999px;
+  color: var(--c-text, #e7e9ee);
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--c-accent, #f97316);
+  color: white;
+  border-color: var(--c-accent, #f97316);
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--c-border-soft, #2a2d33);
+}
+.group-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--c-accent, #f97316);
+  flex: 1;
 }
 </style>

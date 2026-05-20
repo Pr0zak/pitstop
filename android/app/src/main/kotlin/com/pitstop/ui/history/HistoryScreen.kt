@@ -279,7 +279,19 @@ private fun HistoryListScreen(
                     onFilterChange = viewModel::setTripSourceFilter,
                 )
             }
-            1 -> FillupsList(state = ui.fillups, onRefresh = viewModel::refresh, onOpen = onOpenFillup)
+            1 -> {
+                val fillupSort by viewModel.fillupSort.collectAsStateWithLifecycle()
+                val fillupFilter by viewModel.fillupFilter.collectAsStateWithLifecycle()
+                FillupsList(
+                    state = ui.fillups,
+                    onRefresh = viewModel::refresh,
+                    onOpen = onOpenFillup,
+                    sort = fillupSort,
+                    filter = fillupFilter,
+                    onSortChange = viewModel::setFillupSort,
+                    onFilterChange = viewModel::setFillupFilter,
+                )
+            }
             2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh, onOpen = onOpenDtcCode)
             3 -> com.pitstop.ui.history.heatmap.HeatmapTab()
         }
@@ -616,52 +628,171 @@ private fun TripSelectionBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun FillupsList(
     state: HistoryListState<FillupDto>,
     onRefresh: () -> Unit,
     onOpen: (String) -> Unit,
+    sort: FillupSortOrder,
+    filter: FillupFilter,
+    onSortChange: (FillupSortOrder) -> Unit,
+    onFilterChange: (FillupFilter) -> Unit,
 ) {
-    ListSurface(state = state, onRefresh = onRefresh, emptyMessage = "No fillups yet.") { f ->
-        Card(
+    Column(modifier = Modifier.fillMaxSize()) {
+        FillupsFilterBar(sort, filter, onSortChange, onFilterChange)
+
+        val groups = remember(state.data, sort, filter) {
+            groupAndSortFillups(state.data, sort, filter)
+        }
+
+        androidx.compose.material3.pulltorefresh.PullToRefreshBox(
+            isRefreshing = state.loading,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when {
+                state.loading && state.data.isEmpty() -> CenteredSpinner()
+                state.error != null && state.data.isEmpty() ->
+                    CenteredText("Couldn't load: ${state.error}")
+                groups.isEmpty() -> CenteredText(
+                    if (state.data.isEmpty()) "No fillups yet."
+                    else "No fillups match this filter.",
+                )
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for ((key, items) in groups) {
+                        stickyHeader(key = "fillup-header-${key.name}") {
+                            TripGroupHeader(label = key.label, count = items.size)
+                        }
+                        items(items, key = { it.id }) { f -> FillupCard(f, onOpen) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FillupsFilterBar(
+    sort: FillupSortOrder,
+    filter: FillupFilter,
+    onSortChange: (FillupSortOrder) -> Unit,
+    onFilterChange: (FillupFilter) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        for (f in FillupFilter.entries) {
+            val label = when (f) {
+                FillupFilter.All -> "All"
+                FillupFilter.Full -> "Full"
+                FillupFilter.Partial -> "Partial"
+            }
+            androidx.compose.material3.FilterChip(
+                selected = f == filter,
+                onClick = { onFilterChange(f) },
+                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        FillupSortMenu(sort, onSortChange)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FillupSortMenu(
+    sort: FillupSortOrder,
+    onSortChange: (FillupSortOrder) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = when (sort) {
+        FillupSortOrder.RecentFirst -> "Recent"
+        FillupSortOrder.HighestCost -> "Cost"
+        FillupSortOrder.MostFuel -> "Volume"
+        FillupSortOrder.BestMpg -> "MPG"
+        FillupSortOrder.HighestPpg -> "\$/gal"
+    }
+    Box {
+        OutlinedButton(onClick = { open = true }) {
+            Text("Sort: $label", style = MaterialTheme.typography.labelSmall)
+        }
+        androidx.compose.material3.DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+        ) {
+            for (o in FillupSortOrder.entries) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = {
+                        Text(
+                            when (o) {
+                                FillupSortOrder.RecentFirst -> "Most recent"
+                                FillupSortOrder.HighestCost -> "Highest cost"
+                                FillupSortOrder.MostFuel -> "Most fuel"
+                                FillupSortOrder.BestMpg -> "Best MPG"
+                                FillupSortOrder.HighestPpg -> "Highest \$/gal"
+                            },
+                        )
+                    },
+                    onClick = {
+                        onSortChange(o)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FillupCard(f: FillupDto, onOpen: (String) -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen(f.id) },
+    ) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onOpen(f.id) },
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = formatFillupDate(f.fillupDate),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = f.priceTotal?.let { "$%.2f".format(it) } ?: "—",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                val parts = buildList {
-                    f.fuelVolume?.let { add("%.2f gal".format(it)) }
-                    f.pricePerUnit?.let { add("$%.3f/gal".format(it)) }
-                    f.mpg?.let { add("%.1f mpg".format(it)) }
-                    f.city?.let { add(it) }
-                }
-                if (parts.isNotEmpty()) {
-                    Text(
-                        text = parts.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    text = formatFillupDate(f.fillupDate),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = f.priceTotal?.let { "$%.2f".format(it) } ?: "—",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            val parts = buildList {
+                f.fuelVolume?.let { add("%.2f gal".format(it)) }
+                f.pricePerUnit?.let { add("$%.3f/gal".format(it)) }
+                f.mpg?.let { add("%.1f mpg".format(it)) }
+                if (!f.isFull) add("partial")
+                f.city?.let { add(it) }
+            }
+            if (parts.isNotEmpty()) {
+                Text(
+                    text = parts.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
