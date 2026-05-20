@@ -1066,13 +1066,20 @@ class PitstopBridgeService : Service() {
         const val ACTION_STOP = "com.pitstop.bridge.STOP"
 
         /**
-         * Metrics that still publish to MQTT even when manual-sync mode
-         * is on, rate-limited to one frame per [MANUAL_MODE_BEACON_MS].
-         * Keeps server-rendered surfaces (home-screen fuel widget) live
-         * during a drive without violating "no bulk streaming." Add new
-         * names sparingly — every beacon costs cellular bytes.
+         * Topic-last-segment names that still publish to MQTT even
+         * when manual-sync mode is on, rate-limited to one frame per
+         * [MANUAL_MODE_BEACON_MS]. Add new names sparingly — every
+         * beacon costs cellular bytes.
+         *   - `fuel_level` (WIDGET-3): keeps the home-screen widget
+         *     warm so it doesn't sit on the post-drive value while a
+         *     long manual-sync drive is in progress.
+         *   - `location` (OBD-3): a GPS fix per minute is enough for
+         *     trip_deriver to build a trip row and the route map to
+         *     plot a coarse polyline. Without this, manual-sync
+         *     drives where BLE is broken AND WiCAN-WiFi is out of
+         *     range produce zero data — the drive is lost.
          */
-        private val MANUAL_MODE_BEACON_METRICS = setOf("fuel_level")
+        private val MANUAL_MODE_BEACON_METRICS = setOf("fuel_level", "location")
         private const val MANUAL_MODE_BEACON_MS = 60_000L
 
         fun startIntent(context: Context): Intent =
