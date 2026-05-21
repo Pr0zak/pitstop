@@ -102,17 +102,24 @@ class DriveUploader @Inject constructor(
                     return drained
                 }
                 Outcome.Failure -> {
+                    // 4xx is the server saying "this payload is broken,
+                    // don't retry." Drop the row + on-disk payload so
+                    // it stops blocking the head of the queue — without
+                    // this, a single bogus drive jams every subsequent
+                    // sync attempt with "head row already attempted".
                     val fresh = dao.oldestUnackedMeta()
                     val freshErr = if (fresh?.clientDriveUuid == meta.clientDriveUuid) {
                         fresh.lastError ?: "?"
                     } else "?"
                     logs.warn(
-                        "DriveUploader: drive rejected by server, skipping",
+                        "DriveUploader: drive rejected by server, dropping",
                         mapOf(
                             "client_drive_uuid" to meta.clientDriveUuid,
                             "last_error" to freshErr,
                         ),
                     )
+                    meta.payloadFilePath?.let { runCatching { File(it).delete() } }
+                    dao.deleteByUuid(meta.clientDriveUuid)
                 }
             }
         }

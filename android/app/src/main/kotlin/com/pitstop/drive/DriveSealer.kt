@@ -83,7 +83,7 @@ class DriveSealer @Inject constructor(
      * as the drive start and `now` as the ended_at. Stamped
      * `incomplete=true` so the trip row badges accordingly.
      */
-    suspend fun sealOrphan(orphan: DriveBuffer, deviceId: String): PendingDrive {
+    suspend fun sealOrphan(orphan: DriveBuffer, deviceId: String): PendingDrive? {
         val now = System.currentTimeMillis()
         // The orphan's last engine event might not be there — add one
         // synthetic 'off' at now so the payload's engine_events bookend.
@@ -103,7 +103,24 @@ class DriveSealer @Inject constructor(
         endedAtMs: Long,
         incomplete: Boolean,
         deviceId: String,
-    ): PendingDrive {
+    ): PendingDrive? {
+        // Defensive: ended_at must be after started_at AND the drive needs
+        // enough substance to be worth uploading. The v0.1.157 STOPPED
+        // handler fired engine-off in the same OBD burst that fired
+        // engine-on, producing 3-frame drives with ended_at < started_at
+        // that the backend then rejected with HTTP 400 and got stuck at
+        // the head of the queue. Drop these at the source.
+        if (endedAtMs <= buf.startedAtMs || buf.frameCount() < 5) {
+            logs.warn(
+                "DriveSealer: refusing implausible drive (would jam queue)",
+                mapOf(
+                    "started_at" to buf.startedAtMs,
+                    "ended_at" to endedAtMs,
+                    "frame_count" to buf.frameCount(),
+                ),
+            )
+            return null
+        }
         val dto = buf.seal(endedAtMs, incomplete, deviceId)
         val payloadJson = json.encodeToString(dto)
         // Write to disk before inserting. Inlining into the SQLite row
