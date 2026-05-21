@@ -16,18 +16,22 @@
 set -e
 
 TARGET="${TARGET_TAG:?TARGET_TAG env var required (e.g. v0.1.152)}"
+# CI publishes GHCR images via docker/metadata-action's {{version}}
+# pattern, which strips the leading 'v' — so the image tag is 0.1.154
+# not v0.1.154. Normalize to the bare semver to match.
+NORMALIZED="${TARGET#v}"
 cd /work
 
-echo "[1/4] Updating .env BACKEND_TAG / FRONTEND_TAG to $TARGET"
+echo "[1/4] Updating .env BACKEND_TAG / FRONTEND_TAG to $NORMALIZED"
 if grep -q '^BACKEND_TAG=' .env; then
-  sed -i "s|^BACKEND_TAG=.*|BACKEND_TAG=$TARGET|" .env
+  sed -i "s|^BACKEND_TAG=.*|BACKEND_TAG=$NORMALIZED|" .env
 else
-  echo "BACKEND_TAG=$TARGET" >> .env
+  echo "BACKEND_TAG=$NORMALIZED" >> .env
 fi
 if grep -q '^FRONTEND_TAG=' .env; then
-  sed -i "s|^FRONTEND_TAG=.*|FRONTEND_TAG=$TARGET|" .env
+  sed -i "s|^FRONTEND_TAG=.*|FRONTEND_TAG=$NORMALIZED|" .env
 else
-  echo "FRONTEND_TAG=$TARGET" >> .env
+  echo "FRONTEND_TAG=$NORMALIZED" >> .env
 fi
 
 echo "[2/4] docker compose pull backend frontend"

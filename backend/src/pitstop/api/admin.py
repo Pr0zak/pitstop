@@ -631,8 +631,29 @@ async def trigger_upgrade(
                 "Run the CT migration first (deploy/migrate-image-pinned.sh)."
             ),
         )
+    # Self-heal the single-slot job state — the sidecar runs detached so
+    # we never directly see it exit; rely on time + version drift instead.
     if _upgrade_job["status"] == "running":
-        raise HTTPException(status_code=409, detail="upgrade already in progress")
+        target_seen = (_upgrade_job.get("target") or "").lstrip("v")
+        current_seen = VERSION.lstrip("v")
+        started_iso = _upgrade_job.get("started_at")
+        age_min = 999.0
+        if started_iso:
+            try:
+                started = datetime.fromisoformat(started_iso)
+                age_min = (datetime.now(timezone.utc) - started).total_seconds() / 60
+            except ValueError:
+                pass
+        if target_seen == current_seen or age_min > 10:
+            log.info(
+                "self-healing stale upgrade job (target=%s current=%s age_min=%.1f)",
+                target_seen, current_seen, age_min,
+            )
+            _upgrade_job["status"] = "idle"
+        else:
+            raise HTTPException(
+                status_code=409, detail="upgrade already in progress"
+            )
 
     if target is None:
         release = await _fetch_latest_release()
