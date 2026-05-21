@@ -686,15 +686,29 @@ class PitstopBridgeService : Service() {
             // we just asked about. We log which PID was outstanding so a
             // future case like fuel_level silently disappearing from a
             // drive is diagnosable from client_logs (OBD-1).
+            // ELM327 echoes the request before the response, separated by \r:
+            //   "010B\rSTOPPED" / "0108\rNO DATA"
+            // so check each line, not the trimmed-whole-frame's prefix. Also
+            // covers BUS INIT: ERROR / BUS BUSY / CAN ERROR / ? from the
+            // ELM error responses table — all indicate "ECU not reachable",
+            // which from our perspective is engine off.
             val upper = trimmed.uppercase()
-            val isEngineOffSignal = upper.startsWith("STOPPED") ||
-                upper.startsWith("NO DATA") ||
-                upper.startsWith("UNABLE TO CONNECT")
-            if (isEngineOffSignal) {
+            val signal = upper.split('\r', '\n')
+                .map { it.trim() }
+                .firstOrNull { line ->
+                    line.startsWith("STOPPED") ||
+                        line.startsWith("NO DATA") ||
+                        line.startsWith("UNABLE TO CONNECT") ||
+                        line.startsWith("BUS INIT") ||
+                        line.startsWith("BUS BUSY") ||
+                        line.startsWith("CAN ERROR") ||
+                        line == "?"
+                }
+            if (signal != null) {
                 logBuffer.info(
                     "obd no-data response",
                     mapOf(
-                        "response" to upper.take(20),
+                        "response" to signal.take(20),
                         "last_pid" to (lastSentPid?.name ?: "?"),
                     ),
                 )
