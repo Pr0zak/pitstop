@@ -6,6 +6,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { useUnitsStore, type UnitSystem } from "@/stores/units";
 import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2 } from "lucide-vue-next";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
+import UpdateModal from "@/components/UpdateModal.vue";
 import { parseLatLon, roundCoords } from "@/utils/parseLatLon";
 import { apiQuery } from "@/api";
 import * as api from "@/api/endpoints";
@@ -18,6 +19,19 @@ const settings = useSettingsStore();
 const localQueryToken = ref("");
 const localIngestToken = ref("");
 const tokensSaved = ref(false);
+
+const serverVersion = ref<string | null>(null);
+const serverSha = ref<string | null>(null);
+const updateModalOpen = ref(false);
+async function loadServerVersion() {
+  try {
+    const v = await api.getVersion();
+    serverVersion.value = v.version;
+    serverSha.value = v.git_sha;
+  } catch {
+    /* ignore */
+  }
+}
 
 const haEnabled = ref(false);
 const haUrl = ref("");
@@ -49,6 +63,7 @@ const reasonHint = computed(() => {
 });
 
 onMounted(async () => {
+  void loadServerVersion();
   localQueryToken.value = auth.queryToken;
   localIngestToken.value = auth.ingestToken;
   if (auth.hasQueryToken) {
@@ -365,6 +380,31 @@ function geolocate() {
     <h1>Settings</h1>
 
     <div v-if="reasonHint" class="banner warn">{{ reasonHint }}</div>
+
+    <section class="card">
+      <h3>About</h3>
+      <div class="about-row">
+        <div>
+          <div class="muted small">Running version</div>
+          <div class="version-line">
+            <span class="version-number">{{ serverVersion ?? '—' }}</span>
+            <span v-if="serverSha && serverSha !== 'unknown'" class="muted small">
+              · {{ serverSha.slice(0, 7) }}
+            </span>
+          </div>
+        </div>
+        <button type="button" class="check-updates" @click="updateModalOpen = true">
+          <RefreshCw :size="14" /> Check for updates
+        </button>
+      </div>
+      <p class="muted small">
+        Compares the deployed backend to the latest GitHub release. The
+        Upgrade button (in the modal) pulls the new images and recreates
+        backend + frontend containers — no SSH needed.
+      </p>
+    </section>
+
+    <UpdateModal :open="updateModalOpen" @close="updateModalOpen = false" />
 
     <section class="card">
       <h3>API tokens</h3>
@@ -816,6 +856,33 @@ function geolocate() {
   background: rgba(210, 153, 34, 0.12);
   border: 1px solid rgba(210, 153, 34, 0.3);
   color: var(--c-warn);
+}
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.3rem 0 0.6rem 0;
+}
+.about-row .check-updates {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+.version-line {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 1.1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.version-number {
+  color: var(--c-ink0);
+}
+.small {
+  font-size: 0.78rem;
 }
 .grid {
   display: grid;
