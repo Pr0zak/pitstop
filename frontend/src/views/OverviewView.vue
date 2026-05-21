@@ -226,6 +226,43 @@ const heroData = computed(() => {
     worstMpg,
   };
 });
+const gaugeColor = computed(() => {
+  const p = heroData.value.fuelLevelPct;
+  if (p == null) return 'var(--c-line0)';
+  if (p < 15) return '#ff3a2e';
+  if (p < 35) return '#ffb020';
+  return '#4ade80';
+});
+
+function gaugeArcPath(pctIn: number): string {
+  const pct = Math.max(0, Math.min(100, pctIn));
+  if (pct <= 0) return '';
+  const cx = 100, cy = 100, r = 78;
+  const startAngle = Math.PI;
+  const endAngle = Math.PI + (Math.PI * pct) / 100;
+  const sx = cx + r * Math.cos(startAngle);
+  const sy = cy + r * Math.sin(startAngle);
+  const ex = cx + r * Math.cos(endAngle);
+  const ey = cy + r * Math.sin(endAngle);
+  const largeArc = pct > 50 ? 1 : 0;
+  return `M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
+}
+
+function gaugeTickPath(): string {
+  const cx = 100, cy = 100, rOuter = 67, rInner = 61;
+  const angles = [180, 225, 270, 315, 360];
+  return angles
+    .map((deg) => {
+      const a = (deg * Math.PI) / 180;
+      const x1 = cx + rOuter * Math.cos(a);
+      const y1 = cy + rOuter * Math.sin(a);
+      const x2 = cx + rInner * Math.cos(a);
+      const y2 = cy + rInner * Math.sin(a);
+      return `M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+    })
+    .join(' ');
+}
+
 const dtcsQ = useAsync(
   () => (vehicleId.value ? api.listDtcs(vehicleId.value, true) : Promise.resolve([])),
   [vehicleId],
@@ -484,11 +521,38 @@ function dismissAnomaly(fingerprint: string) {
             {{ heroData.monthCount }} fillup{{ heroData.monthCount === 1 ? '' : 's' }}
           </div>
         </div>
-        <div class="card hero">
+        <div class="card hero fuel-gauge" :style="{ '--gauge-accent': gaugeColor }">
           <h3>Fuel level</h3>
-          <div class="hero-value">
-            <span class="big">{{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) : '—' }}</span>
-            <span class="unit">%</span>
+          <div class="fuel-gauge-wrap">
+            <svg class="fuel-gauge-svg" viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet">
+              <path
+                class="gauge-track"
+                :d="gaugeArcPath(100)"
+                fill="none"
+                stroke-width="14"
+                stroke-linecap="round"
+              />
+              <path
+                v-if="heroData.fuelLevelPct != null && heroData.fuelLevelPct > 0"
+                :d="gaugeArcPath(heroData.fuelLevelPct)"
+                fill="none"
+                :stroke="gaugeColor"
+                stroke-width="14"
+                stroke-linecap="round"
+              />
+              <path
+                class="gauge-tick"
+                :d="gaugeTickPath()"
+                fill="none"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span class="fuel-gauge-end e">E</span>
+            <span class="fuel-gauge-end f">F</span>
+            <span class="fuel-gauge-pct">
+              {{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) + '%' : '—' }}
+            </span>
           </div>
           <div class="hero-sub muted">
             {{ heroData.fuelGallons != null && heroData.fuelLevelAge
@@ -814,6 +878,55 @@ function dismissAnomaly(fingerprint: string) {
   height: 30px;
   margin-top: 0.4rem;
   opacity: 0.75;
+}
+.hero.fuel-gauge {
+  border: 1.5px solid var(--gauge-accent, var(--c-line0));
+  transition: border-color 200ms ease;
+}
+.fuel-gauge-wrap {
+  position: relative;
+  width: 100%;
+  margin: 0.1rem 0 0.1rem 0;
+}
+.fuel-gauge-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.gauge-track {
+  stroke: var(--c-line0);
+}
+.gauge-tick {
+  stroke: var(--c-ink3);
+  opacity: 0.7;
+}
+.fuel-gauge-pct {
+  position: absolute;
+  left: 50%;
+  bottom: 8%;
+  transform: translateX(-50%);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 1.55rem;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-ink0);
+}
+.fuel-gauge-end {
+  position: absolute;
+  bottom: 2px;
+  font-family: 'Geist', sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--c-ink3);
+}
+.fuel-gauge-end.e {
+  left: 2px;
+}
+.fuel-gauge-end.f {
+  right: 2px;
 }
 .brand-tape {
   position: relative;
