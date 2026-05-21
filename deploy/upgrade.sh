@@ -20,6 +20,15 @@ TARGET="${TARGET_TAG:?TARGET_TAG env var required (e.g. v0.1.152)}"
 # pattern, which strips the leading 'v' — so the image tag is 0.1.154
 # not v0.1.154. Normalize to the bare semver to match.
 NORMALIZED="${TARGET#v}"
+
+# docker compose names its project after the working directory by
+# default. We bind-mount the CT's /opt/pitstop at /work, so compose
+# would create a parallel `work-backend-1` etc. instead of touching the
+# existing `pitstop-*` containers — and then fail with port-already-bound
+# at the up step. Pin the project name explicitly to match the CT host's
+# default (basename of /opt/pitstop).
+export COMPOSE_PROJECT_NAME=pitstop
+
 cd /work
 
 echo "[1/4] Updating .env BACKEND_TAG / FRONTEND_TAG to $NORMALIZED"
