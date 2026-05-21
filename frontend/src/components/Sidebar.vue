@@ -21,6 +21,7 @@ import {
   Github,
 } from "lucide-vue-next";
 import PitstopLogo from "@/components/logos/PitstopLogo.vue";
+import UpdateModal from "@/components/UpdateModal.vue";
 import {
   LOGOS,
   STORAGE_KEY as LOGO_KEY,
@@ -32,7 +33,6 @@ import { getVersion, getLatestGithubRelease, compareVersions } from "@/api/endpo
 const serverVersion = ref<string | null>(null);
 const serverSha = ref<string | null>(null);
 const latestVersion = ref<string | null>(null);
-const latestUrl = ref<string | null>(null);
 
 // True only when the deployed server is strictly behind the latest
 // GitHub release (UX-2). Stays false when the comparison can't be
@@ -58,7 +58,6 @@ async function loadLatestRelease() {
   const r = await getLatestGithubRelease();
   if (r) {
     latestVersion.value = r.tag_name.replace(/^v/i, "");
-    latestUrl.value = r.html_url;
   }
 }
 
@@ -86,6 +85,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("pitstop-logo-changed", onLogoChanged);
 });
+
+const updateModalOpen = ref<boolean>(false);
 
 const COLLAPSED_KEY = "pitstop_sidebar_collapsed";
 const collapsed = ref<boolean>(
@@ -186,16 +187,24 @@ const widthVar = computed(() =>
       >
         {{ serverVersion }}
       </span>
-      <a
-        v-if="updateAvailable && latestUrl"
-        :href="latestUrl"
-        target="_blank"
-        rel="noopener noreferrer"
+      <button
+        v-if="updateAvailable"
+        type="button"
         class="update-badge"
-        :title="`v${latestVersion} is available — hard-refresh after the CT pulls the new image`"
+        :title="`v${latestVersion} available — click to upgrade in place`"
+        @click="updateModalOpen = true"
       >
         ↑ v{{ latestVersion }}
-      </a>
+      </button>
+      <button
+        v-else
+        type="button"
+        class="check-updates-link"
+        title="Check for updates"
+        @click="updateModalOpen = true"
+      >
+        check for updates
+      </button>
       <a
         href="https://github.com/Pr0zak/pitstop"
         target="_blank"
@@ -210,6 +219,7 @@ const widthVar = computed(() =>
       <ChevronRight v-if="collapsed" :size="16" />
       <ChevronLeft v-else :size="16" />
     </button>
+    <UpdateModal :open="updateModalOpen" @close="updateModalOpen = false" />
   </aside>
 </template>
 
@@ -369,9 +379,26 @@ nav.nav-secondary {
   font-weight: 500;
   text-decoration: none;
   letter-spacing: 0.02em;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
 }
 .footer .update-badge:hover {
   filter: brightness(1.1);
+}
+.footer .check-updates-link {
+  background: none;
+  border: 0;
+  color: var(--c-ink3);
+  font-size: 0.68rem;
+  cursor: pointer;
+  font-family: inherit;
+  text-decoration: underline dotted;
+  padding: 0 0.3rem;
+  letter-spacing: 0.02em;
+}
+.footer .check-updates-link:hover {
+  color: var(--c-ink0);
 }
 .collapse {
   margin: 0.5rem;

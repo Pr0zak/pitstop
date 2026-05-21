@@ -157,6 +157,43 @@ export async function getVersion(): Promise<ServerVersion> {
   return r.data;
 }
 
+/** Server-side update check — backend calls GitHub /releases/latest and
+ *  compares to the running PITSTOP_VERSION. Cached 60 s server-side so
+ *  we don't burn the unauthenticated rate limit. Mirrors Zonik's
+ *  /api/updates response shape. */
+export interface UpdateCheck {
+  update_available: boolean;
+  current_version: string;
+  current_sha: string;
+  latest_version?: string;
+  latest_name?: string | null;
+  latest_body?: string | null;
+  latest_url?: string | null;
+  latest_published_at?: string | null;
+  error?: string;
+}
+export async function checkUpdates(): Promise<UpdateCheck> {
+  const r = await apiQuery.get<UpdateCheck>("/admin/updates");
+  return r.data;
+}
+
+/** Kick the in-app upgrade. Returns immediately; the backend spawns a
+ *  detached `docker:27-cli` sidecar that does the pull + recreate. This
+ *  request's connection will be torn down when the new backend container
+ *  takes over — callers should poll /version to detect completion. */
+export interface UpgradeKick {
+  status: string;
+  target: string;
+  current: string;
+  sidecar_container: string;
+}
+export async function triggerUpgrade(target?: string): Promise<UpgradeKick> {
+  const r = await apiIngest.post<UpgradeKick>("/admin/upgrade", null, {
+    params: target ? { target } : {},
+  });
+  return r.data;
+}
+
 export async function getTrip(id: string): Promise<TripDetail> {
   const r = await apiQuery.get<TripDetail>(`/trips/${id}`);
   return r.data;

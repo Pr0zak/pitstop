@@ -7,15 +7,23 @@ query param so a misclicked button can't drop a year of readings.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import re
+import shlex
+import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
+from ..version import GIT_SHA, VERSION
 
 log = logging.getLogger(__name__)
 
@@ -482,4 +490,229 @@ async def reprocess_trips(
         "older_than_hours": older_than_hours,
         "trips_touched_per_vehicle": summary,
         "total_trips_touched": sum(summary.values()),
+    }
+
+
+_GITHUB_REPO = os.environ.get("PITSTOP_GITHUB_REPO", "Pr0zak/pitstop")
+_GITHUB_RELEASES_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+_release_cache: dict[str, Any] = {"data": None, "ts": 0.0}
+_RELEASE_CACHE_TTL_S = 60
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse "v0.1.152" / "0.1.152" / "0.1.152-3-gabc" into a sortable tuple.
+
+    Strips a leading 'v' and any -gSHA / -rcN / build suffix. Unparseable
+    components fall back to 0 so weird tags don't crash the comparator."""
+    s = re.sub(r"^v", "", v)
+    s = re.split(r"[-+]", s, 1)[0]
+    parts = []
+    for p in s.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+async def _fetch_latest_release() -> dict[str, Any]:
+    """Hit GitHub's /releases/latest, cached for 60 s.
+
+    Returns {tag_name, name, body, html_url, published_at} or {error}.
+    The cache keeps us under GitHub's 60 req/h unauthenticated limit when
+    the web UI polls aggressively after kicking an upgrade."""
+    now = time.time()
+    if _release_cache["data"] and (now - _release_cache["ts"]) < _RELEASE_CACHE_TTL_S:
+        return _release_cache["data"]
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                _GITHUB_RELEASES_URL,
+                headers={"Accept": "application/vnd.github.v3+json"},
+            )
+        if resp.status_code != 200:
+            return {"error": f"GitHub returned {resp.status_code}"}
+        data = resp.json()
+        result = {
+            "tag_name": data.get("tag_name"),
+            "name": data.get("name"),
+            "body": data.get("body"),
+            "html_url": data.get("html_url"),
+            "published_at": data.get("published_at"),
+        }
+        _release_cache["data"] = result
+        _release_cache["ts"] = now
+        return result
+    except Exception as exc:
+        log.warning("github releases fetch failed: %s", exc)
+        return {"error": str(exc)}
+
+
+@router.get(
+    "/updates",
+    dependencies=[Depends(require_query_token)],
+)
+async def check_updates() -> dict[str, Any]:
+    """Compare running version to GitHub's latest release tag.
+
+    Mirrors Zonik's /api/updates pattern: returns update_available + the
+    release metadata so the UI can render a changelog before the user
+    pulls the trigger. Cached for 60 s server-side."""
+    release = await _fetch_latest_release()
+    current = VERSION
+    if "error" in release:
+        return {
+            "update_available": False,
+            "current_version": current,
+            "current_sha": GIT_SHA,
+            "error": release["error"],
+        }
+    latest = release.get("tag_name") or ""
+    update_available = False
+    if latest and current not in ("dev", "0.0.0") and not current.startswith("0.0.0"):
+        try:
+            update_available = _version_tuple(current) < _version_tuple(latest)
+        except Exception:
+            update_available = False
+    return {
+        "update_available": update_available,
+        "current_version": current,
+        "current_sha": GIT_SHA,
+        "latest_version": latest,
+        "latest_name": release.get("name"),
+        "latest_body": release.get("body"),
+        "latest_url": release.get("html_url"),
+        "latest_published_at": release.get("published_at"),
+    }
+
+
+# In-memory upgrade job state. Single-slot — only one upgrade can be
+# in flight, and the API process is about to be torn down anyway when
+# `docker compose up -d` recreates the backend container.
+_upgrade_job: dict[str, Any] = {
+    "status": "idle",  # idle | running | failed
+    "target": None,
+    "started_at": None,
+    "error": None,
+}
+
+
+def _docker_socket_available() -> bool:
+    """Whether the backend container can talk to the host docker daemon.
+
+    True when /var/run/docker.sock is mounted in. The /admin/upgrade
+    endpoint refuses to run without this — pre-migration CTs would
+    otherwise return a confusing "docker: command not found" 500."""
+    return os.path.exists("/var/run/docker.sock") and os.access(
+        "/var/run/docker.sock", os.W_OK | os.R_OK
+    )
+
+
+@router.post(
+    "/upgrade",
+    dependencies=[Depends(require_ingest_token)],
+)
+async def trigger_upgrade(
+    target: str | None = Query(default=None, description="release tag, e.g. v0.1.152"),
+) -> dict[str, Any]:
+    """Kick the upgrade flow.
+
+    If `target` is omitted, we pull the latest GitHub release tag. We
+    then spawn a detached `docker:cli` sidecar container that runs
+    `deploy/upgrade.sh <tag>`. The sidecar bind-mounts /opt/pitstop and
+    the docker socket, so it can `docker compose pull && up -d`. It
+    survives our own container's restart — without that decoupling the
+    `up -d backend` step would kill the process running it."""
+    if not _docker_socket_available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "/var/run/docker.sock not mounted in the backend container. "
+                "Run the CT migration first (deploy/migrate-image-pinned.sh)."
+            ),
+        )
+    if _upgrade_job["status"] == "running":
+        raise HTTPException(status_code=409, detail="upgrade already in progress")
+
+    if target is None:
+        release = await _fetch_latest_release()
+        if "error" in release:
+            raise HTTPException(
+                status_code=502, detail=f"GitHub: {release['error']}"
+            )
+        target = release.get("tag_name")
+        if not target:
+            raise HTTPException(status_code=502, detail="no latest release tag found")
+
+    if not re.fullmatch(r"v?\d+\.\d+\.\d+", target):
+        raise HTTPException(status_code=400, detail="bad target tag format")
+
+    host_dir = os.environ.get("PITSTOP_HOST_DIR", "/opt/pitstop")
+    # Spawn the upgrader sidecar. `--rm -d` = detached + auto-clean.
+    # We pass the target as an env var so the upgrade.sh inside is short.
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-d",
+        "--name",
+        f"pitstop-upgrader-{int(time.time())}",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "-v",
+        f"{host_dir}:/work",
+        "-w",
+        "/work",
+        "-e",
+        f"TARGET_TAG={target}",
+        "docker:27-cli",
+        "sh",
+        "/work/deploy/upgrade.sh",
+    ]
+    log.info("kicking upgrader: %s", shlex.join(cmd))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        out = (stdout or b"").decode(errors="replace").strip()
+        if proc.returncode != 0:
+            _upgrade_job["status"] = "failed"
+            _upgrade_job["error"] = out
+            raise HTTPException(
+                status_code=500, detail=f"docker run failed: {out[:500]}"
+            )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="docker CLI not installed in backend image",
+        ) from exc
+
+    _upgrade_job["status"] = "running"
+    _upgrade_job["target"] = target
+    _upgrade_job["started_at"] = datetime.now(timezone.utc).isoformat()
+    _upgrade_job["error"] = None
+    log.info("upgrade kicked: target=%s sidecar=%s", target, out)
+    return {
+        "status": "running",
+        "target": target,
+        "current": VERSION,
+        "sidecar_container": out,
+    }
+
+
+@router.get(
+    "/upgrade/status",
+    dependencies=[Depends(require_query_token)],
+)
+async def upgrade_status() -> dict[str, Any]:
+    """Cheap status probe. The frontend mostly polls /version directly to
+    detect when the new image has taken over — this endpoint just reports
+    what _this_ (possibly soon-to-die) backend remembers about the kick."""
+    return {
+        **_upgrade_job,
+        "current_version": VERSION,
+        "docker_socket": _docker_socket_available(),
     }

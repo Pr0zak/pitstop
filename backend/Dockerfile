@@ -7,6 +7,14 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
 
+# docker CLI for the in-app /admin/upgrade flow. The endpoint shells out
+# to `docker run --rm -d docker:27-cli ...` which needs the client on
+# PATH; the daemon socket is bind-mounted at runtime. We ship only the
+# client (no engine).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-install-project

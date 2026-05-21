@@ -38,6 +38,14 @@ services:
     image: ghcr.io/${GHCR_OWNER:-pr0zak}/pitstop-backend:${BACKEND_TAG:-latest}
     build:
       context: ./backend
+      # When `docker compose build` runs locally on the CT (instead of
+      # pulling the CI-tagged image), these args inject the right
+      # version/sha so /version doesn't report "dev". CI sets them on
+      # the GHCR build directly.
+      args:
+        VERSION: ${BACKEND_TAG:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
     depends_on:
       db:
@@ -60,9 +68,17 @@ services:
       TZ: ${TZ:-UTC}
       PID_PROFILES_DIR: /app/pid_profiles
       PITSTOP_DISK_ALERT_WEBHOOK: ${PITSTOP_DISK_ALERT_WEBHOOK:-}
+      # /admin/upgrade spawns a docker:27-cli sidecar that bind-mounts
+      # the CT's pitstop dir at /work — this env tells the backend
+      # which host path to pass through.
+      PITSTOP_HOST_DIR: ${PITSTOP_HOST_DIR:-/opt/pitstop}
     volumes:
       - ./pid_profiles:/app/pid_profiles:ro
       - photos_data:/app/data/photos
+      # In-app upgrade flow — backend shells out to `docker run` on the
+      # host daemon. Single-tenant CT, LAN-only; socket-as-root tradeoff
+      # is the same one Zonik's /api/upgrade makes.
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
     healthcheck:
