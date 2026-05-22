@@ -207,10 +207,10 @@ async def get_trip(
             """
             SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1 AND metric = 'fuel_level'
-               AND time BETWEEN $3::timestamptz - interval '60 seconds' AND $3::timestamptz
+               AND time BETWEEN $2::timestamptz - interval '60 seconds' AND $2::timestamptz
              ORDER BY time DESC LIMIT 1
             """,
-            row["vehicle_id"], started, ended,
+            row["vehicle_id"], ended,
         )
         # Calibration ceiling so the start/end values displayed match
         # the hero card (normalized so 100 % == full tank).
