@@ -118,6 +118,31 @@ object Pids {
         },
     )
 
+    val Odometer = Pid(
+        name = "odometer",
+        mode = 0x01,
+        pid = 0xA6,
+        // Odometer changes < 0.05 km/s even at WOT highway speeds.
+        // Polling once every 30 s captures trip start + end accurately
+        // without crowding the round-robin slots that fuel_level,
+        // RPM, speed need at higher cadence.
+        periodMs = 30_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            val c = byte(bytes, 2) ?: return@Pid null
+            val d = byte(bytes, 3) ?: return@Pid null
+            // SAE J1979 PID 0xA6: 4-byte unsigned, value in 0.1 km
+            // units. Cast to Long up front so the << 24 doesn't
+            // overflow Int when A is large.
+            val raw = (a.toLong() shl 24) or
+                (b.toLong() shl 16) or
+                (c.toLong() shl 8) or
+                d.toLong()
+            raw / 10.0  // km
+        },
+    )
+
     val RunTimeSinceStart = Pid(
         name = "run_time_since_start",
         mode = 0x01,
@@ -153,6 +178,7 @@ object Pids {
         FuelLevel,
         EngineLoad,
         ManifoldPressure,
+        Odometer,
         StftB1, LtftB1, StftB2, LtftB2,
         // Honda V6 PCM does NOT answer the simple-format Mode 01
         // PIDs 0x0F (intake_air_temp), 0x10 (maf_air_flow),
