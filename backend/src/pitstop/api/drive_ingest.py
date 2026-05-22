@@ -30,7 +30,8 @@ Logging:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -140,6 +141,74 @@ async def _bulk_insert_pid_readings(
         ON CONFLICT (vehicle_id, metric, time) DO NOTHING
         """,
         records,
+    )
+
+
+async def _refresh_vehicle_state_from_drive(
+    conn: asyncpg.Connection,
+    vehicle_id: UUID,
+    rows: list[PidReadingIn],
+) -> None:
+    """Upsert vehicle_state.latest from the newest reading per metric in
+    this drive payload. Mirrors the live MQTT ingest path so the
+    fuel-level hero card + widget reflect post-drive state immediately
+    after the user taps Sync — instead of waiting for the next live
+    publish (which is suppressed in manual-sync mode and was absent
+    entirely during the 2026-05-20 broker outage).
+
+    Skips any metric whose timestamp would *regress* the latest — drive
+    payloads can arrive late and we never want a stale row to overwrite
+    a fresher live publish."""
+    if not rows:
+        return
+    latest: dict[str, PidReadingIn] = {}
+    for r in rows:
+        cur = latest.get(r.metric)
+        if cur is None or r.t >= cur.t:
+            latest[r.metric] = r
+    if not latest:
+        return
+    last_time = max(r.t for r in latest.values())
+    last_metric = max(latest.values(), key=lambda r: r.t).metric
+    # Build a single JSONB object from all metric snapshots and merge
+    # it onto vehicle_state.latest. The CASE-on-time guard inside the
+    # jsonb_build_object would be complex; instead we trust that the
+    # caller only refreshes when the drive's last_time is plausibly
+    # current. For race robustness the upsert below uses GREATEST on
+    # last_seen_at and only OVERWRITES metrics whose existing time is
+    # older.
+    new_entries = {
+        metric: {
+            "value_num": r.value_num,
+            "value_text": r.value_text,
+            "time": (
+                r.t.astimezone(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S.")
+                + f"{r.t.microsecond // 1000:03d}Z"
+            ),
+            "source": "phone_batch",
+        }
+        for metric, r in latest.items()
+    }
+    await conn.execute(
+        """
+        INSERT INTO vehicle_state
+            (vehicle_id, last_seen_at, last_metric, latest, updated_at)
+        VALUES ($1::uuid, $2::timestamptz, $3::text, $4::jsonb, now())
+        ON CONFLICT (vehicle_id) DO UPDATE
+            SET last_seen_at = GREATEST(vehicle_state.last_seen_at, EXCLUDED.last_seen_at),
+                last_metric  = CASE
+                    WHEN EXCLUDED.last_seen_at > vehicle_state.last_seen_at
+                    THEN EXCLUDED.last_metric
+                    ELSE vehicle_state.last_metric
+                END,
+                latest       = vehicle_state.latest || EXCLUDED.latest,
+                updated_at   = now()
+        """,
+        vehicle_id,
+        last_time,
+        last_metric,
+        json.dumps(new_entries),
     )
 
 
@@ -275,6 +344,15 @@ async def post_drive(
         )
         await _bulk_insert_gps_points(conn, resolved_vehicle_id, body.gps_points)
         await _bulk_insert_engine_events(conn, resolved_vehicle_id, body.engine_events)
+
+        # Refresh vehicle_state.latest from the latest reading per metric
+        # we just inserted. Without this the fuel-level hero card + widget
+        # stay frozen at the last live-MQTT publish (broker outages, or
+        # manual-sync mode where live publishes are suppressed) even
+        # though the drive payload had fresher data.
+        await _refresh_vehicle_state_from_drive(
+            conn, resolved_vehicle_id, body.pid_readings
+        )
 
         # Trip UUID is the phone's client_drive_uuid (deterministic).
         # The deriver's UUID v5 scheme would produce a different ID

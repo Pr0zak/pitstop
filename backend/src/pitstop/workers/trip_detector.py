@@ -257,6 +257,56 @@ async def compute_trip_stats(
         ended_at,
     )
 
+    # Fallback: derive fuel_used from the fuel_level delta when MAF isn't
+    # available. Honda Pilot's poll list doesn't include PID 0x10 (MAF)
+    # reliably, so MAF-integration produces zero and MPG was always
+    # blank for these trips. Sensor is granular (~0.5 % steps) but for
+    # any drive that uses > 1 % of tank, the delta path beats nothing.
+    # raw_pct is normalized against the per-vehicle calibration ceiling
+    # (Honda 0x2F caps below 100 on a full tank) so the delta maps to
+    # physical gallons consistently with the gauge UI.
+    if (fuel_used_l is None) or (float(fuel_used_l) < 0.05):
+        fuel_used_l = await conn.fetchval(
+            """
+            WITH cfg AS (
+                SELECT
+                    COALESCE(tank1_capacity, 0)::float          AS cap_gal,
+                    NULLIF(fuel_level_calibration_pct, 0)::float AS cal_pct
+                  FROM vehicles WHERE id = $1
+            ),
+            first_pt AS (
+                SELECT value_num FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = 'fuel_level'
+                   AND time BETWEEN $2 AND $3
+                 ORDER BY time ASC
+                 LIMIT 1
+            ),
+            last_pt AS (
+                SELECT value_num FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = 'fuel_level'
+                   AND time BETWEEN $2 AND $3
+                 ORDER BY time DESC
+                 LIMIT 1
+            )
+            SELECT CASE
+                WHEN cfg.cap_gal > 0
+                 AND cfg.cal_pct IS NOT NULL
+                 AND first_pt.value_num IS NOT NULL
+                 AND last_pt.value_num IS NOT NULL
+                 AND (first_pt.value_num - last_pt.value_num) > 0.5
+                THEN ((first_pt.value_num - last_pt.value_num)
+                       / cfg.cal_pct * cfg.cap_gal * 3.78541)
+                ELSE 0
+            END
+            FROM cfg, first_pt, last_pt
+            """,
+            vehicle_id,
+            started_at,
+            ended_at,
+        )
+
     dtc_count = await conn.fetchval(
         """
         SELECT count(*)
