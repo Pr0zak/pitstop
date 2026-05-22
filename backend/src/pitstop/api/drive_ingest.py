@@ -190,6 +190,11 @@ async def _refresh_vehicle_state_from_drive(
         }
         for metric, r in latest.items()
     }
+    # Pool's JSONB type codec already runs json.dumps on dict params.
+    # Passing json.dumps(...) here would double-encode (stored as a
+    # JSON string), and the `||` concat then wraps both sides as
+    # single-element arrays — corrupted `latest` shape on next read.
+    # Pass the dict directly and let the codec handle it.
     await conn.execute(
         """
         INSERT INTO vehicle_state
@@ -202,13 +207,17 @@ async def _refresh_vehicle_state_from_drive(
                     THEN EXCLUDED.last_metric
                     ELSE vehicle_state.last_metric
                 END,
-                latest       = vehicle_state.latest || EXCLUDED.latest,
+                latest       = CASE
+                    WHEN jsonb_typeof(vehicle_state.latest) = 'object'
+                    THEN vehicle_state.latest || EXCLUDED.latest
+                    ELSE EXCLUDED.latest
+                END,
                 updated_at   = now()
         """,
         vehicle_id,
         last_time,
         last_metric,
-        json.dumps(new_entries),
+        new_entries,
     )
 
 
