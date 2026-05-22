@@ -21,9 +21,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -200,7 +202,51 @@ private fun HistoryListScreen(
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val pendingCount by viewModel.pendingCount.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val syncConfirm by viewModel.syncConfirm.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(0) }
+
+    syncConfirm?.let { prompt ->
+        val isOffline = prompt.reason == "offline"
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelSyncConfirm() },
+            title = {
+                Text(
+                    if (isOffline) "No network"
+                    else "Cellular upload?"
+                )
+            },
+            text = {
+                Text(
+                    if (isOffline) {
+                        "There's no network connection right now. " +
+                            "${prompt.pendingCount} drive" +
+                            "${if (prompt.pendingCount == 1) "" else "s"} " +
+                            "will stay queued until you're back online."
+                    } else {
+                        "You're on cellular. " +
+                            "${prompt.pendingCount} drive" +
+                            "${if (prompt.pendingCount == 1) "" else "s"} " +
+                            "queued — large payloads (~MB each) will be " +
+                            "sent over your mobile data. " +
+                            "Wait for WiFi, or sync now over cellular?"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.confirmSync() },
+                    enabled = !isOffline,
+                ) {
+                    Text(if (isOffline) "OK" else "Sync over cellular")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelSyncConfirm() }) {
+                    Text(if (isOffline) "Close" else "Wait for WiFi")
+                }
+            },
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         if (pendingCount > 0 || syncState !is SyncState.Idle) {

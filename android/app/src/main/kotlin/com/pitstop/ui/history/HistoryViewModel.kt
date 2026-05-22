@@ -11,6 +11,7 @@ import com.pitstop.http.PitstopApi
 import com.pitstop.http.TripDto
 import com.pitstop.http.TripMergeRequest
 import com.pitstop.log.LogBuffer
+import com.pitstop.net.NetworkMonitor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -74,6 +75,14 @@ sealed class SyncState {
     data class Failed(val message: String) : SyncState()
 }
 
+/** Cellular-confirm prompt before draining the queue on a metered
+ *  network. Carries the queue depth so the dialog can show "Sync N
+ *  drive(s) over cellular?" without an extra round-trip. */
+data class SyncConfirmPrompt(
+    val pendingCount: Int,
+    val reason: String,
+)
+
 /** Multi-select state for the Trips list — drives the merge-two-trips
  *  UX. When `mode` is true the trip cards toggle on tap instead of
  *  opening detail, and the selection action bar appears at the top of
@@ -99,7 +108,11 @@ class HistoryViewModel @Inject constructor(
     private val logBuffer: LogBuffer,
     private val pendingDao: PendingDriveDao,
     private val driveUploader: DriveUploader,
+    private val networkMonitor: NetworkMonitor,
 ) : ViewModel() {
+
+    private val _syncConfirm = MutableStateFlow<SyncConfirmPrompt?>(null)
+    val syncConfirm: StateFlow<SyncConfirmPrompt?> = _syncConfirm.asStateFlow()
 
     private val _ui = MutableStateFlow(HistoryUiState())
     val ui: StateFlow<HistoryUiState> = _ui.asStateFlow()
@@ -151,6 +164,53 @@ class HistoryViewModel @Inject constructor(
      * manual-sync mode.
      */
     fun syncNow() {
+        // Default entry point — gate on network class. Cellular gets a
+        // confirmation dialog; WiFi / Ethernet go straight through.
+        // The user's explicit "Sync anyway" from the dialog calls
+        // confirmSync() which bypasses this check.
+        if (_syncState.value is SyncState.InProgress) return
+        if (_syncConfirm.value != null) return
+        val pending = pendingCount.value
+        when (networkMonitor.classify()) {
+            NetworkMonitor.NetworkClass.Unmetered -> doDrain()
+            NetworkMonitor.NetworkClass.Metered -> {
+                _syncConfirm.value = SyncConfirmPrompt(
+                    pendingCount = pending,
+                    reason = "cellular",
+                )
+                logBuffer.info(
+                    "history: sync-now blocked, awaiting cellular confirm",
+                    mapOf("pending" to pending),
+                )
+            }
+            NetworkMonitor.NetworkClass.None -> {
+                // No network at all. Still surface the prompt so the
+                // user knows why nothing happened, but label it.
+                _syncConfirm.value = SyncConfirmPrompt(
+                    pendingCount = pending,
+                    reason = "offline",
+                )
+                logBuffer.info(
+                    "history: sync-now blocked, no network",
+                    mapOf("pending" to pending),
+                )
+            }
+        }
+    }
+
+    /** Called by the dialog's "Sync anyway" button — runs the drain
+     *  regardless of network class. */
+    fun confirmSync() {
+        _syncConfirm.value = null
+        doDrain()
+    }
+
+    /** Called by the dialog's Cancel / outside-tap. */
+    fun cancelSyncConfirm() {
+        _syncConfirm.value = null
+    }
+
+    private fun doDrain() {
         if (_syncState.value is SyncState.InProgress) return
         val startUnacked = pendingCount.value
         _syncState.value = SyncState.InProgress
