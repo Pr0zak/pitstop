@@ -308,6 +308,9 @@ private fun HeroStatsCard(trip: TripDetailDto) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // 3-col × 2-row grid — keeps every cell the same width so the
+            // value column lines up vertically. Previously row 1 was 2
+            // wide cells and row 2 was 3 narrower ones, which looked off.
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatCell("Duration", fmtDuration(trip.durationS), Modifier.weight(1f))
                 StatCell(
@@ -315,13 +318,13 @@ private fun HeroStatsCard(trip: TripDetailDto) {
                     mi?.let { "%.1f mi".format(it) } ?: "—",
                     Modifier.weight(1f),
                 )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatCell(
                     "MPG",
                     mpg?.let { "%.1f".format(it) } ?: "—",
                     Modifier.weight(1f),
                 )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatCell(
                     "Max speed",
                     trip.maxSpeedKph?.let { "${kphToMph(it).roundToInt()} mph" } ?: "—",
@@ -332,6 +335,11 @@ private fun HeroStatsCard(trip: TripDetailDto) {
                     trip.maxRpm?.let { "${it.roundToInt()}" } ?: "—",
                     Modifier.weight(1f),
                 )
+                StatCell(
+                    "Avg speed",
+                    trip.avgSpeedKph?.let { "${kphToMph(it).roundToInt()} mph" } ?: "—",
+                    Modifier.weight(1f),
+                )
             }
         }
     }
@@ -340,9 +348,7 @@ private fun HeroStatsCard(trip: TripDetailDto) {
 @Composable
 private fun SecondaryStatsCard(trip: TripDetailDto) {
     val rows = buildList<Pair<String, String>> {
-        trip.avgSpeedKph?.let {
-            add("Avg speed" to "${kphToMph(it).roundToInt()} mph")
-        }
+        // Avg speed moved up into the 3×2 hero grid — don't duplicate.
         trip.idleS?.let {
             val m = it / 60
             val s = it % 60
@@ -433,49 +439,57 @@ private fun SeriesChipRow(
     smoothLevel: SmoothLevel,
     onCycleSmooth: () -> Unit,
 ) {
-    androidx.compose.foundation.layout.FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        for (def in available) {
-            val on = def.metric in visible
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Series toggles — the metric selection. Wraps as needed.
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            for (def in available) {
+                val on = def.metric in visible
+                AssistChip(
+                    onClick = { onToggle(def.metric) },
+                    label = {
+                        Text(def.label, style = MaterialTheme.typography.labelMedium)
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = if (on) def.color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHigh,
+                        labelColor = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                )
+            }
+        }
+        // Smooth chip lives on its own line, right-aligned — it's a
+        // chart control, not a series selector. Previously it sat at
+        // the tail of the FlowRow which read as "another metric".
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            val smoothOn = smoothLevel != SmoothLevel.Off
             AssistChip(
-                onClick = { onToggle(def.metric) },
+                onClick = onCycleSmooth,
                 label = {
-                    Text(def.label, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        "Smooth (${smoothLevel.label})",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 },
                 colors = AssistChipDefaults.assistChipColors(
-                    containerColor = if (on) def.color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-                    labelColor = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    containerColor = if (smoothOn) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    labelColor = if (smoothOn) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 ),
             )
         }
-        // Smooth chip — cycles Off → Light → Medium → Heavy → Off.
-        // Sits at the end of the row so the series toggles read
-        // left-to-right first, like the web frontend.
-        val smoothOn = smoothLevel != SmoothLevel.Off
-        AssistChip(
-            onClick = onCycleSmooth,
-            label = {
-                Text(
-                    "Smooth (${smoothLevel.label})",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            },
-            colors = AssistChipDefaults.assistChipColors(
-                containerColor = if (smoothOn) {
-                    MaterialTheme.colorScheme.secondaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
-                },
-                labelColor = if (smoothOn) {
-                    MaterialTheme.colorScheme.onSecondaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            ),
-        )
     }
 }
 

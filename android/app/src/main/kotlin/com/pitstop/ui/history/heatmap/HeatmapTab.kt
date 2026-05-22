@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
+    val showStations by viewModel.showStations.collectAsStateWithLifecycle()
 
     // Pull-to-refresh wraps the whole column — drag down from the
     // mode-toggle row to force a fresh /api/analytics/route-trace
@@ -61,6 +62,20 @@ fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
                 selected = mode == HeatmapMode.Speed,
                 onClick = { viewModel.setMode(HeatmapMode.Speed) },
                 label = { Text("Speed") },
+            )
+            // Stations toggle — overlays a fuel-pump dot at every
+            // historical fillup that carries GPS. Independent of the
+            // density/speed mode (which colors the route polylines).
+            FilterChip(
+                selected = showStations,
+                onClick = { viewModel.toggleStations() },
+                label = {
+                    Text(
+                        if (state.stations.isEmpty()) "Stations"
+                        else "Stations (${state.stations.size})"
+                    )
+                },
+                enabled = state.stations.isNotEmpty(),
             )
             Box(modifier = Modifier.width(8.dp))
             if (state.points.isNotEmpty()) {
@@ -93,6 +108,7 @@ fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
                 else -> MapLibreHeatmapView(
                     points = state.points,
                     mode = mode,
+                    stations = if (showStations) state.stations else emptyList(),
                     modifier = Modifier.fillMaxSize(),
                 )
             }

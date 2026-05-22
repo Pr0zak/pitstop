@@ -20,6 +20,10 @@ data class HeatmapUiState(
     val points: List<List<Double>> = emptyList(),
     val total: Int = 0,
     val stride: Int = 1,
+    /** Fillup markers — [lat, lon] for each historical fillup that
+     *  carries a non-null GPS pair. Rendered as a CircleLayer on top
+     *  of the route polylines when the Stations chip is on. */
+    val stations: List<Pair<Double, Double>> = emptyList(),
 )
 
 @HiltViewModel
@@ -34,6 +38,9 @@ class HeatmapViewModel @Inject constructor(
 
     private val _mode = MutableStateFlow(HeatmapMode.Density)
     val mode: StateFlow<HeatmapMode> = _mode.asStateFlow()
+
+    private val _showStations = MutableStateFlow(false)
+    val showStations: StateFlow<Boolean> = _showStations.asStateFlow()
 
     init { refresh() }
 
@@ -53,19 +60,37 @@ class HeatmapViewModel @Inject constructor(
                 val vehicles = api.getVehicles()
                 val v = vehicles.firstOrNull { it.slug == slug }
                     ?: error("vehicle slug '$slug' not found on server")
-                api.getRouteTrace(v.id, maxPoints = 25_000)
-            }.onSuccess { resp ->
+                val trace = api.getRouteTrace(v.id, maxPoints = 25_000)
+                // Pull every fillup (capped at 500 — even heavy users
+                // are well under that) and keep only those with a real
+                // GPS pair. Fast; lives in the same load pass so the
+                // Stations toggle responds instantly.
+                val fillups = runCatching { api.getFillups(v.id, limit = 500) }
+                    .getOrDefault(emptyList())
+                val stations = fillups.mapNotNull { f ->
+                    val lat = f.lat
+                    val lon = f.lon
+                    if (lat != null && lon != null) lat to lon else null
+                }
+                trace to stations
+            }.onSuccess { (resp, stations) ->
                 _state.update {
                     HeatmapUiState(
                         loading = false,
                         points = resp.points,
                         total = resp.total,
                         stride = resp.stride,
+                        stations = stations,
                     )
                 }
                 logBuffer.info(
                     "heatmap loaded",
-                    mapOf("count" to resp.count, "total" to resp.total, "stride" to resp.stride),
+                    mapOf(
+                        "count" to resp.count,
+                        "total" to resp.total,
+                        "stride" to resp.stride,
+                        "stations" to stations.size,
+                    ),
                 )
             }.onFailure { t ->
                 val msg = t.message ?: t::class.java.simpleName
@@ -77,5 +102,9 @@ class HeatmapViewModel @Inject constructor(
 
     fun setMode(m: HeatmapMode) {
         _mode.value = m
+    }
+
+    fun toggleStations() {
+        _showStations.value = !_showStations.value
     }
 }

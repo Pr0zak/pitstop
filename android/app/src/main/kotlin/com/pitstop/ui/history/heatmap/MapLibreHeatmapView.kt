@@ -28,6 +28,7 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -53,6 +54,7 @@ enum class HeatmapMode { Density, Speed }
 fun MapLibreHeatmapView(
     points: List<List<Double>>,
     mode: HeatmapMode,
+    stations: List<Pair<Double, Double>> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -114,7 +116,7 @@ fun MapLibreHeatmapView(
             update = { view ->
                 runCatching {
                     view.getMapAsync { map ->
-                        runCatching { applyToMap(map, points, mode, mapState) }
+                        runCatching { applyToMap(map, points, mode, stations, mapState) }
                             .onFailure { Log.w(TAG, "applyToMap failed", it) }
                     }
                 }.onFailure { Log.w(TAG, "getMapAsync failed", it) }
@@ -128,6 +130,7 @@ private class HeatmapMapState {
     var styleLoaded: Boolean = false
     var lastPointsRef: List<List<Double>>? = null
     var fittedBounds: Boolean = false
+    var lastStationsRef: List<Pair<Double, Double>>? = null
 }
 
 @Composable
@@ -147,6 +150,9 @@ private fun MapUnavailableFallback(modifier: Modifier) {
 
 private const val SOURCE = "pitstop-heatmap"
 private const val LAYER = "pitstop-heatmap-layer"
+private const val STATIONS_SOURCE = "pitstop-stations"
+private const val STATIONS_LAYER = "pitstop-stations-layer"
+private const val STATIONS_HALO_LAYER = "pitstop-stations-halo"
 private const val STYLE_URL =
     "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 private const val MAX_GAP_S = 30L
@@ -161,6 +167,7 @@ private fun applyToMap(
     map: MapLibreMap,
     points: List<List<Double>>,
     mode: HeatmapMode,
+    stations: List<Pair<Double, Double>>,
     state: HeatmapMapState,
 ) {
     map.uiSettings.isLogoEnabled = false
@@ -174,6 +181,8 @@ private fun applyToMap(
             state.styleLoaded = true
             runCatching { rebuildLayer(map, style, points, mode, state) }
                 .onFailure { Log.w(TAG, "rebuildLayer (initial) failed", it) }
+            runCatching { applyStations(style, stations, state) }
+                .onFailure { Log.w(TAG, "applyStations (initial) failed", it) }
         }
         return
     }
@@ -190,6 +199,61 @@ private fun applyToMap(
         runCatching { applyMode(style, mode) }
             .onFailure { Log.w(TAG, "applyMode failed", it) }
     }
+    runCatching { applyStations(style, stations, state) }
+        .onFailure { Log.w(TAG, "applyStations failed", it) }
+}
+
+/** Add / refresh / clear the fuel-station overlay. Drives the
+ *  Stations chip in the controls row. */
+private fun applyStations(
+    style: Style,
+    stations: List<Pair<Double, Double>>,
+    state: HeatmapMapState,
+) {
+    if (stations === state.lastStationsRef) return
+    style.getLayer(STATIONS_LAYER)?.let { style.removeLayer(it) }
+    style.getLayer(STATIONS_HALO_LAYER)?.let { style.removeLayer(it) }
+    style.getSource(STATIONS_SOURCE)?.let { style.removeSource(it) }
+    state.lastStationsRef = stations
+    if (stations.isEmpty()) return
+
+    val featuresJson = StringBuilder("{\"type\":\"FeatureCollection\",\"features\":[")
+    var first = true
+    for ((lat, lon) in stations) {
+        if (!first) featuresJson.append(',')
+        first = false
+        featuresJson.append(
+            "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{" +
+                "\"type\":\"Point\",\"coordinates\":[" + lon + "," + lat + "]}}",
+        )
+    }
+    featuresJson.append("]}")
+    style.addSource(GeoJsonSource(STATIONS_SOURCE, featuresJson.toString()))
+
+    // Soft outer halo first, then a solid inner dot — gives the marker
+    // enough presence to read over both light and dark map regions
+    // without obscuring the route lines underneath.
+    style.addLayer(
+        CircleLayer(STATIONS_HALO_LAYER, STATIONS_SOURCE).apply {
+            setProperties(
+                PropertyFactory.circleRadius(11.0f),
+                PropertyFactory.circleColor("#22D3EE"),
+                PropertyFactory.circleOpacity(0.22f),
+                PropertyFactory.circleStrokeWidth(0.0f),
+            )
+        }
+    )
+    style.addLayer(
+        CircleLayer(STATIONS_LAYER, STATIONS_SOURCE).apply {
+            setProperties(
+                PropertyFactory.circleRadius(5.5f),
+                PropertyFactory.circleColor("#22D3EE"),
+                PropertyFactory.circleStrokeWidth(1.5f),
+                PropertyFactory.circleStrokeColor("#0E7490"),
+                PropertyFactory.circleOpacity(0.95f),
+            )
+        }
+    )
 }
 
 private fun applyMode(style: Style, mode: HeatmapMode) {
