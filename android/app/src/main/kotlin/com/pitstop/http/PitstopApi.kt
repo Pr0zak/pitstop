@@ -391,6 +391,8 @@ data class TripDetailDto(
     val incomplete: Boolean? = null,
     @kotlinx.serialization.SerialName("odo_start_km") val odoStartKm: Double? = null,
     @kotlinx.serialization.SerialName("odo_end_km") val odoEndKm: Double? = null,
+    @kotlinx.serialization.SerialName("fuel_level_start_pct") val fuelLevelStartPct: Double? = null,
+    @kotlinx.serialization.SerialName("fuel_level_end_pct") val fuelLevelEndPct: Double? = null,
     val samples: List<TripSampleDto> = emptyList(),
     val dtcs: List<TripDtcDto> = emptyList(),
 )

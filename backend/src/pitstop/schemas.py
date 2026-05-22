@@ -282,6 +282,11 @@ class TripDetail(TripOut):
     odo_end_km: float | None = None
     # DTCs that first fired during this trip's window. (Task #110)
     dtcs: list[dict[str, Any]] = Field(default_factory=list)
+    # Fuel-level gauge reading at trip boundaries, normalized against
+    # the vehicle's calibration ceiling so 100 % == full tank.
+    # (v0.1.167 trip-summary expansion)
+    fuel_level_start_pct: float | None = None
+    fuel_level_end_pct: float | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -1179,14 +1179,28 @@ async function saveMeta() {
                   · {{ trip.duration_s ? Math.round((trip.idle_s / trip.duration_s) * 100) : 0 }}%
                 </span>
               </dd>
-              <dt v-if="odoDelta != null">Odometer Δ</dt>
-              <dd v-if="odoDelta != null">
-                <span class="num">{{ fmtOdoDeltaMi(odoDelta) }}</span>
-                <span class="muted small">
-                  · {{ fmtOdoMi(trip.odo_start_km ?? null) }}
-                  → {{ fmtOdoMi(trip.odo_end_km ?? null) }} mi
-                </span>
-              </dd>
+              <template v-if="trip.odo_start_km != null && trip.odo_end_km != null">
+                <dt>Odo start</dt>
+                <dd><span class="num">{{ fmtOdoMi(trip.odo_start_km) }}</span> mi</dd>
+                <dt>Odo end</dt>
+                <dd><span class="num">{{ fmtOdoMi(trip.odo_end_km) }}</span> mi</dd>
+                <dt>Distance (odo Δ)</dt>
+                <dd><span class="num">{{ fmtOdoDeltaMi(odoDelta) }}</span></dd>
+              </template>
+              <template v-if="trip.fuel_level_start_pct != null && trip.fuel_level_end_pct != null">
+                <dt>Fuel level</dt>
+                <dd>
+                  <span class="num">{{ Math.round(trip.fuel_level_start_pct) }}%</span>
+                  <span class="muted">→</span>
+                  <span class="num">{{ Math.round(trip.fuel_level_end_pct) }}%</span>
+                </dd>
+              </template>
+              <template v-if="trip.fuel_used_l != null && trip.fuel_used_l > 0.01">
+                <dt>Gas used (est.)</dt>
+                <dd>
+                  <span class="num">{{ (trip.fuel_used_l * 0.264172).toFixed(2) }}</span> gal
+                </dd>
+              </template>
               <dt>DTCs</dt>
               <dd>
                 <span>{{ trip.dtc_count ?? trip.dtcs?.length ?? 0 }}</span>

@@ -190,6 +190,34 @@ async def get_trip(
             """,
             row["vehicle_id"], ended,
         )
+        # Fuel level at trip boundaries — settled value (not the bouncy
+        # slosh samples). Take the LAST reading within the first 60 s
+        # for start (sensor has settled by the time engine is steady)
+        # and the LAST reading of the trip for end.
+        fuel_start_raw = await conn.fetchval(
+            """
+            SELECT value_num FROM pid_readings
+             WHERE vehicle_id = $1 AND metric = 'fuel_level'
+               AND time BETWEEN $2::timestamptz AND $2::timestamptz + interval '60 seconds'
+             ORDER BY time DESC LIMIT 1
+            """,
+            row["vehicle_id"], started,
+        )
+        fuel_end_raw = await conn.fetchval(
+            """
+            SELECT value_num FROM pid_readings
+             WHERE vehicle_id = $1 AND metric = 'fuel_level'
+               AND time BETWEEN $3::timestamptz - interval '60 seconds' AND $3::timestamptz
+             ORDER BY time DESC LIMIT 1
+            """,
+            row["vehicle_id"], started, ended,
+        )
+        # Calibration ceiling so the start/end values displayed match
+        # the hero card (normalized so 100 % == full tank).
+        veh_cal = await conn.fetchval(
+            "SELECT fuel_level_calibration_pct FROM vehicles WHERE id = $1",
+            row["vehicle_id"],
+        )
         # DTCs that fired during the trip window (Task #110).
         dtc_rows = await conn.fetch(
             """
@@ -203,6 +231,16 @@ async def get_trip(
         )
     out["odo_start_km"] = float(odo_start) if odo_start is not None else None
     out["odo_end_km"] = float(odo_end) if odo_end is not None else None
+    # Normalize fuel boundaries against the per-vehicle calibration so
+    # the displayed start/end matches the gauge (Honda 0x2F caps below
+    # 100 raw on a full tank — see v0.1.159 calibration capture).
+    cal = float(veh_cal) if veh_cal is not None and float(veh_cal) > 0 else 100.0
+    def _norm(raw: Any) -> float | None:
+        if raw is None:
+            return None
+        return min(100.0, float(raw) / cal * 100.0)
+    out["fuel_level_start_pct"] = _norm(fuel_start_raw)
+    out["fuel_level_end_pct"] = _norm(fuel_end_raw)
     out["dtcs"] = [
         {
             "id": str(d["id"]),

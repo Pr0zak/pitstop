@@ -355,9 +355,27 @@ private fun SecondaryStatsCard(trip: TripDetailDto) {
             add("Idle time" to if (m > 0) "${m}m ${s}s" else "${s}s")
         }
         if (trip.dtcCount > 0) add("DTCs fired" to trip.dtcCount.toString())
+        // Odometer start/finish with delta, only when both endpoints
+        // are known (WiCAN didn't always publish odometer in window).
         if (trip.odoStartKm != null && trip.odoEndKm != null) {
-            val delta = kmToMi(trip.odoEndKm - trip.odoStartKm)
-            add("Odometer Δ" to "%.1f mi".format(delta))
+            val startMi = kmToMi(trip.odoStartKm)
+            val endMi = kmToMi(trip.odoEndKm)
+            val deltaMi = endMi - startMi
+            add("Odo start" to "%,.0f mi".format(startMi))
+            add("Odo end" to "%,.0f mi".format(endMi))
+            add("Distance (odo Δ)" to "%.1f mi".format(deltaMi))
+        }
+        // Fuel level start/end (already calibration-normalized server-side).
+        if (trip.fuelLevelStartPct != null && trip.fuelLevelEndPct != null) {
+            add("Fuel level" to "${trip.fuelLevelStartPct.roundToInt()}% → ${trip.fuelLevelEndPct.roundToInt()}%")
+        }
+        // Gas-used estimate — computed by trip_detector from either MAF
+        // integration (preferred) or fuel_level delta (OBD-5 fallback).
+        // Flagged "(est.)" since both paths carry sensor noise — most
+        // useful for long trips on partial tanks.
+        trip.fuelUsedL?.takeIf { it > 0.01 }?.let { lit ->
+            val gal = lit / 3.78541
+            add("Gas used (est.)" to "%.2f gal".format(gal))
         }
         trip.avgCoolantC?.let {
             add("Avg coolant" to "${cToF(it).roundToInt()}°F")

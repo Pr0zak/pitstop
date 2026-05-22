@@ -177,6 +177,9 @@ export interface TripDetail extends Trip {
   // start / end. Null when WiCAN didn't publish in that window.
   odo_start_km?: number | null;
   odo_end_km?: number | null;
+  // Calibration-normalized fuel level at trip boundaries (0–100).
+  fuel_level_start_pct?: number | null;
+  fuel_level_end_pct?: number | null;
   // DTCs that fired during the trip's open window (from
   // dtc_events.seen_at, ascending).
   dtcs?: TripDtcRef[];
