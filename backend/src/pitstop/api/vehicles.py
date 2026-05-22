@@ -131,14 +131,31 @@ async def list_vehicles(pool: asyncpg.Pool = Depends(get_pool)) -> list[dict[str
 async def _smooth_fuel_levels(
     conn: asyncpg.Connection, vehicles: list[dict[str, Any]]
 ) -> None:
-    """Replace each vehicle's latest.fuel_level.value_num with the
-    median of the last ~10 fuel_level readings in the past 5 minutes.
+    """Replace each vehicle's latest.fuel_level.value_num with a
+    physically-grounded smoothed estimate.
 
-    Honda's PID 0x2F float-arm sensor slosh-bounces by 15-20 raw % in a
-    single minute even on a parked car — picking the literal latest
-    reading gives the hero card / widget that bounce. Median over a
-    short window is robust against the dips without lagging behind real
-    fuel changes (which evolve over minutes/hours, not seconds)."""
+    Real fuel can only *decrease* while the engine is running, capped
+    at the engine's worst-case consumption rate. Any rise during
+    driving is fuel slosh in the tank — the float arm moves with the
+    fuel, not with the actual level. Honda Pilot's PID 0x2F bounces
+    ±15-25 % from this in a single minute. The factory dashboard gauge
+    runs a comparable filter (heavy IIR + slew-rate limit + fillup
+    detector) which is why the needle stays calm while OBD scanners
+    bounce visibly.
+
+    Algorithm: replay the last N samples through a state machine —
+      - drop: rate-limited (max SLEW_PCT_PER_MIN raw % per minute)
+      - rise (small, < FILLUP_THRESHOLD raw %): rejected as slosh
+      - rise (large, >= FILLUP_THRESHOLD raw %): accepted only if the
+        previous sample was >= FILLUP_QUIET_MIN minutes ago (engine
+        off in between = fillup), else rejected.
+    The output is the state at the most recent sample, normalized
+    against the per-vehicle calibration ceiling for display."""
+    SLEW_PCT_PER_MIN = 0.5
+    FILLUP_THRESHOLD = 5.0
+    FILLUP_QUIET_MIN = 5.0
+    MAX_SAMPLES = 400
+
     for v in vehicles:
         latest = v.get("latest")
         if not isinstance(latest, dict):
@@ -146,56 +163,65 @@ async def _smooth_fuel_levels(
         entry = latest.get("fuel_level")
         if not isinstance(entry, dict) or entry.get("value_num") is None:
             continue
-        # Two-tier window: prefer the last 30 minutes (fresh, reflects
-        # actual driving), fall back to the most recent 30 samples
-        # regardless of age (parked-overnight; WiCAN doesn't publish
-        # with the CAN bus asleep so the "latest" can sit on a single
-        # slosh dip for hours). Either way the median is much more
-        # stable than the raw latest.
-        row = await conn.fetchrow(
+        samples = await conn.fetch(
             """
-            SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY value_num) AS p50,
-                   COUNT(*) AS n
-              FROM (
-                SELECT value_num FROM pid_readings
-                 WHERE vehicle_id = $1
-                   AND metric = 'fuel_level'
-                   AND time > now() - interval '30 minutes'
-                   AND value_num IS NOT NULL
-                 ORDER BY time DESC
-                 LIMIT 30
-              ) s
+            SELECT time, value_num FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'fuel_level'
+               AND value_num IS NOT NULL
+             ORDER BY time DESC
+             LIMIT $2
             """,
-            v["id"],
+            v["id"], MAX_SAMPLES,
         )
-        if row is None or row["n"] is None or int(row["n"]) < 3:
-            row = await conn.fetchrow(
-                """
-                SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY value_num) AS p50,
-                       COUNT(*) AS n
-                  FROM (
-                    SELECT value_num FROM pid_readings
-                     WHERE vehicle_id = $1
-                       AND metric = 'fuel_level'
-                       AND value_num IS NOT NULL
-                     ORDER BY time DESC
-                     LIMIT 30
-                  ) s
-                """,
-                v["id"],
-            )
-        if row is None or row["n"] is None or int(row["n"]) < 3:
+        if not samples:
             continue
-        raw_median = float(row["p50"])
+        # SQL returned newest-first; replay oldest-first.
+        samples = list(reversed(samples))
+        ENGINE_OFF_GAP_MIN = 15.0
+        state = float(samples[0]["value_num"])
+        last_t = samples[0]["time"]
+        for s in samples[1:]:
+            t = s["time"]
+            val = float(s["value_num"])
+            dt_min = max(0.0, (t - last_t).total_seconds() / 60.0)
+            last_t = t
+            diff = val - state
+            if dt_min >= ENGINE_OFF_GAP_MIN:
+                # Engine-off period (WiCAN sleeps with the CAN bus).
+                # Three cases on resume:
+                #   - val >= state + FILLUP_THRESHOLD → fillup; re-anchor up.
+                #   - val <= state → real consumption + maybe slosh; accept down.
+                #   - val ~= state (small rise) → slosh on restart; keep.
+                if diff >= FILLUP_THRESHOLD:
+                    state = val
+                elif val < state:
+                    state = val
+                # else: small rise after restart, slosh, keep state.
+            elif diff >= FILLUP_THRESHOLD and dt_min >= FILLUP_QUIET_MIN:
+                # Mid-gap fillup (rare — phone bridge sometimes goes
+                # quiet briefly during a fillup). Still requires the
+                # FILLUP_QUIET_MIN guard so a single bouncing sample
+                # while driving never re-anchors upward.
+                state = val
+            elif diff > 0:
+                # Small rise during active sampling — pure slosh.
+                pass
+            else:
+                # Decrease. Slew-limited so a momentary dip can't
+                # yank the displayed value down by 15+ % in a minute.
+                max_drop = SLEW_PCT_PER_MIN * dt_min
+                state = max(val, state - max_drop)
+        # state is now the OEM-style smoothed raw value.
         cal = float(v.get("fuel_level_calibration_pct") or 100.0)
         smoothed = (
-            min(100.0, raw_median / cal * 100.0)
+            min(100.0, state / cal * 100.0)
             if 0 < cal <= 100
-            else raw_median
+            else state
         )
         new_entry = dict(entry)
         new_entry["value_num"] = smoothed
-        new_entry["value_num_raw"] = raw_median
+        new_entry["value_num_raw"] = state
         latest = dict(latest)
         latest["fuel_level"] = new_entry
         v["latest"] = latest
