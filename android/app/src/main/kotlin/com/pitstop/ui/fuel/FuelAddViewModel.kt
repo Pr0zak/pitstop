@@ -138,6 +138,12 @@ class FuelAddViewModel @Inject constructor(
         // auto-prefill reflect the per-vehicle history (not just the
         // bridge's live OBD reading).
         if (resolvedSlug.isNotBlank()) loadLatestOdoForSlug(resolvedSlug)
+        // Retry the autoFill now that we have the vehicle's
+        // backend-persisted latest_odo as a fallback for an empty
+        // in-process BridgeStateBus (cold app start).
+        val selected = vs.firstOrNull { it.slug == resolvedSlug }
+        val latestOdoKm = selected?.latest?.get("odometer")?.valueNum
+        autoFillOdometer(vehicleLatestOdoKm = latestOdoKm)
     }
 
     /**
@@ -167,10 +173,16 @@ class FuelAddViewModel @Inject constructor(
         )
     }
 
-    private fun autoFillOdometer() {
+    private fun autoFillOdometer(vehicleLatestOdoKm: Double? = null) {
         // Don't clobber a user-edited value.
         if (_form.value.odometer.isNotBlank() && !_form.value.odometerAutoFilled) return
-        val km = stateBus.latestByMetric.value["odometer"]?.value ?: return
+        // Prefer the in-process BridgeStateBus (freshest live reading),
+        // fall back to the per-vehicle latest_odo_km the backend gives us
+        // — the form was opening blank for users who hadn't driven since
+        // the last app launch (in-memory bus was empty).
+        val km = stateBus.latestByMetric.value["odometer"]?.value
+            ?: vehicleLatestOdoKm
+            ?: return
         // OBD reports km; convert to miles for the form (matches the
         // "Odometer (mi)" label). User can override.
         val mi = km * 0.621371

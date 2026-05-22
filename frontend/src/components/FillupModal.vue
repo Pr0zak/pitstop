@@ -65,6 +65,20 @@ const showStationDropdown = ref(false);
 const isEdit = computed(() => Boolean(props.initial?.id));
 const tankCount = computed(() => props.vehicle.tank_count ?? 1);
 
+/** Live-OBD odometer prefill (Add Fillup new entry). Backend stores
+ *  vehicles.latest_odo_km — the freshest pid_readings odometer value;
+ *  convert to miles when the vehicle's dist_unit says so. Rounded to
+ *  nearest whole unit so the input doesn't surface decimal-millimetre
+ *  precision the user has to delete. */
+function prefillOdoForVehicle(v: Vehicle): number | undefined {
+  const km = v.latest_odo_km;
+  if (km == null || !Number.isFinite(km)) return undefined;
+  // dist_unit: 0 = km, 1 = mi (per Fuelio import; see types.ts)
+  const isMiles = (v.dist_unit ?? 0) === 1;
+  const out = isMiles ? km * 0.621371 : km;
+  return Math.round(out);
+}
+
 watch(
   () => props.initial,
   (init) => {
@@ -91,7 +105,7 @@ watch(
     } else {
       form.value = {
         fillup_date: new Date().toISOString().slice(0, 16),
-        odo: undefined,
+        odo: prefillOdoForVehicle(props.vehicle),
         fuel_volume: undefined,
         price_total: undefined,
         price_per_unit: undefined,

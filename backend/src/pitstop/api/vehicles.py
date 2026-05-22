@@ -28,6 +28,7 @@ _VEHICLE_SELECT = """
         v.tank1_capacity, v.tank2_capacity,
         v.active, v.pid_profile_id,
         v.latest_odo_km, v.latest_odo_at,
+        v.fuel_level_calibration_pct,
         v.purchase_price, v.purchase_date,
         v.epa_mpg_combined,
         s.last_seen_at, s.last_metric, COALESCE(s.latest, '{}'::jsonb) AS latest,
@@ -36,6 +37,30 @@ _VEHICLE_SELECT = """
       LEFT JOIN vehicle_state s ON s.vehicle_id = v.id
       LEFT JOIN pid_profiles p  ON p.id = v.pid_profile_id
 """
+
+
+def _normalize_latest(
+    latest: dict[str, Any], calibration_pct: float
+) -> dict[str, Any]:
+    """Apply per-vehicle fuel_level calibration to the JSONB ``latest`` map.
+
+    Honda (and others) clip PID 0x2F below 100 even on a physically full
+    tank. The fillup endpoint snapshots the highest reading near each
+    is_full=true fillup into ``vehicles.fuel_level_calibration_pct``; we
+    divide here so widget / hero card render 100 % on a full tank.
+    Raw value is preserved under ``value_num_raw`` for the debug view."""
+    if calibration_pct <= 0 or calibration_pct >= 100:
+        return latest
+    entry = latest.get("fuel_level") if isinstance(latest, dict) else None
+    if not isinstance(entry, dict):
+        return latest
+    raw = entry.get("value_num")
+    if not isinstance(raw, (int, float)):
+        return latest
+    normalized = min(100.0, float(raw) / calibration_pct * 100.0)
+    out = dict(latest)
+    out["fuel_level"] = {**entry, "value_num": normalized, "value_num_raw": float(raw)}
+    return out
 
 
 def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
@@ -72,7 +97,15 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
         ),
         "last_seen_at": row["last_seen_at"],
         "last_metric": row["last_metric"],
-        "latest": row["latest"] or {},
+        "fuel_level_calibration_pct": (
+            float(row["fuel_level_calibration_pct"])
+            if row["fuel_level_calibration_pct"] is not None
+            else 100.0
+        ),
+        "latest": _normalize_latest(
+            row["latest"] or {},
+            float(row["fuel_level_calibration_pct"] or 100.0),
+        ),
         "pid_profile": (
             {"name": row["profile_name"], "description": row["profile_description"]}
             if row["profile_name"] is not None

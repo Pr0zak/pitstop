@@ -243,7 +243,53 @@ async def create_fillup(
     assert row is not None
     out = _row_to_fillup(row)
     await _attach_recomputed_mpg(pool, [out])
+    if body.is_full:
+        await _maybe_calibrate_fuel_level(pool, body.vehicle_id, body.fillup_date)
     return out
+
+
+async def _maybe_calibrate_fuel_level(
+    pool: asyncpg.Pool, vehicle_id: UUID, fillup_date: datetime
+) -> None:
+    """When a full-tank fillup is logged, capture the freshest fuel_level
+    raw reading from within +/-30 min as the vehicle's calibration ceiling.
+
+    Honda's PID 0x2F caps below 100 even on a physically full tank — the
+    sensor's float-arm stop is below the actual fill line. By snapshotting
+    the post-fillup reading as the per-vehicle reference, the UI can
+    normalize all subsequent readings against it (so a "full" tank reads
+    100 %). The window straddles fillup_date because the user may file
+    the fillup either before or after the OBD sees the bump.
+    """
+    async with pool.acquire() as conn:
+        raw = await conn.fetchval(
+            """
+            SELECT value_num FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'fuel_level'
+               AND time BETWEEN $2 - interval '30 min'
+                            AND $2 + interval '30 min'
+               AND value_num IS NOT NULL
+             ORDER BY value_num DESC
+             LIMIT 1
+            """,
+            vehicle_id, fillup_date,
+        )
+        if raw is None:
+            return
+        # Only ratchet the ceiling upward, and only when the new reading
+        # is meaningfully higher (>1 % above the current setting) so we
+        # don't drift down on a partial fill mistakenly marked full.
+        await conn.execute(
+            """
+            UPDATE vehicles
+               SET fuel_level_calibration_pct = $2
+             WHERE id = $1
+               AND $2 > COALESCE(fuel_level_calibration_pct, 100) + 1.0
+               AND $2 <= 100
+            """,
+            vehicle_id, float(raw),
+        )
 
 
 @router.patch(
