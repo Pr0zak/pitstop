@@ -179,7 +179,13 @@ async def _smooth_fuel_levels(
         # SQL returned newest-first; replay oldest-first.
         samples = list(reversed(samples))
         ENGINE_OFF_GAP_MIN = 15.0
-        state = float(samples[0]["value_num"])
+        # Anchor to the MAX of the first few samples. Real fuel only
+        # decreases monotonically, so the highest early reading is the
+        # one closest to ground truth — anchoring to a low slosh dip at
+        # the head of the window would trap state low for the entire
+        # replay (rises are rejected).
+        warmup = [float(s["value_num"]) for s in samples[: min(10, len(samples))]]
+        state = max(warmup) if warmup else float(samples[0]["value_num"])
         last_t = samples[0]["time"]
         for s in samples[1:]:
             t = s["time"]
