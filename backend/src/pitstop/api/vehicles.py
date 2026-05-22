@@ -123,7 +123,82 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
 async def list_vehicles(pool: asyncpg.Pool = Depends(get_pool)) -> list[dict[str, Any]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(_VEHICLE_SELECT + " ORDER BY v.name ASC")
-    return [_row_to_vehicle(r) for r in rows]
+        out = [_row_to_vehicle(r) for r in rows]
+        await _smooth_fuel_levels(conn, out)
+    return out
+
+
+async def _smooth_fuel_levels(
+    conn: asyncpg.Connection, vehicles: list[dict[str, Any]]
+) -> None:
+    """Replace each vehicle's latest.fuel_level.value_num with the
+    median of the last ~10 fuel_level readings in the past 5 minutes.
+
+    Honda's PID 0x2F float-arm sensor slosh-bounces by 15-20 raw % in a
+    single minute even on a parked car — picking the literal latest
+    reading gives the hero card / widget that bounce. Median over a
+    short window is robust against the dips without lagging behind real
+    fuel changes (which evolve over minutes/hours, not seconds)."""
+    for v in vehicles:
+        latest = v.get("latest")
+        if not isinstance(latest, dict):
+            continue
+        entry = latest.get("fuel_level")
+        if not isinstance(entry, dict) or entry.get("value_num") is None:
+            continue
+        # Two-tier window: prefer the last 30 minutes (fresh, reflects
+        # actual driving), fall back to the most recent 30 samples
+        # regardless of age (parked-overnight; WiCAN doesn't publish
+        # with the CAN bus asleep so the "latest" can sit on a single
+        # slosh dip for hours). Either way the median is much more
+        # stable than the raw latest.
+        row = await conn.fetchrow(
+            """
+            SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY value_num) AS p50,
+                   COUNT(*) AS n
+              FROM (
+                SELECT value_num FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = 'fuel_level'
+                   AND time > now() - interval '30 minutes'
+                   AND value_num IS NOT NULL
+                 ORDER BY time DESC
+                 LIMIT 30
+              ) s
+            """,
+            v["id"],
+        )
+        if row is None or row["n"] is None or int(row["n"]) < 3:
+            row = await conn.fetchrow(
+                """
+                SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY value_num) AS p50,
+                       COUNT(*) AS n
+                  FROM (
+                    SELECT value_num FROM pid_readings
+                     WHERE vehicle_id = $1
+                       AND metric = 'fuel_level'
+                       AND value_num IS NOT NULL
+                     ORDER BY time DESC
+                     LIMIT 30
+                  ) s
+                """,
+                v["id"],
+            )
+        if row is None or row["n"] is None or int(row["n"]) < 3:
+            continue
+        raw_median = float(row["p50"])
+        cal = float(v.get("fuel_level_calibration_pct") or 100.0)
+        smoothed = (
+            min(100.0, raw_median / cal * 100.0)
+            if 0 < cal <= 100
+            else raw_median
+        )
+        new_entry = dict(entry)
+        new_entry["value_num"] = smoothed
+        new_entry["value_num_raw"] = raw_median
+        latest = dict(latest)
+        latest["fuel_level"] = new_entry
+        v["latest"] = latest
 
 
 @router.get(
@@ -137,9 +212,11 @@ async def get_vehicle(
 ) -> dict[str, Any]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(_VEHICLE_SELECT + " WHERE v.id = $1", vehicle_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="vehicle not found")
-    return _row_to_vehicle(row)
+        if row is None:
+            raise HTTPException(status_code=404, detail="vehicle not found")
+        out = _row_to_vehicle(row)
+        await _smooth_fuel_levels(conn, [out])
+    return out
 
 
 @router.post(
