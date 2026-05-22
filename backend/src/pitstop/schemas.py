@@ -150,6 +150,12 @@ class VehicleOut(VehicleBase):
     purchase_date: date | None = None
     # EPA combined MPG sticker for "rated vs actual" overlay (Task #90).
     epa_mpg_combined: float | None = None
+    # Per-vehicle fuel-level calibration ceiling (0016 migration).
+    # Honda PID 0x2F caps below 100 even on a physically full tank;
+    # this is the raw % observed at the most recent is_full=true
+    # fillup. The /vehicles endpoint normalizes latest.fuel_level
+    # against this so the UI reads 100 % when actually full.
+    fuel_level_calibration_pct: float = 100.0
 
 
 # ---------------------------------------------------------------------------
