@@ -134,27 +134,23 @@ async def _smooth_fuel_levels(
     """Replace each vehicle's latest.fuel_level.value_num with a
     physically-grounded smoothed estimate.
 
-    Real fuel can only *decrease* while the engine is running, capped
-    at the engine's worst-case consumption rate. Any rise during
-    driving is fuel slosh in the tank — the float arm moves with the
-    fuel, not with the actual level. Honda Pilot's PID 0x2F bounces
-    ±15-25 % from this in a single minute. The factory dashboard gauge
-    runs a comparable filter (heavy IIR + slew-rate limit + fillup
-    detector) which is why the needle stays calm while OBD scanners
-    bounce visibly.
+    Real fuel can only *decrease* while the engine is running. Any rise
+    during sampling is fuel slosh — the float arm moves with the fuel,
+    not with the actual level. Honda Pilot's PID 0x2F bounces ±15-25 %
+    in a single minute. We need a filter that's robust to those dips
+    in both directions.
 
-    Algorithm: replay the last N samples through a state machine —
-      - drop: rate-limited (max SLEW_PCT_PER_MIN raw % per minute)
-      - rise (small, < FILLUP_THRESHOLD raw %): rejected as slosh
-      - rise (large, >= FILLUP_THRESHOLD raw %): accepted only if the
-        previous sample was >= FILLUP_QUIET_MIN minutes ago (engine
-        off in between = fillup), else rejected.
-    The output is the state at the most recent sample, normalized
-    against the per-vehicle calibration ceiling for display."""
-    SLEW_PCT_PER_MIN = 0.5
-    FILLUP_THRESHOLD = 5.0
-    FILLUP_QUIET_MIN = 5.0
-    MAX_SAMPLES = 400
+    Approach: take the **75th percentile** of recent fuel_level samples.
+    The high end of the sample distribution sits at "level when not in
+    a deep slosh dip", which is closest to truth (the float arm only
+    DROPS into momentary dips, never rises above the actual level).
+    The 75th percentile rather than the max gives a little robustness
+    against the rare upward slosh too.
+
+    Window: 60 minutes for the primary read, falling back to the last
+    50 samples regardless of age when parked (WiCAN goes quiet with
+    the CAN bus asleep)."""
+    MAX_SAMPLES = 80
 
     for v in vehicles:
         latest = v.get("latest")
@@ -163,61 +159,42 @@ async def _smooth_fuel_levels(
         entry = latest.get("fuel_level")
         if not isinstance(entry, dict) or entry.get("value_num") is None:
             continue
-        samples = await conn.fetch(
+        rows = await conn.fetch(
             """
-            SELECT time, value_num FROM pid_readings
+            SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1
                AND metric = 'fuel_level'
                AND value_num IS NOT NULL
+               AND time > now() - interval '60 minutes'
              ORDER BY time DESC
              LIMIT $2
             """,
             v["id"], MAX_SAMPLES,
         )
-        if not samples:
+        if not rows or len(rows) < 3:
+            # Parked / no recent samples — fall back to the most recent
+            # 50 samples regardless of age.
+            rows = await conn.fetch(
+                """
+                SELECT value_num FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = 'fuel_level'
+                   AND value_num IS NOT NULL
+                 ORDER BY time DESC
+                 LIMIT 50
+                """,
+                v["id"],
+            )
+        if not rows or len(rows) < 3:
             continue
-        # SQL returned newest-first; replay oldest-first.
-        samples = list(reversed(samples))
-        ENGINE_OFF_GAP_MIN = 15.0
-        # Anchor to the MAX of the first few samples. Real fuel only
-        # decreases monotonically, so the highest early reading is the
-        # one closest to ground truth — anchoring to a low slosh dip at
-        # the head of the window would trap state low for the entire
-        # replay (rises are rejected).
-        warmup = [float(s["value_num"]) for s in samples[: min(10, len(samples))]]
-        state = max(warmup) if warmup else float(samples[0]["value_num"])
-        last_t = samples[0]["time"]
-        for s in samples[1:]:
-            t = s["time"]
-            val = float(s["value_num"])
-            dt_min = max(0.0, (t - last_t).total_seconds() / 60.0)
-            last_t = t
-            diff = val - state
-            if dt_min >= ENGINE_OFF_GAP_MIN:
-                # Engine-off period (WiCAN sleeps with the CAN bus).
-                # Three cases on resume:
-                #   - val >= state + FILLUP_THRESHOLD → fillup; re-anchor up.
-                #   - val <= state → real consumption + maybe slosh; accept down.
-                #   - val ~= state (small rise) → slosh on restart; keep.
-                if diff >= FILLUP_THRESHOLD:
-                    state = val
-                elif val < state:
-                    state = val
-                # else: small rise after restart, slosh, keep state.
-            elif diff >= FILLUP_THRESHOLD and dt_min >= FILLUP_QUIET_MIN:
-                # Mid-gap fillup (rare — phone bridge sometimes goes
-                # quiet briefly during a fillup). Still requires the
-                # FILLUP_QUIET_MIN guard so a single bouncing sample
-                # while driving never re-anchors upward.
-                state = val
-            elif diff > 0:
-                # Small rise during active sampling — pure slosh.
-                pass
-            else:
-                # Decrease. Slew-limited so a momentary dip can't
-                # yank the displayed value down by 15+ % in a minute.
-                max_drop = SLEW_PCT_PER_MIN * dt_min
-                state = max(val, state - max_drop)
+        vals = sorted(float(r["value_num"]) for r in rows)
+        # 75th percentile — robust to slosh dips below and the rare
+        # slosh spike above, while tracking real consumption as the
+        # whole distribution drifts down between fillups.
+        idx = int(len(vals) * 0.75)
+        if idx >= len(vals):
+            idx = len(vals) - 1
+        state = vals[idx]
         # state is now the OEM-style smoothed raw value.
         cal = float(v.get("fuel_level_calibration_pct") or 100.0)
         smoothed = (
