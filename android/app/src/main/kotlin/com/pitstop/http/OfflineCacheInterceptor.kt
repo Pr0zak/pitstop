@@ -34,30 +34,46 @@ class OfflineCacheInterceptor @Inject constructor(
         if (original.method.uppercase() !in CACHEABLE_METHODS) {
             return chain.proceed(original)
         }
-        return try {
+        val networked = try {
             chain.proceed(original)
         } catch (t: IOException) {
             // Network couldn't be reached at all (DNS / connect / read
-            // timeout). Re-issue with FORCE_CACHE — OkHttp will hand back
-            // the most recent cached response within max-stale, or 504
-            // Gateway Timeout if there's nothing on disk.
-            logBuffer.info(
-                "http offline fallback (CACHE-1)",
-                mapOf(
-                    "url" to original.url.encodedPath,
-                    "err" to (t.message ?: t::class.java.simpleName),
-                ),
+            // timeout). Fall through to FORCE_CACHE.
+            return forceCacheFallback(
+                chain, original, "io: ${t.message ?: t::class.java.simpleName}"
             )
-            val cached = original.newBuilder()
-                .cacheControl(
-                    CacheControl.Builder()
-                        .onlyIfCached()
-                        .maxStale(MAX_STALE_HOURS.toInt(), TimeUnit.HOURS)
-                        .build(),
-                )
-                .build()
-            chain.proceed(cached)
         }
+        // Backend reachable but returned a server error. Pitstop's read
+        // endpoints are pure projections of stored data — if the server
+        // is throwing, the *cached* answer from a minute ago is almost
+        // certainly more useful than a red error toast. Closes the gap
+        // that left /vehicles broken on v0.1.163 → users saw blank
+        // screens despite a perfectly good cached payload on disk.
+        if (networked.code in 500..599) {
+            networked.close()
+            return forceCacheFallback(chain, original, "http ${networked.code}")
+        }
+        return networked
+    }
+
+    private fun forceCacheFallback(
+        chain: Interceptor.Chain,
+        original: okhttp3.Request,
+        reason: String,
+    ): Response {
+        logBuffer.info(
+            "http offline fallback (CACHE-1)",
+            mapOf("url" to original.url.encodedPath, "err" to reason),
+        )
+        val cached = original.newBuilder()
+            .cacheControl(
+                CacheControl.Builder()
+                    .onlyIfCached()
+                    .maxStale(MAX_STALE_HOURS.toInt(), TimeUnit.HOURS)
+                    .build(),
+            )
+            .build()
+        return chain.proceed(cached)
     }
 
     private companion object {
