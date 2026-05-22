@@ -5,7 +5,14 @@ services:
     ports:
       - "${MOSQUITTO_BIND:-0.0.0.0}:1883:1883"
     volumes:
-      - ./mosquitto/config:/mosquitto/config:ro
+      # Absolute host path via env var. When the upgrader sidecar runs
+      # `docker compose up -d` from its bind-mount at /work, compose
+      # would otherwise resolve `./mosquitto/config` to /work/...,
+      # which doesn't exist on the host — and compose then sees a mount
+      # mismatch and *recreates* mosquitto with the broken bind. The
+      # :-. fallback keeps host-side `docker compose` working when run
+      # from /opt/pitstop directly.
+      - ${PITSTOP_HOST_DIR:-.}/mosquitto/config:/mosquitto/config:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
     healthcheck:
@@ -73,7 +80,7 @@ services:
       # which host path to pass through.
       PITSTOP_HOST_DIR: ${PITSTOP_HOST_DIR:-/opt/pitstop}
     volumes:
-      - ./pid_profiles:/app/pid_profiles:ro
+      - ${PITSTOP_HOST_DIR:-.}/pid_profiles:/app/pid_profiles:ro
       - photos_data:/app/data/photos
       # In-app upgrade flow — backend shells out to `docker run` on the
       # host daemon. Single-tenant CT, LAN-only; socket-as-root tradeoff
