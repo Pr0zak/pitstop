@@ -297,9 +297,10 @@ class ConfigViewModel @Inject constructor(
     /**
      * Manual update check — same UpdateChecker the periodic
      * UpdateCheckWorker uses, but driven by the user pressing the
-     * "Check now" button in Settings → App. Surfaces the result via a
-     * ConfigToast.UpdateAvailable / UpdateUpToDate / UpdateCheckError so
-     * the snackbar host on Settings can render it.
+     * "Check now" button in Settings → App. Surfaces ONLY non-success
+     * states via snackbar (error, up-to-date). The "newer available"
+     * case is communicated by the inline UI state (latestUpdate);
+     * a snackbar there was overlapping the Download button.
      */
     fun checkForUpdates() {
         if (_checkingUpdate.value) return
@@ -310,14 +311,10 @@ class ConfigViewModel @Inject constructor(
                 _latestUpdate.value = info
                 val emit = when {
                     info == null -> ConfigToast.UpdateCheckError("Couldn't reach GitHub")
-                    info.isNewer -> ConfigToast.UpdateAvailable(
-                        current = info.currentVersion,
-                        latest = info.latestVersion,
-                        url = info.releaseUrl,
-                    )
+                    info.isNewer -> null
                     else -> ConfigToast.UpdateUpToDate(info.currentVersion)
                 }
-                _toast.emit(emit)
+                if (emit != null) _toast.emit(emit)
             } finally {
                 _checkingUpdate.value = false
             }
@@ -353,18 +350,16 @@ class ConfigViewModel @Inject constructor(
     /**
      * Kick off an APK download via [UpdateInstaller]. When the download
      * finishes, the system installer dialog opens automatically.
-     * Snackbar reports start/failure; progress shows in the system
-     * download notification, which is the right surface for it.
+     * Snackbar only fires on FAILURE — the success path is represented
+     * by the Download button changing to "Downloading…" plus the system
+     * download notification. A success snackbar overlapped the button.
      */
     fun downloadAndInstall() {
         val info = _latestUpdate.value ?: return
         if (!info.isNewer) return
         viewModelScope.launch {
             val id = updateInstaller.startDownload(info)
-            _toast.emit(
-                if (id != null) ConfigToast.UpdateDownloadStarted(info.latestVersion)
-                else ConfigToast.UpdateDownloadFailed,
-            )
+            if (id == null) _toast.emit(ConfigToast.UpdateDownloadFailed)
         }
     }
 
