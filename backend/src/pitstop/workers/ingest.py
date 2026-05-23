@@ -816,6 +816,7 @@ class MqttIngest:
                         port=self._cfg.mqtt_port,
                         username=self._cfg.mqtt_user or None,
                         password=self._cfg.mqtt_password or None,
+                        keepalive=30,
                     ) as client:
                         log.info(
                             "MQTT connected host=%s port=%d",
@@ -828,7 +829,24 @@ class MqttIngest:
                         # these alongside the 3-part metric topics.
                         await client.subscribe("wican/+/+/+")
                         await client.subscribe("bridge/+/+")
-                        async for msg in client.messages:
+                        # Watchdog: aiomqtt's async iterator can hang
+                        # silently when the broker drops our subscription
+                        # without raising. WiCAN's LWT-off during a long
+                        # signal drop (~3 min) reliably triggered this in
+                        # the 2026-05-23 cellular VPN test. Force-reconnect
+                        # if no messages arrive in 90 s — even at idle the
+                        # WiCAN publishes battery_voltage every ~30 s, so
+                        # 90 s of silence is a real stall.
+                        msg_iter = client.messages.__aiter__()
+                        while not self._stop.is_set():
+                            try:
+                                msg = await asyncio.wait_for(
+                                    msg_iter.__anext__(), timeout=90.0
+                                )
+                            except TimeoutError as exc:
+                                raise aiomqtt.MqttError(
+                                    "watchdog: no MQTT messages in 90 s"
+                                ) from exc
                             if self._stop.is_set():
                                 break
                             await self._handle_message(msg)
