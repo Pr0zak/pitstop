@@ -47,6 +47,8 @@ data class ConfigFormState(
     val manualSyncOnly: Boolean = false,
     val bridgeBleEnabled: Boolean = true,
     val bridgeGpsEnabled: Boolean = true,
+    val bridgeAutoTrigger: Boolean = true,
+    val bridgeAutoTriggerSsids: List<String> = listOf("MobileChicken"),
     val saved: Boolean = false,
 )
 
@@ -151,6 +153,8 @@ class ConfigViewModel @Inject constructor(
                 manualSyncOnly = secrets.settings.manualSyncOnly,
                 bridgeBleEnabled = secrets.settings.bridgeBleEnabled,
                 bridgeGpsEnabled = secrets.settings.bridgeGpsEnabled,
+                bridgeAutoTrigger = secrets.settings.bridgeAutoTrigger,
+                bridgeAutoTriggerSsids = secrets.settings.bridgeAutoTriggerSsids,
             )
             _formReady.value = true
         }
@@ -226,6 +230,42 @@ class ConfigViewModel @Inject constructor(
         }
     }
 
+    /** Auto-persist the Bridge → "Auto-start in car" switch. Observed
+     *  by [com.pitstop.presence.InCarDetector] mid-session — flipping
+     *  off immediately unregisters the WiFi NetworkCallback. */
+    fun setBridgeAutoTrigger(value: Boolean) {
+        _form.value = _form.value.copy(bridgeAutoTrigger = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setBridgeAutoTrigger(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: bridgeAutoTrigger auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    /** Auto-persist the editable SSID allowlist for the in-car
+     *  detector. Form receives the raw comma-separated text — we
+     *  split + clean here so DataStore stores a normalised value. */
+    fun setBridgeAutoTriggerSsids(commaSeparated: String) {
+        val parsed = commaSeparated
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        _form.value = _form.value.copy(bridgeAutoTriggerSsids = parsed)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setBridgeAutoTriggerSsids(parsed) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: bridgeAutoTriggerSsids auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
     fun pickDevice(device: ScannedDevice) {
         _form.value = _form.value.copy(
             bleDeviceMac = device.mac,
@@ -272,6 +312,8 @@ class ConfigViewModel @Inject constructor(
                     manualSyncOnly = f.manualSyncOnly,
                     bridgeBleEnabled = f.bridgeBleEnabled,
                     bridgeGpsEnabled = f.bridgeGpsEnabled,
+                    bridgeAutoTrigger = f.bridgeAutoTrigger,
+                    bridgeAutoTriggerSsids = f.bridgeAutoTriggerSsids,
                 ),
                 mqttPassword = f.mqttPassword,
                 ingestToken = f.ingestToken,

@@ -82,6 +82,37 @@ data class Settings(
      * settings.
      */
     val bridgeGpsEnabled: Boolean = true,
+    /**
+     * When true, an app-level [com.pitstop.presence.InCarDetector] OR-combines
+     * three independent "in-car" signals — paired-car WiFi SSID
+     * association, Android Auto active, paired-car HFP Bluetooth — and
+     * starts the bridge foreground service when any one fires. When all
+     * three stay false for the detector's debounce window the service
+     * is stopped automatically. When false the detector is inert and
+     * only the manual Start/Stop button in Settings drives the bridge
+     * (matches v0.1.173 behaviour).
+     *
+     * Default true: solves the >5 %/h idle drain that happens when the
+     * user leaves the bridge manually started overnight. New installs
+     * get the right behaviour out of the box; existing installs that
+     * already had the bridge manually running keep working (the
+     * detector sees their in-car signals when they drive and the auto
+     * lifecycle takes over).
+     */
+    val bridgeAutoTrigger: Boolean = true,
+    /**
+     * Comma-separated WiFi SSIDs the [com.pitstop.presence.InCarDetector]
+     * treats as "you're in the car" when the phone is associated with
+     * one. The most reliable hands-on signal: the user's car-only
+     * hotspot SSID. Default `["MobileChicken"]` covers the developer's
+     * setup; a power user can add their own (eg. a vehicle nav unit's
+     * SSID) via the Settings UI.
+     *
+     * Reading `WifiInfo.getSSID()` on Android Q+ requires
+     * `ACCESS_FINE_LOCATION` — already declared / requested for GPS,
+     * so this signal piggybacks on the existing prompt.
+     */
+    val bridgeAutoTriggerSsids: List<String> = listOf("MobileChicken"),
 )
 
 data class SettingsWithSecrets(

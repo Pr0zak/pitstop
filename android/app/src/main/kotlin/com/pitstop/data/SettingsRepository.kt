@@ -40,6 +40,8 @@ class SettingsRepository @Inject constructor(
         val manualSyncOnly: Preferences.Key<Boolean> = booleanPreferencesKey("manual_sync_only")
         val bridgeBleEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_ble_enabled")
         val bridgeGpsEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_gps_enabled")
+        val bridgeAutoTrigger: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_auto_trigger")
+        val bridgeAutoTriggerSsids: Preferences.Key<String> = stringPreferencesKey("bridge_auto_trigger_ssids")
     }
 
     /**
@@ -88,6 +90,12 @@ class SettingsRepository @Inject constructor(
             manualSyncOnly = prefs[Keys.manualSyncOnly] ?: false,
             bridgeBleEnabled = prefs[Keys.bridgeBleEnabled] ?: true,
             bridgeGpsEnabled = prefs[Keys.bridgeGpsEnabled] ?: true,
+            bridgeAutoTrigger = prefs[Keys.bridgeAutoTrigger] ?: true,
+            bridgeAutoTriggerSsids = prefs[Keys.bridgeAutoTriggerSsids]
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?: listOf("MobileChicken"),
         )
     }
 
@@ -124,6 +132,8 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.manualSyncOnly] = settings.manualSyncOnly
             prefs[Keys.bridgeBleEnabled] = settings.bridgeBleEnabled
             prefs[Keys.bridgeGpsEnabled] = settings.bridgeGpsEnabled
+            prefs[Keys.bridgeAutoTrigger] = settings.bridgeAutoTrigger
+            prefs[Keys.bridgeAutoTriggerSsids] = settings.bridgeAutoTriggerSsids.joinToString(",")
         }
         // Treat blank as "leave alone" rather than "clear" — otherwise a
         // save fired before the form's init coroutine has populated the
@@ -161,5 +171,23 @@ class SettingsRepository @Inject constructor(
      *  Same hot-reload contract as [setBridgeBleEnabled]. */
     suspend fun setBridgeGpsEnabled(value: Boolean) {
         context.dataStore.edit { it[Keys.bridgeGpsEnabled] = value }
+    }
+
+    /** Focused setter for the Bridge → "Auto-start in car" toggle.
+     *  Observed by [com.pitstop.presence.InCarDetector] off the
+     *  settings flow — flipping at runtime starts / stops the
+     *  detector's signal collection without restarting anything. */
+    suspend fun setBridgeAutoTrigger(value: Boolean) {
+        context.dataStore.edit { it[Keys.bridgeAutoTrigger] = value }
+    }
+
+    /** Focused setter for the SSID allowlist that drives the in-car
+     *  detector's WiFi signal. Empty list = the WiFi signal is inert
+     *  (the other two signals still fire). */
+    suspend fun setBridgeAutoTriggerSsids(values: List<String>) {
+        val cleaned = values.map { it.trim() }.filter { it.isNotEmpty() }
+        context.dataStore.edit {
+            it[Keys.bridgeAutoTriggerSsids] = cleaned.joinToString(",")
+        }
     }
 }

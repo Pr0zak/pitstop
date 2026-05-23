@@ -128,8 +128,13 @@ fun ConfigScreen(
                 offlineBufferBytes = bridge.offlineBufferBytes,
                 bleEnabled = form.bridgeBleEnabled,
                 gpsEnabled = form.bridgeGpsEnabled,
+                autoTrigger = form.bridgeAutoTrigger,
+                autoTriggerSsids = form.bridgeAutoTriggerSsids,
+                inCar = bridge.inCar,
                 onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
                 onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
+                onAutoTriggerChange = { v -> viewModel.setBridgeAutoTrigger(v) },
+                onAutoTriggerSsidsChange = { v -> viewModel.setBridgeAutoTriggerSsids(v) },
                 onStart = { viewModel.startBridge() },
                 onStop = { viewModel.stopBridge() },
             )
@@ -224,8 +229,13 @@ private fun BridgeServiceSection(
     offlineBufferBytes: Long,
     bleEnabled: Boolean,
     gpsEnabled: Boolean,
+    autoTrigger: Boolean,
+    autoTriggerSsids: List<String>,
+    inCar: Boolean,
     onBleEnabledChange: (Boolean) -> Unit,
     onGpsEnabledChange: (Boolean) -> Unit,
+    onAutoTriggerChange: (Boolean) -> Unit,
+    onAutoTriggerSsidsChange: (String) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -303,6 +313,55 @@ private fun BridgeServiceSection(
                 )
             }
             Switch(checked = gpsEnabled, onCheckedChange = onGpsEnabledChange)
+        }
+
+        // Auto-trigger: start the bridge automatically when the phone
+        // detects you're in the car (paired WiFi SSID, Android Auto, or
+        // paired-car HFP Bluetooth). Stops automatically once all three
+        // signals are absent for the debounce + grace window. When off,
+        // only the manual Start/Stop buttons drive the service.
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Auto-start in car", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (autoTrigger) {
+                        if (inCar) "On — currently detecting car"
+                        else "Watches WiFi SSID, Android Auto, and paired-car Bluetooth"
+                    } else "Off — use Start / Stop below"
+                    ,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (autoTrigger && inCar) {
+                        MaterialTheme.colorScheme.primary
+                    } else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = autoTrigger, onCheckedChange = onAutoTriggerChange)
+        }
+        if (autoTrigger) {
+            // Editable comma-separated list. Empty = the WiFi signal is
+            // disabled (AA + BT still fire). Persists on every keystroke
+            // via the setter — no Save button required.
+            val ssidText = remember(autoTriggerSsids) {
+                mutableStateOf(autoTriggerSsids.joinToString(", "))
+            }
+            OutlinedTextField(
+                value = ssidText.value,
+                onValueChange = { v ->
+                    ssidText.value = v
+                    onAutoTriggerSsidsChange(v)
+                },
+                label = { Text("Car WiFi SSIDs") },
+                placeholder = { Text("MobileChicken") },
+                supportingText = {
+                    Text(
+                        "Comma-separated. Reads associated WiFi name; needs Location permission.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

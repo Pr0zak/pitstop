@@ -324,15 +324,11 @@ class PitstopBridgeService : Service() {
 
     // -------- Bridge driver --------
 
-    // TODO(zak, Task #13): optional auto-trigger — when bridgeGpsEnabled
-    // is true AND the phone associates with a configurable WiFi SSID
-    // (default "MobileChicken"), call startForegroundService() on this
-    // bridge automatically; on disassociation, stop it. Implementation
-    // would use ConnectivityManager.registerNetworkCallback() with a
-    // NetworkRequest filtering TRANSPORT_WIFI, then inspect
-    // WifiInfo.getSSID() in onCapabilitiesChanged. Skipped from this
-    // pass to keep the PR small — the manual Start button in Settings
-    // is the documented MVP path.
+    // Auto-trigger now lives in [com.pitstop.presence.InCarDetector] —
+    // app-singleton, observes paired-car WiFi SSID + AA + paired-car
+    // HFP, calls startForegroundService on this service when in-car
+    // and the stop intent when the combined signal stays false past
+    // the debounce + grace window.
     @SuppressLint("MissingPermission")
     private fun startBridge() {
         pollJob = scope.launch {

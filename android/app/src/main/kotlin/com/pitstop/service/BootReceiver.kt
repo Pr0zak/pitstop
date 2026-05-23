@@ -10,6 +10,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -56,7 +57,29 @@ class BootReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         scope.launch {
             try {
-                if (settings.bridgeAutoStart()) {
+                val current = settings.settings.first()
+                // When bridgeAutoTrigger is on, the InCarDetector
+                // (singleton in PitstopApp) will start the bridge the
+                // moment the user actually gets in the car. Starting
+                // the foreground service on every boot just to sit
+                // idle for hours defeats the whole point of the
+                // detector — and the manifest already has us listed
+                // as a stickied foreground service that the OS will
+                // re-launch when needed.
+                //
+                // For self-update (MY_PACKAGE_REPLACED) we DO still
+                // want to relaunch immediately if the bridge was
+                // running before the update — the user expects an
+                // in-progress drive to keep recording. The detector
+                // catches the in-car case but a fresh process can't
+                // resume an in-flight drive on its own.
+                val autoTrigger = current.bridgeAutoTrigger
+                val should = if (isPackageReplaced) {
+                    settings.bridgeAutoStart()
+                } else {
+                    !autoTrigger && settings.bridgeAutoStart()
+                }
+                if (should) {
                     val why = if (isPackageReplaced) "after self-update" else "after boot"
                     Log.i(TAG, "auto-starting pitstop bridge $why")
                     ContextCompat.startForegroundService(
@@ -64,7 +87,11 @@ class BootReceiver : BroadcastReceiver() {
                         PitstopBridgeService.startIntent(context),
                     )
                 } else {
-                    Log.i(TAG, "trigger=${action}; bridge auto-start disabled, skipping")
+                    Log.i(
+                        TAG,
+                        "trigger=$action; skipped " +
+                            "(auto_trigger=$autoTrigger, auto_start=${settings.bridgeAutoStart()})",
+                    )
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "BootReceiver failure", t)

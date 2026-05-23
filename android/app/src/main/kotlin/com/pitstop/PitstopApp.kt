@@ -8,6 +8,7 @@ import androidx.work.Configuration
 import com.pitstop.drive.scheduleDriveUploads
 import com.pitstop.log.LogBuffer
 import com.pitstop.notif.SyncReminderManager
+import com.pitstop.presence.InCarDetector
 import com.pitstop.update.scheduleUpdateChecks
 import com.pitstop.widget.scheduleFuelWidgetRefresh
 import dagger.hilt.android.HiltAndroidApp
@@ -19,6 +20,7 @@ class PitstopApp : Application(), Configuration.Provider {
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var logBuffer: LogBuffer
     @Inject lateinit var syncReminderManager: SyncReminderManager
+    @Inject lateinit var inCarDetector: InCarDetector
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -50,6 +52,15 @@ class PitstopApp : Application(), Configuration.Provider {
         // useful in manual-sync mode where the queue otherwise grows
         // silently.
         syncReminderManager.start()
+        // App-lifetime in-car detector. Listens for paired-car WiFi
+        // SSID + AA + paired-car HFP and auto-starts/stops the bridge
+        // foreground service when bridgeAutoTrigger is on. Replaces
+        // the leave-it-on-all-day pattern that was burning 5-10 %/h
+        // when the phone sat in the driveway. The detector itself is
+        // ~free at idle (one WiFi NetworkCallback + the existing AA +
+        // HFP observers from PresenceTracker); the bridge service no
+        // longer runs unless one of the signals fires.
+        inCarDetector.start()
     }
 
     /**
