@@ -307,6 +307,21 @@ async def compute_trip_stats(
             ended_at,
         )
 
+    # Sanity cap: raw fuel_level can slosh 20+ pct on a short trip,
+    # producing fallback estimates that imply sub-1-MPG consumption.
+    # Discard rather than poison /analytics/* with the bogus value;
+    # NULL distinguishes "unknown" from a genuine zero. Threshold:
+    # 0.40 L/km ≈ 5.9 MPG, looser than any plausible real-world figure
+    # on a moving trip (worst-case towing-uphill gasoline still beats
+    # ~6 MPG).
+    if (
+        fuel_used_l is not None
+        and distance_km is not None
+        and float(distance_km) > 0.5
+        and float(fuel_used_l) / float(distance_km) > 0.40
+    ):
+        fuel_used_l = None
+
     dtc_count = await conn.fetchval(
         """
         SELECT count(*)

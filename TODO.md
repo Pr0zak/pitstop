@@ -1,46 +1,80 @@
 # pitstop — Pending Work
 
-Generated 2026-05-21 by session-close after shipping **v0.1.156** (in-app web upgrade flow, end-to-end validated).
+Generated 2026-05-22 by session-close after shipping **v0.1.171** (phone now polls Mode 01 PID 0xA6 odometer at 30s cadence for trip start/end).
 
-Numeric task IDs in the harness are session-scoped. Use the **mnemonics** below as durable identifiers. To resume, open Claude Code in `/home/spider/pitstop` and say `rehydrate from TODO.md` — it'll re-instantiate via `TaskCreate` with the right `blockedBy` edges.
+Numeric task IDs in the harness are session-scoped. Use the **mnemonics** below as durable identifiers. To resume, open Claude Code in `/home/spider/pitstop` and say `rehydrate from TODO.md`.
 
-The original Phase A/B/C build plan (tasks #1–#29, repo scaffold through HA plumbing) all shipped between v0.1.0 and v0.1.123 and is no longer carried in this file. See `git log` + [`docs/decisions.md`](./docs/decisions.md) for the running history and the ADRs that document the build.
+The original Phase A/B/C build plan (tasks #1–#29, repo scaffold through HA plumbing) all shipped between v0.1.0 and v0.1.123 and is no longer carried here. See `git log` + [`docs/decisions.md`](./docs/decisions.md) for the running history and the ADRs.
 
 ---
 
 ## #VERIFY — phone install + UX verification on real device (1 task · user-side)
 
-The whole v0.1.135 → v0.1.156 stack is in one APK. Install once and exercise each change in turn. The web side has already been verified via the in-app upgrade endpoint (v0.1.154 → v0.1.155 → v0.1.156 all flipped cleanly through `/admin/upgrade`).
+The whole v0.1.135 → v0.1.171 stack is in one APK. Phone is currently on v0.1.171 per the live logs.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| VERIFY-1 | Install latest APK via in-app self-update; spot-check: (a) **manual-sync beacon** — even with manual-sync ON, fuel widget + Overview hero card update at ~1/min, but no per-frame OBD floods to MQTT; (b) **OTA progress** — in-app update shows a real progress bar pulling the new APK; (c) **fuel widget WorkManager refresh** — value stays current after the launcher has sat idle (Doze) for hours; (d) **NO DATA logging** — Status → DTCs / logs doesn't include endless `NO DATA` spam for Honda-unsupported PIDs; (e) **offline cache** — open Trips with cellular off, recent ones still render; (f) **combined-trips heatmap** — Heatmap tab on phone renders the same polyline overlay style as the web heatmap; (g) **BLE-lost watchdog** — drives without OBD now seal at ~3 min idle instead of 15; (h) **GPS bypasses manual-sync** — drives still get GPS even in manual-sync mode; (i) **pull-to-refresh** — pull down on History / Home / Trips reloads; (j) **trip + fillup grouping** — History tabs show date-bucketed sections + sort/filter chips; (k) **fuel gauge** — Status Home shows the analog arc-gauge fuel card; (l) verify the **fuel gauge** also looks right on the web Overview. | — |
-
-Code-side gates passed compile-clean + the web upgrade flow was validated end-to-end against a running CT. The remaining unknown is real-device behavior.
+| VERIFY-1 | After a clean BLE link (see BLE-2), confirm on a real drive: (a) trip detail shows **Odo start / Odo end / Distance (odo Δ)** rows; (b) **Fuel level start → end** rows populate even when both sit near the calibration peak; (c) **Gas used (est.)** appears once tank drops below ~85 % raw; (d) Fuel hero gauge stays calm (p75 smoothing) through slosh dips; (e) Sync-now confirm dialog fires on cellular; (f) cache-on-5xx fallback shows stale data instead of error toast when backend hiccups. | BLE-2 |
 
 ---
 
-## Recently closed (this session, v0.1.134 → v0.1.156)
+## #BLE — Phone BLE link stability (1 task · in-progress, user-side first)
 
-- **UPDATE-2/3/4/5 — In-app web upgrade flow (Zonik-style) (2026-05-20/21, v0.1.153–156)** — `GET /admin/updates` compares running PITSTOP_VERSION to GitHub /releases/latest (60s cache). `POST /admin/upgrade` spawns a detached `docker:27-cli` sidecar via mounted /var/run/docker.sock that runs `deploy/upgrade.sh` against the CT host daemon — survives the backend's own restart. Sidebar update-badge becomes a button; new Settings → About card has a "Check for updates" button. UpdateModal polls /version every 3s until target tag appears, then prompts page reload. Two fixes shipped during validation: v0.1.155 strips `v` prefix to match GHCR semver tags + self-heals stale "running" job state; v0.1.156 pins `COMPOSE_PROJECT_NAME=pitstop` so the sidecar updates real `pitstop-*` containers instead of phantom `work-*` ones. CT 231 migrated to image-pull deploy in the process (`BACKEND_TAG=v0.1.X` / `FRONTEND_TAG=v0.1.X` in `.env`).
-- **GAUGE-1/2 — Fuel hero card as analog arc gauge (2026-05-20, v0.1.151–152)** — phone + web Overview Fuel level card replaced with a 180° SVG/Canvas arc gauge: tick marks at E/¼/½/¾/F, color-coded fill (red <15%, amber <35%, green ≥35%), border tinted to the same accent, big mono % on the arc baseline. Web LiveView's tile-grid fuel display deliberately left alone.
-- **FILLUPS-1/2 — Group fillups by date + sort/filter (2026-05-20, v0.1.150)** — mirrors the trips treatment. Phone gets a chip row (All / Full / Partial) + sort dropdown (Recent / Cost / Volume / MPG / $/gal) above sticky-header date sections; web FuelView splits the single table into per-bucket cards keeping its existing column-header click sort.
-- **TRIPS-1/2 — Group trips by date + sort/filter (2026-05-20, v0.1.149)** — both clients group trips into Today / Yesterday / Past 7 / Past 30 / This year / Older with sticky headers; phone adds source filter (Phone / Manual merge / Other) + sort by Recent / Furthest / Fastest / Longest.
-- **UX-1/2 — Pull-to-refresh + web update badge (2026-05-20, v0.1.148)** — phone History / Home / Trips lists wrap in `PullToRefreshBox`. Web sidebar shows a `↑ vX.Y.Z` badge when `/version` < latest GitHub release (this was the seed of the bigger in-app upgrade work shipped above).
-- **OBD-3 — GPS bypasses manual-sync gate (2026-05-20, v0.1.147)** — `location` added to `MANUAL_MODE_BEACON_METRICS` alongside `fuel_level`. Trips taken in manual-sync mode no longer go GPS-less.
-- **OBD-2 — BLE-lost watchdog 15 min → 3 min (2026-05-20, v0.1.146)** — drives that end with a permanent BLE drop are now sealed quickly so they show up in History without the user waiting.
-- **MAP-1/2/3 — Combined trips heatmap (2026-05-19/20, v0.1.141–145)** — backend endpoint streams trip route points for a date range; web view renders them via MapLibre using the trip-detail polyline approach (not circles); phone parity port via MapLibre Android. The mode-toggle bug where `setStyle({diff:true})` kept the GeoJSON source but wiped layers was diagnosed and fixed by re-adding layers in the `style.load` callback.
-- **DERIVE-1 — Trip derivation from wican-only PID windows (2026-05-19)** — confirmed NOT a bug: wican-only data with vehicle_speed=0 correctly skipped as not-a-trip; the sparse 32 km/h readings the user saw were pass-by glimpses on the property.
-- **CACHE-1 — OkHttp offline cache (2026-05-19, v0.1.140)** — phone HTTP client now has a 32 MB disk cache plus a two-interceptor offline-fallback: network interceptor rewrites `Cache-Control: max-age=120, stale-while-revalidate=600`; application interceptor returns `only-if-cached, max-stale=86400` when offline.
-- **OBD-1 — Drop Honda-unsupported PIDs + log NO DATA (2026-05-19, v0.1.139)** — `pid_profiles/honda-pilot19.json` no longer asks for 0x14/16/17/18 (O2 sensors) or 0x1F (engine-run-time). `NO DATA` responses now flow to `client_logs` at INFO so future drift is visible.
-- **WIDGET-5 — Periodic WorkManager fuel refresh (2026-05-18, v0.1.138)** — a `PeriodicWorkRequest` runs every 30 min via WorkManager (which Android honors even in Doze) and triggers `FuelWidgetProvider.refreshWidgets`, surviving Doze-deferred `updatePeriodMillis`.
-- **UPDATE-1 — In-app OTA progress bar (2026-05-18, v0.1.137)** — `OtaUpdater` now streams `downloaded / total bytes` to a `StateFlow`; the settings download card renders a determinate `LinearProgressIndicator` instead of a spinner.
-- **WIDGET-4 — Hero fuel card prefers local in-process metric (2026-05-18, v0.1.136)** — when `BridgeStateBus.fuelLevelPct` is fresher than the `/vehicles` `latest.fuel_level.time`, the hero card uses the local sample. Fixes the lag where manual-sync mode would suppress publishes and the hero card showed stale data.
-- **WIDGET-3 — Manual-sync fuel beacon (2026-05-18, v0.1.135)** — even when manual-sync is on, the phone publishes `fuel_level` at most once per 60s (and `location` per OBD-3) so the widget + hero card stay current. Allowlist is `MANUAL_MODE_BEACON_METRICS = {"fuel_level", "location"}`.
+Throughout today the phone's BLE GATT link to the WiCAN dongle went into a tight error loop (`status -5` / `0x85 GATT ERROR` / `0x8 GATT CONN TIMEOUT`), the same flap pattern that hit on 2026-05-20 (resolved then by Bluetooth forget+re-pair). Until BLE works, the new v0.1.171 odometer poll never fires and trips upload as wican-only.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| BLE-2 | User-side: Bluetooth → Forget WiCAN → re-pair from pitstop Settings → Bridge. THEN take a 3+ min drive. THEN inspect new trip's odo_start_km / odo_end_km via the API. If the flap returns within a week, consider an automated "GATT error → forget + retry pair" recovery flow in the phone bridge service. | — |
+
+---
+
+## #WICAN — WiCAN-side PID config (1 task · user-side)
+
+WiCAN's AutoPID list publishes ~30 metrics per drive (engine_load, ltft, rpm, etc.) but **doesn't include odometer** at trip cadence — its A6-Odometer publish fires roughly once a day. The phone's new PID 0xA6 poll (v0.1.171) covers this when BLE is healthy; add WiCAN as a redundant path so trips have odo even on phone-BLE outages.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| WICAN-1 | On the WiCAN web UI (driveway-only LAN access), add Mode 01 PID 0xA6 to the AutoPID poll list, name `odometer`, cadence 30s. Verify by tailing `wican/pilot19/pid` MQTT — should now publish `odometer` alongside the other metrics during a drive. | — |
+
+---
+
+## #OBD — MPG via MAF (1 task · planning)
+
+OBD-5's fuel-level-delta MPG fallback shipped in v0.1.163, but Honda Pilot's 0x2F sensor is too noisy/non-linear at the top of the range — short trips on a near-full tank can't move it enough to register. Proper MPG needs `maf_air_flow` (PID 0x10), which Honda V6 PCM **doesn't** answer in the standard Mode 01 form (returns NO DATA — that's why we dropped it in OBD-1). WiCAN's `66-MAFSensorA/B` (custom Honda PIDs) do work; need to plumb those.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| OBD-6 | Backend: teach `compute_trip_stats` to ALSO integrate `66-MAFSensorA` (or whatever canonical alias) as a MAF source, not just `maf_air_flow`. Map the WiCAN-published Honda-extended MAF PIDs to the same fuel-used integration that already exists. Should unblock per-trip MPG without depending on the broken std-PID path. | — |
+
+---
+
+## Recently closed (this session, v0.1.156 → v0.1.171)
+
+- **v0.1.171 — Phone polls PID 0xA6 odometer (30s).** Adds `Odometer` to the DEFAULT poll list with 4-byte parser (J1979 spec, 0.1 km units). Trip start/end will populate via phone bridge once BLE is healthy (BLE-2). Honda confirmed to answer the PID — WiCAN reads it correctly.
+- **v0.1.170 — Trip detail 500 fix.** Unused `$2` SQL placeholder in the fuel_level_end query made asyncpg throw `IndeterminateDatatypeError` on every GET /trips/{id}. Rebound to $2=ended, dropped the unused param.
+- **v0.1.169 — Fuel smoothing via 75th percentile.** Three iterations: median → median+widow → slew-rate-limited replay → final p75-of-recent. The p75 approach is simplest and most accurate for this sensor: high end of recent samples = closest to truth (fuel only goes down), robust to slosh dips below + spikes above. 60-min window primary, fallback to last 50 samples regardless of age when parked.
+- **v0.1.168 — Median-smooth fuel_level (initial) + raw debug.** Then superseded by v0.1.169's p75.
+- **v0.1.167 — Trip detail: odo start/end + fuel level start/end + gas used.** Added per-vehicle calibration-normalized fuel_level boundaries, surfaced fuel_used_l as gal. Phone + web both render rows when data exists.
+- **v0.1.166 — Phone cache fallback on HTTP 5xx.** `OfflineCacheInterceptor` only caught IOException; 5xx propagated as HttpException to ViewModels. Now both paths route to FORCE_CACHE so stale-cached data shows instead of error toast.
+- **v0.1.165 — Don't double-encode JSONB in drive_ingest.** v0.1.163's `_refresh_vehicle_state_from_drive` called json.dumps() on a dict before passing to asyncpg, which has a JSONB codec that also calls json.dumps(). Double-encoding → Postgres stored a JSON string → `||` concat against an existing object wrapped both as arrays → /vehicles 500. CASE on jsonb_typeof = 'object' added so any pre-existing array `latest` self-heals on next drive upload.
+- **v0.1.164 — Cellular-data confirm dialog.** New NetworkMonitor classifies via NET_CAPABILITY_NOT_METERED. Sync-now on cellular opens an AlertDialog with the pending count; Wait for WiFi / Sync over cellular. Offline shows informational variant.
+- **v0.1.163 — OBD-5 + post-drive vehicle_state refresh.** MPG fallback from fuel_level delta when MAF integration yields zero. /drives POST now also upserts vehicle_state.latest so the hero card reflects post-drive readings (manual-sync mode users no longer see frozen values).
+- **v0.1.162 — Compose binds use absolute host paths.** Recurring mosquitto crash-loop fixed: the in-app upgrade sidecar's `docker compose up` from /work resolved `./mosquitto/config` to `/work/mosquitto/config` (host path doesn't exist), triggering recreate with a broken bind. Pinned both bind sources to `${PITSTOP_HOST_DIR:-.}/...` so they're stable regardless of caller's cwd.
+- **v0.1.161 — Trip-detail 3×2 hero grid + heatmap gas-station overlay.** Hero stats card now has even column widths (Duration / Distance / MPG; Max speed / Max RPM / Avg speed). Heatmap gets a Stations FilterChip — overlays a cyan halo+dot at every fillup's GPS pair.
+- **v0.1.160 — Surface fuel_level_calibration_pct on VehicleOut.** Pydantic was stripping the new column from the response; phone hero card local-override needed it.
+- **v0.1.159 — Live-OBD odo prefill + per-vehicle fuel calibration.** Add Fillup form prefills `odo` from `vehicle.latest_odo_km` (web + phone). alembic 0016 adds `fuel_level_calibration_pct REAL DEFAULT 100`. POST /fillups with is_full=true captures highest raw fuel_level reading ±30 min → vehicle's calibration ceiling. /vehicles normalizes display so 100% = full tank.
+- **v0.1.158 — Don't seal implausible drives; drop 4xx-rejected ones from queue.** v0.1.157's STOPPED handler caused a 3-frame 0-duration drive to seal and jam the upload queue. Added refuse-implausible-drives guard + 4xx auto-eviction.
+- **v0.1.157 — OBD-4: recognize STOPPED/BUS ERROR/CAN ERROR as engine-off.** ELM327 echoes the request before the response (`010B\rSTOPPED`); the original startsWith check on the trimmed whole frame always failed. Now splits per line and matches against the ELM error-response table.
+
+---
+
+## Infrastructure note
+
+The in-app upgrade flow (UPDATE-2 series) was used 8+ times this session — each ship was deployed via `/admin/upgrade?target=vX.Y.Z` rather than the laptop-side `pitstop-deploy` skill. v0.1.162's absolute-path fix was the load-bearing change; without it every sidecar invocation broke mosquitto. The flow is now stable.
 
 ---
 
 ## See also
 
-- ADRs: [`docs/decisions.md`](./docs/decisions.md) — pending after this session: ADR for the in-app upgrade flow (sidecar + bind mount + project name pin).
-- Memory: `~/.claude/projects/-home-spider-pitstop/memory/` — no `project_pitstop_state.md` exists; the session-close skill recommends creating one but defers to the user.
+- ADRs: [`docs/decisions.md`](./docs/decisions.md) — pending after this session: ADR for the slosh-robust fuel-level smoothing (p75 of recent samples vs OEM-style filter — explain the iteration path).
+- Memory: `~/.claude/projects/-home-spider-pitstop/memory/` — still no `project_pitstop_state.md`. Session-close recommends one but defers to user.
