@@ -1,26 +1,60 @@
 # pitstop — Pending Work
 
-Generated 2026-05-22 by session-close after shipping **v0.1.171** (phone now polls Mode 01 PID 0xA6 odometer at 30s cadence for trip start/end).
+Generated 2026-05-23 by session-close after shipping **v0.1.172** (sanity-cap fuel-level fallback to discard impossible MPG; paired with device-side WiCAN poll-list fix enabling Mode 01 PID 0x10 MAF) **and** the post-release cellular-VPN architecture work (WiCAN now reaches mosquitto via WireGuard tunnel through the UCG-Ultra when on car WiFi — phone bridge no longer required for OBD capture).
 
-Numeric task IDs in the harness are session-scoped. Use the **mnemonics** below as durable identifiers. To resume, open Claude Code in `/home/spider/pitstop` and say `rehydrate from TODO.md`.
+Numeric task IDs in the harness are session-scoped. Use **mnemonics** below as the durable identifiers. To resume, open Claude Code in `/home/spider/pitstop` and say `rehydrate from TODO.md + memory`.
 
-The original Phase A/B/C build plan (tasks #1–#29, repo scaffold through HA plumbing) all shipped between v0.1.0 and v0.1.123 and is no longer carried here. See `git log` + [`docs/decisions.md`](./docs/decisions.md) for the running history and the ADRs.
+The original Phase A/B/C build plan (tasks #1–#29, repo scaffold through HA plumbing) all shipped between v0.1.0 and v0.1.123 and is no longer carried here. See `git log` + [`docs/decisions.md`](./docs/decisions.md) for the running history and ADRs.
 
 ---
 
-## #VERIFY — phone install + UX verification on real device (1 task · user-side)
+## #VPN — Cellular tunnel architecture (4 tasks · live, partially proven)
 
-The whole v0.1.135 → v0.1.171 stack is in one APK. Phone is currently on v0.1.171 per the live logs.
+**Status:** Architecture works end-to-end via WiCAN's `sta_ssid=MobileChicken` → cellular → DDNS `zak.port0.org:51820` → UCG-Ultra WireGuard server → tunnel `192.168.5.3 ↔ 10.0.0.83` → mosquitto. Verified by broker-side subscribe catching live publishes after WiCAN connected to phone hotspot in driveway.
+
+**Key gotchas discovered today:**
+- **SSID is case-sensitive.** WiCAN configured with `mobilechicken` (lowercase) never matched the actual `MobileChicken` SSID. Fixed.
+- **`sta_fallbacks` triggers at boot/scan time, not mid-connection.** When WiCAN's home WiFi drops mid-drive, it stays in reconnect-loop on the same SSID. Switching networks requires a sleep/wake cycle (engine off > 5 min for voltage-triggered sleep).
+- **`SmartConnect` wifi_mode in firmware 4.49 is buggy / unsupported despite being in the API.** UI hides the toggle. Pushing it via API bricked the device into AP-mode fallback. Avoid; stick to `Station` mode with primary + fallback.
+- **`/store_auto_data` + `/store_config` race** — POSTing both then triggering one reboot via `/store_config` loses the auto_pid changes (the flash flush hadn't completed when reboot fired). Push auto_pid first with its own `/system_reboot`, then push general config separately.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| VERIFY-1 | After a clean BLE link (see BLE-2), confirm on a real drive: (a) trip detail shows **Odo start / Odo end / Distance (odo Δ)** rows; (b) **Fuel level start → end** rows populate even when both sit near the calibration peak; (c) **Gas used (est.)** appears once tank drops below ~85 % raw; (d) Fuel hero gauge stays calm (p75 smoothing) through slosh dips; (e) Sync-now confirm dialog fires on cellular; (f) cache-on-5xx fallback shows stale data instead of error toast when backend hiccups. | BLE-2 |
+| VPN-1 | **Real drive test of cellular tunnel.** With hotspot ON before engine start, take a 5+ min drive away from home WiFi. Verify: (a) WiCAN's destination success_count ticks throughout drive, (b) pid_readings land with no >60s gaps, (c) trip seals correctly with sensible MAF coverage. | — |
+| VPN-2 | **UniFi firewall rule: LAN → VPN reverse routing.** Today we couldn't reach the WiCAN at `192.168.5.3` from the LAN (`10.0.0.0/24`). Add a UCG firewall rule allowing LAN clients to reach VPN-server subnet `192.168.5.0/24` so we can curl the WiCAN's web UI through the tunnel for live diagnostics during a drive. | — |
+| VPN-3 | **Phase-out plan for phone BLE-OBD bridge.** Once VPN-1 + #13 (GPS-only mode) both land, the phone bridge becomes redundant for OBD. Document the deprecation, add a feature flag in Settings to disable BLE-OBD by default for new installs, ADR for the architecture. | VPN-1, #13 |
+| VPN-4 | **Key rotation.** During API discovery + recovery the UCG WG server private key, the WiCAN client WG private key, and the phone hotspot password all ended up in conversation context. Rotate via UniFi UI → regenerate One-Click VPN keys → re-push new client config to WiCAN. | — |
 
 ---
 
-## #BLE — Phone BLE link stability (1 task · in-progress, user-side first)
+## #MAF — verify WiCAN MAF coverage survives a sleep/wake cycle (2 tasks · user-side first, then verify)
 
-Throughout today the phone's BLE GATT link to the WiCAN dongle went into a tight error loop (`status -5` / `0x85 GATT ERROR` / `0x8 GATT CONN TIMEOUT`), the same flap pattern that hit on 2026-05-20 (resolved then by Bluetooth forget+re-pair). Until BLE works, the new v0.1.171 odometer poll never fires and trips upload as wican-only.
+Today's fix added `10-MAFAirFlowRate` (Mode 01 PID 0x10) to the WiCAN's std_pids and disabled four always-zero PIDs (`9D-EngineFuelRate`, `51-FuelType`, `9E-EngineExhaustFlowRate`, `9F-FuelSystemPercentageUse`). MAF landed cleanly at 1 Hz from 09:04 → 09:24 (1,828 samples). Then the WiCAN went to sleep (engine-off > 5 min, voltage < 13.1 V), and two subsequent trips (09:37, 09:50) had **zero** MAF samples — even though RPM, speed, throttle, manifold pressure, etc. all landed fine.
+
+Open question: does the WiCAN re-apply the new PID config on wake-from-sleep, or does it revert to a cached set that doesn't include `10-MAFAirFlowRate`?
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| MAF-1 | Drive the car for 2–3 min. Then immediately: `curl http://10.0.0.181/load_auto_pid` and confirm `10-MAFAirFlowRate` is still in std_pids with `enabled: true`. Then query the DB: any `maf_air_flow` samples in the trip's time window? | — |
+| MAF-2 | **If MAF-1 shows the PID is gone or disabled**, two options: (a) disable WiCAN sleep entirely via `/store_config` with `sleep_status: disable` (costs a few mA standby drain), or (b) investigate the wake-from-sleep PID-restore path in WiCAN firmware. (a) is the pragmatic fix. **If MAF-1 shows MAF is back and integrating cleanly**, close this family. | MAF-1 |
+
+Skills: `/wican-config --show` to inspect the live config; `/pitstop-status` for ingest health.
+
+---
+
+## #VERIFY — phone install + UX verification on real device (1 task · user-side, carried forward)
+
+The whole v0.1.135 → v0.1.172 stack is in one APK. Phone was on v0.1.171 entering this session; the v0.1.172 backend release didn't change phone code, but the new APK is available.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| VERIFY-1 | After a clean BLE link (see BLE-2), confirm on a real drive: (a) trip detail shows **Odo start / Odo end / Distance (odo Δ)** rows; (b) **Fuel level start → end** rows populate even when both sit near the calibration peak; (c) **Gas used (est.)** appears once tank drops below ~85 % raw (and now reads from real MAF integration, not slosh fallback); (d) Fuel hero gauge stays calm (p75 smoothing) through slosh dips; (e) Sync-now confirm dialog fires on cellular; (f) cache-on-5xx fallback shows stale data instead of error toast when backend hiccups. | BLE-2, MAF-1 |
+
+---
+
+## #BLE — Phone BLE link stability (1 task · user-side first, carried forward)
+
+The phone's BLE GATT link to the WiCAN dongle has been flapping (`status -5` / `0x85 GATT ERROR` / `0x8 GATT CONN TIMEOUT`), the same flap pattern that hit on 2026-05-20 (resolved then by Bluetooth forget+re-pair). Until BLE works, the new v0.1.171 odometer poll never fires and trips upload as wican-only.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
@@ -28,53 +62,57 @@ Throughout today the phone's BLE GATT link to the WiCAN dongle went into a tight
 
 ---
 
-## #WICAN — WiCAN-side PID config (1 task · user-side)
+## #WICAN — WiCAN-side AutoPID additions (1 task · user-side, carried forward)
 
-WiCAN's AutoPID list publishes ~30 metrics per drive (engine_load, ltft, rpm, etc.) but **doesn't include odometer** at trip cadence — its A6-Odometer publish fires roughly once a day. The phone's new PID 0xA6 poll (v0.1.171) covers this when BLE is healthy; add WiCAN as a redundant path so trips have odo even on phone-BLE outages.
-
-| Mnemonic | Subject | Blocked by |
-|---|---|---|
-| WICAN-1 | On the WiCAN web UI (driveway-only LAN access), add Mode 01 PID 0xA6 to the AutoPID poll list, name `odometer`, cadence 30s. Verify by tailing `wican/pilot19/pid` MQTT — should now publish `odometer` alongside the other metrics during a drive. | — |
-
----
-
-## #OBD — MPG via MAF (1 task · planning)
-
-OBD-5's fuel-level-delta MPG fallback shipped in v0.1.163, but Honda Pilot's 0x2F sensor is too noisy/non-linear at the top of the range — short trips on a near-full tank can't move it enough to register. Proper MPG needs `maf_air_flow` (PID 0x10), which Honda V6 PCM **doesn't** answer in the standard Mode 01 form (returns NO DATA — that's why we dropped it in OBD-1). WiCAN's `66-MAFSensorA/B` (custom Honda PIDs) do work; need to plumb those.
+The phone's PID 0xA6 poll (v0.1.171) covers odometer at trip cadence when BLE is healthy; the WiCAN's `A6-Odometer` entry is enabled but at 5000 ms (its own slow default). Adding it as a faster redundant path on the WiCAN would close the gap on phone-BLE outages.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| OBD-6 | Backend: teach `compute_trip_stats` to ALSO integrate `66-MAFSensorA` (or whatever canonical alias) as a MAF source, not just `maf_air_flow`. Map the WiCAN-published Honda-extended MAF PIDs to the same fuel-used integration that already exists. Should unblock per-trip MPG without depending on the broken std-PID path. | — |
+| WICAN-1 | On the WiCAN web UI (or via `/wican-config --period A6-Odometer=30000 --apply --reboot`), reduce `A6-Odometer` to ≤30 s. Verify by tailing `wican/pilot19/pid` MQTT — should now publish `odometer` at the faster cadence. Low priority since phone already covers this, but cheap defense-in-depth. | — |
 
 ---
 
-## Recently closed (this session, v0.1.156 → v0.1.171)
+## #SD — Evaluate WiCAN SD buffer-and-sync as phone-bridge replacement (4 tasks · investigation)
 
-- **v0.1.171 — Phone polls PID 0xA6 odometer (30s).** Adds `Odometer` to the DEFAULT poll list with 4-byte parser (J1979 spec, 0.1 km units). Trip start/end will populate via phone bridge once BLE is healthy (BLE-2). Honda confirmed to answer the PID — WiCAN reads it correctly.
-- **v0.1.170 — Trip detail 500 fix.** Unused `$2` SQL placeholder in the fuel_level_end query made asyncpg throw `IndeterminateDatatypeError` on every GET /trips/{id}. Rebound to $2=ended, dropped the unused param.
-- **v0.1.169 — Fuel smoothing via 75th percentile.** Three iterations: median → median+widow → slew-rate-limited replay → final p75-of-recent. The p75 approach is simplest and most accurate for this sensor: high end of recent samples = closest to truth (fuel only goes down), robust to slosh dips below + spikes above. 60-min window primary, fallback to last 50 samples regardless of age when parked.
-- **v0.1.168 — Median-smooth fuel_level (initial) + raw debug.** Then superseded by v0.1.169's p75.
-- **v0.1.167 — Trip detail: odo start/end + fuel level start/end + gas used.** Added per-vehicle calibration-normalized fuel_level boundaries, surfaced fuel_used_l as gal. Phone + web both render rows when data exists.
-- **v0.1.166 — Phone cache fallback on HTTP 5xx.** `OfflineCacheInterceptor` only caught IOException; 5xx propagated as HttpException to ViewModels. Now both paths route to FORCE_CACHE so stale-cached data shows instead of error toast.
-- **v0.1.165 — Don't double-encode JSONB in drive_ingest.** v0.1.163's `_refresh_vehicle_state_from_drive` called json.dumps() on a dict before passing to asyncpg, which has a JSONB codec that also calls json.dumps(). Double-encoding → Postgres stored a JSON string → `||` concat against an existing object wrapped both as arrays → /vehicles 500. CASE on jsonb_typeof = 'object' added so any pre-existing array `latest` self-heals on next drive upload.
-- **v0.1.164 — Cellular-data confirm dialog.** New NetworkMonitor classifies via NET_CAPABILITY_NOT_METERED. Sync-now on cellular opens an AlertDialog with the pending count; Wait for WiFi / Sync over cellular. Offline shows informational variant.
-- **v0.1.163 — OBD-5 + post-drive vehicle_state refresh.** MPG fallback from fuel_level delta when MAF integration yields zero. /drives POST now also upserts vehicle_state.latest so the hero card reflects post-drive readings (manual-sync mode users no longer see frozen values).
-- **v0.1.162 — Compose binds use absolute host paths.** Recurring mosquitto crash-loop fixed: the in-app upgrade sidecar's `docker compose up` from /work resolved `./mosquitto/config` to `/work/mosquitto/config` (host path doesn't exist), triggering recreate with a broken bind. Pinned both bind sources to `${PITSTOP_HOST_DIR:-.}/...` so they're stable regardless of caller's cwd.
-- **v0.1.161 — Trip-detail 3×2 hero grid + heatmap gas-station overlay.** Hero stats card now has even column widths (Duration / Distance / MPG; Max speed / Max RPM / Avg speed). Heatmap gets a Stations FilterChip — overlays a cyan halo+dot at every fillup's GPS pair.
-- **v0.1.160 — Surface fuel_level_calibration_pct on VehicleOut.** Pydantic was stripping the new column from the response; phone hero card local-override needed it.
-- **v0.1.159 — Live-OBD odo prefill + per-vehicle fuel calibration.** Add Fillup form prefills `odo` from `vehicle.latest_odo_km` (web + phone). alembic 0016 adds `fuel_level_calibration_pct REAL DEFAULT 100`. POST /fillups with is_full=true captures highest raw fuel_level reading ±30 min → vehicle's calibration ceiling. /vehicles normalizes display so 100% = full tank.
-- **v0.1.158 — Don't seal implausible drives; drop 4xx-rejected ones from queue.** v0.1.157's STOPPED handler caused a 3-frame 0-duration drive to seal and jam the upload queue. Added refuse-implausible-drives guard + 4xx auto-eviction.
-- **v0.1.157 — OBD-4: recognize STOPPED/BUS ERROR/CAN ERROR as engine-off.** ELM327 echoes the request before the response (`010B\rSTOPPED`); the original startsWith check on the trimmed whole frame always failed. Now splits per line and matches against the ELM error-response table.
+**Idea:** WiCAN logs every drive to its onboard SD card (`logger_status` is currently `disable`, `log_storage: sdcard`, `log_filesystem: fatfs`). If the firmware supports buffer-on-publish-fail + replay-on-reconnect, we could remove the phone from the data-capture loop entirely — cellular trips would just buffer locally on the WiCAN and drain to MQTT when the car returns to home WiFi. Phone becomes pure UI + server polling. Eliminates the BLE flap class of bugs ([[BLE-2]]) and the phone-battery drain of an always-on BLE service.
+
+**Known catches** before starting work:
+- WiCAN-Pro has **no GPS** — phone provides GPS via the bridge today. Removing phone = no GPS = no route maps / GPS-haversine distance / station overlays on cellular trips. Either accept the regression or find a separate GPS source.
+- **No live data during cellular drives** — drives only appear server-side after the car gets home. Trade real-time visibility for architectural simplicity.
+- The firmware's SD logger may be designed for *offline extraction* (pull the card, parse CSV) rather than store-and-forward to MQTT. Unverified.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| SD-1 | Empirical test. Toggle `logger_status: enable` (probably via `/store_config`; verify the right endpoint — the `/wican-config` skill currently only edits `/store_auto_data`). Drive a short cellular trip with the phone bridge OFF (manual-sync mode is fine). Return to home WiFi, wait 2 min. Inspect: (a) `/wican/pilot19/pid` MQTT for any backfilled messages with old timestamps; (b) pull the SD card and read whatever files landed — note filename format, log shape, and whether timestamps are preserved. | — |
+| SD-2 | Read `meatpiHQ/wican-fw` source for the publish-on-MQTT-failure path. Confirm or refute that the firmware buffers failed publishes and replays them on reconnect. Look for: queueing layer between AutoPID and the MQTT client, persistence of that queue across sleep/wake, and timestamp-replay semantics. | — |
+| SD-3 | Design the integration. Two paths: (a) firmware handles replay natively → no pitstop backend changes, just enable logger + clean up phone bridge code. (b) Firmware doesn't replay → write a small driveway-sync helper (could run on the pitstop CT, polling the WiCAN's HTTP API for SD contents when the device shows up on LAN), and a backend endpoint to ingest the dumped log. Include the GPS-gap decision: accept loss, or carve out a phone-GPS-only path. | SD-1, SD-2 |
+| SD-4 | Go/no-go on phasing out the phone bridge as primary capture path. Write an ADR documenting the architecture choice, the GPS tradeoff, and the migration plan (likely: parallel run for a few weeks, then deprecate). | SD-3 |
+
+Skills: `/wican-config` for current PID config. The `/store_config` endpoint for the logger toggle isn't yet wrapped in a skill — SD-1 may surface a useful extension to `/wican-config`.
 
 ---
 
-## Infrastructure note
+## Recently closed (this session, v0.1.171 → v0.1.172)
 
-The in-app upgrade flow (UPDATE-2 series) was used 8+ times this session — each ship was deployed via `/admin/upgrade?target=vX.Y.Z` rather than the laptop-side `pitstop-deploy` skill. v0.1.162's absolute-path fix was the load-bearing change; without it every sidecar invocation broke mosquitto. The flow is now stable.
+- **v0.1.172 — Fuel-level fallback sanity cap.** When MAF samples are missing inside a trip window, `compute_trip_stats` falls back to a `(start − end)` fuel_level delta. The fallback reads raw `value_num` (the recent smoothing only runs at API read time), so the Pilot's noisy 0.5 %-step sensor produced fuel_used_l of 4–25 L on 1–6 km drives — 0.3 to 3.6 MPG, poisoning every `/analytics/*` endpoint. New rule: if computed L/km > 0.40 (worse than ~5.9 MPG, looser than any plausible moving trip), discard to NULL. Existing 4 affected rows nulled manually via DB UPDATE.
+- **WiCAN poll list cleanup (device-side, not in the repo).** Added `10-MAFAirFlowRate` (Mode 01 PID 0x10 MAF — the universal standard, not Mode 22 0x66 which intermittently gateway-blocks on Honda). Disabled `9D-EngineFuelRate` (constant 0 on Pilot), `51-FuelType` (constant 0), `9E-EngineExhaustFlowRate` (constant 0), `9F-FuelSystemPercentageUse` (constant 0). std_pids enabled count: 61 → 58.
+- **New skill `/wican-config`.** Pull/edit/apply WiCAN auto_pid config over its unauthenticated HTTP API at `http://10.0.0.181`. Supports `--show`, `--enable`, `--disable`, `--add`, `--period`, `--apply`, `--reboot`. Backups to `~/.wican-backups/` before every write. See `~/.claude/skills/wican-config/SKILL.md`.
+- **Skill update: `/stitch-design`.** Documented (a) the two flavors of `generate_screen_from_text` timeout (with-body vs pure), (b) `list_screens` eventual-consistency lag of 30–90s, (c) `/tmp/` is unsafe on WSL2 (use a project-local gitignored dir), (d) parallel-generates work but each can time out independently.
+- **Stitch UI explorations (not in repo, exploratory).** Two Stitch projects: 14 mockups across Refined + Bold A/B for Home / Trip detail / Fillup / Analytics on both web and phone. Then a Driver's Seat round (amber-phosphor instrument cluster aesthetic, 2 screens). User found the first round flat, second round closer but no Vue port was made — purely design exploration. Mockups at `/home/spider/pitstop/.stitch-mockups/` (gitignored).
+
+---
+
+## Discoveries worth remembering
+
+These are persisted to memory; this list exists for the next session to know what's there without re-deriving:
+
+- **`reference_wican_api.md`** — full HTTP API surface for the WiCAN-Pro at 10.0.0.181 (load_auto_pid, store_auto_data, system_reboot, etc.).
+- **`project_pilot_dead_pids.md`** — Pilot Elite V6's set of PIDs that respond but always return 0 (9D, 9E, 9F, 51) — so we don't re-add them.
+- **`project_pitstop_state.md`** — current pitstop deploy state as of v0.1.172 (created this session per the recommendation in last session's TODO).
 
 ---
 
 ## See also
 
-- ADRs: [`docs/decisions.md`](./docs/decisions.md) — pending after this session: ADR for the slosh-robust fuel-level smoothing (p75 of recent samples vs OEM-style filter — explain the iteration path).
-- Memory: `~/.claude/projects/-home-spider-pitstop/memory/` — still no `project_pitstop_state.md`. Session-close recommends one but defers to user.
+- ADRs: [`docs/decisions.md`](./docs/decisions.md). Pending: ADR for the fuel-level slosh-robust smoothing (p75 of recent samples) and a sibling ADR for the fuel_used_l sanity cap rationale.
+- Memory: `~/.claude/projects/-home-spider-pitstop/memory/` — see `MEMORY.md` for the index.
