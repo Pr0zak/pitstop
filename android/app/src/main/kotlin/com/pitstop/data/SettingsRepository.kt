@@ -38,6 +38,8 @@ class SettingsRepository @Inject constructor(
         val unitSystem: Preferences.Key<String> = stringPreferencesKey("unit_system")
         val pairedCarBtMac: Preferences.Key<String> = stringPreferencesKey("paired_car_bt_mac")
         val manualSyncOnly: Preferences.Key<Boolean> = booleanPreferencesKey("manual_sync_only")
+        val bridgeBleEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_ble_enabled")
+        val bridgeGpsEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_gps_enabled")
     }
 
     /**
@@ -84,6 +86,8 @@ class SettingsRepository @Inject constructor(
             } ?: "imperial",
             pairedCarBtMac = prefs[Keys.pairedCarBtMac]?.takeIf { it.isNotBlank() },
             manualSyncOnly = prefs[Keys.manualSyncOnly] ?: false,
+            bridgeBleEnabled = prefs[Keys.bridgeBleEnabled] ?: true,
+            bridgeGpsEnabled = prefs[Keys.bridgeGpsEnabled] ?: true,
         )
     }
 
@@ -118,6 +122,8 @@ class SettingsRepository @Inject constructor(
             settings.pairedCarBtMac?.let { prefs[Keys.pairedCarBtMac] = it }
                 ?: prefs.remove(Keys.pairedCarBtMac)
             prefs[Keys.manualSyncOnly] = settings.manualSyncOnly
+            prefs[Keys.bridgeBleEnabled] = settings.bridgeBleEnabled
+            prefs[Keys.bridgeGpsEnabled] = settings.bridgeGpsEnabled
         }
         // Treat blank as "leave alone" rather than "clear" — otherwise a
         // save fired before the form's init coroutine has populated the
@@ -142,5 +148,18 @@ class SettingsRepository @Inject constructor(
      *  [update] guards against, so a narrow edit is safe. */
     suspend fun setManualSyncOnly(value: Boolean) {
         context.dataStore.edit { it[Keys.manualSyncOnly] = value }
+    }
+
+    /** Focused setter for the Bridge → "OBD via BLE" collector switch.
+     *  Toggling it mid-session is observed by [PitstopBridgeService]
+     *  off the settings flow and takes effect without a restart. */
+    suspend fun setBridgeBleEnabled(value: Boolean) {
+        context.dataStore.edit { it[Keys.bridgeBleEnabled] = value }
+    }
+
+    /** Focused setter for the Bridge → "GPS capture" collector switch.
+     *  Same hot-reload contract as [setBridgeBleEnabled]. */
+    suspend fun setBridgeGpsEnabled(value: Boolean) {
+        context.dataStore.edit { it[Keys.bridgeGpsEnabled] = value }
     }
 }

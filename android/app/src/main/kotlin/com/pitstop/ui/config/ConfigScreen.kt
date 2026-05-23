@@ -126,6 +126,10 @@ fun ConfigScreen(
                 lastFrameMs = bridge.lastFrameAtMs,
                 metricsActive = bridge.metricsActive,
                 offlineBufferBytes = bridge.offlineBufferBytes,
+                bleEnabled = form.bridgeBleEnabled,
+                gpsEnabled = form.bridgeGpsEnabled,
+                onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
+                onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
                 onStart = { viewModel.startBridge() },
                 onStop = { viewModel.stopBridge() },
             )
@@ -218,6 +222,10 @@ private fun BridgeServiceSection(
     lastFrameMs: Long?,
     metricsActive: Int,
     offlineBufferBytes: Long,
+    bleEnabled: Boolean,
+    gpsEnabled: Boolean,
+    onBleEnabledChange: (Boolean) -> Unit,
+    onGpsEnabledChange: (Boolean) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -232,6 +240,12 @@ private fun BridgeServiceSection(
     SettingsSection(title = "Bridge service") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusPill(state = pillState, label = statusText)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = activeCollectorsLabel(bleEnabled, gpsEnabled),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         error?.let {
             Text(
@@ -258,10 +272,44 @@ private fun BridgeServiceSection(
                 color = MaterialTheme.colorScheme.tertiary,
             )
         }
+
+        // Per-collector toggles. Splitting BLE from GPS lets the user run
+        // a GPS-only bridge (eg. while OBD comes through the WiCAN's own
+        // WiFi → WireGuard path) or a BLE-only bridge (eg. while the
+        // phone has no fix and the user doesn't want the location-perm
+        // overhead). Disabling both + tapping Start auto-stops the
+        // service with a "nothing enabled" notification.
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("OBD via BLE", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (bleEnabled) "Polls the WiCAN over BLE for OBD frames"
+                    else "Bridge skips BLE — OBD must reach the broker by another path",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = bleEnabled, onCheckedChange = onBleEnabledChange)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("GPS capture", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (gpsEnabled) "Publishes location fixes during drives"
+                    else "Bridge does not request or publish GPS",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = gpsEnabled, onCheckedChange = onGpsEnabledChange)
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = onStart,
-                enabled = phase == BridgePhase.Idle || phase == BridgePhase.Error,
+                enabled = (bleEnabled || gpsEnabled) &&
+                    (phase == BridgePhase.Idle || phase == BridgePhase.Error),
             ) { Text("Start") }
             OutlinedButton(
                 onClick = onStop,
@@ -269,6 +317,13 @@ private fun BridgeServiceSection(
             ) { Text("Stop") }
         }
     }
+}
+
+private fun activeCollectorsLabel(ble: Boolean, gps: Boolean): String = when {
+    ble && gps -> "OBD + GPS"
+    ble -> "OBD only"
+    gps -> "GPS only"
+    else -> "Nothing enabled"
 }
 
 // ── BLE device ─────────────────────────────────────────────────────

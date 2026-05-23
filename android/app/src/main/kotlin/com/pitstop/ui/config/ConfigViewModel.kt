@@ -45,6 +45,8 @@ data class ConfigFormState(
     val aaTilesDiag: List<String> = emptyList(),
     val unitSystem: String = "imperial",
     val manualSyncOnly: Boolean = false,
+    val bridgeBleEnabled: Boolean = true,
+    val bridgeGpsEnabled: Boolean = true,
     val saved: Boolean = false,
 )
 
@@ -147,6 +149,8 @@ class ConfigViewModel @Inject constructor(
                 bleDeviceName = secrets.settings.bleDeviceName,
                 verboseLogging = secrets.settings.verboseLogging,
                 manualSyncOnly = secrets.settings.manualSyncOnly,
+                bridgeBleEnabled = secrets.settings.bridgeBleEnabled,
+                bridgeGpsEnabled = secrets.settings.bridgeGpsEnabled,
             )
             _formReady.value = true
         }
@@ -184,6 +188,38 @@ class ConfigViewModel @Inject constructor(
                 .onFailure { t ->
                     logBuffer.warn(
                         "config: manualSyncOnly auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    /** Auto-persist the Bridge → "OBD via BLE" switch. Same pattern as
+     *  [setManualSyncOnly] — non-secret booleans are safe to commit
+     *  immediately and we want the bridge service's settings-flow
+     *  watcher to react without the user having to tap Save. */
+    fun setBridgeBleEnabled(value: Boolean) {
+        _form.value = _form.value.copy(bridgeBleEnabled = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setBridgeBleEnabled(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: bridgeBleEnabled auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    /** Auto-persist the Bridge → "GPS capture" switch. See
+     *  [setBridgeBleEnabled] for the rationale. */
+    fun setBridgeGpsEnabled(value: Boolean) {
+        _form.value = _form.value.copy(bridgeGpsEnabled = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setBridgeGpsEnabled(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: bridgeGpsEnabled auto-save failed",
                         mapOf("err" to (t.message ?: t::class.java.simpleName)),
                     )
                 }
@@ -234,6 +270,8 @@ class ConfigViewModel @Inject constructor(
                     aaTilesDiag = f.aaTilesDiag,
                     unitSystem = f.unitSystem,
                     manualSyncOnly = f.manualSyncOnly,
+                    bridgeBleEnabled = f.bridgeBleEnabled,
+                    bridgeGpsEnabled = f.bridgeGpsEnabled,
                 ),
                 mqttPassword = f.mqttPassword,
                 ingestToken = f.ingestToken,

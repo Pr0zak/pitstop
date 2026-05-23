@@ -96,6 +96,19 @@ class PitstopBridgeService : Service() {
     @Volatile private var manualSyncOnly: Boolean = false
 
     /**
+     * Cached snapshots of the collector toggles. The settings-flow
+     * watcher in [onCreate] keeps these in sync mid-session so the
+     * user can flip "OBD via BLE" or "GPS capture" without restarting
+     * the service. [startBridge] reads the flags at launch time to
+     * decide which collectors to spin up; runtime flips of GPS apply
+     * immediately via [applyGpsToggle] and runtime flips of BLE take
+     * effect on the next reconnect cycle (we don't tear down a live
+     * BLE link mid-frame).
+     */
+    @Volatile private var bridgeBleEnabled: Boolean = true
+    @Volatile private var bridgeGpsEnabled: Boolean = true
+
+    /**
      * Last successful (or attempted) publish time per metric for the
      * manual-mode beacon allowlist. We update on every attempt rather
      * than only on success so a temporarily-unreachable broker doesn't
@@ -149,19 +162,51 @@ class PitstopBridgeService : Service() {
                 stateBus.update { it.copy(inCar = v) }
             }
         }
-        // Watch the manual-sync setting. Cached in [manualSyncOnly] for
-        // the hot publish gate to read without hitting DataStore on
-        // every frame. Flipping the toggle in Settings takes effect
-        // mid-session — the service doesn't need to restart.
+        // Watch the manual-sync + collector-toggle settings. Cached in
+        // volatile fields for the hot publish/poll paths to read
+        // without hitting DataStore on every frame. Flipping any
+        // toggle in Settings takes effect mid-session — the service
+        // doesn't need to restart. BLE flips are honoured at the next
+        // reconnect cycle (we don't tear down a live link), GPS flips
+        // apply immediately via [applyGpsToggle].
         scope.launch {
             settingsRepository.settings.collect { s ->
-                val prior = manualSyncOnly
+                val priorManual = manualSyncOnly
                 manualSyncOnly = s.manualSyncOnly
-                if (prior != s.manualSyncOnly) {
+                if (priorManual != s.manualSyncOnly) {
                     logBuffer.info(
                         "manual-sync mode changed",
                         mapOf("manual_sync_only" to s.manualSyncOnly),
                     )
+                }
+                val priorBle = bridgeBleEnabled
+                bridgeBleEnabled = s.bridgeBleEnabled
+                if (priorBle != s.bridgeBleEnabled) {
+                    logBuffer.info(
+                        "bridge ble-collector toggled",
+                        mapOf("enabled" to s.bridgeBleEnabled),
+                    )
+                    if (!s.bridgeBleEnabled) {
+                        // Drop the live link so the reconnect loop in
+                        // connectBleWithRetry observes phase=Disconnected
+                        // and re-checks the flag before re-arming.
+                        runCatching { bleManager?.disconnectDevice() }
+                    } else {
+                        // Wake the BLE reconnect loop so a re-enable
+                        // doesn't sit through the remaining backoff.
+                        stateBus.wakeUp()
+                    }
+                    refreshNotificationForActive()
+                }
+                val priorGps = bridgeGpsEnabled
+                bridgeGpsEnabled = s.bridgeGpsEnabled
+                if (priorGps != s.bridgeGpsEnabled) {
+                    logBuffer.info(
+                        "bridge gps-collector toggled",
+                        mapOf("enabled" to s.bridgeGpsEnabled),
+                    )
+                    applyGpsToggle()
+                    refreshNotificationForActive()
                 }
             }
         }
@@ -279,19 +324,49 @@ class PitstopBridgeService : Service() {
 
     // -------- Bridge driver --------
 
+    // TODO(zak, Task #13): optional auto-trigger — when bridgeGpsEnabled
+    // is true AND the phone associates with a configurable WiFi SSID
+    // (default "MobileChicken"), call startForegroundService() on this
+    // bridge automatically; on disassociation, stop it. Implementation
+    // would use ConnectivityManager.registerNetworkCallback() with a
+    // NetworkRequest filtering TRANSPORT_WIFI, then inspect
+    // WifiInfo.getSSID() in onCapabilitiesChanged. Skipped from this
+    // pass to keep the PR small — the manual Start button in Settings
+    // is the documented MVP path.
     @SuppressLint("MissingPermission")
     private fun startBridge() {
         pollJob = scope.launch {
+            // Snapshot the collector toggles up front. The settings-flow
+            // watcher in onCreate keeps the cached fields fresh after
+            // this point, so flipping a toggle mid-session takes effect
+            // without restarting.
+            val secrets = settingsRepository.current()
+            val s = secrets.settings
+            bridgeBleEnabled = s.bridgeBleEnabled
+            bridgeGpsEnabled = s.bridgeGpsEnabled
+
+            // Both collectors off → the bridge would do nothing useful.
+            // Self-stop and surface a notification so the user sees why.
+            if (!bridgeBleEnabled && !bridgeGpsEnabled) {
+                logBuffer.warn("bridge: both BLE and GPS collectors disabled — stopping")
+                updateNotification(getString(R.string.bridge_state_nothing_enabled))
+                runCatching { settingsRepository.setBridgeAutoStart(false) }
+                pollJob = null
+                stopSelf()
+                return@launch
+            }
+
             // Mark "user wants this running" so BootReceiver auto-starts the
             // service after a phone reboot. Cleared in stopBridge() when the
             // user explicitly stops.
             runCatching { settingsRepository.setBridgeAutoStart(true) }
 
             // GPS: parallel to the BLE/MQTT path. If permission is missing
-            // we log + skip; the bridge still publishes OBD telemetry.
+            // we log + skip; the bridge still publishes OBD telemetry. The
+            // toggle gate is checked inside startGpsUpdates() — keeping the
+            // check there means the runtime-toggle path can call the same
+            // entry point to re-arm GPS without duplicating logic.
             startGpsUpdates()
-            val secrets = settingsRepository.current()
-            val s = secrets.settings
             vehicleSlug = s.vehicleSlug.ifBlank { "vehicle" }
             logBuffer.info(
                 "bridge start",
@@ -299,6 +374,8 @@ class PitstopBridgeService : Service() {
                     "vehicle_slug" to vehicleSlug,
                     "broker" to loggableUrl(s.brokerUrl),
                     "ble_mac" to maskMac(s.bleDeviceMac),
+                    "ble_enabled" to bridgeBleEnabled,
+                    "gps_enabled" to bridgeGpsEnabled,
                     "verbose_logging" to s.verboseLogging,
                 ),
             )
@@ -309,17 +386,22 @@ class PitstopBridgeService : Service() {
 
             stateBus.update {
                 it.copy(
-                    phase = BridgePhase.Connecting,
+                    // Phase reflects the BLE link state. With BLE disabled
+                    // there's no link to negotiate — we sit in Idle (the
+                    // BridgeStatePill renders "Idle" for that, which is
+                    // honest about not maintaining a BLE connection).
+                    phase = if (bridgeBleEnabled) BridgePhase.Connecting else BridgePhase.Idle,
                     brokerUrl = s.brokerUrl.takeIf { url -> url.isNotBlank() },
                     deviceName = s.bleDeviceName,
                     deviceMac = s.bleDeviceMac,
                 )
             }
-            updateNotification(getString(R.string.bridge_state_scanning))
+            refreshNotificationForActive()
 
             // Connect MQTT in parallel — the bridge can publish even while BLE is down
             // (eg. heartbeat) and the moment BLE comes up we don't want to wait on a
-            // TCP handshake.
+            // TCP handshake. MQTT is shared infrastructure for both collectors so it
+            // starts regardless of which one is enabled.
             launch { connectMqttWithRetry(s.brokerUrl, s.mqttUser, secrets.mqttPassword) }
             // Drain backlog whenever the broker is reachable. Runs forever
             // until the bridge is stopped.
@@ -329,6 +411,32 @@ class PitstopBridgeService : Service() {
             // the client's automatic-reconnect loop without us re-running
             // connectMqttWithRetry.
             launch { trackBrokerLiveness() }
+
+            if (!bridgeBleEnabled) {
+                logBuffer.info("bridge: BLE collector disabled by setting — GPS-only mode")
+                // Hold the coroutine open so pollJob stays non-null until
+                // the user stops the service or re-enables BLE. The
+                // settings-flow watcher already updates the cached flag;
+                // we poll every 5s (rare wake-up only — GPS-only mode is
+                // typically a long-lived state). When BLE flips back on
+                // we re-read MAC/name fresh from DataStore so a device
+                // picker change during the GPS-only window is honoured.
+                while (isActive) {
+                    if (bridgeBleEnabled) {
+                        val current = settingsRepository.current().settings
+                        val mac = current.bleDeviceMac
+                        if (!mac.isNullOrBlank()) {
+                            connectBleWithRetry(mac, current.bleDeviceName)
+                            // connectBleWithRetry returns only when the
+                            // scope is cancelled OR BLE is disabled mid-loop.
+                            // Either way, drop back to the idle-wait.
+                            continue
+                        }
+                    }
+                    delay(5_000L)
+                }
+                return@launch
+            }
 
             val mac = s.bleDeviceMac
             if (mac.isNullOrBlank()) {
@@ -488,6 +596,17 @@ class PitstopBridgeService : Service() {
         }
 
         while (scope.isActive) {
+            // Honour the runtime BLE-toggle flip: if the user disabled
+            // the BLE collector while we were in backoff, exit the
+            // retry loop cleanly. The outer startBridge() coroutine
+            // observes pollJob still being non-null and parks in the
+            // idle-wait until either BLE is re-enabled or the service
+            // is stopped.
+            if (!bridgeBleEnabled) {
+                logBuffer.info("ble retry exiting: BLE collector disabled")
+                stateBus.update { it.copy(phase = BridgePhase.Idle) }
+                return
+            }
             val device = try {
                 adapter.getRemoteDevice(mac)
             } catch (e: Exception) {
@@ -871,6 +990,20 @@ class PitstopBridgeService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun startGpsUpdates() {
+        // Collector toggle: skip the LocationManager subscription entirely
+        // when GPS is disabled. Crucially, we DON'T re-check the runtime
+        // permission in that branch — the acceptance test calls for the
+        // BLE-only mode to not even touch ACCESS_FINE_LOCATION.
+        if (!bridgeGpsEnabled) {
+            logBuffer.info("gps: collector disabled by setting — skipping subscription")
+            return
+        }
+        if (gpsListener != null) {
+            // Already subscribed — re-arm requests would just stack
+            // duplicate callbacks. Idempotent so the runtime-toggle
+            // path can call us without bookkeeping.
+            return
+        }
         val granted = androidx.core.content.ContextCompat.checkSelfPermission(
             this,
             android.Manifest.permission.ACCESS_FINE_LOCATION,
@@ -930,6 +1063,42 @@ class PitstopBridgeService : Service() {
         gpsListener = null
         val lm = getSystemService(LOCATION_SERVICE) as? android.location.LocationManager
         runCatching { lm?.removeUpdates(listener) }
+    }
+
+    /**
+     * Runtime-toggle entry point for GPS. Called from the settings-flow
+     * watcher when the user flips the "GPS capture" switch mid-session.
+     * Spinning up / tearing down LocationManager is cheap and we want
+     * the change to take effect without restarting the foreground
+     * service.
+     */
+    private fun applyGpsToggle() {
+        if (bridgeGpsEnabled) {
+            startGpsUpdates()
+        } else {
+            stopGpsUpdates()
+        }
+    }
+
+    /**
+     * Pick the right "what's actually running" notification line based
+     * on the active collectors. Called whenever the toggle state changes
+     * AND whenever the BLE connect/reconnect notification would have
+     * pushed an "Idle" / "Connecting" / "Connected" line — we want
+     * GPS-only mode to surface a stable, honest description rather
+     * than the BLE-centric lines.
+     */
+    private fun refreshNotificationForActive() {
+        val text = when {
+            !bridgeBleEnabled && !bridgeGpsEnabled ->
+                getString(R.string.bridge_state_nothing_enabled)
+            !bridgeBleEnabled && bridgeGpsEnabled ->
+                getString(R.string.bridge_state_gps_only)
+            bridgeBleEnabled && !bridgeGpsEnabled ->
+                getString(R.string.bridge_state_ble_only)
+            else -> getString(R.string.bridge_state_ble_and_gps)
+        }
+        updateNotification(text)
     }
 
 // Track when we last accepted a GPS-provider fix so we can ignore

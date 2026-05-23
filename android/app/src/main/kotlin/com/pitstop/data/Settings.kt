@@ -57,6 +57,31 @@ data class Settings(
      * users who upgrade through this version without touching settings.
      */
     val manualSyncOnly: Boolean = false,
+    /**
+     * Independent toggle for the BLE-OBD collector inside the bridge
+     * foreground service. When false the service runs but never opens
+     * a BLE link to the WiCAN dongle — useful once the WiCAN reaches
+     * the broker over its own WiFi path (phone hotspot → WireGuard)
+     * so the phone only needs to ship GPS.
+     *
+     * Defaults to true to preserve the existing collect-OBD-over-BLE
+     * behaviour for everyone who upgrades through this release. Will
+     * flip to false once the VPN architecture is fully phased in.
+     */
+    val bridgeBleEnabled: Boolean = true,
+    /**
+     * Independent toggle for the GPS collector inside the bridge
+     * foreground service. When false the bridge never subscribes to
+     * LocationManager updates — Live-screen GPS tiles stay blank and
+     * `bridge/<slug>/location` is never published. Combined with
+     * [bridgeBleEnabled] this enables a "GPS-only" or "BLE-only"
+     * mode without restructuring the service.
+     *
+     * Defaults to true so that the GPS-collector path keeps running
+     * for users who upgrade through this release without touching
+     * settings.
+     */
+    val bridgeGpsEnabled: Boolean = true,
 )
 
 data class SettingsWithSecrets(

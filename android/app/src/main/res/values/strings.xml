@@ -11,6 +11,10 @@
     <string name="bridge_state_connected">Connected — publishing %1$d metrics</string>
     <string name="bridge_state_disconnected">BLE disconnected — retrying</string>
     <string name="bridge_state_error">Error: %1$s</string>
+    <string name="bridge_state_nothing_enabled">Nothing enabled — turn on OBD or GPS in Settings</string>
+    <string name="bridge_state_gps_only">GPS only — BLE collector disabled</string>
+    <string name="bridge_state_ble_only">OBD only — GPS collector disabled</string>
+    <string name="bridge_state_ble_and_gps">OBD + GPS active</string>
 
     <!-- Config -->
     <string name="config_title">Pitstop configuration</string>
