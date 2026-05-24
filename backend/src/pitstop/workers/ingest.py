@@ -491,6 +491,23 @@ class MqttIngest:
         if parsed is None:
             log.debug("rejecting bad topic %r", topic)
             return
+        # Retained WiCAN PID-data redelivery pollutes pid_readings: every
+        # backend reconnect, mosquitto re-delivers the last retained
+        # `wican/<id>/pid` snapshot. The AutoPID payload carries no
+        # capture timestamp, so the consolidated-JSON fan-out wrote each
+        # redelivery as a fresh sample at now(). Over a day of 90s
+        # watchdog cycles that injects fake idle-MAF samples into the time
+        # series and corrupted trip-end fuel integration (27 L on a 69 km
+        # drive observed 2026-05-24). LWT (`status` / `can/status`) is
+        # handled below as authoritative state and intentionally honors
+        # retain so engine-state survives backend restarts.
+        if (
+            msg.retain
+            and parsed.source == "wican"
+            and parsed.metric not in ("status", "can/status")
+        ):
+            log.debug("skipping retained wican PID msg on %r", topic)
+            return
         try:
             payload = msg.payload.decode("utf-8") if msg.payload else ""
         except UnicodeDecodeError:
