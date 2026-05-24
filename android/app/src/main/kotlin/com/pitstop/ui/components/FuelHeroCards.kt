@@ -57,6 +57,13 @@ data class HeroCardData(
     val fuelLevelTimestampMs: Long? = null,
     val tank1CapacityGal: Double? = null,
     val mpgSeries: List<Double>,
+    /** When true, fuelLevelPct came from the backend's persisted
+     *  hybrid estimator (vehicles.fuel_level_estimate_l). Live BLE
+     *  samples should NOT overlay this — the estimator is intentionally
+     *  stable between fillups + trips + sensor-snaps. When false, the
+     *  hero is showing the legacy smoothed sensor and live BLE overlay
+     *  is welcome. */
+    val fuelLevelIsEstimate: Boolean = false,
 )
 
 @Composable

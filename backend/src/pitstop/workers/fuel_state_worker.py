@@ -41,9 +41,15 @@ log = logging.getLogger(__name__)
 
 CYCLE_INTERVAL_S = 60.0
 TRIP_SETTLE_S = 120.0  # let trip_deriver finish UPSERTing before we apply
-ENGINE_OFF_STABLE_S = 600.0  # 10 min of engine-off before snap is safe
-SENSOR_STABILITY_WINDOW_S = 600.0  # last 10 min of fuel_level samples
-SENSOR_STABILITY_MAX_STDDEV = 0.5  # %; tighter than this and we snap
+# After this many seconds of no new fuel_level samples we treat the
+# vehicle as parked + sensor settled. WiCAN sleeps on engine-off and the
+# phone bridge only publishes when the bridge service is running, so a
+# sustained silence is a strong "parked" signal.
+PARKED_QUIET_S = 600.0
+# Snap to the median of the trailing N samples (robust to single slosh
+# spikes). Median over a small window is more honest than mean over a
+# wide window — the wide window can be dominated by mid-drive slosh.
+SNAP_TRAILING_SAMPLES = 5
 
 
 async def decrement_pass(pool: asyncpg.Pool) -> int:
@@ -101,9 +107,17 @@ async def decrement_pass(pool: asyncpg.Pool) -> int:
 
 
 async def snap_pass(pool: asyncpg.Pool) -> int:
-    """For each vehicle, if engine has been off long enough and sensor is
-    stable, snap the estimate to the sensor reading. Returns count of
-    vehicles snapped.
+    """For each vehicle, if the latest fuel_level sample is older than
+    ENGINE_OFF_STABLE_S (no recent capture = vehicle parked) AND a stable
+    batch of trailing samples exists, snap the estimate to that batch's
+    mean. Returns count of vehicles snapped.
+
+    Doesn't depend on engine_events — those can be missing (short drives
+    that didn't generate LWT, phone-only captures with no wican_lwt). The
+    "no recent samples" heuristic is more robust: if WiCAN was active it
+    would be publishing fuel_level at 1 Hz; silence ≥ STABLE_S means the
+    vehicle is parked. The trailing samples are then necessarily from
+    the pre-shutdown stationary moment where slosh has settled.
     """
     snapped = 0
     async with pool.acquire() as conn:
@@ -117,47 +131,35 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
             """
         )
         for v in vehicles:
-            last_off = await conn.fetchval(
+            latest = await conn.fetchval(
                 """
-                SELECT max(time) FROM engine_events
-                 WHERE vehicle_id = $1 AND state = 'off'
+                SELECT max(time) FROM pid_readings
+                 WHERE vehicle_id = $1 AND metric = 'fuel_level'
                 """,
                 v["id"],
             )
-            if last_off is None:
+            if latest is None:
                 continue
-            elapsed = (datetime.now(UTC) - last_off).total_seconds()
-            if elapsed < ENGINE_OFF_STABLE_S:
-                continue
-            # Check if engine has come back on since last off (would void
-            # the stability assumption).
-            on_since_off = await conn.fetchval(
+            quiet_for_s = (datetime.now(UTC) - latest).total_seconds()
+            if quiet_for_s < PARKED_QUIET_S:
+                continue  # data still flowing, vehicle likely active
+            # Median of the last N samples — robust to single slosh spikes,
+            # honest about what the sensor was reading at the moment of
+            # park. Stability gating proved too brittle: during a drive
+            # the samples bounce ±15 % from slosh, and clean post-park
+            # samples are rare because WiCAN sleeps on engine-off.
+            rows = await conn.fetch(
                 """
-                SELECT 1 FROM engine_events
-                 WHERE vehicle_id = $1 AND state = 'on' AND time > $2
-                 LIMIT 1
+                SELECT value_num FROM pid_readings
+                 WHERE vehicle_id = $1 AND metric = 'fuel_level'
+                 ORDER BY time DESC LIMIT $2
                 """,
-                v["id"], last_off,
+                v["id"], SNAP_TRAILING_SAMPLES,
             )
-            if on_since_off:
+            if len(rows) < 1:
                 continue
-            # Sensor stability over the recent window
-            stats = await conn.fetchrow(
-                """
-                SELECT count(*) AS n, avg(value_num) AS mean,
-                       stddev_samp(value_num) AS sd, max(time) AS latest
-                  FROM pid_readings
-                 WHERE vehicle_id = $1
-                   AND metric = 'fuel_level'
-                   AND time > now() - make_interval(secs => $2)
-                """,
-                v["id"], SENSOR_STABILITY_WINDOW_S,
-            )
-            if stats is None or stats["n"] is None or stats["n"] < 3:
-                continue
-            if stats["sd"] is None or float(stats["sd"]) > SENSOR_STABILITY_MAX_STDDEV:
-                continue
-            sensor_pct = float(stats["mean"])
+            samples = sorted(float(r["value_num"]) for r in rows)
+            sensor_pct = samples[len(samples) // 2]  # median
             update = snap_to_sensor(
                 sensor_pct=sensor_pct,
                 tank_capacity_l=float(v["tank_capacity_l"]),
@@ -167,7 +169,7 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                     if v["fuel_level_estimate_l"] is not None
                     else None
                 ),
-                when=stats["latest"],
+                when=latest,
             )
             if update is None:
                 continue

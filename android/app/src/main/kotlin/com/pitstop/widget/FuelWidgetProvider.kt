@@ -133,12 +133,26 @@ class FuelWidgetProvider : AppWidgetProvider() {
         val vehicles = entry.api().getVehicles()
         val vehicle = vehicles.firstOrNull { it.slug == slug }
             ?: return null to "no vehicle"
-        val fuelEntry = vehicle.latest["fuel_level"]
-        val pct = fuelEntry?.valueNum
-        val gallons = vehicle.tank1Capacity
-            ?.takeIf { it > 0 && pct != null }
-            ?.let { it * pct!! / 100.0 }
-        val age = fuelEntry?.time?.let { formatAge(it) }
+        // Prefer the persisted hybrid estimator (backend ADR-019); fall
+        // back to legacy smoothed-sensor display when the estimator
+        // hasn't been seeded yet.
+        val estimateL = vehicle.fuelLevelEstimateL
+        val tankL = vehicle.tankCapacityL?.takeIf { it > 0 }
+        val tankGal = vehicle.tank1Capacity?.takeIf { it > 0 }
+        val pct: Double?
+        val gallons: Double?
+        val age: String?
+        if (estimateL != null && tankL != null) {
+            pct = (estimateL / tankL * 100.0).coerceIn(0.0, 100.0)
+            val isUserUnitGallons = tankGal != null && tankL > tankGal * 1.5
+            gallons = if (isUserUnitGallons) estimateL * 0.264172 else estimateL
+            age = vehicle.fuelLevelEstimateUpdatedAt?.let { formatAge(it) }
+        } else {
+            val fuelEntry = vehicle.latest["fuel_level"]
+            pct = fuelEntry?.valueNum
+            gallons = tankGal?.takeIf { pct != null }?.let { it * pct!! / 100.0 }
+            age = fuelEntry?.time?.let { formatAge(it) }
+        }
         val sub = listOfNotNull(
             gallons?.let { "%.1f gal".format(it) },
             age,

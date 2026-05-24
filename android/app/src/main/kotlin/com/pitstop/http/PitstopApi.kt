@@ -77,6 +77,14 @@ data class VehicleDto(
      *  Keyed by canonical metric name (e.g. "fuel_level", "coolant_temp").
      *  Empty map when the vehicle has never reported. */
     @SerialName("latest") val latest: Map<String, LatestReadingDto> = emptyMap(),
+    /** Hybrid fuel-level estimator state (backend migration 0017,
+     *  ADR-019 follow-up). When non-null, prefer over the raw
+     *  latest.fuel_level sensor reading for the hero card — it's a
+     *  persisted estimate mutated by fillups + trips + sensor-snap,
+     *  stable between events. Null until first fillup or first snap. */
+    @SerialName("tank_capacity_l") val tankCapacityL: Double? = null,
+    @SerialName("fuel_level_estimate_l") val fuelLevelEstimateL: Double? = null,
+    @SerialName("fuel_level_estimate_updated_at") val fuelLevelEstimateUpdatedAt: String? = null,
 )
 
 @Serializable

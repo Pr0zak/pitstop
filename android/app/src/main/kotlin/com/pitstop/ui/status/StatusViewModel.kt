@@ -211,20 +211,45 @@ class StatusViewModel @Inject constructor(
         val monthCost = monthFills.mapNotNull { it.priceTotal }.sum()
         val monthCount = monthFills.size
 
-        // Fuel level + estimated gallons + reading age, sourced from the
-        // /vehicles endpoint's vehicle_state.latest JSONB (no separate
-        // request — already in hand). The fuel_level value is whatever the
-        // PCM reported on the most recent OBD-II poll; the timestamp lets
-        // us flag stale readings ("3h ago") vs live ("live").
-        val fuelEntry = vehicle?.latest?.get("fuel_level")
-        val fuelLevelPct = fuelEntry?.valueNum
+        // Fuel level — two sources, picked by availability (parity with
+        // OverviewView.vue's hero card post-ADR-019):
+        //
+        // 1. **Hybrid estimator (preferred):** backend's fuel_level_estimate_l
+        //    is a persisted state mutated by fillups + trips + sensor-snap.
+        //    Stable, monotonic between events, immune to MAF/slosh noise.
+        // 2. **Raw smoothed sensor (legacy fallback):** when the estimator
+        //    hasn't been seeded yet, fall back to vehicle_state.latest's
+        //    fuel_level (server-side p75 smoothing).
+        val estimateL = vehicle?.fuelLevelEstimateL
+        val tankCapacityL = vehicle?.tankCapacityL?.takeIf { it > 0 }
         val tankCapacityGal = vehicle?.tank1Capacity?.takeIf { it > 0 }
-        val fuelGallons = if (fuelLevelPct != null && tankCapacityGal != null) {
-            tankCapacityGal * fuelLevelPct / 100.0
-        } else null
-        val fuelLevelAge = fuelEntry?.time?.let { formatReadingAge(it) }
-        val fuelLevelTimestampMs = fuelEntry?.time?.let {
-            runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
+        val fuelEntry = vehicle?.latest?.get("fuel_level")
+
+        val fuelLevelPct: Double?
+        val fuelGallons: Double?
+        val fuelLevelAge: String?
+        val fuelLevelTimestampMs: Long?
+        if (estimateL != null && tankCapacityL != null) {
+            fuelLevelPct = (estimateL / tankCapacityL * 100.0).coerceIn(0.0, 100.0)
+            // tank1_capacity comes from Fuelio in user's fuel_unit; if that's
+            // gallons, convert L→gal. Heuristic: tank_capacity_l >> tank1
+            // suggests user unit = gallons.
+            val isUserUnitGallons =
+                tankCapacityGal != null && tankCapacityL > tankCapacityGal * 1.5
+            fuelGallons = if (isUserUnitGallons) estimateL * 0.264172 else estimateL
+            fuelLevelAge = vehicle.fuelLevelEstimateUpdatedAt?.let { formatReadingAge(it) }
+            fuelLevelTimestampMs = vehicle.fuelLevelEstimateUpdatedAt?.let {
+                runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
+            }
+        } else {
+            fuelLevelPct = fuelEntry?.valueNum
+            fuelGallons = if (fuelLevelPct != null && tankCapacityGal != null) {
+                tankCapacityGal * fuelLevelPct / 100.0
+            } else null
+            fuelLevelAge = fuelEntry?.time?.let { formatReadingAge(it) }
+            fuelLevelTimestampMs = fuelEntry?.time?.let {
+                runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
+            }
         }
 
         return HeroCardData(
@@ -243,6 +268,7 @@ class StatusViewModel @Inject constructor(
             // we keep the field populated for source-compat. Empty if
             // monthly is empty.
             mpgSeries = monthly.mapNotNull { it.mpg },
+            fuelLevelIsEstimate = (estimateL != null && tankCapacityL != null),
         )
     }
 
@@ -302,6 +328,10 @@ class StatusViewModel @Inject constructor(
     ) { hero, local ->
         if (hero == null) return@combine null
         if (local == null) return@combine hero
+        // Estimator path is intentionally stable; never overlay live BLE
+        // samples on top of fuel_level_estimate_l. The Live tab is the
+        // place for raw real-time values.
+        if (hero.fuelLevelIsEstimate) return@combine hero
         val serverTs = hero.fuelLevelTimestampMs
         if (serverTs != null && local.tsMs <= serverTs) return@combine hero
         val tank = hero.tank1CapacityGal
