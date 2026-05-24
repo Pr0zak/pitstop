@@ -95,6 +95,7 @@ async def lifespan(app: FastAPI):
     eia_task: asyncio.Task | None = None
     deriver_task: asyncio.Task | None = None
     weather_task: asyncio.Task | None = None
+    fuel_state_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
@@ -160,6 +161,15 @@ async def lifespan(app: FastAPI):
         weather_task = asyncio.create_task(
             weather_backfiller.run(pool), name="weather-backfiller"
         )
+        # Fuel-state worker — hybrid fuel-level estimator (ADR-019 follow-up).
+        # Decrements vehicle estimate on settled trips' fuel_used_l and
+        # snaps to the raw fuel-level sensor when engine has been off long
+        # enough for the sensor to settle. State machine math lives in
+        # services/fuel_state.py.
+        from .workers import fuel_state_worker  # noqa: E402
+        fuel_state_task = asyncio.create_task(
+            fuel_state_worker.run(pool, settings), name="fuel-state-worker"
+        )
         yield
     finally:
         log.info("pitstop backend stopping")
@@ -172,6 +182,7 @@ async def lifespan(app: FastAPI):
         for task in (
             ingest_task, trip_task, ha_task, log_drain_task,
             retention_task, eia_task, deriver_task, weather_task,
+            fuel_state_task,
         ):
             if task is None:
                 continue

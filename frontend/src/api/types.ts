@@ -53,6 +53,20 @@ export interface Vehicle {
   // EPA combined MPG sticker. Reference line on the MPG chart; null
   // hides the overlay. (Task #90)
   epa_mpg_combined?: number | null;
+  // Per-vehicle calibration: the highest raw fuel_level value observed
+  // around an is_full=true fillup. Used to normalize the noisy sensor
+  // so a physically full tank displays 100% even when the sensor caps
+  // at 85%. (Migration 0016)
+  fuel_level_calibration_pct?: number;
+  // Hybrid fuel-level estimator state (migration 0017, ADR-019 follow-up).
+  // tank_capacity_l: configured usable tank volume in liters (default 80).
+  // fuel_level_estimate_l: persisted running estimate, mutated by fillups
+  // (reset), trips (decrement), and engine-off sensor-snap (HIGH).
+  // NULL when the estimator hasn't been seeded yet — frontend falls back
+  // to the legacy smoothed-sensor display in that case.
+  tank_capacity_l?: number | null;
+  fuel_level_estimate_l?: number | null;
+  fuel_level_estimate_updated_at?: string | null;
 }
 
 export interface Profile {

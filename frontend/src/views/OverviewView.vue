@@ -163,21 +163,53 @@ const heroData = computed(() => {
     (f.fillup_date ?? "").startsWith(thisMonth),
   ).length;
 
-  // Fuel level + estimated gallons + reading age — sourced from
-  // vehicle_state.latest (JSONB blob already on the /vehicles payload).
-  // Matches the phone hero card's framing (FuelHeroCards.kt). Replaces the
-  // earlier "miles since last fill / range" card for cross-client parity.
-  const fuelEntry = vehicles.selectedVehicle?.latest?.fuel_level ?? null;
-  const fuelLevelPct =
-    fuelEntry?.value_num != null && Number.isFinite(fuelEntry.value_num)
-      ? fuelEntry.value_num
+  // Fuel level + estimated gallons + reading age. Two sources, picked by
+  // availability:
+  //
+  // 1. **Hybrid estimator (preferred, post-ADR-019 phase 2):** the backend's
+  //    fuel-state worker maintains `vehicles.fuel_level_estimate_l` as a
+  //    persisted state mutated by fillups (reset), trips (decrement), and
+  //    sensor-snap when engine has been off long enough for the noisy
+  //    PID 0x2F sensor to settle. Stable, monotonic between events,
+  //    immune to MAF-burst noise.
+  //
+  // 2. **Raw smoothed sensor (legacy fallback):** when the estimator
+  //    hasn't been seeded yet (no fillup logged since the migration, no
+  //    truth-up snap fired yet), fall back to the JSONB
+  //    `latest.fuel_level` field which goes through the p75 smoothing
+  //    in /vehicles. Same behavior as pre-phase-2.
+  const sv = vehicles.selectedVehicle;
+  const estimateL = sv?.fuel_level_estimate_l ?? null;
+  const tankCapacityL = sv?.tank_capacity_l ?? null;
+  const tankCapacityGal = sv?.tank1_capacity ?? null;  // user-fuel-unit
+  const fuelEntry = sv?.latest?.fuel_level ?? null;
+
+  let fuelLevelPct: number | null;
+  let fuelGallons: number | null;
+  let fuelLevelAge: string | null;
+  if (estimateL != null && tankCapacityL != null && tankCapacityL > 0) {
+    fuelLevelPct = Math.max(0, Math.min(100, (estimateL / tankCapacityL) * 100));
+    // Show in user's fuel unit. tank1_capacity comes from Fuelio in the
+    // user's setting; if that's gallons, estimateL needs the L→gal
+    // conversion. If the user has fuel_unit set to L, the "gallons"
+    // variable is technically liters — name is historical.
+    const isUserUnitGallons =
+      tankCapacityGal != null && tankCapacityL > tankCapacityGal * 1.5;
+    fuelGallons = isUserUnitGallons ? estimateL * 0.264172 : estimateL;
+    fuelLevelAge = sv?.fuel_level_estimate_updated_at
+      ? formatReadingAge(sv.fuel_level_estimate_updated_at)
       : null;
-  const tankCapacityGal = vehicles.selectedVehicle?.tank1_capacity ?? null;
-  const fuelGallons =
-    fuelLevelPct != null && tankCapacityGal != null && tankCapacityGal > 0
-      ? (tankCapacityGal * fuelLevelPct) / 100
-      : null;
-  const fuelLevelAge = fuelEntry?.time ? formatReadingAge(fuelEntry.time) : null;
+  } else {
+    fuelLevelPct =
+      fuelEntry?.value_num != null && Number.isFinite(fuelEntry.value_num)
+        ? fuelEntry.value_num
+        : null;
+    fuelGallons =
+      fuelLevelPct != null && tankCapacityGal != null && tankCapacityGal > 0
+        ? (tankCapacityGal * fuelLevelPct) / 100
+        : null;
+    fuelLevelAge = fuelEntry?.time ? formatReadingAge(fuelEntry.time) : null;
+  }
 
   // EIA region-avg comparison. Pulls the most-recent week's $/gal for
   // the configured region; computes a % delta vs the user's latest
