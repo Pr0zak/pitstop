@@ -109,6 +109,15 @@ class PitstopBridgeService : Service() {
     @Volatile private var bridgeGpsEnabled: Boolean = true
 
     /**
+     * Set by the watchdogs ([obdQuiet], [bleLost]) just before they
+     * flip the BLE engine-state to Off, so the engine-state listener
+     * (which actually seals the drive) records the right kind. Reset
+     * to "off" after each seal so an ordinary engine-off seal doesn't
+     * inherit a stale "ble_lost" tag.
+     */
+    @Volatile private var pendingSealKind: String = "off"
+
+    /**
      * Last successful (or attempted) publish time per metric for the
      * manual-mode beacon allowlist. We update on every attempt rather
      * than only on success so a temporarily-unreachable broker doesn't
@@ -263,7 +272,15 @@ class PitstopBridgeService : Service() {
                 // drive is implausible. Seal as kind=ble_lost so the
                 // trip's metadata is honest about why it cut off where
                 // it did.
-                val bleLost = s.phase != BridgePhase.Connected &&
+                //
+                // Suppressed when BLE is disabled in settings (GPS-only
+                // mode): "BLE not connected" is then the intentional
+                // state, not a fault, and the drive's engine-state is
+                // owned by the InCarDetector hint instead. Without this
+                // guard a 3-minute GPS-only drive would be force-sealed
+                // mid-trip the moment the watchdog tripped.
+                val bleLost = bridgeBleEnabled &&
+                    s.phase != BridgePhase.Connected &&
                     lastFrame > 0 && ageMs > bleLostThresholdMs
                 if (!obdQuiet && !bleLost) continue
                 val reason = if (bleLost) "ble_lost" else "quiet"
@@ -277,16 +294,14 @@ class PitstopBridgeService : Service() {
                     mapOf("frame_age_ms" to ageMs, "phase" to s.phase.name),
                 )
                 val tMs = System.currentTimeMillis()
-                stateBus.update {
-                    it.copy(
-                        engineState = EngineState.Off,
-                        engineStateChangedAtMs = tMs,
-                    )
-                }
+                // Watchdog is BLE-derived — route through the merge.
+                // Drive sealing happens in the engine-state listener
+                // (see [observeEngineStateForRecorder]) which sees the
+                // On→Off transition and seals with this kind.
+                pendingSealKind = reason
+                stateBus.setBleEngineState(EngineState.Off, tMs)
                 publishEngineState("off", tMs)
                 stateBus.clearMetrics()
-                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
-                driveSealer.seal(tMs, deviceId, kind = reason)
             }
         }
         logBuffer.info("bridge service created")
@@ -407,6 +422,10 @@ class PitstopBridgeService : Service() {
             // the client's automatic-reconnect loop without us re-running
             // connectMqttWithRetry.
             launch { trackBrokerLiveness() }
+            // Drive-recorder lifecycle (v0.1.176 fix). Started here —
+            // not in onCreate — so vehicleSlug is guaranteed populated
+            // before the first engineState=On lands. See observe...().
+            launch { observeEngineStateForRecorder() }
 
             if (!bridgeBleEnabled) {
                 logBuffer.info("bridge: BLE collector disabled by setting — GPS-only mode")
@@ -459,34 +478,82 @@ class PitstopBridgeService : Service() {
     private var stoppedRunLength = 0
     private val engineOffThreshold = 6
 
+    /**
+     * Single chokepoint for drive open / seal, driven off the merged
+     * `engineState` on the bus (NOT the BLE callbacks directly). This
+     * unifies four sources that all want to start / end a drive:
+     *
+     *   - BLE OBD frame parser ([onEngineOnSignal] / [onEngineOffSignal])
+     *   - OBD-quiet watchdog
+     *   - BLE-lost watchdog
+     *   - GPS-only [com.pitstop.presence.InCarDetector] hint (v0.1.176)
+     *
+     * Pre-v0.1.176 the open/seal lived inside the BLE callbacks, which
+     * is why GPS-only mode silently captured nothing.
+     *
+     * Started from [startBridge] after `vehicleSlug` is populated so
+     * the immediate replay of an already-on engine state lands with a
+     * non-blank vehicle id.
+     */
+    private suspend fun observeEngineStateForRecorder() {
+        var last: EngineState = EngineState.Unknown
+        stateBus.status
+            .map { it.engineState }
+            .collect { current ->
+                if (current == last) return@collect
+                val prior = last
+                last = current
+                val tMs = System.currentTimeMillis()
+                when (current) {
+                    EngineState.On -> {
+                        if (vehicleSlug.isBlank()) {
+                            logBuffer.warn("drive open skipped: vehicleSlug blank")
+                            return@collect
+                        }
+                        val result = driveRecorder.open(vehicleSlug, tMs)
+                        result.orphan?.let { orphan ->
+                            // Hand off on the service scope (not the
+                            // pollJob child) so a concurrent stopBridge
+                            // can't cancel us mid-write.
+                            scope.launch {
+                                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                                driveSealer.sealOrphan(orphan, deviceId)
+                            }
+                        }
+                    }
+                    EngineState.Off -> {
+                        // Only seal if we actually had a drive open —
+                        // the Unknown→Off transition at bridge start
+                        // (BLE comes up, ECU reports STOPPED) would
+                        // otherwise call seal() against an empty
+                        // recorder, which is just a debug no-op but
+                        // looks wrong in the logs.
+                        if (prior == EngineState.On) {
+                            val kind = pendingSealKind
+                            pendingSealKind = "off"
+                            scope.launch {
+                                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                                driveSealer.seal(tMs, deviceId, kind = kind)
+                            }
+                        }
+                    }
+                    EngineState.Unknown -> Unit
+                }
+            }
+    }
+
     private fun onEngineOnSignal() {
         stoppedRunLength = 0
         val s = stateBus.status.value
         if (s.engineState != EngineState.On) {
             logBuffer.info("engine on")
             val tMs = System.currentTimeMillis()
-            stateBus.update {
-                it.copy(
-                    engineState = EngineState.On,
-                    engineStateChangedAtMs = tMs,
-                )
-            }
+            // BLE-derived On — flip the merge input. The
+            // engine-state listener in onCreate opens the drive
+            // recorder when it sees the merged engineState reach On
+            // (covers BLE-only, GPS-only, and hybrid paths uniformly).
+            stateBus.setBleEngineState(EngineState.On, tMs)
             publishEngineState("on", tMs)
-            // Open a phone-canonical drive buffer (#117). The recorder
-            // mirrors every PID / GPS / IMU sample the bridge publishes
-            // while open; on engine_off DriveSealer.seal() persists +
-            // uploads. If the prior buffer never closed cleanly (BLE
-            // dropped before engine_off fired), seal the orphan with
-            // incomplete=true so the drive isn't lost.
-            if (vehicleSlug.isNotBlank()) {
-                val result = driveRecorder.open(vehicleSlug, tMs)
-                result.orphan?.let { orphan ->
-                    scope.launch {
-                        val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
-                        driveSealer.sealOrphan(orphan, deviceId)
-                    }
-                }
-            }
         }
     }
 
@@ -497,12 +564,9 @@ class PitstopBridgeService : Service() {
         if (s.engineState != EngineState.Off) {
             logBuffer.info("engine off (wican reports stopped)")
             val tMs = System.currentTimeMillis()
-            stateBus.update {
-                it.copy(
-                    engineState = EngineState.Off,
-                    engineStateChangedAtMs = tMs,
-                )
-            }
+            // BLE-derived Off — flip the merge input. The
+            // engine-state listener handles drive sealing.
+            stateBus.setBleEngineState(EngineState.Off, tMs)
             publishEngineState("off", tMs)
             // Clear cached metric samples so the Live screen doesn't
             // sit on stale RPM / speed / coolant values from the
@@ -510,13 +574,6 @@ class PitstopBridgeService : Service() {
             // the bus too (see publish gates below) so the screen
             // stays blank until the next engine_on.
             stateBus.clearMetrics()
-            // Seal the open drive (#117). The sealer persists to Room
-            // and kicks the upload worker; subsequent retries collapse
-            // on the deterministic client_drive_uuid.
-            scope.launch {
-                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
-                driveSealer.seal(tMs, deviceId)
-            }
         }
     }
 
@@ -1144,10 +1201,19 @@ class PitstopBridgeService : Service() {
         if (loc.hasSpeed()) stateBus.publishMetric("gps_speed", loc.speed.toDouble())
         if (loc.hasAltitude()) stateBus.publishMetric("gps_alt", loc.altitude)
 
-        // MQTT publish stays engine-on-gated: we don't want gps_points
-        // littered with stationary noise from a phone sitting in the
-        // driveway, and the trip route polyline only covers driving.
-        if (stateBus.status.value.engineState != EngineState.On) return
+        // MQTT publish stays soft-gated. Original gate was strictly
+        // engine-on which silently dropped every GPS fix in GPS-only
+        // mode (v0.1.176 bug: BLE-disabled = engineState never became
+        // On = zero `bridge/+/location` ever published). Allow the
+        // publish when EITHER:
+        //   - merged engineState is On (BLE OBD, watchdog, OR
+        //     InCarDetector hint — see BridgeStateBus merge rules), OR
+        //   - the phone is actually moving (>1 m/s ≈ 2.2 mph): catches
+        //     the early-drive window before any engine signal lands
+        //     and is naturally false in a parked driveway.
+        val movingMps = if (loc.hasSpeed()) loc.speed.toDouble() else 0.0
+        val engineOn = stateBus.status.value.engineState == EngineState.On
+        if (!engineOn && movingMps <= 1.0) return
 
         // Bridge payload v2: one /location row carries the whole fix
         // (lat/lon/alt/speed/heading/accuracy) with the original capture
@@ -1184,6 +1250,24 @@ class PitstopBridgeService : Service() {
         // Start again.
         scope.launch {
             runCatching { settingsRepository.setBridgeAutoStart(false) }
+        }
+        // Seal any in-progress drive BEFORE we cancel the pollJob (the
+        // engine-state listener lives on pollJob and would otherwise be
+        // killed before it sees the synthetic Off). Matters most for
+        // GPS-only mode where the stop intent from InCarDetector is the
+        // normal end-of-drive signal — without this, the GPS-captured
+        // payload would sit in the recorder until the next bridge start
+        // forced an orphan recovery.
+        val hadOpenDrive = driveRecorder.current() != null
+        if (hadOpenDrive) {
+            val tMs = System.currentTimeMillis()
+            val kind = pendingSealKind
+            pendingSealKind = "off"
+            scope.launch {
+                val deviceId = settingsRepository.deviceIdOrNull() ?: "unknown"
+                driveSealer.seal(tMs, deviceId, kind = kind)
+            }
+            publishEngineState("off", tMs)
         }
         stopGpsUpdates()
         pollJob?.cancel()

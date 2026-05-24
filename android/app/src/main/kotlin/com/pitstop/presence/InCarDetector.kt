@@ -21,6 +21,7 @@ import com.google.android.gms.location.ActivityTransitionRequest
 import com.google.android.gms.location.DetectedActivity
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
+import com.pitstop.service.BridgeStateBus
 import com.pitstop.service.PitstopBridgeService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -92,6 +93,7 @@ class InCarDetector @Inject constructor(
     private val settings: SettingsRepository,
     private val presence: PresenceTracker,
     private val activityBus: ActivityRecognitionBus,
+    private val stateBus: BridgeStateBus,
     private val logBuffer: LogBuffer,
 ) {
 
@@ -188,6 +190,9 @@ class InCarDetector @Inject constructor(
                         _ssidMatched.value = false
                         pendingStopJob?.cancel()
                         pendingStopJob = null
+                        // Withdraw any lingering hint so the merge falls
+                        // back to BLE-only behaviour.
+                        stateBus.setInCarEngineHint(null)
                     }
                 }
                 // Reconcile AR subscription against the toggle + parent
@@ -206,6 +211,13 @@ class InCarDetector @Inject constructor(
         observerJob = ownScope.launch {
             inCar.collect { v ->
                 if (!enabled) return@collect
+                // Push the hint into the state bus regardless of the
+                // auto-start side effect. The BridgeStateBus merges this
+                // with the BLE-derived engine signal — in BLE-only mode
+                // it's a no-op (BLE wins); in GPS-only mode it's the
+                // ONLY engine-state source, which is what enables drive
+                // sealing without a WiCAN link (v0.1.176 fix).
+                stateBus.setInCarEngineHint(v)
                 if (v) {
                     pendingStopJob?.cancel()
                     pendingStopJob = null
@@ -214,7 +226,11 @@ class InCarDetector @Inject constructor(
                     // Already debounced for DEBOUNCE_MS by the inCar
                     // flow itself. Add a grace window on top so a
                     // momentary all-false window in the driveway
-                    // doesn't immediately tear down the service.
+                    // doesn't immediately tear down the service. The
+                    // hint flip above already happened — the merged
+                    // engineState transitions Off and the bridge's
+                    // engine-state listener seals the open drive BEFORE
+                    // this grace window expires and stopBridge fires.
                     pendingStopJob?.cancel()
                     pendingStopJob = ownScope.launch {
                         delay(STOP_GRACE_MS)
@@ -238,6 +254,7 @@ class InCarDetector @Inject constructor(
         clearWifiCallback()
         unsubscribeActivityRecognition()
         _ssidMatched.value = false
+        stateBus.setInCarEngineHint(null)
     }
 
     private fun startBridge(reason: String) {

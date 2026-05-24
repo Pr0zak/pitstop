@@ -79,6 +79,24 @@ class BridgeStateBus @Inject constructor() {
     val latestByMetric: StateFlow<Map<String, MetricSample>> = _latestByMetric.asStateFlow()
 
     /**
+     * Engine-state merge inputs. The published [BridgeStatus.engineState]
+     * is derived from these two whenever either changes, so callers
+     * shouldn't write `engineState` directly — go through
+     * [setBleEngineState] (BLE/OBD-derived) or [setInCarEngineHint]
+     * (presence-derived, e.g. [com.pitstop.presence.InCarDetector]).
+     *
+     * Merge precedence (per the v0.1.176 GPS-only fix):
+     *   - BLE explicit On wins
+     *   - BLE explicit Off wins (the WiCAN reported STOPPED, trust it
+     *     over a stale Bluetooth-headset-still-connected hint)
+     *   - Otherwise (BLE Unknown / link down / collector disabled) the
+     *     in-car hint becomes the source of truth so GPS-only drives
+     *     transition engine state at all
+     */
+    @Volatile private var bleEngineState: EngineState = EngineState.Unknown
+    @Volatile private var inCarEngineHint: Boolean? = null
+
+    /**
      * External signal that an immediate BLE reconnect attempt is now
      * worth trying — e.g. WiCAN just came online via MQTT, so the
      * adaptive backoff loop should stop sleeping and try BLE now.
@@ -98,6 +116,44 @@ class BridgeStateBus @Inject constructor() {
         _status.update(transform)
     }
 
+    /**
+     * Record the BLE/OBD view of the engine. Callers feed this from
+     * the WiCAN response parser (engine-on / STOPPED), the OBD-quiet
+     * watchdog, and the BLE-lost watchdog. The merged
+     * [BridgeStatus.engineState] is recomputed and the change-time
+     * stamp updated only when the public state actually flips.
+     */
+    fun setBleEngineState(state: EngineState, atMs: Long = System.currentTimeMillis()) {
+        bleEngineState = state
+        applyEngineMerge(atMs)
+    }
+
+    /**
+     * Record the presence-detector hint that the user is in the car.
+     * Used as the engine-state source of truth when BLE is disabled,
+     * the link is down, or the WiCAN hasn't reported anything yet —
+     * see the merge rules on [bleEngineState]. Pass `null` to clear
+     * the hint (e.g. when the InCarDetector is turned off).
+     */
+    fun setInCarEngineHint(active: Boolean?, atMs: Long = System.currentTimeMillis()) {
+        inCarEngineHint = active
+        applyEngineMerge(atMs)
+    }
+
+    private fun applyEngineMerge(atMs: Long) {
+        val merged = when {
+            bleEngineState == EngineState.On -> EngineState.On
+            bleEngineState == EngineState.Off -> EngineState.Off
+            inCarEngineHint == true -> EngineState.On
+            inCarEngineHint == false -> EngineState.Off
+            else -> EngineState.Unknown
+        }
+        _status.update { cur ->
+            if (cur.engineState == merged) cur
+            else cur.copy(engineState = merged, engineStateChangedAtMs = atMs)
+        }
+    }
+
     fun publishMetric(name: String, value: Double) {
         val sample = MetricSample(name = name, value = value, tsMs = System.currentTimeMillis())
         _latestByMetric.update { it + (name to sample) }
@@ -110,6 +166,8 @@ class BridgeStateBus @Inject constructor() {
     }
 
     fun reset() {
+        bleEngineState = EngineState.Unknown
+        inCarEngineHint = null
         _status.value = BridgeStatus()
         _latestByMetric.value = emptyMap()
     }
