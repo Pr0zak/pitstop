@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -42,6 +43,18 @@ class SettingsRepository @Inject constructor(
         val bridgeGpsEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_gps_enabled")
         val bridgeAutoTrigger: Preferences.Key<Boolean> = booleanPreferencesKey("bridge_auto_trigger")
         val bridgeAutoTriggerSsids: Preferences.Key<String> = stringPreferencesKey("bridge_auto_trigger_ssids")
+        val bridgeAutoTriggerActivityEnabled: Preferences.Key<Boolean> =
+            booleanPreferencesKey("bridge_auto_trigger_activity_enabled")
+
+        // Process-survival flag for the Activity Recognition signal.
+        // ActivityTransitionUpdates fire via PendingIntent → BroadcastReceiver
+        // and survive process death; the receiver writes the latest
+        // IN_VEHICLE state here so InCarDetector can re-emit it on the
+        // next process boot before the next AR transition arrives.
+        val inVehicleState: Preferences.Key<Boolean> =
+            booleanPreferencesKey("ar_in_vehicle_state")
+        val inVehicleStateAtMs: Preferences.Key<Long> =
+            longPreferencesKey("ar_in_vehicle_state_at_ms")
     }
 
     /**
@@ -96,6 +109,8 @@ class SettingsRepository @Inject constructor(
                 ?.map { it.trim() }
                 ?.filter { it.isNotEmpty() }
                 ?: listOf("MobileChicken"),
+            bridgeAutoTriggerActivityEnabled =
+                prefs[Keys.bridgeAutoTriggerActivityEnabled] ?: false,
         )
     }
 
@@ -134,6 +149,7 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.bridgeGpsEnabled] = settings.bridgeGpsEnabled
             prefs[Keys.bridgeAutoTrigger] = settings.bridgeAutoTrigger
             prefs[Keys.bridgeAutoTriggerSsids] = settings.bridgeAutoTriggerSsids.joinToString(",")
+            prefs[Keys.bridgeAutoTriggerActivityEnabled] = settings.bridgeAutoTriggerActivityEnabled
         }
         // Treat blank as "leave alone" rather than "clear" — otherwise a
         // save fired before the form's init coroutine has populated the
@@ -189,5 +205,43 @@ class SettingsRepository @Inject constructor(
         context.dataStore.edit {
             it[Keys.bridgeAutoTriggerSsids] = cleaned.joinToString(",")
         }
+    }
+
+    /** Focused setter for the opt-in Activity Recognition sub-toggle.
+     *  Observed by [com.pitstop.presence.InCarDetector] off the settings
+     *  flow — flipping at runtime starts / stops the AR subscription
+     *  without restarting anything. The UI is responsible for ensuring
+     *  the runtime permission is granted BEFORE flipping this to true. */
+    suspend fun setBridgeAutoTriggerActivityEnabled(value: Boolean) {
+        context.dataStore.edit { it[Keys.bridgeAutoTriggerActivityEnabled] = value }
+    }
+
+    /**
+     * Latest IN_VEHICLE state persisted by the activity-recognition
+     * broadcast receiver. Read on process boot by [com.pitstop.presence.InCarDetector]
+     * to re-establish the signal before the next AR transition arrives.
+     * Stale values (older than [AR_STATE_STALE_MS]) are treated as false
+     * by the consumer.
+     */
+    suspend fun readInVehicleState(): Pair<Boolean, Long> {
+        val prefs = context.dataStore.data.first()
+        return (prefs[Keys.inVehicleState] ?: false) to
+            (prefs[Keys.inVehicleStateAtMs] ?: 0L)
+    }
+
+    /** Persist the latest IN_VEHICLE transition from the AR receiver. */
+    suspend fun writeInVehicleState(value: Boolean, atMs: Long) {
+        context.dataStore.edit {
+            it[Keys.inVehicleState] = value
+            it[Keys.inVehicleStateAtMs] = atMs
+        }
+    }
+
+    companion object {
+        /** AR state older than this is treated as unknown / false on
+         *  process boot. 30 min is long enough to cover most process-death
+         *  windows while short enough that a stale "ENTER IN_VEHICLE" from
+         *  the previous drive doesn't auto-start the bridge the next day. */
+        const val AR_STATE_STALE_MS: Long = 30L * 60_000L
     }
 }

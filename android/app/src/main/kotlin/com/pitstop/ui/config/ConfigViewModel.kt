@@ -49,6 +49,7 @@ data class ConfigFormState(
     val bridgeGpsEnabled: Boolean = true,
     val bridgeAutoTrigger: Boolean = true,
     val bridgeAutoTriggerSsids: List<String> = listOf("MobileChicken"),
+    val bridgeAutoTriggerActivityEnabled: Boolean = false,
     val saved: Boolean = false,
 )
 
@@ -155,6 +156,8 @@ class ConfigViewModel @Inject constructor(
                 bridgeGpsEnabled = secrets.settings.bridgeGpsEnabled,
                 bridgeAutoTrigger = secrets.settings.bridgeAutoTrigger,
                 bridgeAutoTriggerSsids = secrets.settings.bridgeAutoTriggerSsids,
+                bridgeAutoTriggerActivityEnabled =
+                    secrets.settings.bridgeAutoTriggerActivityEnabled,
             )
             _formReady.value = true
         }
@@ -246,6 +249,23 @@ class ConfigViewModel @Inject constructor(
         }
     }
 
+    /** Auto-persist the Activity-Recognition sub-toggle. The Settings
+     *  UI is responsible for ensuring the runtime ACTIVITY_RECOGNITION
+     *  permission is granted before passing `true` — denial flips the
+     *  toggle back off via a snackbar handler in the composable. */
+    fun setBridgeAutoTriggerActivityEnabled(value: Boolean) {
+        _form.value = _form.value.copy(bridgeAutoTriggerActivityEnabled = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setBridgeAutoTriggerActivityEnabled(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: bridgeAutoTriggerActivityEnabled auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
     /** Auto-persist the editable SSID allowlist for the in-car
      *  detector. Form receives the raw comma-separated text — we
      *  split + clean here so DataStore stores a normalised value. */
@@ -314,6 +334,7 @@ class ConfigViewModel @Inject constructor(
                     bridgeGpsEnabled = f.bridgeGpsEnabled,
                     bridgeAutoTrigger = f.bridgeAutoTrigger,
                     bridgeAutoTriggerSsids = f.bridgeAutoTriggerSsids,
+                    bridgeAutoTriggerActivityEnabled = f.bridgeAutoTriggerActivityEnabled,
                 ),
                 mqttPassword = f.mqttPassword,
                 ingestToken = f.ingestToken,

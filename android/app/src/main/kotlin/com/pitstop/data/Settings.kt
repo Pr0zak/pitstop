@@ -113,6 +113,20 @@ data class Settings(
      * so this signal piggybacks on the existing prompt.
      */
     val bridgeAutoTriggerSsids: List<String> = listOf("MobileChicken"),
+    /**
+     * Opt-in 4th in-car signal: subscribe to
+     * [com.google.android.gms.location.ActivityRecognitionClient] and
+     * count IN_VEHICLE transitions as "in car". Fires within ~5–15 s of
+     * vehicle motion — independent of (and faster than) the WiFi-SSID
+     * signal, which can lag 30–60 s while the phone clings to home WiFi.
+     *
+     * Requires the dangerous `ACTIVITY_RECOGNITION` runtime permission
+     * on Android 10+. We NEVER prompt at install or first launch — the
+     * user enables this via a sub-toggle under "Auto-start in car"; the
+     * UI requests the permission only when the toggle flips on. Disabled
+     * by default so existing users don't see a permission prompt.
+     */
+    val bridgeAutoTriggerActivityEnabled: Boolean = false,
 )
 
 data class SettingsWithSecrets(

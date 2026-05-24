@@ -41,6 +41,22 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!--
+      Activity Recognition (Task: faster in-car detection). Opt-in 4th signal
+      in InCarDetector — fires on IN_VEHICLE ENTER/EXIT transitions within
+      ~5–15 s of vehicle motion, independent of WiFi handoff (which can lag
+      30–60 s as the phone clings to home WiFi). Runtime permission on
+      Android 10+ — we NEVER prompt at install or first launch; user opts
+      in via the "Use motion detection for faster start" sub-toggle in
+      Settings → Bridge service → Auto-start in car.
+
+      Both permissions are declared: the OS one is required for API 29+,
+      and the GMS one is required for API 28 and below where the system
+      perm doesn't exist yet.
+    -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
+
     <!-- Camera intent for fuel receipt photos (Task #29). We do not bake bytes — URI only. -->
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
@@ -147,6 +163,15 @@
              via the PendingIntent in SyncReminderManager. -->
         <receiver
             android:name=".notif.SyncReminderReceiver"
+            android:exported="false" />
+
+        <!-- ActivityRecognitionClient transition callbacks. Fired by
+             Google Play services when the device ENTERs / EXITs the
+             IN_VEHICLE detected-activity state. Not exported — the
+             PendingIntent we register with the AR client is implicit-by-
+             component-name so only GMS in our own process can hit it. -->
+        <receiver
+            android:name=".presence.ActivityRecognitionReceiver"
             android:exported="false" />
 
         <!-- Fuel-level home-screen widget (v0.1.124). Provider draws a

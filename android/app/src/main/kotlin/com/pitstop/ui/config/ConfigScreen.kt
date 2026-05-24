@@ -1,5 +1,10 @@
 package com.pitstop.ui.config
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,14 +40,18 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import com.pitstop.ble.ScannedDevice
 import com.pitstop.service.BridgePhase
 import com.pitstop.ui.components.PillState
@@ -118,6 +127,7 @@ fun ConfigScreen(
                 .verticalScroll(rememberScrollState()),
         ) {
             // ── always expanded: daily-use surfaces ──
+            val scope = rememberCoroutineScope()
             BridgeServiceSection(
                 phase = bridge.phase,
                 deviceName = bridge.deviceName,
@@ -130,11 +140,18 @@ fun ConfigScreen(
                 gpsEnabled = form.bridgeGpsEnabled,
                 autoTrigger = form.bridgeAutoTrigger,
                 autoTriggerSsids = form.bridgeAutoTriggerSsids,
+                autoTriggerActivityEnabled = form.bridgeAutoTriggerActivityEnabled,
                 inCar = bridge.inCar,
                 onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
                 onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
                 onAutoTriggerChange = { v -> viewModel.setBridgeAutoTrigger(v) },
                 onAutoTriggerSsidsChange = { v -> viewModel.setBridgeAutoTriggerSsids(v) },
+                onAutoTriggerActivityEnabledChange = { v ->
+                    viewModel.setBridgeAutoTriggerActivityEnabled(v)
+                },
+                onShowSnackbar = { msg ->
+                    scope.launch { snackbarHostState.showSnackbar(msg) }
+                },
                 onStart = { viewModel.startBridge() },
                 onStop = { viewModel.stopBridge() },
             )
@@ -231,11 +248,14 @@ private fun BridgeServiceSection(
     gpsEnabled: Boolean,
     autoTrigger: Boolean,
     autoTriggerSsids: List<String>,
+    autoTriggerActivityEnabled: Boolean,
     inCar: Boolean,
     onBleEnabledChange: (Boolean) -> Unit,
     onGpsEnabledChange: (Boolean) -> Unit,
     onAutoTriggerChange: (Boolean) -> Unit,
     onAutoTriggerSsidsChange: (String) -> Unit,
+    onAutoTriggerActivityEnabledChange: (Boolean) -> Unit,
+    onShowSnackbar: (String) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -362,6 +382,62 @@ private fun BridgeServiceSection(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            // ── 4th signal: Activity Recognition (opt-in) ────────────────
+            // Fires within ~5–15 s of vehicle motion, before WiFi can
+            // hand off from the home network to the car hotspot. Off by
+            // default — flipping this on triggers the runtime permission
+            // prompt. On denial we surface a snackbar and leave the
+            // toggle off (the setter is only called on grant).
+            val ctx = LocalContext.current
+            val permGranted = remember(autoTriggerActivityEnabled) {
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                    ContextCompat.checkSelfPermission(
+                        ctx, Manifest.permission.ACTIVITY_RECOGNITION,
+                    ) == PackageManager.PERMISSION_GRANTED
+            }
+            val permLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                if (granted) {
+                    onAutoTriggerActivityEnabledChange(true)
+                } else {
+                    onShowSnackbar(
+                        "Permission denied — falling back to WiFi/Bluetooth signals",
+                    )
+                    // Defensive: ensure persisted state matches reality.
+                    onAutoTriggerActivityEnabledChange(false)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Use motion detection for faster start",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        "Detects vehicle motion within ~15 s, independent of WiFi handoff",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = autoTriggerActivityEnabled && permGranted,
+                    onCheckedChange = { wanted ->
+                        if (!wanted) {
+                            onAutoTriggerActivityEnabledChange(false)
+                            return@Switch
+                        }
+                        // Wanted = ON. Only persist after the runtime perm
+                        // is granted; the launcher callback handles it.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !permGranted) {
+                            permLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                        } else {
+                            onAutoTriggerActivityEnabledChange(true)
+                        }
+                    },
+                )
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

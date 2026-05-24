@@ -2,7 +2,9 @@ package com.pitstop.presence
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -12,6 +14,11 @@ import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.ActivityRecognition
+import com.google.android.gms.location.ActivityRecognitionClient
+import com.google.android.gms.location.ActivityTransition
+import com.google.android.gms.location.ActivityTransitionRequest
+import com.google.android.gms.location.DetectedActivity
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import com.pitstop.service.PitstopBridgeService
@@ -35,7 +42,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * App-singleton "user is in the car" detector. OR-combines three
+ * App-singleton "user is in the car" detector. OR-combines four
  * independent signals into a single [inCar] StateFlow:
  *
  *   1. **Paired-car WiFi SSID** — phone associates with one of the
@@ -47,6 +54,15 @@ import javax.inject.Singleton
  *      AA StateFlow.
  *   3. **Paired-car HFP Bluetooth** — reuses [PresenceTracker]'s
  *      existing HFP signal.
+ *   4. **Activity Recognition `IN_VEHICLE`** *(opt-in)* — GMS
+ *      [ActivityRecognitionClient] transitions, fed in via
+ *      [ActivityRecognitionBus] (which the
+ *      [ActivityRecognitionReceiver] writes to). Off by default; the
+ *      user enables it under the "Auto-start in car" toggle, at which
+ *      point the UI requests the `ACTIVITY_RECOGNITION` runtime
+ *      permission. Fires within ~5–15 s of vehicle motion — faster
+ *      than the WiFi SSID signal which can lag 30–60 s while the
+ *      phone clings to home WiFi.
  *
  * The detector also owns the auto-start side effect: whenever the
  * combined `inCar` flips true and [com.pitstop.data.Settings.bridgeAutoTrigger]
@@ -75,6 +91,7 @@ class InCarDetector @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settings: SettingsRepository,
     private val presence: PresenceTracker,
+    private val activityBus: ActivityRecognitionBus,
     private val logBuffer: LogBuffer,
 ) {
 
@@ -85,10 +102,14 @@ class InCarDetector @Inject constructor(
     private val _ssidMatched = MutableStateFlow(false)
     val ssidMatched: StateFlow<Boolean> = _ssidMatched.asStateFlow()
 
-    /** True when ANY of the three signals is active. */
+    /** True when ANY of the four signals is active. */
     val inCar: StateFlow<Boolean> by lazy {
-        combine(_ssidMatched, presence.inCar) { ssid, presenceInCar ->
-            ssid || presenceInCar
+        combine(
+            _ssidMatched,
+            presence.inCar,
+            activityBus.inVehicle,
+        ) { ssid, presenceInCar, inVehicle ->
+            ssid || presenceInCar || inVehicle
         }
             .distinctUntilChanged()
             .debounceFalse(DEBOUNCE_MS)
@@ -103,6 +124,8 @@ class InCarDetector @Inject constructor(
 
     @Volatile private var enabled: Boolean = false
     @Volatile private var configuredSsids: Set<String> = setOf("MobileChicken")
+    @Volatile private var activitySubscribed: Boolean = false
+    @Volatile private var activityToggleOn: Boolean = false
 
     /** Cache of the most recent SSID we saw associated, so a settings
      *  change (eg. user adds a new SSID) can re-evaluate without a
@@ -114,11 +137,32 @@ class InCarDetector @Inject constructor(
         if (started) return
         started = true
 
+        // Re-seed the AR bus from the persisted IN_VEHICLE flag so the
+        // signal carries across process death. AR transitions fire via
+        // PendingIntent and can wake the process after kill, but the bus
+        // is in-memory — without this restore, a process boot would clear
+        // the signal to false even though the device is still moving.
+        ownScope.launch {
+            runCatching {
+                val (value, atMs) = settings.readInVehicleState()
+                val age = System.currentTimeMillis() - atMs
+                if (value && atMs > 0L && age < SettingsRepository.AR_STATE_STALE_MS) {
+                    activityBus.setInVehicle(true)
+                    logBuffer.info(
+                        "AR state restored on boot",
+                        mapOf("age_ms" to age),
+                    )
+                }
+            }
+        }
+
         // Watch the toggle + SSID list. Apply changes immediately.
         settingsJob = ownScope.launch {
             settings.settings.collect { s ->
                 val priorEnabled = enabled
+                val priorActivityToggle = activityToggleOn
                 enabled = s.bridgeAutoTrigger
+                activityToggleOn = s.bridgeAutoTriggerActivityEnabled
                 configuredSsids = s.bridgeAutoTriggerSsids.toSet()
                 // SSID list could have changed: re-evaluate against the
                 // last seen SSID so users get instant feedback after
@@ -146,6 +190,15 @@ class InCarDetector @Inject constructor(
                         pendingStopJob = null
                     }
                 }
+                // Reconcile AR subscription against the toggle + parent
+                // enabled flag. Also re-checks on every emission so OS-level
+                // permission revocation (which doesn't fire a settings
+                // change) is caught next time the user touches Settings.
+                reconcileActivityRecognition(
+                    parentEnabled = enabled,
+                    toggleOn = activityToggleOn,
+                    toggleChanged = priorActivityToggle != activityToggleOn,
+                )
             }
         }
 
@@ -183,6 +236,7 @@ class InCarDetector @Inject constructor(
         pendingStopJob?.cancel()
         pendingStopJob = null
         clearWifiCallback()
+        unsubscribeActivityRecognition()
         _ssidMatched.value = false
     }
 
@@ -312,6 +366,106 @@ class InCarDetector @Inject constructor(
         recomputeSsidMatched()
     }
 
+    /**
+     * Apply the desired AR-subscription state given the user toggles +
+     * runtime permission. Idempotent and safe to call on every settings
+     * emission. When permission has been revoked under our feet (eg.
+     * user toggled it off in OS Settings), we silently unsubscribe and
+     * clear the bus value — the toggle stays "on" in our Settings so a
+     * re-grant + next settings emission resubscribes without UI action.
+     */
+    private fun reconcileActivityRecognition(
+        parentEnabled: Boolean,
+        toggleOn: Boolean,
+        toggleChanged: Boolean,
+    ) {
+        val want = parentEnabled && toggleOn && hasActivityRecognitionPermission()
+        if (toggleChanged) {
+            logBuffer.info(
+                "AR sub-toggle changed",
+                mapOf("on" to toggleOn, "perm" to hasActivityRecognitionPermission()),
+            )
+        }
+        when {
+            want && !activitySubscribed -> subscribeActivityRecognition()
+            !want && activitySubscribed -> unsubscribeActivityRecognition()
+        }
+        if (!want) {
+            // No subscription = no incoming transitions to drive the bus
+            // back to false. Force it down so a stale `true` from a prior
+            // session can't keep the bridge stuck up.
+            activityBus.setInVehicle(false)
+        }
+    }
+
+    private fun hasActivityRecognitionPermission(): Boolean {
+        // The OS-level permission only exists on Q+. On earlier API
+        // levels the GMS manifest permission is auto-granted at install
+        // time (it's a normal permission for GMS) — no runtime check.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACTIVITY_RECOGNITION,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun activityRecognitionPendingIntent(): PendingIntent {
+        val intent = Intent(context, ActivityRecognitionReceiver::class.java)
+        // FLAG_MUTABLE: GMS writes the result extras into the intent
+        // before delivery. PendingIntent compat shim helps API <23 but
+        // our minSdk is 26 so we can use the constant directly.
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        return PendingIntent.getBroadcast(context, AR_PI_REQUEST_CODE, intent, flags)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun subscribeActivityRecognition() {
+        val request = ActivityTransitionRequest(
+            listOf(
+                ActivityTransition.Builder()
+                    .setActivityType(DetectedActivity.IN_VEHICLE)
+                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
+                    .build(),
+                ActivityTransition.Builder()
+                    .setActivityType(DetectedActivity.IN_VEHICLE)
+                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
+                    .build(),
+            ),
+        )
+        val client: ActivityRecognitionClient = ActivityRecognition.getClient(context)
+        runCatching {
+            client.requestActivityTransitionUpdates(
+                request,
+                activityRecognitionPendingIntent(),
+            ).addOnSuccessListener {
+                activitySubscribed = true
+                logBuffer.info("AR subscribed")
+            }.addOnFailureListener { exc ->
+                activitySubscribed = false
+                logBuffer.warn(
+                    "AR subscribe failed",
+                    mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
+                )
+            }
+        }.onFailure { exc ->
+            logBuffer.warn(
+                "AR subscribe threw",
+                mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
+            )
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun unsubscribeActivityRecognition() {
+        if (!activitySubscribed) return
+        val client: ActivityRecognitionClient = ActivityRecognition.getClient(context)
+        runCatching {
+            client.removeActivityTransitionUpdates(activityRecognitionPendingIntent())
+        }
+        activitySubscribed = false
+        logBuffer.info("AR unsubscribed")
+    }
+
     private fun recomputeSsidMatched() {
         val seen = lastSeenSsid ?: run {
             _ssidMatched.value = false
@@ -328,6 +482,11 @@ class InCarDetector @Inject constructor(
     }
 
     companion object {
+        /** PendingIntent request code for the AR transition broadcast.
+         *  Stable across process boots so removeActivityTransitionUpdates
+         *  matches the same PendingIntent we registered with. */
+        private const val AR_PI_REQUEST_CODE: Int = 0x5A170A1C
+
         /** Debounce window for the combined signal flipping false.
          *  Smoothes momentary BT disconnects + WiFi blips. */
         private const val DEBOUNCE_MS: Long = 30_000L
