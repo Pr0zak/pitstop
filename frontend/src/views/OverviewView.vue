@@ -244,8 +244,11 @@ function gaugeArcPath(pctIn: number): string {
   const sy = cy + r * Math.sin(startAngle);
   const ex = cx + r * Math.cos(endAngle);
   const ey = cy + r * Math.sin(endAngle);
-  const largeArc = pct > 50 ? 1 : 0;
-  return `M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
+  // Sweep is always 0–180° (top-half gauge), so large-arc-flag is ALWAYS 0.
+  // Previously this was `pct > 50 ? 1 : 0`, which told SVG to take the LONGER
+  // arc when pct>50 — drawing the wrong way around the circle and leaving
+  // only the two rounded-cap endpoints visible.
+  return `M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 0 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
 }
 
 function gaugeTickPath(): string {
