@@ -311,6 +311,15 @@ class MqttIngest:
         self._batch_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._unparsed_warns: set[tuple[UUID, str]] = set()
+        # wican_lwt debounce state: per vehicle, last RECORDED (state, time).
+        # WiCAN's LWT message conflates broker-connection state with
+        # engine state. On flaky cellular, the broker can fire LWT
+        # off-on flaps every 30-90 s without the engine ever changing.
+        # We suppress: (a) duplicate same-state events (broker
+        # re-delivering retained), (b) state transitions where the
+        # previous recorded transition was < 30 s ago (likely flap).
+        # See LWT-1 in pitstop/TODO.md.
+        self._last_lwt: dict[UUID, tuple[str, datetime]] = {}
 
     # -- helpers ---------------------------------------------------------
 
@@ -683,6 +692,24 @@ class MqttIngest:
             state = "off"
         else:
             return
+        # LWT debounce — see self._last_lwt comment in __init__.
+        prev = self._last_lwt.get(vehicle_id)
+        if prev is not None:
+            prev_state, prev_when = prev
+            if state == prev_state:
+                log.debug(
+                    "wican_lwt suppress duplicate %s for vehicle %s",
+                    state, vehicle_id,
+                )
+                return
+            elapsed = (default_when - prev_when).total_seconds()
+            if elapsed < 30.0:
+                log.info(
+                    "wican_lwt suppress flap %s→%s for vehicle %s (%.1f s since last)",
+                    prev_state, state, vehicle_id, elapsed,
+                )
+                return
+        self._last_lwt[vehicle_id] = (state, default_when)
         await self._record_engine_state(vehicle_id, default_when, state, "wican_lwt")
 
     async def _record_engine_state(
@@ -816,7 +843,14 @@ class MqttIngest:
                         port=self._cfg.mqtt_port,
                         username=self._cfg.mqtt_user or None,
                         password=self._cfg.mqtt_password or None,
-                        keepalive=30,
+                        # keepalive: default 60 is right. v0.1.173 set
+                        # this to 30 thinking faster broker-disconnect
+                        # detection was better, but it caused mosquitto
+                        # to drop the subscription every ~30s on local
+                        # docker-bridge LAN (verified during cellular
+                        # drive test 2026-05-23). The 90 s watchdog
+                        # below already handles silent stalls.
+                        keepalive=60,
                     ) as client:
                         log.info(
                             "MQTT connected host=%s port=%d",
