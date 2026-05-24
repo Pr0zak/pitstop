@@ -286,3 +286,51 @@ A second long-running rabbit-hole: the previous "verified" ATF temp config from 
 - Forum reports of `222201` working on some Pilot trims are not generalizable — the public `honda-pilot-2019.json` profile keeps the canonical config in `stub_pids` as a starting point for other owners while making explicit it didn't work on the test vehicle.
 
 Shipped in v0.1.123.
+
+---
+
+## ADR-019 — Capture path: hybrid (WiCAN-MQTT + phone-BLE), backend dedupes
+
+**Context.** Three candidate architectures for getting OBD frames off the WiCAN-Pro and into the backend:
+
+- **Path A — Phone BLE bridge.** WiCAN in ELM327-style mode, phone polls OBD over BLE, ships via MQTT + caches everything to `PendingDrive` payload for offline-safe resilience.
+- **Path B — WiCAN cellular tunnel.** WiCAN runs `protocol: auto_pid` + WiFi station to the car's WiFi hotspot → WireGuard tunnel to a home VPN server → mosquitto. No phone needed.
+- **Path C — Hybrid.** Both paths active simultaneously. Backend dedupes on the existing `pid_readings` PK `(vehicle_id, metric, time)`.
+
+A prior reading of the situation (TODO.md 2026-05-24 morning) concluded Path C was impossible because BLE and WiFi-station mode were mutually exclusive on WiCAN-Pro, citing:
+- meatpiHQ/wican-fw Discussion #615 (user wired a physical toggle switch to flip modes per drive)
+- meatpi docs: "When the BLE is connected, the device configuration access point will be disabled."
+- Crowd Supply marketing mentioning *auto-switching* (sequential), not concurrent operation.
+
+Based on that, we restructured TODO.md declaring Path A primary, Path B backup, and cancelled VPN-3 (phase-out of BLE).
+
+**Then we empirically tested Beta-06 firmware (`git_version: v4.49p_beta-06`) in the driveway:**
+
+1. WiCAN booted with `wifi_mode: Station`, `sta_status: Connected`, `ble_status: enable`.
+2. 10-minute mosquitto capture showed WiCAN publishing `wican/pilot19/pid` at ~1 Hz over WiFi.
+3. *Simultaneously*, the phone's pitstop app connected via BLE — logs at 15:23:45 captured the full handshake: `ble connect → ble services discovered → ble service matched → ble connected → ble link ready; entering poll loop → engine on → DriveRecorder: drive opened`.
+4. WiCAN's MQTT publishing did **not** stop while BLE was connected. Both radios concurrent.
+
+Discussion #615 was on older firmware. Beta-06 implements actual radio coexistence (likely via ESP-IDF's BLE/WiFi time-slicing). The exclusivity belief that drove the TODO restructure is wrong **for our installed firmware**.
+
+**Decision.**
+
+1. **Hybrid is the architecture.** Run both paths simultaneously on Beta-06 (or newer).
+2. **Backend dedupes naturally** via `pid_readings`'s composite PK `(vehicle_id, metric, time)`. Same OBD frame arriving from both sources within the same second triggers an `INSERT … ON CONFLICT DO NOTHING`; whichever arrives first wins, the other is silently swallowed. No new code needed — this is already the schema's behavior.
+3. **Path A (phone bridge) keeps its role as the offline-safe primary.** Captures everything to `PendingDrive` regardless of connectivity (ADR-016), uploads at trip end via `POST /drives`. Adds the GPS track (WiCAN has no GPS chip). Pre-existing pain (BLE GATT flap, BLE-2) is genuine but bounded.
+4. **Path B (WiCAN tunnel) covers Path A's blind spots.** Passenger drives (no phone), dead phone, app crashed, BLE flap mid-drive. Lossier (WiCAN does fire-and-forget QoS-0 with no local buffer — cellular drops = OBD gaps), but better than nothing for those cases.
+5. **Coexistence is firmware-version-gated.** Pin firmware to `v4.49p_beta-06` or newer. Pre-Beta-06 builds may force one-at-a-time; the documented behavior on older firmware (Discussion #615) was real, not marketing.
+
+**Consequence.**
+
+- Both data sources can run live with no application-level dedup logic — the schema does it.
+- Hybrid resilience: at least one path is publishing in every plausible failure mode short of "WiCAN itself dead."
+- TODO.md needs another restructure (the morning's BLE-only re-pivot was wrong).
+- VPN-3 (BLE-OBD phase-out) stays cancelled — BLE is part of the architecture permanently, not a transitional fallback.
+- VPN-VERIFY-1 (real cellular drive with phone-BT-off) is still valid as a Path B isolation test, just no longer the architectural make-or-break.
+- WiCAN firmware upgrades must be evaluated: a regression that removes BLE+WiFi coexistence breaks the hybrid path. Worth a smoke test on every firmware bump.
+- The `/health/ingest` endpoint advances `last_message_at` from retained-message redelivery to a freshly-reconnecting backend subscriber, even when no new data is actually flowing. This masked the WiCAN's mid-test silence and looked like ingestion health when there was none. Worth filing as a separate bug; the right signal is "last NEW row inserted into pid_readings," not "last MQTT receipt."
+- The `Discussion #615 → Path A primary` decision documented earlier today is overturned by this ADR. The earlier TODO restructure was correct procedure given the information at the time; the empirical test is what produced the better answer.
+
+Test ran 2026-05-24 driveway. ADR-019 written same day, no code change required.
+
