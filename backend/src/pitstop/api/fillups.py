@@ -21,6 +21,7 @@ from fastapi import Path as FastAPIPath
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
 from ..schemas import FillupCreate, FillupOut, FillupUpdate
+from ..services.fuel_state import persist_estimate, reset_on_fillup
 
 log = logging.getLogger(__name__)
 
@@ -245,7 +246,47 @@ async def create_fillup(
     await _attach_recomputed_mpg(pool, [out])
     if body.is_full:
         await _maybe_calibrate_fuel_level(pool, body.vehicle_id, body.fillup_date)
+    await _apply_fillup_to_fuel_estimate(pool, body)
     return out
+
+
+async def _apply_fillup_to_fuel_estimate(
+    pool: asyncpg.Pool, body: FillupCreate
+) -> None:
+    """Update the hybrid fuel-level estimate after a fillup is logged.
+
+    is_full=true snaps estimate to tank capacity. Partial fillups add the
+    pumped liters to the prior estimate. See services/fuel_state.py for
+    the full state-machine documentation.
+    """
+    async with pool.acquire() as conn:
+        v = await conn.fetchrow(
+            """
+            SELECT tank_capacity_l, fuel_level_estimate_l
+              FROM vehicles WHERE id = $1
+            """,
+            body.vehicle_id,
+        )
+        if v is None or v["tank_capacity_l"] is None:
+            return  # vehicle pre-migration or missing capacity; skip
+        update = reset_on_fillup(
+            is_full=bool(body.is_full),
+            pumped_liters=float(body.fuel_volume) if body.fuel_volume else None,
+            current_estimate_l=(
+                float(v["fuel_level_estimate_l"])
+                if v["fuel_level_estimate_l"] is not None
+                else None
+            ),
+            tank_capacity_l=float(v["tank_capacity_l"]),
+            when=body.fillup_date,
+        )
+        if update.confidence == "LOW" and update.reason == "fillup_skipped_no_liters":
+            return  # nothing meaningful to persist
+        await persist_estimate(conn, body.vehicle_id, update)
+        log.info(
+            "fuel-estimate reset vehicle=%s liters=%.2f reason=%s",
+            body.vehicle_id, update.liters, update.reason,
+        )
 
 
 async def _maybe_calibrate_fuel_level(

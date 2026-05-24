@@ -156,6 +156,15 @@ class VehicleOut(VehicleBase):
     # fillup. The /vehicles endpoint normalizes latest.fuel_level
     # against this so the UI reads 100 % when actually full.
     fuel_level_calibration_pct: float = 100.0
+    # Hybrid fuel-level estimator state (0017 migration).
+    # tank_capacity_l is configured usable volume; the estimate is
+    # the in-liters running prediction maintained by fillup-reset,
+    # trip-decrement, and sensor-snap operations. NULL on either
+    # field means the hybrid estimate isn't seeded yet — the
+    # frontend falls back to the raw smoothed sensor display.
+    tank_capacity_l: float | None = None
+    fuel_level_estimate_l: float | None = None
+    fuel_level_estimate_updated_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------

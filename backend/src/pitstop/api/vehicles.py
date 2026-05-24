@@ -29,6 +29,9 @@ _VEHICLE_SELECT = """
         v.active, v.pid_profile_id,
         v.latest_odo_km, v.latest_odo_at,
         v.fuel_level_calibration_pct,
+        v.tank_capacity_l,
+        v.fuel_level_estimate_l,
+        v.fuel_level_estimate_updated_at,
         v.purchase_price, v.purchase_date,
         v.epa_mpg_combined,
         s.last_seen_at, s.last_metric, COALESCE(s.latest, '{}'::jsonb) AS latest,
@@ -102,6 +105,17 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
             if row["fuel_level_calibration_pct"] is not None
             else 100.0
         ),
+        "tank_capacity_l": (
+            float(row["tank_capacity_l"])
+            if row["tank_capacity_l"] is not None
+            else None
+        ),
+        "fuel_level_estimate_l": (
+            float(row["fuel_level_estimate_l"])
+            if row["fuel_level_estimate_l"] is not None
+            else None
+        ),
+        "fuel_level_estimate_updated_at": row["fuel_level_estimate_updated_at"],
         "latest": _normalize_latest(
             row["latest"] or {},
             float(row["fuel_level_calibration_pct"] or 100.0),
