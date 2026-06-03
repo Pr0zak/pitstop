@@ -387,13 +387,23 @@ class HistoryViewModel @Inject constructor(
 
 // ── Trip-grouping helpers (TRIPS-1) ─────────────────────────────────
 
-/** Relative-date bucket label for a trip's started_at. */
+/** Relative-date bucket label for a trip's started_at.
+ *
+ *  Converts the ISO-8601 timestamp (always UTC on the wire) to the phone's
+ *  local timezone before taking the date. Without this, a 7 PM CDT drive
+ *  whose UTC timestamp rolls into the next day (00:25Z) would bucket as
+ *  "Today" the morning after — surprising users who think of trips in
+ *  local wall-clock time. */
 fun bucketFor(
     startedAtIso: String,
     now: java.time.LocalDate = java.time.LocalDate.now(),
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
 ): TripGroupKey {
-    val t = runCatching { java.time.OffsetDateTime.parse(startedAtIso).toLocalDate() }
-        .getOrNull() ?: return TripGroupKey.Older
+    val t = runCatching {
+        java.time.OffsetDateTime.parse(startedAtIso)
+            .atZoneSameInstant(zone)
+            .toLocalDate()
+    }.getOrNull() ?: return TripGroupKey.Older
     val daysAgo = java.time.temporal.ChronoUnit.DAYS.between(t, now)
     return when {
         daysAgo <= 0L -> TripGroupKey.Today
