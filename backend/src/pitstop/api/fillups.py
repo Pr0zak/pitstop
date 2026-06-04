@@ -262,16 +262,22 @@ async def _apply_fillup_to_fuel_estimate(
     async with pool.acquire() as conn:
         v = await conn.fetchrow(
             """
-            SELECT tank_capacity_l, fuel_level_estimate_l
+            SELECT tank_capacity_l, fuel_level_estimate_l, fuel_unit
               FROM vehicles WHERE id = $1
             """,
             body.vehicle_id,
         )
         if v is None or v["tank_capacity_l"] is None:
             return  # vehicle pre-migration or missing capacity; skip
+        # Convert pumped volume to liters. fuel_unit convention in this
+        # codebase: 0=liters, 1=US gallons. The estimator math is L-only.
+        pumped_l: float | None = None
+        if body.fuel_volume:
+            raw = float(body.fuel_volume)
+            pumped_l = raw * 3.78541 if v["fuel_unit"] == 1 else raw
         update = reset_on_fillup(
             is_full=bool(body.is_full),
-            pumped_liters=float(body.fuel_volume) if body.fuel_volume else None,
+            pumped_liters=pumped_l,
             current_estimate_l=(
                 float(v["fuel_level_estimate_l"])
                 if v["fuel_level_estimate_l"] is not None

@@ -50,6 +50,12 @@ PARKED_QUIET_S = 600.0
 # spikes). Median over a small window is more honest than mean over a
 # wide window — the wide window can be dominated by mid-drive slosh.
 SNAP_TRAILING_SAMPLES = 5
+# Honda PID 0x2F sensor is laggy after a fillup — observed 2026-06-03
+# still reading pre-fillup level 12 min after an is_full=true fillup.
+# Quarantine snap_pass for this window so the fillup-reset stands
+# until MAF integration takes over or the sensor catches up. 6 hours
+# is conservative; typical settle is 1-2 drive cycles.
+SNAP_POST_FILLUP_QUARANTINE_S = 6 * 3600.0
 
 
 async def decrement_pass(pool: asyncpg.Pool) -> int:
@@ -131,12 +137,35 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
             """
         )
         for v in vehicles:
+            # Latest fillup time — snaps must only consider samples taken
+            # AFTER any recent fillup. A fillup is authoritative (user
+            # observed the tank state); pre-fillup sensor samples are
+            # stale and would silently undo the fillup-reset. Discovered
+            # 2026-06-03: a 18:17 is_full=true fillup reset estimate to
+            # 80 L; snap_pass at 23:14 read pre-fillup near-empty samples
+            # and clobbered the estimate down to 3.94 L.
+            latest_fillup = await conn.fetchval(
+                """
+                SELECT max(fillup_date) FROM fillups WHERE vehicle_id = $1
+                """,
+                v["id"],
+            )
+            # Quarantine snap for SNAP_POST_FILLUP_QUARANTINE_S after a
+            # fillup — Honda's PID 0x2F is laggy after a fillup and the
+            # post-fillup samples read pre-fillup values for the first
+            # hour or three. Let the fillup-reset stand until MAF
+            # integration takes over or the sensor catches up.
+            if latest_fillup is not None:
+                since_fillup_s = (datetime.now(UTC) - latest_fillup).total_seconds()
+                if since_fillup_s < SNAP_POST_FILLUP_QUARANTINE_S:
+                    continue
             latest = await conn.fetchval(
                 """
                 SELECT max(time) FROM pid_readings
                  WHERE vehicle_id = $1 AND metric = 'fuel_level'
+                   AND ($2::timestamptz IS NULL OR time > $2)
                 """,
-                v["id"],
+                v["id"], latest_fillup,
             )
             if latest is None:
                 continue
@@ -148,13 +177,15 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
             # park. Stability gating proved too brittle: during a drive
             # the samples bounce ±15 % from slosh, and clean post-park
             # samples are rare because WiCAN sleeps on engine-off.
+            # Same post-fillup gate applies here.
             rows = await conn.fetch(
                 """
                 SELECT value_num FROM pid_readings
                  WHERE vehicle_id = $1 AND metric = 'fuel_level'
+                   AND ($3::timestamptz IS NULL OR time > $3)
                  ORDER BY time DESC LIMIT $2
                 """,
-                v["id"], SNAP_TRAILING_SAMPLES,
+                v["id"], SNAP_TRAILING_SAMPLES, latest_fillup,
             )
             if len(rows) < 1:
                 continue

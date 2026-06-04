@@ -204,16 +204,30 @@ async def _refresh_latest_odo(
     vehicle_id: uuid.UUID,
 ) -> None:
     """Pull the freshest odometer reading from pid_readings and update
-    vehicles.latest_odo_km if it's newer than the stored value. Cheap
-    per-cycle (one SELECT max + one conditional UPDATE per vehicle).
+    vehicles.latest_odo_km if it's newer than the stored value.
+
+    Uses latest-by-time (not max-by-value). The original max(value_num)
+    pattern let a single glitched CAN frame poison the field permanently
+    — observed 2026-06-03 with a burst of 10,496,563 km samples from a
+    pre-retain-fix WiCAN cycle that lifted the Pilot's "lifetime
+    odometer" by 85× and never relaxed.
+
+    Sanity-rejects implausibly-large values (no consumer car odometer
+    crosses 1,000,000 km / ~620k mi). Caps don't filter the underlying
+    pid_readings rows (those land via the ingest path), only what we
+    promote to vehicles.latest_odo_km.
     """
     row = await conn.fetchrow(
         """
-        SELECT max(time) AS t, max(value_num) AS odo
+        SELECT time AS t, value_num AS odo
           FROM pid_readings
          WHERE vehicle_id = $1
            AND metric = 'odometer'
            AND value_num IS NOT NULL
+           AND value_num > 0
+           AND value_num < 1000000
+         ORDER BY time DESC
+         LIMIT 1
         """,
         vehicle_id,
     )
