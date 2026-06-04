@@ -50,12 +50,13 @@ PARKED_QUIET_S = 600.0
 # spikes). Median over a small window is more honest than mean over a
 # wide window — the wide window can be dominated by mid-drive slosh.
 SNAP_TRAILING_SAMPLES = 5
-# Honda PID 0x2F sensor is laggy after a fillup — observed 2026-06-03
-# still reading pre-fillup level 12 min after an is_full=true fillup.
-# Quarantine snap_pass for this window so the fillup-reset stands
-# until MAF integration takes over or the sensor catches up. 6 hours
-# is conservative; typical settle is 1-2 drive cycles.
-SNAP_POST_FILLUP_QUARANTINE_S = 6 * 3600.0
+# Safety cap: never let a single snap drop the estimate by more than this
+# fraction of tank_capacity_l. A 66 L drop on an 80 L tank in one tick
+# (observed 2026-06-04, Honda PID 0x2F still stuck on pre-fillup reading
+# many hours after a real fill) is far more likely sensor lag than real
+# fuel loss. Cap forces the correction to happen gradually as the
+# sensor catches up.
+MAX_SNAP_DROP_FRACTION = 0.25
 
 
 async def decrement_pass(pool: asyncpg.Pool) -> int:
@@ -150,14 +151,26 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                 """,
                 v["id"],
             )
-            # Quarantine snap for SNAP_POST_FILLUP_QUARANTINE_S after a
-            # fillup — Honda's PID 0x2F is laggy after a fillup and the
-            # post-fillup samples read pre-fillup values for the first
-            # hour or three. Let the fillup-reset stand until MAF
-            # integration takes over or the sensor catches up.
+            # Quarantine snap until at least one COMPLETED TRIP has
+            # happened since the latest fillup. Time-based quarantine
+            # (the prior 6h fixed window) isn't enough: Honda's PID 0x2F
+            # stays stuck on pre-fillup readings until the car has been
+            # driven, and if WiCAN sleeps right after the pump there are
+            # no fresh samples to disambiguate. A trip-since-fillup is
+            # physical proof the sensor has had a chance to update.
             if latest_fillup is not None:
-                since_fillup_s = (datetime.now(UTC) - latest_fillup).total_seconds()
-                if since_fillup_s < SNAP_POST_FILLUP_QUARANTINE_S:
+                trip_since = await conn.fetchval(
+                    """
+                    SELECT 1 FROM trips
+                     WHERE vehicle_id = $1
+                       AND ended_at IS NOT NULL
+                       AND ended_at > $2
+                       AND distance_km > 1.0
+                     LIMIT 1
+                    """,
+                    v["id"], latest_fillup,
+                )
+                if trip_since is None:
                     continue
             latest = await conn.fetchval(
                 """
@@ -204,6 +217,26 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
             )
             if update is None:
                 continue
+            # Safety cap: never drop the estimate by more than
+            # MAX_SNAP_DROP_FRACTION of tank_capacity_l in a single tick.
+            # A huge downward correction is almost always sensor lag, not
+            # real fuel loss; force the correction to happen gradually.
+            current_l = (
+                float(v["fuel_level_estimate_l"])
+                if v["fuel_level_estimate_l"] is not None else None
+            )
+            tank_l = float(v["tank_capacity_l"])
+            if current_l is not None and update.liters < current_l:
+                drop = current_l - update.liters
+                max_drop = tank_l * MAX_SNAP_DROP_FRACTION
+                if drop > max_drop:
+                    log.warning(
+                        "fuel-estimate snap CAPPED vehicle=%s sensor=%.1f%% "
+                        "wanted=%.2fL current=%.2fL cap=%.2fL — sensor "
+                        "likely laggy; deferring full correction",
+                        v["id"], sensor_pct, update.liters, current_l, max_drop,
+                    )
+                    continue
             await persist_estimate(conn, v["id"], update)
             snapped += 1
             log.info(
