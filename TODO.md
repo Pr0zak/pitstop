@@ -1,6 +1,6 @@
 # pitstop — Pending Work
 
-Generated 2026-05-24 after shipping **v0.1.178** + writing **ADR-019** (radio coexistence + hybrid architecture). The morning's "Path A primary" pivot is overturned — empirical test proved Beta-06 supports concurrent BLE + WiFi-station. See [`docs/decisions.md#adr-019`](./docs/decisions.md).
+Generated 2026-06-05 by session-close after shipping **v0.1.183** (snap_pass trip-since-fillup quarantine + safety cap on drops). The 2026-06-05 session landed two phone TZ + fillup unit-conversion fixes and made the hybrid fuel-level estimator safe against Honda's PID 0x2F post-fillup lag.
 
 Numeric task IDs are session-scoped. Use **mnemonics** below as the durable identifiers. To rehydrate in a new session: open Claude Code in the pitstop repo and say `rehydrate from TODO.md + memory`.
 
@@ -10,134 +10,119 @@ The original Phase A/B/C build plan (tasks #1–#29) all shipped between v0.1.0 
 
 ## Architecture — current state
 
-**Hybrid (ADR-019).** Two capture paths run simultaneously on WiCAN firmware ≥ v4.49p_beta-06:
+**Hybrid capture (ADR-019).** WiCAN runs `protocol: auto_pid` + WiFi-station to mosquitto AND phone bridges OBD over BLE to drive payload, concurrently on Beta-06 firmware. Backend dedupes via `pid_readings` PK.
 
-- **Phone bridge** — Kotlin app polls OBD over BLE, ships via MQTT and caches every frame to `PendingDrive` payload (ADR-016). Adds GPS track. Offline-safe primary.
-- **WiCAN tunnel** — `protocol: auto_pid` + WiFi-station to `<car-hotspot-ssid>` → WireGuard → mosquitto. Phone-free fallback for passenger drives / dead phone / BLE flaps.
-
-Backend dedupes via `pid_readings` PK `(vehicle_id, metric, time)`. No application-level dedup logic needed; the schema handles it.
-
-Confirmed working in the driveway 2026-05-24 — phone connected via BLE + recorded a drive WHILE WiCAN published at 1 Hz over WiFi to the broker, simultaneously.
+**Hybrid fuel-level estimator (v0.1.179 → v0.1.183).** Per-vehicle estimate in liters, mutated by three operations: fillup-reset (HIGH), trip-decrement (MEDIUM), engine-quiet sensor-snap (HIGH). Snap is quarantined until a `trips.distance_km > 1.0` exists since the latest fillup (v0.1.183) and capped at 25% tank-drop per tick. Web + phone + widget all read `fuel_level_estimate_l`.
 
 ---
 
-## #HEALTH — `/health/ingest` masks dead pipes (1 task · backend, NEW)
+## #FUEL — Hybrid estimator follow-ups (3 tasks · phase 3)
 
-Discovered during ARCH-2 today. The endpoint reports `last_message_at` from MQTT receipt time, which advances on every backend reconnect because retained messages re-deliver to the fresh subscriber. During WiCAN silence we saw `lag_s: 7s` while no new `pid_readings` rows had been inserted for 5 minutes. The pipe looked healthy when it wasn't.
+Phase 1+2 shipped in v0.1.179/180; v0.1.181/182/183 hardened it against TZ, unit-conversion, and post-fillup-sensor-lag edge cases.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| HEALTH-1 | Change `/health/ingest` to source from `SELECT max(time) FROM pid_readings WHERE time > now() - interval '5 min'` (or equivalent) so the timestamp reflects *new data*, not MQTT receipt. Optionally surface both: `last_received_at` (MQTT) + `last_new_row_at` (DB), with `lag_s` derived from the latter. | — |
+| FUEL-DECREMENT-NULL | **Investigate why `trips.fuel_used_l` is NULL on recent trips.** Observed 2026-06-05: 4 of 5 trips since the 06-03 fillup have NULL fuel_used_l, 1 has 0. Decrement_pass silently skips, estimate hasn't moved. Look at `compute_trip_stats` in `trip_detector.py` — MAF integration may be receiving sparse data (MQTT-2 ~90s subscription drops?), or the integration may be bailing out on a precondition (no MAF readings? speed always 0?). Consider also marking NULL trips as applied so they don't re-evaluate forever. | — |
+| TANK-CAP-UI | UI to edit `tank_capacity_l` per vehicle in Settings (currently defaults to 80 L via migration 0017). Pilot's real capacity is 81 L so default is fine; matters when other vehicles get added. | — |
+| FUEL-CONFIDENCE-UI | Surface estimate "freshness" in UI: if `fuel_level_estimate_updated_at` is > 7 days old, show a "stale" badge. Today the estimate just shows as a value with no confidence indicator. | — |
+
+---
+
+## #HEALTH — `/health/ingest` misleading (1 task · backend)
+
+Endpoint advances `last_message_at` on every backend reconnect via retained-message redelivery — looks healthy even when no new data is flowing. Reduced impact after v0.1.179's retain-skip fix (no more spurious row writes), but the endpoint itself still lies.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| HEALTH-1 | Change `/health/ingest` to source from `SELECT max(time) FROM pid_readings WHERE time > now() - interval '5 min'` (or surface both: `last_received_at` MQTT + `last_new_row_at` DB, with `lag_s` derived from the latter). | — |
+
+---
+
+## #MQTT — Backend MQTT subscription instability (1 task · backend)
+
+MQTT-1 (keepalive=60) + LWT-1 (flap debounce) shipped in v0.1.178. Retain-skip in v0.1.179 stopped the worst symptom (fake row inserts). The underlying ~90s subscription drop pattern is still happening (warnings in backend log) but no longer poisoning the time series. May be contributing to FUEL-DECREMENT-NULL by causing MAF data gaps.
+
+| Mnemonic | Subject | Blocked by |
+|---|---|---|
+| MQTT-2 | Investigate why backend MQTT subscription drops every ~90s even on local docker-bridge LAN to mosquitto. Look at aiomqtt 2.x internals, mosquitto broker-side timeout, slow DB writes blocking the ping coroutine. | — |
 
 ---
 
 ## #BLE — Phone BLE link stability (2 tasks · permanent priority per ADR-019)
 
-BLE-OBD is part of the long-term architecture, not a transitional fallback. GATT flap pattern is a chronic source of pain.
+BLE-OBD is permanent part of the architecture, not a transitional fallback.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| BLE-2 | **Automated GATT-error recovery** in the phone bridge service: detect `status -5` / `0x85` patterns, attempt programmatic forget+re-pair via BluetoothAdapter APIs, fall back to a sticky notification telling the user to re-pair manually only after N retries fail. | — |
-| BLE-3 | **BLE-OBD path health watchdog.** Surface time-since-last-OBD-frame in phone UI + publish to a `phone_health` MQTT topic so the backend can detect "phone says it's bridging but no frames" silently. | — |
+| BLE-2 | **Automated GATT-error recovery** in the phone bridge service: detect `status -5` / `0x85`, attempt programmatic forget+re-pair via BluetoothAdapter APIs, fall back to a sticky notification after N retries. | — |
+| BLE-3 | **BLE-OBD path health watchdog.** Surface time-since-last-OBD-frame in phone UI + publish to a `phone_health` MQTT topic so backend can detect "phone says it's bridging but no frames" silently. | — |
 
 ---
 
-## #FW — WiCAN firmware version smoke test (1 task · low-effort safety net)
+## #FW — WiCAN firmware bump smoke test (1 task)
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| FW-1 | Hybrid architecture depends on Beta-06's BLE+WiFi coexistence behavior. A regression in a future firmware bump would silently break Path A (BLE) while Path B (tunnel) keeps working. Add a quick post-update test: `curl /check_status`; if `ble_status: enable` AND `sta_status: Connected`, open phone app → confirm BLE-OBD frames flow → confirm WiCAN MQTT keeps publishing. ~5 min checklist documented somewhere stable (CLAUDE.md or `docs/wican-config.md`). | — |
-
----
-
-## #ARCH — Architecture decisions (closed today)
-
-| Mnemonic | Subject | Status |
-|---|---|---|
-| ARCH-1 | Write ADR-019 ("BLE-bridge primary, cellular tunnel as backup") | **REPLACED** — ADR-019 written but as a *hybrid* decision after empirical test reversed the original framing. See `docs/decisions.md#adr-019`. |
-| ARCH-2 | Verify WiCAN's BLE-disconnect → WiFi auto-switch actually works | **RESOLVED differently** — empirical test showed BLE + WiFi are CONCURRENT in Beta-06, not just auto-switching. Hybrid coexistence is the actual finding. |
-
----
-
-## #MQTT — Backend MQTT subscription stability (1 task · backend, lower-priority)
-
-MQTT-1 shipped in v0.1.178. MQTT-2 remains; once HEALTH-1 lands we'll have a clearer signal of whether MQTT-2 is also fixed by v0.1.178's keepalive=60 + LWT debounce.
-
-| Mnemonic | Subject | Blocked by |
-|---|---|---|
-| MQTT-2 | Investigate why backend MQTT subscription drops every ~30s on local docker-bridge LAN to mosquitto. Look at aiomqtt 2.x internals around ping, mosquitto broker-side timeout, whether message handler blocks the ping coroutine (slow DB write?). Enable DEBUG logs on both ends. | HEALTH-1 |
+| FW-1 | Hybrid architecture depends on Beta-06's BLE+WiFi coexistence behavior. Add a quick post-update test: `curl /check_status`; if both `ble_status: enable` AND `sta_status: Connected`, open phone app → confirm BLE-OBD frames flow AND WiCAN MQTT keeps publishing. ~5 min checklist; document in CLAUDE.md or `docs/wican-config.md`. | — |
 
 ---
 
 ## #VPN-VERIFY — Cellular tunnel isolation test (1 task · user-side)
 
-Reframed once more: Path B is a real path in the architecture; this test verifies it works end-to-end without the phone in the picture.
+Path B (tunnel) end-to-end test, no phone in the picture.
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| VPN-VERIFY-1 | Real drive with phone Bluetooth OFF / app killed. Verify: (a) WiCAN joins `<car-hotspot-ssid>` (primary back to `<car-hotspot-ssid>` first — see VPN-FOLLOW-RESWAP), (b) tunnel comes up + MQTT publishes flow throughout drive, (c) trip seals from WiCAN-only data (no GPS expected — that's fine for backup-path semantics). | VPN-FOLLOW-RESWAP |
+| VPN-VERIFY-1 | Real drive with phone Bluetooth OFF / app killed. Verify: (a) WiCAN joins the car hotspot, (b) tunnel up + MQTT publishes flow throughout drive, (c) trip seals from WiCAN-only data (no GPS expected — backup path). | VPN-FOLLOW-RESWAP |
 
 ---
 
-## #VPN-FOLLOW — Cellular VPN follow-ups (4 tasks)
+## #VPN-FOLLOW — Cellular VPN follow-ups (3 tasks)
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| VPN-FOLLOW-RESWAP | Today we swapped WiCAN's primary SSID back to **`<home-wifi-ssid>`** (home WiFi) for at-home reachability during ARCH-2 testing. Before VPN-VERIFY-1, swap back: primary = `<car-hotspot-ssid>`, fallback[0] = `<home-wifi-ssid>`. | — |
-| VPN-2 | **UniFi firewall: LAN → VPN reverse routing.** Add a UCG rule allowing LAN (`10.0.0.0/24`) clients to reach VPN-server subnet (`192.168.5.0/24`) so WiCAN's web UI is reachable through the tunnel from anywhere on LAN. | — |
-| VPN-4 | **Key rotation.** UCG WG server private key, WiCAN client WG private key, phone hotspot password — all in conversation context. Also the MQTT broker password (today). Rotate all four. | — |
-| ~~VPN-3~~ | ~~Phase-out plan for phone BLE-OBD bridge.~~ **STAYS CANCELLED** per ADR-019 — BLE is permanent. | — |
+| VPN-FOLLOW-RESWAP | WiCAN's primary SSID was swapped to home WiFi for at-home testing on 2026-05-24. Before VPN-VERIFY-1, swap back: primary = car hotspot, fallback[0] = home WiFi. | — |
+| VPN-2 | **UniFi firewall: LAN → VPN reverse routing.** Add a UCG rule allowing LAN clients to reach VPN-server subnet so WiCAN's web UI is reachable through the tunnel from anywhere on LAN. | — |
+| VPN-4 | **Key rotation.** Secrets that ended up in conversation context across the 2026-05-23/24 sessions: UCG WG server private key, WiCAN client WG private key, hotspot password, **MQTT broker password** (`pitstop` user), **INGEST_TOKEN**. Rotate all five. | — |
 
 ---
 
-## #VERIFY — End-to-end primary-path drive (1 task · user-side, carried)
-
-After installing v0.1.177+178 phone APK:
+## #VERIFY — Primary-path drive verification (1 task · user-side)
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| VERIFY-1 | Real drive with phone BLE ON (the normal hybrid path): (a) bridge auto-starts via InCarDetector signal, (b) GPS captures + uploads via drive payload, (c) MAF lands via BLE-OBD bridge, (d) trip seals as one continuous drive (LWT debounce v0.1.178), (e) fuel hero gauge renders cleanly (v0.1.177 fix), (f) in-app upgrade dialog Download button is no longer covered by snackbar (v0.1.174). | — |
+| VERIFY-1 | Spot-check on a normal drive with phone BLE ON (primary hybrid path): (a) bridge auto-starts via InCarDetector, (b) GPS captures + uploads via drive payload, (c) MAF lands via BLE-OBD, (d) trip seals as one continuous drive, (e) hero card on web + phone agree on fuel level. | — |
 
 ---
 
-## #WICAN — WiCAN-side AutoPID polish (1 task · low-priority)
+## #WICAN — WiCAN-side AutoPID polish (1 task · backup-path only)
 
 | Mnemonic | Subject | Blocked by |
 |---|---|---|
-| WICAN-1 | Reduce WiCAN's `A6-Odometer` period from 5000ms → ≤30000ms via `/wican-config --period A6-Odometer=30000 --apply --reboot`. Mostly matters for the tunnel-only/phone-free path (phone's own 0xA6 poll handles odometer in the hybrid case). | — |
+| WICAN-1 | Reduce WiCAN's `A6-Odometer` period from 5000ms → ≤30000ms via `/wican-config --period A6-Odometer=30000 --apply --reboot`. Backup-path only (phone handles odometer in primary path). | — |
 
 ---
 
-## Recently closed (this session, v0.1.172 → v0.1.178 + ADR-019)
+## Recently closed (2026-06-05 session, v0.1.181 → v0.1.183)
 
 **Backend / web**
-- **v0.1.172** — Fuel-level fallback sanity cap. Implied L/km > 0.40 → NULL.
-- **v0.1.173** — Backend MQTT subscriber watchdog (`asyncio.wait_for(timeout=90s)`).
-- **v0.1.177** — Web fuel-gauge SVG arc fix. Hard-coded `large-arc-flag=0`.
-- **v0.1.178** — MQTT keepalive=60 + wican_lwt flap debounce (MQTT-1 + LWT-1). Reverted v0.1.173's aggressive keepalive=30; added per-vehicle LWT state tracking to suppress duplicate-state events and < 30s state-flip flaps.
+- **v0.1.182** — Fillup partial-fill unit conversion (`pumped_l = raw * 3.78541` when fuel_unit=1) + snap_pass post-fillup sample gate + odometer `_refresh_latest_odo` sanity filter (was `max()` getting poisoned by a 10.4M km bad CAN frame; switched to ORDER BY time DESC + < 1M km filter; deleted 262 corrupted rows).
+- **v0.1.183** — snap_pass redesign: **trip-since-fillup quarantine** (replaced 6h time quarantine; Honda's PID 0x2F stays stuck post-fillup until driven) + `MAX_SNAP_DROP_FRACTION = 0.25` safety cap to prevent sensor-lag from cratering the estimate in one tick.
 
 **Phone**
-- **v0.1.173** — BridgeService split into independent BLE/GPS toggles, runtime-switchable.
-- **v0.1.174** — In-app upgrade dialog snackbar overlap fix.
-- **v0.1.175** — InCarDetector + multi-signal auto-trigger (SSID + AA + paired-car BT).
-- **v0.1.176** — Activity Recognition as 4th in-car signal (opt-in).
-- **v0.1.177** — GPS-only mode capture fix; engine-state merge across BLE + InCarDetector hint.
+- **v0.1.181** — `HistoryViewModel.bucketFor` TZ fix: `OffsetDateTime.parse().atZoneSameInstant(zone).toLocalDate()` (was rendering UTC date via `toInstant().toString().take(10)`, made a June 2 evening drive show in "Today" bucket).
 
-**WiCAN device-side (not in repo)**
-- WireGuard VPN config installed → UCG One-Click VPN server (proven 2026-05-23, re-proven 2026-05-24 with `vpn_status: connected` on `<home-wifi-ssid>` too).
-- Primary SSID currently **`<home-wifi-ssid>`** (was `<car-hotspot-ssid>`; swapped 2026-05-24 for at-home reachability during ARCH-2). VPN-FOLLOW-RESWAP must swap back before cellular testing.
-- BLE re-enabled 2026-05-24 (`ble_status: enable`) — confirmed coexists with WiFi station in Beta-06.
-
-**Docs / architecture**
-- **ADR-019** written 2026-05-24 — Hybrid capture architecture (BLE + WiFi concurrent, backend dedupes).
-- `/wican-config` skill (from prior session) auto-backups + dry-runs std_pids changes.
+**Prior arc (carried from previous session-close)**
+- v0.1.172/173/174/175/176/177/178/179/180 — see git log + previous TODO.md revisions. Highlights: retain-skip MQTT fix, hybrid fuel-level estimator phase 1+2, snap_pass decoupled from engine_events, phone hero + widget parity.
 
 ---
 
 ## Discoveries persisted to memory
 
-- **`project_pitstop_state.md`** — needs update for v0.1.178 + ADR-019 (hybrid architecture, BLE+WiFi coexistence in Beta-06).
-- **`reference_wican_api.md`** — WiCAN HTTP API surface (correct password field is `sta_pass`, not `sta_password` — `/load_config` returns real plaintext passwords, not masked).
+- **`project_pitstop_state.md`** — updated to v0.1.183. Includes hybrid estimator gotchas (quarantine, safety cap, parked-quiet threshold, partial-fillup unit conversion).
+- **`project_wican_ble_wifi_coexist.md`** — Beta-06 supports concurrent radios.
+- **`feedback_health_ingest_misleading.md`** — `/health/ingest` masks dead pipes via retained-message redelivery.
+- **`reference_wican_api.md`** — WiCAN HTTP API.
 - **`project_pilot_dead_pids.md`** — PIDs the Pilot answers with constant 0.
 
 ## See also
