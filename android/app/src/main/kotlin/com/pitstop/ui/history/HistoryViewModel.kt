@@ -101,6 +101,24 @@ sealed class MergeState {
     data class Failed(val message: String) : MergeState()
 }
 
+/** Long-press a trip → context sheet appears with merge / delete
+ *  options. Carries the long-pressed trip id so taps on the sheet
+ *  know what to act on. */
+data class TripContextSheet(val tripId: String)
+
+/** Two-step delete: tapping Delete in the context sheet opens this
+ *  prompt; tapping Delete in the prompt fires the API call. Carries
+ *  the trip id so the dialog can name what's being deleted. */
+data class TripDeletePrompt(val tripId: String)
+
+/** Mirrors [MergeState] for the delete flow. */
+sealed class DeleteState {
+    data object Idle : DeleteState()
+    data object InProgress : DeleteState()
+    data object Done : DeleteState()
+    data class Failed(val message: String) : DeleteState()
+}
+
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     private val api: PitstopApi,
@@ -125,6 +143,15 @@ class HistoryViewModel @Inject constructor(
 
     private val _mergeState = MutableStateFlow<MergeState>(MergeState.Idle)
     val mergeState: StateFlow<MergeState> = _mergeState.asStateFlow()
+
+    private val _tripContextSheet = MutableStateFlow<TripContextSheet?>(null)
+    val tripContextSheet: StateFlow<TripContextSheet?> = _tripContextSheet.asStateFlow()
+
+    private val _tripDeletePrompt = MutableStateFlow<TripDeletePrompt?>(null)
+    val tripDeletePrompt: StateFlow<TripDeletePrompt?> = _tripDeletePrompt.asStateFlow()
+
+    private val _deleteState = MutableStateFlow<DeleteState>(DeleteState.Idle)
+    val deleteState: StateFlow<DeleteState> = _deleteState.asStateFlow()
 
     private val _tripSort = MutableStateFlow(TripSortOrder.RecentFirst)
     val tripSort: StateFlow<TripSortOrder> = _tripSort.asStateFlow()
@@ -236,6 +263,71 @@ class HistoryViewModel @Inject constructor(
         }
     }
 
+    /** Long-press on a trip card. Opens the context sheet so the user
+     *  can choose between "Select for merge" and "Delete". This
+     *  replaced the prior direct-to-selection long-press so delete is
+     *  reachable from the same gesture without a separate affordance. */
+    fun openTripContextSheet(tripId: String) {
+        if (_tripContextSheet.value != null) return
+        _tripContextSheet.value = TripContextSheet(tripId = tripId)
+    }
+
+    fun closeTripContextSheet() {
+        _tripContextSheet.value = null
+    }
+
+    /** Sheet → "Select for merge". Enters multi-select mode and seeds
+     *  it with the long-pressed trip, matching the previous direct
+     *  long-press → selection behaviour. */
+    fun enterMergeFromContext() {
+        val sheet = _tripContextSheet.value ?: return
+        _tripContextSheet.value = null
+        _tripSelection.update { sel ->
+            if (sheet.tripId in sel.ids) sel.copy(mode = true)
+            else sel.copy(mode = true, ids = sel.ids + sheet.tripId)
+        }
+    }
+
+    /** Sheet → "Delete". Closes the sheet and opens the confirm
+     *  prompt; the API call doesn't fire until the user confirms. */
+    fun requestDeleteFromContext() {
+        val sheet = _tripContextSheet.value ?: return
+        _tripContextSheet.value = null
+        _tripDeletePrompt.value = TripDeletePrompt(tripId = sheet.tripId)
+    }
+
+    fun cancelDeletePrompt() {
+        _tripDeletePrompt.value = null
+    }
+
+    /** Fire DELETE /trips/{id} for the prompted trip. Refreshes the
+     *  list on success and shows a brief Done banner. */
+    fun confirmDeleteTrip() {
+        val prompt = _tripDeletePrompt.value ?: return
+        if (_deleteState.value is DeleteState.InProgress) return
+        val tripId = prompt.tripId
+        _tripDeletePrompt.value = null
+        _deleteState.value = DeleteState.InProgress
+        logBuffer.info("trip delete requested", mapOf("id" to tripId))
+        viewModelScope.launch {
+            runCatching { api.deleteTrip(tripId) }
+                .onSuccess {
+                    logBuffer.info("trip delete accepted", mapOf("id" to tripId))
+                    _deleteState.value = DeleteState.Done
+                    refresh()
+                    delay(DELETE_DISMISS_MS)
+                    if (_deleteState.value is DeleteState.Done) _deleteState.value = DeleteState.Idle
+                }
+                .onFailure { t ->
+                    val msg = t.message ?: t::class.java.simpleName
+                    logBuffer.warn("trip delete failed", mapOf("err" to msg, "id" to tripId))
+                    _deleteState.value = DeleteState.Failed(msg)
+                    delay(DELETE_DISMISS_MS)
+                    if (_deleteState.value is DeleteState.Failed) _deleteState.value = DeleteState.Idle
+                }
+        }
+    }
+
     /** Toggle a trip in/out of the merge selection. First selection
      *  flips the list into selection mode. Capped at 2; further taps
      *  on unselected trips are ignored until the user clears one. */
@@ -294,6 +386,7 @@ class HistoryViewModel @Inject constructor(
     private companion object {
         const val SYNC_DISMISS_MS = 4_000L
         const val MERGE_DISMISS_MS = 3_000L
+        const val DELETE_DISMISS_MS = 3_000L
     }
 
     /** Reload all three lists in parallel. Each list manages its own

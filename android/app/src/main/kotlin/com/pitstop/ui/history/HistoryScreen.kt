@@ -308,6 +308,9 @@ private fun HistoryListScreen(
             0 -> {
                 val tripSelection by viewModel.tripSelection.collectAsStateWithLifecycle()
                 val mergeState by viewModel.mergeState.collectAsStateWithLifecycle()
+                val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
+                val contextSheet by viewModel.tripContextSheet.collectAsStateWithLifecycle()
+                val deletePrompt by viewModel.tripDeletePrompt.collectAsStateWithLifecycle()
                 val tripSort by viewModel.tripSort.collectAsStateWithLifecycle()
                 val tripFilter by viewModel.tripSourceFilter.collectAsStateWithLifecycle()
                 TripsList(
@@ -316,7 +319,9 @@ private fun HistoryListScreen(
                     onOpen = onOpenTrip,
                     selection = tripSelection,
                     mergeState = mergeState,
+                    deleteState = deleteState,
                     onToggleSelect = viewModel::toggleTripSelection,
+                    onLongPress = viewModel::openTripContextSheet,
                     onCancelSelection = viewModel::exitTripSelection,
                     onMerge = viewModel::mergeSelectedTrips,
                     sort = tripSort,
@@ -324,6 +329,23 @@ private fun HistoryListScreen(
                     onSortChange = viewModel::setTripSort,
                     onFilterChange = viewModel::setTripSourceFilter,
                 )
+                contextSheet?.let { sheet ->
+                    TripContextSheetUi(
+                        sheet = sheet,
+                        trip = ui.trips.data.firstOrNull { it.id == sheet.tripId },
+                        onDismiss = viewModel::closeTripContextSheet,
+                        onSelectForMerge = viewModel::enterMergeFromContext,
+                        onDelete = viewModel::requestDeleteFromContext,
+                    )
+                }
+                deletePrompt?.let { prompt ->
+                    TripDeleteConfirmDialog(
+                        prompt = prompt,
+                        trip = ui.trips.data.firstOrNull { it.id == prompt.tripId },
+                        onCancel = viewModel::cancelDeletePrompt,
+                        onConfirm = viewModel::confirmDeleteTrip,
+                    )
+                }
             }
             1 -> {
                 val fillupSort by viewModel.fillupSort.collectAsStateWithLifecycle()
@@ -392,7 +414,9 @@ private fun TripsList(
     onOpen: (String) -> Unit,
     selection: TripSelection,
     mergeState: MergeState,
+    deleteState: DeleteState,
     onToggleSelect: (String) -> Unit,
+    onLongPress: (String) -> Unit,
     onCancelSelection: () -> Unit,
     onMerge: () -> Unit,
     sort: TripSortOrder,
@@ -408,6 +432,9 @@ private fun TripsList(
                 onCancel = onCancelSelection,
                 onMerge = onMerge,
             )
+        }
+        if (deleteState !is DeleteState.Idle) {
+            TripDeleteBanner(deleteState)
         }
         // Sort + source-filter controls (TRIPS-1). Filter chips run
         // horizontally; sort menu sits at the right.
@@ -440,7 +467,7 @@ private fun TripsList(
                             TripGroupHeader(label = key.label, count = items.size)
                         }
                         items(items, key = { it.id }) { trip ->
-                            TripCard(trip, selection, onOpen, onToggleSelect)
+                            TripCard(trip, selection, onOpen, onToggleSelect, onLongPress)
                         }
                     }
                 }
@@ -557,6 +584,7 @@ private fun TripCard(
     selection: TripSelection,
     onOpen: (String) -> Unit,
     onToggleSelect: (String) -> Unit,
+    onLongPress: (String) -> Unit,
 ) {
     val isSelected = trip.id in selection.ids
     Card(
@@ -572,7 +600,14 @@ private fun TripCard(
                 onClick = {
                     if (selection.mode) onToggleSelect(trip.id) else onOpen(trip.id)
                 },
-                onLongClick = { onToggleSelect(trip.id) },
+                onLongClick = {
+                    // In selection mode, long-press still toggles to
+                    // preserve the fast-select flow. Out of selection
+                    // mode, long-press opens the context sheet (merge
+                    // / delete) instead of jumping straight into
+                    // selection.
+                    if (selection.mode) onToggleSelect(trip.id) else onLongPress(trip.id)
+                },
             ),
     ) {
         Column(
@@ -624,6 +659,123 @@ private fun TripCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TripContextSheetUi(
+    sheet: TripContextSheet,
+    trip: TripDto?,
+    onDismiss: () -> Unit,
+    onSelectForMerge: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val sheetState = androidx.compose.material3.rememberModalBottomSheetState()
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Text(
+                text = trip?.let { formatTripDate(it.startedAt) } ?: "Trip",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            trip?.distanceKm?.let { km ->
+                Text(
+                    text = "%.1f mi".format(km * 0.621371),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+            androidx.compose.material3.ListItem(
+                headlineContent = { Text("Select for merge") },
+                supportingContent = { Text("Pick a second trip to combine with this one") },
+                modifier = Modifier.clickable {
+                    onSelectForMerge()
+                },
+            )
+            androidx.compose.material3.ListItem(
+                headlineContent = {
+                    Text(
+                        "Delete trip",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                },
+                supportingContent = { Text("Removes this trip from history. Can't be undone.") },
+                modifier = Modifier.clickable {
+                    onDelete()
+                },
+            )
+            Spacer(Modifier.size(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun TripDeleteConfirmDialog(
+    prompt: TripDeletePrompt,
+    trip: TripDto?,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Delete trip?") },
+        text = {
+            val when_ = trip?.let { formatTripDate(it.startedAt) } ?: "this trip"
+            val miles = trip?.distanceKm?.let { " (%.1f mi)".format(it * 0.621371) } ?: ""
+            Text("Permanently delete $when_$miles? This can't be undone.")
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) { Text("Delete") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun TripDeleteBanner(state: DeleteState) {
+    val label = when (state) {
+        DeleteState.Idle -> return
+        DeleteState.InProgress -> "Deleting…"
+        DeleteState.Done -> "Trip deleted"
+        is DeleteState.Failed -> "Delete failed: ${state.message}"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (state is DeleteState.Failed) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.surfaceVariant,
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        if (state is DeleteState.InProgress) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+            )
         }
     }
 }

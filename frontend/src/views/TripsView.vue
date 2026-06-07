@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
+import type { Trip } from "@/api/types";
 import {
   fmtDateTime,
   fmtDuration,
@@ -21,6 +22,36 @@ const limit = ref(50);
 const offset = ref(0);
 
 const vehicleId = computed(() => vehicles.selectedVehicleId);
+
+// ── Selection mode (mirror phone) ───────────────────────────────────
+// Tap a row in selection mode → toggle in the set. The action bar
+// shows count + Merge (only when exactly 2) + Delete (any ≥ 1) + Cancel.
+// "Select" button in the toolbar enters the mode; entering selection
+// suppresses the open-detail behavior on row click.
+const selectMode = ref(false);
+const selectedIds = ref<Set<string>>(new Set());
+type ActionState =
+  | { kind: "idle" }
+  | { kind: "in_progress"; verb: "merge" | "delete" }
+  | { kind: "done"; verb: "merge" | "delete"; message: string }
+  | { kind: "failed"; verb: "merge" | "delete"; message: string };
+const action = ref<ActionState>({ kind: "idle" });
+const confirmDelete = ref(false);
+
+function enterSelectMode() {
+  selectMode.value = true;
+}
+function exitSelectMode() {
+  selectMode.value = false;
+  selectedIds.value = new Set();
+  action.value = { kind: "idle" };
+}
+function toggleSelected(id: string) {
+  const next = new Set(selectedIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selectedIds.value = next;
+}
 
 // Client-side sort + source filter (TRIPS-2). Apply over the
 // currently-loaded page; for narrow date windows the server-side
@@ -83,8 +114,116 @@ watch([vehicleId, fromDate, toDate], () => {
 });
 
 function open(tripId: string) {
+  if (selectMode.value) {
+    toggleSelected(tripId);
+    return;
+  }
   router.push(`/trips/${tripId}`);
 }
+
+// ── Merge ───────────────────────────────────────────────────────────
+// Backend picks the earlier trip as the kept row regardless of which
+// id we pass as the path parameter, so we can just pass the first one.
+async function doMerge() {
+  if (selectedIds.value.size !== 2) return;
+  if (action.value.kind === "in_progress") return;
+  const ids = Array.from(selectedIds.value);
+  action.value = { kind: "in_progress", verb: "merge" };
+  try {
+    await api.mergeTrips(ids[0], ids[1]);
+    action.value = { kind: "done", verb: "merge", message: "Trips merged" };
+    selectMode.value = false;
+    selectedIds.value = new Set();
+    await reload();
+    setTimeout(() => {
+      if (action.value.kind === "done" && action.value.verb === "merge") {
+        action.value = { kind: "idle" };
+      }
+    }, 3000);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    action.value = { kind: "failed", verb: "merge", message: msg };
+    setTimeout(() => {
+      if (action.value.kind === "failed" && action.value.verb === "merge") {
+        action.value = { kind: "idle" };
+      }
+    }, 4000);
+  }
+}
+
+// ── Delete ──────────────────────────────────────────────────────────
+function requestDelete() {
+  if (selectedIds.value.size === 0) return;
+  confirmDelete.value = true;
+}
+function cancelDelete() {
+  confirmDelete.value = false;
+}
+async function doDelete() {
+  confirmDelete.value = false;
+  if (selectedIds.value.size === 0) return;
+  if (action.value.kind === "in_progress") return;
+  const ids = Array.from(selectedIds.value);
+  action.value = { kind: "in_progress", verb: "delete" };
+  try {
+    // Serial deletes — the count is small (typically 1–3) and serial
+    // gives a deterministic error message if one fails. The successful
+    // ones are already gone server-side; reload reconciles.
+    for (const id of ids) {
+      await api.deleteTrip(id);
+    }
+    action.value = {
+      kind: "done",
+      verb: "delete",
+      message: `Deleted ${ids.length} trip${ids.length === 1 ? "" : "s"}`,
+    };
+    selectMode.value = false;
+    selectedIds.value = new Set();
+    await reload();
+    setTimeout(() => {
+      if (action.value.kind === "done" && action.value.verb === "delete") {
+        action.value = { kind: "idle" };
+      }
+    }, 3000);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    action.value = { kind: "failed", verb: "delete", message: msg };
+    // Partial failure is possible — reload so the list reflects
+    // whatever did delete.
+    await reload();
+    setTimeout(() => {
+      if (action.value.kind === "failed" && action.value.verb === "delete") {
+        action.value = { kind: "idle" };
+      }
+    }, 4000);
+  }
+}
+
+// Pre-compute a label for the confirm dialog so it can name what's
+// being deleted without doing template-side lookups.
+const deleteTargets = computed<Trip[]>(() => {
+  if (!data.value?.items) return [];
+  return data.value.items.filter((t) => selectedIds.value.has(t.id));
+});
+
+const actionBarLabel = computed(() => {
+  switch (action.value.kind) {
+    case "in_progress":
+      return action.value.verb === "merge" ? "Merging…" : "Deleting…";
+    case "done":
+      return action.value.message;
+    case "failed":
+      return `${action.value.verb === "merge" ? "Merge" : "Delete"} failed: ${action.value.message}`;
+    default: {
+      const n = selectedIds.value.size;
+      if (n === 0) return "Tap a trip to select";
+      if (n === 1) return "1 selected — pick one more to merge, or Delete";
+      if (n === 2) return "2 selected — Merge or Delete";
+      return `${n} selected — Delete (Merge takes exactly 2)`;
+    }
+  }
+});
+
 function nextPage() {
   if (data.value && offset.value + limit.value < data.value.total) {
     offset.value += limit.value;
@@ -189,8 +328,62 @@ const purposeRollup = computed<PurposeRow[]>(() => {
           </select>
         </label>
         <button type="button" class="ghost" @click="reset">Reset</button>
+        <button
+          v-if="!selectMode"
+          type="button"
+          class="ghost"
+          @click="enterSelectMode"
+        >Select</button>
       </div>
     </header>
+
+    <div v-if="selectMode" class="action-bar" role="toolbar" aria-label="Trip selection actions">
+      <span class="action-label">{{ actionBarLabel }}</span>
+      <span v-if="action.kind === 'in_progress'" class="spinner" aria-hidden="true"></span>
+      <button
+        type="button"
+        class="ghost"
+        :disabled="action.kind === 'in_progress'"
+        @click="exitSelectMode"
+      >Cancel</button>
+      <button
+        type="button"
+        class="primary"
+        :disabled="selectedIds.size !== 2 || action.kind === 'in_progress'"
+        @click="doMerge"
+      >Merge</button>
+      <button
+        type="button"
+        class="danger"
+        :disabled="selectedIds.size === 0 || action.kind === 'in_progress'"
+        @click="requestDelete"
+      >Delete</button>
+    </div>
+
+    <div
+      v-if="confirmDelete"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-confirm-title"
+      @click.self="cancelDelete"
+    >
+      <div class="modal">
+        <h3 id="delete-confirm-title">Delete {{ deleteTargets.length }} trip{{ deleteTargets.length === 1 ? '' : 's' }}?</h3>
+        <p class="muted">This can't be undone.</p>
+        <ul v-if="deleteTargets.length <= 5" class="target-list">
+          <li v-for="t in deleteTargets" :key="t.id">
+            {{ fmtDateTime(t.started_at) }}
+            <span class="muted">·</span>
+            {{ fmtDistanceKm(t.distance_km ?? null) }}
+          </li>
+        </ul>
+        <div class="modal-actions">
+          <button type="button" class="ghost" @click="cancelDelete">Cancel</button>
+          <button type="button" class="danger" @click="doDelete">Delete</button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="!vehicleId" class="card">
       <p class="muted">Select a vehicle to view its trips.</p>
@@ -229,6 +422,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
         <table class="data">
           <thead>
             <tr>
+              <th v-if="selectMode" class="sel-cell"></th>
               <th>Started</th>
               <th>Duration</th>
               <th>Distance</th>
@@ -244,8 +438,14 @@ const purposeRollup = computed<PurposeRow[]>(() => {
               v-for="t in group.items"
               :key="t.id"
               class="clickable"
+              :class="{ selected: selectedIds.has(t.id) }"
               @click="open(t.id)"
             >
+              <td v-if="selectMode" class="sel-cell">
+                <span class="checkbox" :class="{ on: selectedIds.has(t.id) }" aria-hidden="true">
+                  <span v-if="selectedIds.has(t.id)">✓</span>
+                </span>
+              </td>
               <td>{{ fmtDateTime(t.started_at) }}</td>
               <td>{{ fmtDuration(t.duration_s) }}</td>
               <td>{{ fmtDistanceKm(t.distance_km ?? null) }}</td>
@@ -398,5 +598,139 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   font-weight: 500;
   color: var(--c-accent, #f97316);
   flex: 1;
+}
+
+/* Selection mode + action bar + confirm dialog */
+.action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--c-surface-soft, #1e1c2a);
+  border: 1px solid var(--c-border-soft, #2a2d33);
+  border-radius: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.action-label {
+  flex: 1;
+  font-size: 0.88rem;
+  color: var(--c-text, #e7e9ee);
+}
+.action-bar button.primary,
+.action-bar button.danger,
+.action-bar button.ghost {
+  font-size: 0.85rem;
+  padding: 0.32rem 0.85rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--c-border-soft, #2a2d33);
+}
+.action-bar button.primary {
+  background: var(--c-accent, #f97316);
+  color: white;
+  border-color: var(--c-accent, #f97316);
+}
+.action-bar button.danger {
+  background: #b91c1c;
+  color: white;
+  border-color: #b91c1c;
+}
+.action-bar button.danger:disabled,
+.action-bar button.primary:disabled,
+.action-bar button.ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--c-border-soft, #2a2d33);
+  border-top-color: var(--c-accent, #f97316);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.sel-cell {
+  width: 30px;
+  padding-right: 0;
+}
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1.5px solid var(--c-border-soft, #2a2d33);
+  background: transparent;
+  color: white;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+.checkbox.on {
+  background: var(--c-accent, #f97316);
+  border-color: var(--c-accent, #f97316);
+}
+tr.selected {
+  background: rgba(249, 115, 22, 0.12);
+}
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--c-surface, #14121d);
+  border: 1px solid var(--c-border-soft, #2a2d33);
+  border-radius: 10px;
+  padding: 1.2rem 1.4rem;
+  width: min(420px, calc(100% - 2rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.modal h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.target-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  background: var(--c-surface-soft, #1e1c2a);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  max-height: 9rem;
+  overflow-y: auto;
+}
+.target-list li {
+  padding: 0.15rem 0;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.modal-actions button {
+  font-size: 0.9rem;
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--c-border-soft, #2a2d33);
+  background: transparent;
+  color: var(--c-text, #e7e9ee);
+}
+.modal-actions button.danger {
+  background: #b91c1c;
+  color: white;
+  border-color: #b91c1c;
 }
 </style>

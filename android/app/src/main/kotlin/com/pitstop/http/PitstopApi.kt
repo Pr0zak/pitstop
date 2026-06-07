@@ -4,6 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -289,6 +290,11 @@ interface PitstopApi {
         @Path("id") id: String,
         @Body body: TripMergeRequest,
     ): TripDto
+
+    /** Delete a trip permanently (server returns 204 on success, 404 if
+     *  the trip is already gone). */
+    @DELETE("api/trips/{id}")
+    suspend fun deleteTrip(@Path("id") id: String)
 
     @GET("api/trips/{id}/route")
     suspend fun getTripRoute(@Path("id") id: String): TripRouteDto
