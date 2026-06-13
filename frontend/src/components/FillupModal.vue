@@ -1,8 +1,26 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
+import { format, parseISO } from "date-fns";
 import { X, MapPin } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
 import type { Fillup, Vehicle } from "@/api/types";
+
+// `fillup_date` is a timestamptz (UTC) on the wire. A <input type="datetime-local">
+// works in LOCAL wall-clock, so display must convert UTC ISO → local wall-clock
+// and save must re-interpret the local string as UTC. Doing `.slice(0,16)` on the
+// raw ISO would render the UTC wall-clock as if it were local, and saving back
+// shifted every untouched edit by the UTC offset (the v0.1.181 phone bug class).
+function isoToLocalInput(iso: string | null | undefined): string {
+  if (!iso) return localNowInput();
+  try {
+    return format(parseISO(iso), "yyyy-MM-dd'T'HH:mm");
+  } catch {
+    return localNowInput();
+  }
+}
+function localNowInput(): string {
+  return format(new Date(), "yyyy-MM-dd'T'HH:mm");
+}
 
 const props = defineProps<{
   vehicle: Vehicle;
@@ -84,7 +102,7 @@ watch(
   (init) => {
     if (init) {
       form.value = {
-        fillup_date: init.fillup_date?.slice(0, 16) ?? new Date().toISOString().slice(0, 16),
+        fillup_date: isoToLocalInput(init.fillup_date),
         odo: init.odo ?? undefined,
         fuel_volume: init.fuel_volume ?? undefined,
         price_total:
@@ -104,7 +122,7 @@ watch(
       };
     } else {
       form.value = {
-        fillup_date: new Date().toISOString().slice(0, 16),
+        fillup_date: localNowInput(),
         odo: prefillOdoForVehicle(props.vehicle),
         fuel_volume: undefined,
         price_total: undefined,

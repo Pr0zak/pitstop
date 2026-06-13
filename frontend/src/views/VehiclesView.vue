@@ -5,6 +5,7 @@ import { fmtRelative } from "@/composables/useFormat";
 import { Plus, Pencil, X } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
 import type { Vehicle } from "@/api/types";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 const store = useVehiclesStore();
 
@@ -24,6 +25,11 @@ const form = ref({
   purchase_price: undefined as number | undefined,
   purchase_date: "" as string,
   epa_mpg_combined: undefined as number | undefined,
+  // Usable tank volume in liters — what the hybrid fuel-level estimator
+  // (migration 0017) reads to convert its persisted estimate_l into a
+  // percentage. Distinct from Fuelio's tank1_capacity (user-unit, used by
+  // the legacy range-to-empty card).
+  tank_capacity_l: undefined as number | undefined,
 });
 
 function slugify(s: string): string {
@@ -62,6 +68,7 @@ function openCreate() {
     purchase_price: undefined,
     purchase_date: "",
     epa_mpg_combined: undefined,
+    tank_capacity_l: undefined,
   };
   showModal.value = true;
   submitError.value = null;
@@ -83,6 +90,7 @@ function openEdit(v: Vehicle) {
     purchase_price: v.purchase_price ?? undefined,
     purchase_date: v.purchase_date ?? "",
     epa_mpg_combined: v.epa_mpg_combined ?? undefined,
+    tank_capacity_l: v.tank_capacity_l ?? undefined,
   };
   showModal.value = true;
   submitError.value = null;
@@ -105,6 +113,7 @@ async function submit() {
       purchase_price: form.value.purchase_price ?? null,
       purchase_date: form.value.purchase_date || null,
       epa_mpg_combined: form.value.epa_mpg_combined ?? null,
+      tank_capacity_l: form.value.tank_capacity_l ?? null,
     };
     if (editing.value) {
       await api.updateVehicle(editing.value.id, payload);
@@ -120,13 +129,27 @@ async function submit() {
   }
 }
 
-async function remove(v: Vehicle) {
-  if (!window.confirm(`Delete vehicle "${v.name}"? This cannot be undone.`)) return;
+// Delete vehicle — in-app confirm instead of native window.confirm/alert.
+const deleteTarget = ref<Vehicle | null>(null);
+const deleteBusy = ref(false);
+const deleteError = ref<string | null>(null);
+function requestRemove(v: Vehicle) {
+  deleteTarget.value = v;
+  deleteError.value = null;
+}
+async function confirmRemove() {
+  const v = deleteTarget.value;
+  if (!v) return;
+  deleteBusy.value = true;
+  deleteError.value = null;
   try {
     await api.deleteVehicle(v.id);
+    deleteTarget.value = null;
     await store.fetchVehicles();
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : "delete failed");
+    deleteError.value = e instanceof Error ? e.message : "delete failed";
+  } finally {
+    deleteBusy.value = false;
   }
 }
 </script>
@@ -174,7 +197,7 @@ async function remove(v: Vehicle) {
               <button class="ghost" type="button" @click="openEdit(v)" title="Edit">
                 <Pencil :size="14" />
               </button>
-              <button class="ghost" type="button" @click="remove(v)" title="Delete">
+              <button class="ghost" type="button" @click="requestRemove(v)" title="Delete">
                 <X :size="14" />
               </button>
             </td>
@@ -248,6 +271,19 @@ async function remove(v: Vehicle) {
                   Reference line on the MPG chart.
                 </small>
               </label>
+              <label>
+                Tank capacity (L)
+                <input
+                  type="number"
+                  step="0.1"
+                  v-model.number="form.tank_capacity_l"
+                  placeholder="e.g. 80"
+                />
+                <small class="muted">
+                  Usable tank volume in liters. Feeds the fuel-level
+                  estimate and range-to-empty.
+                </small>
+              </label>
             </div>
             <label class="cb">
               <input type="checkbox" v-model="form.active" /> Active
@@ -263,6 +299,17 @@ async function remove(v: Vehicle) {
         </div>
       </div>
     </Teleport>
+
+    <ConfirmDialog
+      :open="deleteTarget != null"
+      :title="deleteTarget ? `Delete vehicle “${deleteTarget.name}”?` : 'Delete vehicle?'"
+      :message="deleteError ? deleteError : 'This cannot be undone.'"
+      confirm-label="Delete"
+      tone="danger"
+      :busy="deleteBusy"
+      @confirm="confirmRemove"
+      @cancel="deleteTarget = null"
+    />
   </div>
 </template>
 

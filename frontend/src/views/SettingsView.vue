@@ -7,6 +7,7 @@ import { useUnitsStore, type UnitSystem } from "@/stores/units";
 import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2 } from "lucide-vue-next";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
 import UpdateModal from "@/components/UpdateModal.vue";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { parseLatLon, roundCoords } from "@/utils/parseLatLon";
 import { apiQuery } from "@/api";
 import * as api from "@/api/endpoints";
@@ -266,10 +267,15 @@ async function assignDevice(deviceId: string, vehicleId: string) {
   }
 }
 
-async function unassignDevice(deviceId: string) {
-  if (!window.confirm(`Unmap ${deviceId}? Future readings will be dropped until you remap it.`)) {
-    return;
-  }
+// Unmap device — in-app confirm instead of native window.confirm.
+const unmapTarget = ref<string | null>(null);
+function requestUnassign(deviceId: string) {
+  unmapTarget.value = deviceId;
+}
+async function confirmUnassign() {
+  const deviceId = unmapTarget.value;
+  if (!deviceId) return;
+  unmapTarget.value = null;
   try {
     await api.unmapDevice(deviceId);
     await loadDevices();
@@ -335,15 +341,15 @@ async function previewPurge() {
   }
 }
 
-async function commitPurge() {
+// Commit purge — in-app confirm gate instead of native window.confirm.
+const confirmPurgeOpen = ref(false);
+function requestCommitPurge() {
   if (purgeBusy.value || !purgePreview.value) return;
-  if (
-    !window.confirm(
-      `Delete ${purgePreview.value.rows.toLocaleString()} reading(s) older than ${purgeAgeDays.value} days? This cannot be undone.`,
-    )
-  ) {
-    return;
-  }
+  confirmPurgeOpen.value = true;
+}
+async function commitPurge() {
+  confirmPurgeOpen.value = false;
+  if (purgeBusy.value || !purgePreview.value) return;
   purgeBusy.value = true;
   purgeMessage.value = null;
   try {
@@ -685,7 +691,7 @@ function geolocate() {
                 v-if="d.mapped"
                 class="ghost"
                 type="button"
-                @click="unassignDevice(d.device_id)"
+                @click="requestUnassign(d.device_id)"
                 title="Unmap"
               >
                 <Trash2 :size="14" />
@@ -825,7 +831,7 @@ function geolocate() {
           <button
             type="button"
             class="danger"
-            @click="commitPurge"
+            @click="requestCommitPurge"
             :disabled="purgeBusy || !purgePreview"
           >
             <Trash2 :size="14" /> Commit purge
@@ -838,6 +844,30 @@ function geolocate() {
         <p v-if="purgeMessage" class="muted small">{{ purgeMessage }}</p>
       </div>
     </section>
+
+    <ConfirmDialog
+      :open="unmapTarget != null"
+      :title="unmapTarget ? `Unmap ${unmapTarget}?` : 'Unmap device?'"
+      message="Future readings from this device will be dropped until you remap it."
+      confirm-label="Unmap"
+      tone="danger"
+      @confirm="confirmUnassign"
+      @cancel="unmapTarget = null"
+    />
+    <ConfirmDialog
+      :open="confirmPurgeOpen"
+      title="Delete old readings?"
+      :message="
+        purgePreview
+          ? `Delete ${purgePreview.rows.toLocaleString()} reading(s) older than ${purgeAgeDays} days? This cannot be undone.`
+          : null
+      "
+      confirm-label="Delete"
+      tone="danger"
+      :busy="purgeBusy"
+      @confirm="commitPurge"
+      @cancel="confirmPurgeOpen = false"
+    />
   </div>
 </template>
 

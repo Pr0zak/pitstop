@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useVehiclesStore } from "@/stores/vehicles";
+import { useUnitsStore } from "@/stores/units";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
@@ -9,6 +10,7 @@ import type { AnalyticsWindow } from "@/api/types";
 import { fmtDateTime, fmtMpg, fmtRelative } from "@/composables/useFormat";
 
 const vehicles = useVehiclesStore();
+const units = useUnitsStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 const window = ref<AnalyticsWindow>("all");
 
@@ -74,12 +76,9 @@ const dtcsQ = useAsync(
   [vehicleId],
 );
 
-watch(vehicleId, () => {
-  void mpgQ.reload();
-  void rpmQ.reload();
-  void tempCoolantQ.reload();
-  void dtcsQ.reload();
-});
+// (No manual watch on vehicleId — useAsync already re-fetches when any
+// dep ref changes, so each of these queries reloads on vehicle switch.
+// A manual watch fired a second, redundant round of requests.)
 
 // MPG line chart
 const mpgChart = computed(() => {
@@ -141,7 +140,9 @@ const rpmChart = computed(() => {
   return { aligned, opts };
 });
 
-// Temp distribution (3 series)
+// Temp distribution. coolant_temp is stored canonically in °C; convert to
+// °F when the user's resolved unit system is imperial and label the axis to
+// match. (The axis was hardcoded "°F" while plotting raw °C — a 2x mislabel.)
 const tempChart = computed(() => {
   const series: { points: typeof tempCoolantQ.data.value; label: string; color: string }[] =
     [
@@ -149,6 +150,9 @@ const tempChart = computed(() => {
     ];
   const all = series.filter((s) => s.points && s.points.length > 0);
   if (all.length === 0) return null;
+  const imperial = units.resolved === "imperial";
+  const toDisplay = (c: number | null): number | null =>
+    c == null ? null : imperial ? (c * 9) / 5 + 32 : c;
   // Build a unified time axis from the union of buckets (assumes daily alignment).
   const tsSet = new Set<number>();
   for (const s of all) {
@@ -165,7 +169,7 @@ const tempChart = computed(() => {
     const col: (number | null)[] = new Array(ts.length).fill(null);
     for (const p of s.points!) {
       const i = tsIdx.get(Math.round((Date.parse(p.bucket) || 0) / 1000));
-      if (i != null) col[i] = p.avg ?? null;
+      if (i != null) col[i] = toDisplay(p.avg ?? null);
     }
     cols.push(col);
     seriesDefs.push({ label: s.label, stroke: s.color, width: 1.5 });
@@ -174,7 +178,7 @@ const tempChart = computed(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "°F" }],
+    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: imperial ? "°F" : "°C" }],
     series: seriesDefs,
   };
   return { aligned: cols, opts };

@@ -18,6 +18,7 @@ import {
 } from "@/composables/useFormat";
 import { Plus, Pencil, X, Upload } from "lucide-vue-next";
 import FillupModal from "@/components/FillupModal.vue";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
 import { WMO_CODE } from "@/api/types";
@@ -45,6 +46,21 @@ function weatherTitle(f: Fillup): string {
 const vehicles = useVehiclesStore();
 const settings = useSettingsStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
+
+// uPlot draws to <canvas>; ctx.strokeStyle can't resolve CSS custom properties
+// like "var(--c-accent)" — they render as transparent/black. Resolve the token
+// to a concrete hex once at setup; fall back to the known accent value when
+// getComputedStyle is unavailable (SSR / test env).
+const ACCENT = (() => {
+  try {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue("--c-accent")
+      .trim();
+    return v || "#ff5b3a";
+  } catch {
+    return "#ff5b3a";
+  }
+})();
 const tab = ref<"fillups" | "map" | "stats">("fillups");
 
 onMounted(() => {
@@ -269,13 +285,19 @@ const SORT_FIELD: Record<SortKey, keyof Fillup> = {
 const sortedFillups = computed<Fillup[]>(() => {
   const items = [...(fillupsQ.data.value?.items ?? [])];
   const field = SORT_FIELD[sortKey.value];
+  // Only the date column compares as a string (ISO timestamps sort
+  // lexicographically). Every other column is numeric — including
+  // price_total / fuel_volume, which arrive Decimal-serialised as JSON
+  // strings, so "9.80" would lexically sort above "100.00" if compared
+  // as text. Coerce to Number before comparing those.
+  const asString = sortKey.value === "fillup_date";
   items.sort((a, b) => {
-    const av = (a as Fillup)[field] ?? 0;
-    const bv = (b as Fillup)[field] ?? 0;
-    if (typeof av === "string" && typeof bv === "string") {
+    const av = (a as Fillup)[field] ?? (asString ? "" : 0);
+    const bv = (b as Fillup)[field] ?? (asString ? "" : 0);
+    if (asString) {
       return sortDir.value === "asc"
-        ? av.localeCompare(bv)
-        : bv.localeCompare(av);
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
     }
     const ax = Number(av);
     const bx = Number(bv);
@@ -365,13 +387,29 @@ function openEdit(f: Fillup) {
 function onSaved() {
   void fillupsQ.reload();
 }
-async function remove(f: Fillup) {
-  if (!window.confirm("Delete this fillup?")) return;
+
+// Delete fillup — in-app confirm (ConfirmDialog) instead of native
+// window.confirm/alert so it matches the dark theme.
+const deleteTarget = ref<Fillup | null>(null);
+const deleteBusy = ref(false);
+const deleteError = ref<string | null>(null);
+function requestRemove(f: Fillup) {
+  deleteTarget.value = f;
+  deleteError.value = null;
+}
+async function confirmRemove() {
+  const f = deleteTarget.value;
+  if (!f) return;
+  deleteBusy.value = true;
+  deleteError.value = null;
   try {
     await api.deleteFillup(f.id);
+    deleteTarget.value = null;
     await fillupsQ.reload();
   } catch (e: unknown) {
-    alert(e instanceof Error ? e.message : "delete failed");
+    deleteError.value = e instanceof Error ? e.message : "delete failed";
+  } finally {
+    deleteBusy.value = false;
   }
 }
 
@@ -539,20 +577,35 @@ const summary = computed(() => {
     .map((f) => f.mpg)
     .filter((v): v is number => typeof v === "number");
   const avgMpg = mpgs.length ? mpgs.reduce((a, b) => a + b, 0) / mpgs.length : null;
-  const totalSpend12m = (monthlyQ.data.value?.months ?? []).reduce(
-    (sum, m) => sum + (m.total ?? 0),
-    0,
-  );
+  // monthlyQ deliberately over-fetches (max(window,36), up to 120 for "all")
+  // so the YoY ghost lines have prior-year data. The headline spend must only
+  // sum the SELECTED window, not the whole over-fetched history. Filter to the
+  // stats cutoff; when the window is "all", sum everything.
+  const allMonths = monthlyQ.data.value?.months ?? [];
+  const cutoff = statsCutoffMs.value;
+  const windowMonths =
+    cutoff != null
+      ? allMonths.filter((m) => (Date.parse(m.month) || 0) >= cutoff)
+      : allMonths;
+  const totalSpendWindow = windowMonths.reduce((sum, m) => sum + (m.total ?? 0), 0);
   const totalMiles = (cpmQ.data.value?.points ?? []).reduce(
     (sum, p) => sum + (p.miles ?? 0),
     0,
   );
   return {
     avgMpg,
-    totalSpend12m,
+    totalSpendWindow,
     totalMiles,
   };
 });
+
+// Label for the spend KPI tracks the selected window.
+const spendWindowLabel = computed<string>(
+  () =>
+    ({ "30d": "30 days", "3m": "3 months", "12m": "12 months", all: "all time" })[
+      statsWindow.value
+    ],
+);
 
 // ── New stats panels (#46): $/gal trend, fillup-frequency histogram,
 //    tank-fill volume distribution, range-to-empty estimator. All four
@@ -595,7 +648,7 @@ const ppgChart = computed(() => {
       { stroke: "#9aa0aa" },
       { stroke: "#9aa0aa", label: "$/gal" },
     ],
-    series: [{}, { label: "$/gal", stroke: "var(--c-accent)", width: 1.5 }],
+    series: [{}, { label: "$/gal", stroke: ACCENT, width: 1.5 }],
   };
   return { aligned, opts };
 });
@@ -642,7 +695,7 @@ const frequencyChart = computed(() => {
       {},
       {
         label: "Fillups",
-        stroke: "var(--c-accent)",
+        stroke: ACCENT,
         width: 0,
         fill: "rgba(255,91,58,0.55)",
         paths: (_u, _seriesIdx, idx0, idx1) => {
@@ -697,7 +750,7 @@ const volumeDistChart = computed(() => {
       {},
       {
         label: "Fillups",
-        stroke: "var(--c-accent)",
+        stroke: ACCENT,
         width: 0,
         fill: "rgba(255,91,58,0.55)",
         paths: (_u, _seriesIdx, idx0, idx1) => {
@@ -853,6 +906,7 @@ const mpgVsTempChart = computed(() => {
         <div v-else-if="!fillupsQ.data.value || fillupsQ.data.value.items.length === 0" class="card">
           <p class="muted">No fillups yet. Import your Fuelio history or add one manually.</p>
         </div>
+        <template v-else>
         <div class="filter-bar">
           <div class="chip-row" role="tablist" aria-label="Fillup filter">
             <button
@@ -910,7 +964,7 @@ const mpgVsTempChart = computed(() => {
                         )
                   }}
                 </td>
-                <td>{{ f.station_id ?? "—" }}</td>
+                <td>{{ f.city ?? f.station_id ?? "—" }}</td>
                 <td :title="weatherTitle(f)">
                   <span v-if="f.weather_temp_c != null">
                     {{ wxIcon(f.weather_code) }}
@@ -939,7 +993,7 @@ const mpgVsTempChart = computed(() => {
                   <button class="ghost" type="button" @click="openEdit(f)" title="Edit">
                     <Pencil :size="14" />
                   </button>
-                  <button class="ghost" type="button" @click="remove(f)" title="Delete">
+                  <button class="ghost" type="button" @click="requestRemove(f)" title="Delete">
                     <X :size="14" />
                   </button>
                 </td>
@@ -965,6 +1019,7 @@ const mpgVsTempChart = computed(() => {
             @click="offset = offset + limit"
           >Next</button>
         </footer>
+        </template>
       </template>
 
       <!-- Stations map -->
@@ -1101,8 +1156,8 @@ const mpgVsTempChart = computed(() => {
             <div class="big">{{ fmtMpg(summary.avgMpg) }}</div>
           </div>
           <div class="card kpi">
-            <h3>Total spend (12m)</h3>
-            <div class="big">{{ fmtMoney(summary.totalSpend12m) }}</div>
+            <h3>Total spend ({{ spendWindowLabel }})</h3>
+            <div class="big">{{ fmtMoney(summary.totalSpendWindow) }}</div>
           </div>
           <div class="card kpi">
             <h3>Miles tracked</h3>
@@ -1135,7 +1190,8 @@ const mpgVsTempChart = computed(() => {
           <div v-if="chartVisible.range" class="card kpi">
             <h3>Range to empty</h3>
             <div v-if="!rangeEstimate" class="muted small">
-              Set tank capacity on the vehicle first.
+              Set tank capacity on the
+              <RouterLink to="/vehicles">vehicle</RouterLink> first.
             </div>
             <template v-else-if="rangeEstimate.miles != null">
               <div class="big">{{ rangeEstimate.miles.toFixed(0) }} mi</div>
@@ -1207,6 +1263,23 @@ const mpgVsTempChart = computed(() => {
       :all-vehicles="vehicles.vehicles"
       @close="showModal = false"
       @saved="onSaved"
+    />
+
+    <ConfirmDialog
+      :open="deleteTarget != null"
+      title="Delete this fillup?"
+      :message="
+        deleteError
+          ? deleteError
+          : deleteTarget
+            ? fmtDate(deleteTarget.fillup_date) + ' · ' + fmtGallons(deleteTarget.fuel_volume)
+            : null
+      "
+      confirm-label="Delete"
+      tone="danger"
+      :busy="deleteBusy"
+      @confirm="confirmRemove"
+      @cancel="deleteTarget = null"
     />
   </div>
 </template>

@@ -8,9 +8,9 @@ import * as api from "@/api/endpoints";
 import {
   fmtRelative,
   fmtMpg,
-  fmtMiles,
   fmtMoney,
   fmtDate,
+  fmtDistanceKm,
 } from "@/composables/useFormat";
 import { Fuel, Route, AlertTriangle } from "lucide-vue-next";
 
@@ -211,6 +211,23 @@ const heroData = computed(() => {
     fuelLevelAge = fuelEntry?.time ? formatReadingAge(fuelEntry.time) : null;
   }
 
+  // Fuel-estimate staleness (FUEL-CONFIDENCE-UI). The hybrid estimator is
+  // updated by fillups / trips / engine-off snaps; if none of those have
+  // fired in over a week the displayed level is increasingly untrustworthy.
+  // Surface a warn badge so the number isn't read as gospel. Mirrored on
+  // the phone.
+  const STALE_MS = 7 * 86_400_000;
+  const estUpdatedAt = sv?.fuel_level_estimate_updated_at;
+  const estUpdatedMs = estUpdatedAt ? Date.parse(estUpdatedAt) : NaN;
+  const estimateStale =
+    estimateL != null &&
+    Number.isFinite(estUpdatedMs) &&
+    Date.now() - estUpdatedMs > STALE_MS;
+  const estimateStaleDays =
+    estimateStale && Number.isFinite(estUpdatedMs)
+      ? Math.floor((Date.now() - estUpdatedMs) / 86_400_000)
+      : null;
+
   // EIA region-avg comparison. Pulls the most-recent week's $/gal for
   // the configured region; computes a % delta vs the user's latest
   // pump price. Null when EIA data isn't available yet.
@@ -246,6 +263,8 @@ const heroData = computed(() => {
     fuelLevelPct,
     fuelGallons,
     fuelLevelAge,
+    estimateStale,
+    estimateStaleDays,
     hasLatest: !!latest,
     eiaLatest,
     ppgVsRegion,
@@ -320,17 +339,6 @@ const cooQ = useAsync(
       : Promise.resolve(null as api.CostOfOwnership | null),
   [vehicleId],
 );
-
-const latest = computed(() => vehicles.selectedVehicle?.latest ?? {});
-function num(key: string): number | null {
-  const v = latest.value?.[key];
-  if (typeof v === "number") return v;
-  if (typeof v === "string") {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
 
 // Build a normalised SVG path "M0,y0 L1,y1 …" from an array of
 // numbers, mapped into a 0–100 × 0–30 viewBox so the same SVG
@@ -588,6 +596,11 @@ function dismissAnomaly(fingerprint: string) {
             <span class="fuel-gauge-pct">
               {{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) + '%' : '—' }}
             </span>
+            <span
+              v-if="heroData.estimateStale"
+              class="stale-badge"
+              :title="`Estimate hasn't been updated by a fillup, trip, or sensor snap in ${heroData.estimateStaleDays} day${heroData.estimateStaleDays === 1 ? '' : 's'}`"
+            >stale</span>
           </div>
           <div class="hero-sub muted">
             {{ heroData.fuelGallons != null && heroData.fuelLevelAge
@@ -797,7 +810,7 @@ function dismissAnomaly(fingerprint: string) {
             <li v-for="t in tripsQ.data.value.items" :key="t.id">
               <RouterLink :to="`/trips/${t.id}`">
                 <span>{{ fmtDate(t.started_at) }}</span>
-                <span class="muted">{{ fmtMiles(t.distance_mi) }}</span>
+                <span class="muted">{{ fmtDistanceKm(t.distance_km ?? null) }}</span>
               </RouterLink>
             </li>
           </ul>
@@ -962,6 +975,22 @@ function dismissAnomaly(fingerprint: string) {
 }
 .fuel-gauge-end.f {
   right: 2px;
+}
+.stale-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-family: 'Geist', sans-serif;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: #f59e0b;
+  background: #f59e0b1f;
+  border: 1px solid #f59e0b66;
+  cursor: help;
 }
 .brand-tape {
   position: relative;

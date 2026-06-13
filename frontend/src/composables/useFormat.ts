@@ -94,14 +94,14 @@ export function fmtVolumeL(l: number | null | undefined, system?: ResolvedUnitSy
   if (l == null || Number.isNaN(l)) return "—";
   return resolved(system) === "imperial"
     ? `${L_TO_USGAL(l).toFixed(2)} gal`
-    : `${l.toFixed(2)} l`;
+    : `${l.toFixed(2)} L`;
 }
 
 export function fmtFuelRateLh(lh: number | null | undefined, system?: ResolvedUnitSystem): string {
   if (lh == null || Number.isNaN(lh)) return "—";
   return resolved(system) === "imperial"
     ? `${L_TO_USGAL(lh).toFixed(2)} gph`
-    : `${lh.toFixed(2)} l/h`;
+    : `${lh.toFixed(2)} L/h`;
 }
 
 export function fmtConsumptionLp100(
@@ -111,7 +111,7 @@ export function fmtConsumptionLp100(
   if (lp100 == null || Number.isNaN(lp100) || lp100 <= 0) return "—";
   return resolved(system) === "imperial"
     ? `${LP100_TO_MPG(lp100).toFixed(1)} mpg`
-    : `${lp100.toFixed(1)} l/100km`;
+    : `${lp100.toFixed(1)} L/100km`;
 }
 
 export function fmtDuration(seconds: number | null | undefined): string {

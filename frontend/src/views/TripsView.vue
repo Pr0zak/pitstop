@@ -16,10 +16,45 @@ import {
 
 const vehicles = useVehiclesStore();
 const router = useRouter();
+// Date-range presets (TRIPS, C16). Chips compute LOCAL boundaries so the
+// server window matches what the user means by a calendar day; "custom"
+// reveals the two date inputs. This also sidesteps the date-only-as-UTC bug:
+// `new Date("2026-06-13")` parses as UTC midnight, which in US TZs lops ~6h
+// off the "To" day. We build local 00:00 boundaries explicitly instead.
+type DatePreset = "7d" | "30d" | "90d" | "all" | "custom";
+const datePreset = ref<DatePreset>("all");
 const fromDate = ref<string>("");
 const toDate = ref<string>("");
 const limit = ref(50);
 const offset = ref(0);
+
+/** Local 00:00 of a "yyyy-MM-dd" string, as an ISO UTC instant. */
+function localDayStartIso(ymd: string): string | undefined {
+  if (!ymd) return undefined;
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+}
+/** Exclusive end: local 00:00 of (ymd + 1 day), as an ISO UTC instant, so the
+ *  whole "To" calendar day is included. */
+function localDayEndExclusiveIso(ymd: string): string | undefined {
+  if (!ymd) return undefined;
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d + 1, 0, 0, 0, 0).toISOString();
+}
+
+// Resolved from/to instants the query actually uses. Presets win; for
+// "custom" we read the date inputs (with local-boundary construction).
+const fromIso = computed<string | undefined>(() => {
+  if (datePreset.value === "all") return undefined;
+  if (datePreset.value === "custom") return localDayStartIso(fromDate.value);
+  const days = { "7d": 7, "30d": 30, "90d": 90 }[datePreset.value];
+  return new Date(Date.now() - days * 86_400_000).toISOString();
+});
+const toIso = computed<string | undefined>(() =>
+  datePreset.value === "custom" ? localDayEndExclusiveIso(toDate.value) : undefined,
+);
 
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 
@@ -91,25 +126,21 @@ function bucketFor(iso: string): GroupKey {
   return "older";
 }
 
-function isoOrUndef(s: string): string | undefined {
-  return s ? new Date(s).toISOString() : undefined;
-}
-
 const { data, loading, error, reload } = useAsync(
   () =>
     vehicleId.value
       ? api.listTrips({
           vehicle_id: vehicleId.value,
-          from: isoOrUndef(fromDate.value),
-          to: isoOrUndef(toDate.value),
+          from: fromIso.value,
+          to: toIso.value,
           limit: limit.value,
           offset: offset.value,
         })
       : Promise.resolve({ items: [], total: 0 }),
-  [vehicleId, fromDate, toDate, limit, offset],
+  [vehicleId, fromIso, toIso, limit, offset],
 );
 
-watch([vehicleId, fromDate, toDate], () => {
+watch([vehicleId, fromIso, toIso], () => {
   offset.value = 0;
 });
 
@@ -233,11 +264,20 @@ function prevPage() {
   offset.value = Math.max(0, offset.value - limit.value);
 }
 function reset() {
+  datePreset.value = "all";
   fromDate.value = "";
   toDate.value = "";
   offset.value = 0;
   void reload();
 }
+
+const DATE_PRESET_LABEL: Record<DatePreset, string> = {
+  "7d": "7d",
+  "30d": "30d",
+  "90d": "90d",
+  all: "All",
+  custom: "Custom",
+};
 
 // Filter + sort + group the current page (TRIPS-2). Always shown
 // across whatever from/to range the server delivered.
@@ -298,14 +338,28 @@ const purposeRollup = computed<PurposeRow[]>(() => {
     <header class="head">
       <h1>Trips</h1>
       <div class="filters">
-        <label>
-          <span class="lbl">From</span>
-          <input type="date" v-model="fromDate" />
-        </label>
-        <label>
-          <span class="lbl">To</span>
-          <input type="date" v-model="toDate" />
-        </label>
+        <div class="chip-row" role="tablist" aria-label="Date range">
+          <button
+            v-for="opt in (['7d','30d','90d','all','custom'] as const)"
+            :key="opt"
+            type="button"
+            class="chip"
+            :class="{ active: datePreset === opt }"
+            @click="datePreset = opt"
+          >
+            {{ DATE_PRESET_LABEL[opt] }}
+          </button>
+        </div>
+        <template v-if="datePreset === 'custom'">
+          <label>
+            <span class="lbl">From</span>
+            <input type="date" v-model="fromDate" />
+          </label>
+          <label>
+            <span class="lbl">To</span>
+            <input type="date" v-model="toDate" />
+          </label>
+        </template>
         <div class="chip-row" role="tablist" aria-label="Source filter">
           <button
             v-for="opt in (['all','phone_batch','manual_merge','other'] as const)"
@@ -385,13 +439,23 @@ const purposeRollup = computed<PurposeRow[]>(() => {
       </div>
     </div>
 
+    <!-- Thin top progress bar during background revalidation. Replaces the
+         old full-card "Loading…" blank so stale rows stay visible while the
+         next page/sort/window loads (stale-while-revalidate, B9). -->
+    <div
+      v-if="loading && data"
+      class="revalidate-bar"
+      role="progressbar"
+      aria-label="Loading"
+    ></div>
+
     <div v-if="!vehicleId" class="card">
       <p class="muted">Select a vehicle to view its trips.</p>
     </div>
-    <div v-else-if="loading" class="card">
+    <div v-else-if="loading && !data" class="card">
       <p class="muted">Loading trips…</p>
     </div>
-    <div v-else-if="error" class="card">
+    <div v-else-if="error && !data" class="card">
       <p class="muted">Failed to load: {{ error }}</p>
     </div>
     <div v-else-if="!data || data.items.length === 0" class="card">
@@ -482,6 +546,32 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  position: relative;
+}
+.revalidate-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  overflow: hidden;
+  background: var(--c-accent-soft, rgba(255, 91, 58, 0.18));
+  z-index: 20;
+}
+.revalidate-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: var(--c-accent, #ff5b3a);
+  border-radius: 1px;
+  animation: revalidate-slide 1s ease-in-out infinite;
+}
+@keyframes revalidate-slide {
+  0% { left: -40%; }
+  100% { left: 100%; }
 }
 .head {
   display: flex;
