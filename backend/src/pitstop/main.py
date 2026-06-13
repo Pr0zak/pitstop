@@ -32,12 +32,10 @@ from .api import utils as utils_api
 from .api import vehicles as vehicles_api
 from .config import settings
 from .logging_handler import DbLogHandler, run_db_log_drainer
+from .workers import trip_deriver, weather_backfiller
 from .workers.bus import bus
 from .workers.ha_mirror import HaMirror
 from .workers.ingest import MqttIngest
-from .workers.trip_detector import TripDetector
-from .workers import trip_deriver
-from .workers import weather_backfiller
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 log = logging.getLogger(__name__)
@@ -88,7 +86,6 @@ async def lifespan(app: FastAPI):
     log.info("pitstop backend starting")
     pool: asyncpg.Pool | None = None
     ingest_task: asyncio.Task | None = None
-    trip_task: asyncio.Task | None = None
     ha_task: asyncio.Task | None = None
     log_drain_task: asyncio.Task | None = None
     retention_task: asyncio.Task | None = None
@@ -97,7 +94,6 @@ async def lifespan(app: FastAPI):
     weather_task: asyncio.Task | None = None
     fuel_state_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
-    trip_detector: TripDetector | None = None
     ha_mirror: HaMirror | None = None
     try:
         async def _init_conn(conn: asyncpg.Connection) -> None:
@@ -129,15 +125,16 @@ async def lifespan(app: FastAPI):
             run_db_log_drainer(db_log_handler, pool), name="db-log-drainer"
         )
         ingest = MqttIngest(pool=pool, bus_=bus, config=settings)
+        # Expose the ingest worker so /health/ingest can surface the true
+        # in-process "last MQTT receipt" alongside the DB max(time) — the
+        # two are different signals (HEALTH-1).
+        app.state.ingest = ingest
         # Streaming TripDetector retired in favour of the periodic
-        # trip_deriver (post-processed batch derivation; Task #81).
-        # We still set up the in-memory bus subscription via TripDetector
-        # = None so the ingest worker can keep publishing engine_events
-        # without errors; the bus is consumed only by HaMirror now.
-        trip_detector = None
+        # trip_deriver (post-processed batch derivation; Task #81). The
+        # ingest worker keeps publishing engine_events to the in-process
+        # bus; the bus is consumed only by HaMirror now.
         ha_mirror = HaMirror(pool=pool, bus_=bus, config=settings)
         ingest_task = asyncio.create_task(ingest.run(), name="mqtt-ingest")
-        trip_task = None
         ha_task = asyncio.create_task(ha_mirror.run(), name="ha-mirror")
         deriver_task = asyncio.create_task(
             trip_deriver.run(pool, settings), name="trip-deriver"
@@ -175,12 +172,10 @@ async def lifespan(app: FastAPI):
         log.info("pitstop backend stopping")
         if ingest is not None:
             ingest.stop()
-        if trip_detector is not None:
-            trip_detector.stop()
         if ha_mirror is not None:
             ha_mirror.stop()
         for task in (
-            ingest_task, trip_task, ha_task, log_drain_task,
+            ingest_task, ha_task, log_drain_task,
             retention_task, eia_task, deriver_task, weather_task,
             fuel_state_task,
         ):

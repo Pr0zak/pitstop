@@ -169,6 +169,6 @@ async def run(pool: asyncpg.Pool) -> None:
                 log.info("eia: stored %s region-week rows", n)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            log.error("eia cycle failed: %s", exc)
+        except Exception:  # noqa: BLE001
+            log.exception("eia cycle failed")
         await asyncio.sleep(CYCLE_INTERVAL_SECONDS)

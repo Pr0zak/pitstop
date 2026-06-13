@@ -116,6 +116,6 @@ async def run(pool: asyncpg.Pool) -> None:
             await _cycle(pool)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            log.error("retention cycle failed: %s", exc)
+        except Exception:  # noqa: BLE001
+            log.exception("retention cycle failed")
         await asyncio.sleep(CYCLE_INTERVAL_SECONDS)

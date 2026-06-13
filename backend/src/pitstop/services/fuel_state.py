@@ -5,8 +5,9 @@ Three operations mutate the per-vehicle estimate stored in
 
 1. ``reset_on_fillup`` — called from ``POST /fillups``. is_full sets the
    estimate to tank capacity; partial fillups add the pumped liters.
-2. ``decrement_on_trip`` — called from trip_detector after a trip's
-   ``fuel_used_l`` is computed (MAF integration). Subtracts; floors at 0.
+2. ``decrement_on_trip`` — called from the fuel_state_worker after a
+   trip's ``fuel_used_l`` is computed (MAF integration or de-sloshed
+   fuel-level delta). Subtracts; floors at 0.
 3. ``snap_to_sensor`` — called from the truth-up worker when the engine
    has been off long enough that the sensor reading should be stable.
 

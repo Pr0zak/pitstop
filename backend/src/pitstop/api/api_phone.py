@@ -29,6 +29,8 @@ from pydantic import BaseModel
 
 from ..auth import require_ingest_token
 from ..db.deps import get_pool
+from ..schemas import FillupCreate
+from .fillups import _apply_fillup_to_fuel_estimate, _maybe_calibrate_fuel_level
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +159,29 @@ async def post_fillup_phone(
             raise HTTPException(
                 status_code=400, detail="vehicle does not exist"
             ) from exc
+
+    # Route the fillup through the same fuel-estimate + calibration helpers
+    # that POST /fillups uses, so a pump-side phone quick-add resets the
+    # hybrid estimate exactly like a web entry (ADR-013 parity). Build a
+    # FillupCreate from the already-converted stored-unit values.
+    fill = FillupCreate(
+        vehicle_id=vehicle_id,
+        fillup_date=(
+            body.ts.astimezone(timezone.utc) if body.ts.tzinfo else body.ts
+        ),
+        odo=odo,
+        fuel_volume=fuel_volume,
+        is_full=is_full,
+        price_total=price_total,
+        price_per_unit=price_per_unit,
+        lat=body.lat,
+        lon=body.lon,
+        city=body.station_name,
+        notes=body.notes,
+    )
+    if is_full:
+        await _maybe_calibrate_fuel_level(pool, vehicle_id, fill.fillup_date)
+    await _apply_fillup_to_fuel_estimate(pool, fill)
 
     log.info(
         "phone fillup ingested vehicle_slug=%s id=%s gallons=%.3f total=$%s",

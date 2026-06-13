@@ -46,8 +46,22 @@ class TestParseTopic:
     def test_too_few_parts_rejected(self) -> None:
         assert parse_topic("wican/pilot19") is None
 
+    def test_wican_four_part_can_status(self) -> None:
+        # 4-part WiCAN structured topics are accepted; the trailing parts
+        # join into the metric so existing dispatch can match by name.
+        p = parse_topic("wican/pilot19/can/status")
+        assert p is not None
+        assert p.source == "wican"
+        assert p.vehicle_slug == "pilot19"
+        assert p.metric == "can/status"
+
+    def test_bridge_four_parts_rejected(self) -> None:
+        # The 4-part form is WiCAN-only; an over-long bridge topic is junk.
+        assert parse_topic("bridge/pilot19/engine/rpm") is None
+
     def test_too_many_parts_rejected(self) -> None:
-        assert parse_topic("wican/pilot19/engine/rpm") is None
+        # 5+ parts are rejected for every source.
+        assert parse_topic("wican/pilot19/engine/rpm/extra") is None
 
     def test_empty_slug_rejected(self) -> None:
         assert parse_topic("wican//engine_rpm") is None

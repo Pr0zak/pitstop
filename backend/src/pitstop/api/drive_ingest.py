@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import require_ingest_token
 from ..db.deps import get_pool
-from ..workers.trip_detector import compute_trip_stats
+from ..workers.trip_stats import compute_trip_stats
 
 log = logging.getLogger(__name__)
 

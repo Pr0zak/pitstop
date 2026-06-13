@@ -15,13 +15,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+# Copy the lockfile so the build resolves to the exact pinned versions
+# (uv.lock is committed; no `>=`-floor drift between builds).
+COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-install-project
+    uv sync --frozen --no-install-project
 
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync
+    uv sync --frozen
 
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown

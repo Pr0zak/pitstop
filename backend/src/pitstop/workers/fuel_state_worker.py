@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 import asyncpg
 
 from ..services.fuel_state import (
+    EstimateUpdate,
     decrement_on_trip,
     persist_estimate,
     snap_to_sensor,
@@ -60,19 +60,39 @@ MAX_SNAP_DROP_FRACTION = 0.25
 
 
 async def decrement_pass(pool: asyncpg.Pool) -> int:
-    """Process all unapplied trips. Returns count of trips processed."""
+    """Process all unapplied settled trips. Returns count of trips applied.
+
+    For each trip we (re-)read the vehicle's running estimate inside a
+    per-trip transaction that takes ``SELECT ... FOR UPDATE`` on the
+    vehicle row. This is what actually prevents:
+
+    1. **Lost updates across multiple trips for one vehicle in a single
+       cycle.** The estimate is re-read per trip rather than snapshotted
+       once, so two unapplied trips both debit a running total instead of
+       the second clobbering the first.
+    2. **Clobbering a concurrent ``POST /fillups`` reset.** The row lock
+       serialises against the api's reset path.
+
+    Fuel debit preference order:
+      - ``fuel_used_l`` (MAF or de-sloshed fuel-level delta) when present.
+      - **EPA fallback** (#3): when ``fuel_used_l`` is NULL/0 but
+        ``distance_km`` is known and the vehicle has ``epa_mpg_combined``,
+        decrement by an EPA-based estimate (LOW confidence) and stamp
+        ``fuel_applied_at`` so the gauge keeps moving between snaps.
+      - Otherwise terminal-stamp stale NULL trips (``ended_at`` older than
+        24 h) so "applied" semantics stay clean and we stop re-scanning
+        them forever.
+    """
     processed = 0
     async with pool.acquire() as conn:
-        # SELECT FOR UPDATE on vehicles row prevents racing with the
-        # fillup-reset path in the api.
+        # Candidate trips: settled + unapplied. Includes trips with NULL
+        # fuel_used_l so the EPA fallback / terminal-stamp paths can run.
         trips = await conn.fetch(
             """
-            SELECT t.id, t.vehicle_id, t.fuel_used_l, t.ended_at,
-                   v.fuel_level_estimate_l, v.tank_capacity_l
+            SELECT t.id, t.vehicle_id, t.fuel_used_l, t.distance_km,
+                   t.ended_at
               FROM trips t
-              JOIN vehicles v ON v.id = t.vehicle_id
              WHERE t.fuel_applied_at IS NULL
-               AND t.fuel_used_l IS NOT NULL
                AND t.ended_at IS NOT NULL
                AND t.ended_at < now() - make_interval(secs => $1)
              ORDER BY t.vehicle_id, t.ended_at
@@ -80,25 +100,82 @@ async def decrement_pass(pool: asyncpg.Pool) -> int:
             TRIP_SETTLE_S,
         )
         for row in trips:
-            update = decrement_on_trip(
-                fuel_used_l=float(row["fuel_used_l"]),
-                current_estimate_l=(
-                    float(row["fuel_level_estimate_l"])
-                    if row["fuel_level_estimate_l"] is not None
-                    else None
-                ),
-                when=row["ended_at"],
-            )
-            if update is None:
-                # No prior estimate — can't decrement. Mark the trip as
-                # applied anyway so we don't keep re-trying it on every
-                # cycle; the next snap or fillup will seed the state.
-                await conn.execute(
-                    "UPDATE trips SET fuel_applied_at = now() WHERE id = $1",
-                    row["id"],
-                )
-                continue
+            stale = row["ended_at"] < datetime.now(UTC) - timedelta(hours=24)
             async with conn.transaction():
+                # Lock the vehicle row + read the freshest estimate inside
+                # the txn — this is the real lost-update / fillup-race fix.
+                veh = await conn.fetchrow(
+                    """
+                    SELECT fuel_level_estimate_l, tank_capacity_l,
+                           epa_mpg_combined
+                      FROM vehicles WHERE id = $1
+                      FOR UPDATE
+                    """,
+                    row["vehicle_id"],
+                )
+                if veh is None:
+                    continue
+                current_l = (
+                    float(veh["fuel_level_estimate_l"])
+                    if veh["fuel_level_estimate_l"] is not None
+                    else None
+                )
+
+                fuel_used = (
+                    float(row["fuel_used_l"])
+                    if row["fuel_used_l"] is not None
+                    else None
+                )
+                update = None
+                if fuel_used is not None and fuel_used > 0:
+                    update = decrement_on_trip(
+                        fuel_used_l=fuel_used,
+                        current_estimate_l=current_l,
+                        when=row["ended_at"],
+                    )
+                elif (
+                    row["distance_km"] is not None
+                    and float(row["distance_km"]) > 0
+                    and veh["epa_mpg_combined"] is not None
+                    and float(veh["epa_mpg_combined"]) > 0
+                    and current_l is not None
+                ):
+                    # EPA fallback (#3): liters = km / 1.609 / mpg * 3.785.
+                    epa_l = (
+                        float(row["distance_km"])
+                        / 1.609
+                        / float(veh["epa_mpg_combined"])
+                        * 3.785
+                    )
+                    update = decrement_on_trip(
+                        fuel_used_l=epa_l,
+                        current_estimate_l=current_l,
+                        when=row["ended_at"],
+                    )
+                    if update is not None:
+                        # Re-tag as LOW confidence — it's a model estimate,
+                        # not a measured burn.
+                        update = EstimateUpdate(
+                            liters=update.liters,
+                            confidence="LOW",
+                            reason=f"trip_epa_decrement_{epa_l:.2f}L",
+                            when=update.when,
+                        )
+
+                if update is None:
+                    # No usable debit. Stamp so we stop re-trying, but only
+                    # terminal-stamp NULL-fuel trips once they're stale —
+                    # a recent trip might still get a real fuel_used_l from
+                    # a later deriver pass, or a fillup may seed the
+                    # estimate so a future cycle can apply it.
+                    if fuel_used is not None or stale or current_l is not None:
+                        await conn.execute(
+                            "UPDATE trips SET fuel_applied_at = now() "
+                            "WHERE id = $1",
+                            row["id"],
+                        )
+                    continue
+
                 await persist_estimate(conn, row["vehicle_id"], update)
                 await conn.execute(
                     "UPDATE trips SET fuel_applied_at = now() WHERE id = $1",
@@ -106,9 +183,8 @@ async def decrement_pass(pool: asyncpg.Pool) -> int:
                 )
             processed += 1
             log.info(
-                "fuel-estimate decrement trip=%s vehicle=%s used=%.2fL new=%.2fL",
-                row["id"], row["vehicle_id"], float(row["fuel_used_l"]),
-                update.liters,
+                "fuel-estimate decrement trip=%s vehicle=%s new=%.2fL reason=%s",
+                row["id"], row["vehicle_id"], update.liters, update.reason,
             )
     return processed
 
@@ -257,6 +333,6 @@ async def run(pool: asyncpg.Pool, cfg: "Settings") -> None:
                 log.info("fuel-state cycle: decremented=%d snapped=%d", d, s)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            log.error("fuel-state cycle failed: %s", exc)
+        except Exception:  # noqa: BLE001
+            log.exception("fuel-state cycle failed")
         await asyncio.sleep(CYCLE_INTERVAL_S)

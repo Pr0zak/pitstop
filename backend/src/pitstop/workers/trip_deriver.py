@@ -43,10 +43,9 @@ import asyncpg
 if TYPE_CHECKING:
     from ..config import Settings
 
-# Reuse compute_trip_stats from the streaming detector — same window
-# math (haversine on gps_points, speed integration fallback) we already
-# trust in production.
-from .trip_detector import compute_trip_stats
+# Shared trip-window stats (haversine on gps_points, speed integration
+# fallback, MAF + fuel-level fallback fuel estimation).
+from .trip_stats import compute_trip_stats
 
 log = logging.getLogger(__name__)
 
@@ -480,6 +479,6 @@ async def run(pool: asyncpg.Pool, cfg: "Settings") -> None:
                 log.info("trip deriver cycle: %s trips touched %s", touched, summary)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            log.error("trip deriver cycle failed: %s", exc)
+        except Exception:  # noqa: BLE001
+            log.exception("trip deriver cycle failed")
         await asyncio.sleep(CYCLE_INTERVAL_S)

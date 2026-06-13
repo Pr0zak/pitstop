@@ -23,23 +23,15 @@ class Settings(BaseSettings):
 
     pid_profiles_dir: str = "/app/pid_profiles"
 
-    # Trip detector tuning.
+    # Trip derivation tuning.
     #
-    # silence_close_s = 60 was tearing trips into shreds at every red
-    # light: a typical 30-min drive produced 5-6 zero-distance "trips"
-    # because the engine-off-at-light idle pushed the detector past the
-    # silence threshold. 600 (10 min) matches industry-typical OBD
-    # session sleeps and only forces a close on real engine-off events.
-    #
-    # min_distance_km filters the 0-km sliver-trips that survive even
-    # the longer silence — a parked car still publishes battery + temp
-    # readings every minute, which would otherwise auto-open + auto-
-    # close a 0-km "trip" the user has no interest in seeing.
-    trip_silence_open_s: int = 120
-    trip_silence_close_s: int = 600
+    # min_distance_km filters 0-km sliver-trips: a parked car still
+    # publishes battery + temp readings every minute, which the deriver
+    # would otherwise emit as a 0-km "trip" the user has no interest in
+    # seeing. (The streaming detector's silence/low-voltage knobs were
+    # removed with the TripDetector class — the periodic deriver builds
+    # intervals from the full data window instead.)
     trip_min_distance_km: float = 0.5
-    trip_low_voltage_threshold: float = 12.0
-    trip_low_voltage_consecutive: int = 3
 
     # MQTT ingest tuning.
     ingest_batch_max_rows: int = 100

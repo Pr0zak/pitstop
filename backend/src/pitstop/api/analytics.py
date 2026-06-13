@@ -194,21 +194,6 @@ def _period_key(d: datetime | date, window: AnalyticsWindow) -> str:
     return d.strftime("%Y-%m")
 
 
-def _window_cutoff(window: AnalyticsWindow) -> datetime | None:
-    """Filter cutoff applied client-side via ?from on real callers; we don't
-    enforce a cutoff in the analytics SQL because window controls grouping."""
-    if window == "all":
-        return None
-    today = datetime.now(tz=None)
-    if window == "month":
-        return today - timedelta(days=31)
-    if window == "3m":
-        return today - timedelta(days=92)
-    if window == "year":
-        return today - timedelta(days=365)
-    return None
-
-
 @router.get("/mpg", dependencies=[Depends(require_query_token)])
 async def mpg_series(
     vehicle_id: UUID = Query(...),
@@ -272,7 +257,6 @@ async def cost_per_mi(
     fuel_cost_by_period: dict[str, float] = defaultdict(float)
     distance_by_period: dict[str, float] = defaultdict(float)
     last_full_odo: float | None = None
-    last_full_period: str | None = None
     for row in rows:
         period = _period_key(row["fillup_date"], window)
         # Fuel cost: prefer price_total else price_per_unit * volume.
@@ -292,7 +276,6 @@ async def cost_per_mi(
                     # simpler to attribute to the later period.
                     distance_by_period[period] += distance
             last_full_odo = float(row["odo"])
-            last_full_period = period  # noqa: F841 (kept for readability)
     service_cost_by_period: dict[str, float] = defaultdict(float)
     for ex in exps:
         period = _period_key(ex["expense_date"], window)

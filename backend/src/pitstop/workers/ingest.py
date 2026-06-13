@@ -43,6 +43,18 @@ log = logging.getLogger(__name__)
 
 VALID_SOURCES = {"wican", "bridge"}
 
+# Active loopback liveness probe. Instead of tearing down a healthy
+# connection whenever the broker is merely silent (a parked car publishes
+# nothing — the old 90 s passive watchdog reconnected every ~95 s forever,
+# MQTT-2), we publish a tiny heartbeat to a dedicated topic we're also
+# subscribed to and only declare a stall when the loopback fails to return
+# within ~2 probe intervals. A truly hung broker (subscription silently
+# dropped) still trips this; legitimate silence does not.
+PROBE_TOPIC = "pitstop/_probe"
+PROBE_INTERVAL_S = 30.0
+# Allow ~2 missed probes before declaring the broker hung.
+PROBE_STALL_TIMEOUT_S = PROBE_INTERVAL_S * 2 + 15.0
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedTopic:
@@ -320,6 +332,22 @@ class MqttIngest:
         # previous recorded transition was < 30 s ago (likely flap).
         # See LWT-1 in pitstop/TODO.md.
         self._last_lwt: dict[UUID, tuple[str, datetime]] = {}
+        # HEALTH-1: monotonic-clock timestamp of the last MQTT message we
+        # actually received from the broker (any topic, including our own
+        # loopback probe). Distinct from "last NEW row written to
+        # pid_readings" — exposed via /health/ingest so the dashboard can
+        # tell "broker link alive" apart from "fresh telemetry flowing".
+        self._last_received_at: datetime | None = None
+        # Last time the loopback probe round-tripped back to us. Drives the
+        # active stall detection in run().
+        self._last_probe_at: float = time.monotonic()
+
+    # -- public liveness accessor (HEALTH-1) ----------------------------
+
+    @property
+    def last_received_at(self) -> datetime | None:
+        """Wall-clock time of the most recent MQTT receipt (any topic)."""
+        return self._last_received_at
 
     # -- helpers ---------------------------------------------------------
 
@@ -487,6 +515,12 @@ class MqttIngest:
 
     async def _handle_message(self, msg: aiomqtt.Message) -> None:
         topic = str(msg.topic)
+        # Any receipt — including our own loopback probe — proves the broker
+        # link is alive (HEALTH-1 + active-probe liveness, MQTT-2).
+        self._last_received_at = datetime.now(tz=UTC)
+        if topic == PROBE_TOPIC:
+            self._last_probe_at = time.monotonic()
+            return
         parsed = parse_topic(topic)
         if parsed is None:
             log.debug("rejecting bad topic %r", topic)
@@ -501,12 +535,13 @@ class MqttIngest:
         # drive observed 2026-05-24). LWT (`status` / `can/status`) is
         # handled below as authoritative state and intentionally honors
         # retain so engine-state survives backend restarts.
-        if (
-            msg.retain
-            and parsed.source == "wican"
-            and parsed.metric not in ("status", "can/status")
-        ):
-            log.debug("skipping retained wican PID msg on %r", topic)
+        #
+        # This applies to ALL sources, not just wican: a retained legacy
+        # bridge scalar would otherwise re-insert at now() on every
+        # reconnect and re-create the same HEALTH lie. The only retained
+        # messages we keep are the authoritative status/LWT topics.
+        if msg.retain and parsed.metric not in ("status", "can/status"):
+            log.debug("skipping retained msg on %r", topic)
             return
         try:
             payload = msg.payload.decode("utf-8") if msg.payload else ""
@@ -527,6 +562,9 @@ class MqttIngest:
             return
         if parsed.source == "bridge" and parsed.metric == "engine_state":
             await self._handle_engine_state(payload, vehicle_id, now)
+            return
+        if parsed.source == "bridge" and parsed.metric == "phone_health":
+            await self._handle_phone_health(payload, vehicle_id, now)
             return
 
         # WiCAN authoritative engine state, two flavours depending on
@@ -680,6 +718,109 @@ class MqttIngest:
             except (OverflowError, OSError, ValueError):
                 pass
         await self._record_engine_state(vehicle_id, when, state, "bridge")
+
+    async def _handle_phone_health(
+        self, payload: str, vehicle_id: UUID, default_when: datetime
+    ) -> None:
+        """Record a phone-telemetry heartbeat (BLE-3).
+
+        Contract — the Android app publishes to ``bridge/<slug>/phone_health``:
+
+            {
+              "t": <unix_ms>,
+              "obd_age_s": <int>,        # secs since last OBD frame
+              "ble_phase": "connected",  # BLE link phase
+              "gps_age_s": <int>,        # secs since last GPS fix
+              "queue_drives": <int>,     # pending un-synced drives
+              "offline_buffer_bytes": <int>,
+              "app_version": "<str>"
+            }
+
+        Best-effort, non-fatal: a malformed payload or a DB hiccup is
+        swallowed so it can never block telemetry ingest. We record the
+        heartbeat as a structured ``client_logs`` row (source='phone',
+        message='phone_health'); when ``obd_age_s`` is high while the
+        engine is on the row is escalated to level='warn' so a stuck BLE
+        link surfaces in the logs depot.
+        """
+        s = payload.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(obj, dict):
+            return
+
+        when = default_when
+        t_ms = obj.get("t")
+        if isinstance(t_ms, (int, float)):
+            try:
+                when = datetime.fromtimestamp(float(t_ms) / 1000.0, tz=UTC)
+            except (OverflowError, OSError, ValueError):
+                pass
+
+        def _opt_int(key: str) -> int | None:
+            v = obj.get(key)
+            if isinstance(v, bool):
+                return None
+            if isinstance(v, (int, float)):
+                return int(v)
+            return None
+
+        obd_age_s = _opt_int("obd_age_s")
+
+        # Escalate to a warning when OBD has gone quiet while the engine is
+        # believed to be on — that's the "BLE link wedged mid-drive" case.
+        level = "info"
+        if obd_age_s is not None and obd_age_s >= 60:
+            try:
+                engine_on = await self._is_engine_on(vehicle_id)
+            except (asyncpg.PostgresError, OSError):
+                engine_on = False
+            if engine_on:
+                level = "warn"
+
+        context = {
+            "obd_age_s": obd_age_s,
+            "ble_phase": obj.get("ble_phase"),
+            "gps_age_s": _opt_int("gps_age_s"),
+            "queue_drives": _opt_int("queue_drives"),
+            "offline_buffer_bytes": _opt_int("offline_buffer_bytes"),
+            "app_version": obj.get("app_version"),
+        }
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO client_logs
+                        (source, level, message, vehicle_id, device_id,
+                         context, client_ts)
+                    VALUES ('phone', $1, 'phone_health', $2, NULL,
+                            $3::jsonb, $4)
+                    """,
+                    level,
+                    vehicle_id,
+                    json.dumps(context),
+                    when,
+                )
+        except (asyncpg.PostgresError, OSError) as exc:
+            log.debug("phone_health insert failed vehicle=%s: %s", vehicle_id, exc)
+
+    async def _is_engine_on(self, vehicle_id: UUID) -> bool:
+        """True if the most recent engine_event for this vehicle is 'on'."""
+        async with self._pool.acquire() as conn:
+            state = await conn.fetchval(
+                """
+                SELECT state FROM engine_events
+                 WHERE vehicle_id = $1
+                 ORDER BY time DESC
+                 LIMIT 1
+                """,
+                vehicle_id,
+            )
+        return state == "on"
 
     async def _handle_wican_status(
         self, payload: str, vehicle_id: UUID, default_when: datetime
@@ -849,11 +990,50 @@ class MqttIngest:
 
     # -- public lifecycle ------------------------------------------------
 
+    async def _probe_loop(self, client: aiomqtt.Client, stall: asyncio.Event) -> None:
+        """Active loopback liveness probe (MQTT-2).
+
+        Publishes a tiny heartbeat to ``PROBE_TOPIC`` every
+        ``PROBE_INTERVAL_S``. ``_handle_message`` stamps ``_last_probe_at``
+        when the loopback returns. If the probe hasn't round-tripped within
+        ``PROBE_STALL_TIMEOUT_S`` (≈2 intervals) the broker has silently
+        dropped our subscription — set ``stall`` so the message loop
+        reconnects. Legitimate broker silence (parked car) never trips this
+        because the probe traffic is self-generated.
+
+        This replaces the old passive 90 s "no messages = reconnect"
+        watchdog that tore down healthy connections whenever the car was
+        parked and publishing nothing.
+        """
+        while not self._stop.is_set() and not stall.is_set():
+            try:
+                await client.publish(PROBE_TOPIC, payload=b"1", qos=0)
+            except aiomqtt.MqttError:
+                stall.set()
+                return
+            age = time.monotonic() - self._last_probe_at
+            if age > PROBE_STALL_TIMEOUT_S:
+                # Routine probe-reconnect — INFO, not WARNING, so it doesn't
+                # spam client_logs via DbLogHandler (which queues WARN+).
+                log.info(
+                    "MQTT loopback probe stalled (%.0fs since last round-trip); "
+                    "reconnecting",
+                    age,
+                )
+                stall.set()
+                return
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=PROBE_INTERVAL_S)
+                return  # stop signaled
+            except TimeoutError:
+                pass
+
     async def run(self) -> None:
         """Main loop. Reconnects forever on transient broker failures."""
         flush_task = asyncio.create_task(self._flush_loop())
         try:
             while not self._stop.is_set():
+                probe_task: asyncio.Task | None = None
                 try:
                     async with aiomqtt.Client(
                         hostname=self._cfg.mqtt_host,
@@ -865,8 +1045,9 @@ class MqttIngest:
                         # detection was better, but it caused mosquitto
                         # to drop the subscription every ~30s on local
                         # docker-bridge LAN (verified during cellular
-                        # drive test 2026-05-23). The 90 s watchdog
-                        # below already handles silent stalls.
+                        # drive test 2026-05-23). The active loopback probe
+                        # below handles silent stalls without reconnecting
+                        # on legitimate silence.
                         keepalive=60,
                     ) as client:
                         log.info(
@@ -880,29 +1061,43 @@ class MqttIngest:
                         # these alongside the 3-part metric topics.
                         await client.subscribe("wican/+/+/+")
                         await client.subscribe("bridge/+/+")
-                        # Watchdog: aiomqtt's async iterator can hang
-                        # silently when the broker drops our subscription
-                        # without raising. WiCAN's LWT-off during a long
-                        # signal drop (~3 min) reliably triggered this in
-                        # the 2026-05-23 cellular VPN test. Force-reconnect
-                        # if no messages arrive in 90 s — even at idle the
-                        # WiCAN publishes battery_voltage every ~30 s, so
-                        # 90 s of silence is a real stall.
+                        # Subscribe to our own loopback probe topic — the
+                        # active liveness check that replaced the passive
+                        # silence watchdog (MQTT-2).
+                        await client.subscribe(PROBE_TOPIC)
+                        # Reset the probe clock so a slow first round-trip
+                        # after reconnect doesn't immediately re-stall.
+                        self._last_probe_at = time.monotonic()
+                        stall = asyncio.Event()
+                        probe_task = asyncio.create_task(
+                            self._probe_loop(client, stall)
+                        )
                         msg_iter = client.messages.__aiter__()
-                        while not self._stop.is_set():
+                        while not self._stop.is_set() and not stall.is_set():
+                            # Short timeout so we can observe the stall flag
+                            # during legitimate silence WITHOUT reconnecting:
+                            # a TimeoutError here just loops back to re-check
+                            # the flag. Only the probe failing trips a
+                            # reconnect.
                             try:
                                 msg = await asyncio.wait_for(
-                                    msg_iter.__anext__(), timeout=90.0
+                                    msg_iter.__anext__(), timeout=5.0
                                 )
-                            except TimeoutError as exc:
-                                raise aiomqtt.MqttError(
-                                    "watchdog: no MQTT messages in 90 s"
-                                ) from exc
+                            except TimeoutError:
+                                continue
                             if self._stop.is_set():
                                 break
                             await self._handle_message(msg)
+                        if stall.is_set():
+                            raise aiomqtt.MqttError(
+                                "loopback probe stalled — broker hung"
+                            )
                 except aiomqtt.MqttError as exc:
-                    log.warning("MQTT error, reconnecting in 5s: %s", exc)
+                    # Routine probe-reconnect already logged at INFO inside
+                    # _probe_loop; log the reconnect itself at INFO too so
+                    # the parked-car case stops spamming WARN into the logs
+                    # depot. Genuine connection errors still surface here.
+                    log.info("MQTT error, reconnecting in 5s: %s", exc)
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=5.0)
                         break
@@ -917,6 +1112,13 @@ class MqttIngest:
                         break
                     except TimeoutError:
                         continue
+                finally:
+                    if probe_task is not None:
+                        probe_task.cancel()
+                        with contextlib.suppress(
+                            asyncio.CancelledError, Exception
+                        ):
+                            await probe_task
         finally:
             self._stop.set()
             flush_task.cancel()
