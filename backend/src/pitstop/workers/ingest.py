@@ -1072,26 +1072,47 @@ class MqttIngest:
                         probe_task = asyncio.create_task(
                             self._probe_loop(client, stall)
                         )
-                        msg_iter = client.messages.__aiter__()
-                        while not self._stop.is_set() and not stall.is_set():
-                            # Short timeout so we can observe the stall flag
-                            # during legitimate silence WITHOUT reconnecting:
-                            # a TimeoutError here just loops back to re-check
-                            # the flag. Only the probe failing trips a
-                            # reconnect.
-                            try:
-                                msg = await asyncio.wait_for(
-                                    msg_iter.__anext__(), timeout=5.0
-                                )
-                            except TimeoutError:
-                                continue
-                            if self._stop.is_set():
-                                break
-                            await self._handle_message(msg)
+                        # Consume with the documented `async for` pattern.
+                        # Wrapping `client.messages.__anext__()` in
+                        # `asyncio.wait_for` cancels the generator's pending
+                        # receive on every tick, which corrupts aiomqtt's
+                        # message iteration so NO further messages (including
+                        # our own loopback probe) are delivered — _last_probe_at
+                        # never advances and the probe false-stalls every ~90s,
+                        # reproducing the exact MQTT-2 reconnect storm we were
+                        # trying to kill (regression caught on the 2026-06-13
+                        # driveway data). Run the consumer as its own task and
+                        # let the probe task flag a genuine stall concurrently;
+                        # FIRST_COMPLETED tears the pair down so the outer loop
+                        # reconnects. Legitimate silence just blocks the
+                        # `async for` harmlessly — only the probe trips a
+                        # reconnect.
+                        async def _consume() -> None:
+                            async for msg in client.messages:
+                                if self._stop.is_set():
+                                    return
+                                await self._handle_message(msg)
+
+                        consumer_task = asyncio.create_task(_consume())
+                        done, _pending = await asyncio.wait(
+                            {consumer_task, probe_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        consumer_task.cancel()
+                        with contextlib.suppress(
+                            asyncio.CancelledError, Exception
+                        ):
+                            await consumer_task
                         if stall.is_set():
                             raise aiomqtt.MqttError(
                                 "loopback probe stalled — broker hung"
                             )
+                        # Surface a real consumer-side MqttError (broker drop)
+                        # so the outer handler reconnects rather than spinning.
+                        if consumer_task in done:
+                            exc = consumer_task.exception()
+                            if exc is not None:
+                                raise exc
                 except aiomqtt.MqttError as exc:
                     # Routine probe-reconnect already logged at INFO inside
                     # _probe_loop; log the reconnect itself at INFO too so
