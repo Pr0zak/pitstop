@@ -1,6 +1,6 @@
 # pitstop — Pending Work
 
-Generated 2026-06-05 by session-close after shipping **v0.1.183** (snap_pass trip-since-fillup quarantine + safety cap on drops). The 2026-06-05 session landed two phone TZ + fillup unit-conversion fixes and made the hybrid fuel-level estimator safe against Honda's PID 0x2F post-fillup lag.
+Generated 2026-06-13 by session-close after shipping **v0.1.185** (full-stack review pass: privacy, P0/P1 correctness, modernization, UI parity across backend/web/android). The 2026-06-13 session ran a 3-agent code review, fixed the findings, and validated the Android build on the emulator.
 
 Numeric task IDs are session-scoped. Use **mnemonics** below as the durable identifiers. To rehydrate in a new session: open Claude Code in the pitstop repo and say `rehydrate from TODO.md + memory`.
 
@@ -103,6 +103,26 @@ Path B (tunnel) end-to-end test, no phone in the picture.
 
 ---
 
+## Recently closed (2026-06-13 session, v0.1.185)
+
+**Full-stack review pass (3-agent review → fix → emulator-validated). Highlights:**
+- **PRIVACY** — removed the hardcoded `MobileChicken` hotspot SSID default from the Android app (was shipping in the public repo; defaults now empty). Working tree is grep-clean; **git-history scrub still pending** (deferred by choice).
+- **MQTT-2 closed** — the ~95s "subscription drop" was pitstop's own silence watchdog; replaced with an active `pitstop/_probe` loopback heartbeat. Log spam gone.
+- **FUEL-DECREMENT-NULL closed** — P75-windowed de-slosh of the fuel-level fallback + EPA-distance decrement fallback (LOW confidence) so the estimate keeps moving without MAF; stale NULL trips terminal-stamped. New P1 found+fixed: `decrement_pass` lost-update now uses a real `SELECT … FOR UPDATE`.
+- **HEALTH-1 closed** — `last_new_row_at` + `last_received_at` surfaced; retain-skip covers all sources.
+- **Android P0s** — FGS location-type crash guard; ADR-017 watchdogs repointed to a dedicated `lastObdFrameAtMs` (GPS/WiCAN frames no longer defeat them).
+- **BLE-3 (partial)** — `bridge/<slug>/phone_health` beacon (phone) + subscriber (backend) + OBD-freshness pill/row in the app. **BLE-2 still open.**
+- **Web P1s** — FillupModal TZ corruption, dashboard distance regression, spend KPI window; plus canvas color, chart-zoom, date-filter TZ, temp C/F, numeric price sort.
+- **TANK-CAP-UI (web) + FUEL-CONFIDENCE-UI (web+phone) closed.** TANK-CAP phone parity deferred (phone has no vehicle-editor screen / no `PATCH /vehicles/{id}` yet).
+- **Modernization** — targetSdk 35, force-dark theme (fixed broken light stub), R8 minify (release 70→47MB), retired `TripDetector` deleted, `uv.lock` pin, constant-time auth, eslint+prettier+vitest.
+
+**Still needing a real drive / hardware:** PID 0x10 (MAF) added to the phone poll list in code but unconfirmed on the Pilot PCM (EPA fallback covers either way) → folds into FUEL-DECREMENT-NULL verification + VERIFY-1. BLE-2, VPN-VERIFY-1, VPN-4 key rotation, WICAN-1 unchanged.
+
+## Recently closed (2026-06-07 session, v0.1.184)
+
+**Web + Phone parity**
+- **v0.1.184 — Trip merge in web + delete on phone & web.** Backend's `DELETE /trips/{id}` and `POST /trips/{id}/merge` are now reachable from both clients. Web: "Select" toolbar button → tap-to-select → action bar with Merge (exactly 2) / Delete (any) / Cancel + confirm modal. Phone: long-press → `ModalBottomSheet` (Select for merge / Delete) → confirm dialog. APIs added: `PitstopApi.deleteTrip()`, `endpoints.ts.mergeTrips()`.
+
 ## Recently closed (2026-06-05 session, v0.1.181 → v0.1.183)
 
 **Backend / web**
@@ -119,7 +139,7 @@ Path B (tunnel) end-to-end test, no phone in the picture.
 
 ## Discoveries persisted to memory
 
-- **`project_pitstop_state.md`** — updated to v0.1.183. Includes hybrid estimator gotchas (quarantine, safety cap, parked-quiet threshold, partial-fillup unit conversion).
+- **`project_pitstop_state.md`** — updated to v0.1.184. Includes hybrid estimator gotchas (quarantine, safety cap, parked-quiet threshold, partial-fillup unit conversion) and the v0.1.184 trip merge/delete parity surfaces.
 - **`project_wican_ble_wifi_coexist.md`** — Beta-06 supports concurrent radios.
 - **`feedback_health_ingest_misleading.md`** — `/health/ingest` masks dead pipes via retained-message redelivery.
 - **`reference_wican_api.md`** — WiCAN HTTP API.
