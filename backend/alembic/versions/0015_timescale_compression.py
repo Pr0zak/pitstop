@@ -16,8 +16,7 @@ No retention/drop policy — we keep all rows forever. Sizing math
      10 years ≈ 15–20 GB
 
 That comfortably fits the current 30 GB CT for the life of any one
-vehicle. Headroom: `pct resize 231 rootfs +10G` on pve5 is a
-one-liner when needed.
+vehicle. Headroom: growing the CT rootfs is a one-liner when needed.
 
 Backfill: existing chunks older than 7 days are compressed in the
 upgrade() step so the immediate disk win lands without waiting for

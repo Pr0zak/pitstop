@@ -106,7 +106,7 @@ Path B (tunnel) end-to-end test, no phone in the picture.
 ## Recently closed (2026-06-13 session, v0.1.185)
 
 **Full-stack review pass (3-agent review → fix → emulator-validated). Highlights:**
-- **PRIVACY** — removed the hardcoded `MobileChicken` hotspot SSID default from the Android app (was shipping in the public repo; defaults now empty). Working tree is grep-clean; **git-history scrub still pending** (deferred by choice).
+- **PRIVACY** — removed a hardcoded personal hotspot SSID default from the Android app (was shipping in the public repo; defaults now empty). Working tree is grep-clean; **git-history scrub still pending** (deferred by choice).
 - **MQTT-2 closed** — the ~95s "subscription drop" was pitstop's own silence watchdog; replaced with an active `pitstop/_probe` loopback heartbeat. Log spam gone.
 - **FUEL-DECREMENT-NULL closed** — P75-windowed de-slosh of the fuel-level fallback + EPA-distance decrement fallback (LOW confidence) so the estimate keeps moving without MAF; stale NULL trips terminal-stamped. New P1 found+fixed: `decrement_pass` lost-update now uses a real `SELECT … FOR UPDATE`.
 - **HEALTH-1 closed** — `last_new_row_at` + `last_received_at` surfaced; retain-skip covers all sources.
