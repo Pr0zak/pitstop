@@ -128,18 +128,36 @@ class DriveSealer @Inject constructor(
         // caps row reads at ~2 MB, so a 5+ MB row becomes unreadable
         // (CursorWindow IllegalStateException) and stalls the queue.
         val file = payloadFile(dto.clientDriveUuid)
-        file.writeText(payloadJson)
-        val row = PendingDrive(
-            clientDriveUuid = dto.clientDriveUuid,
-            vehicleId = dto.vehicleId,
-            startedAt = buf.startedAtMs,
-            endedAt = endedAtMs,
-            incomplete = incomplete,
-            frameCount = dto.frameCount,
-            payloadJson = "",
-            payloadFilePath = file.absolutePath,
-        )
-        dao.insert(row)
+        // The file-write + dao.insert pair must be atomic w.r.t.
+        // cancellation: seal() is launched on the bridge service scope,
+        // which onDestroy cancels. A cancel landing between writeText and
+        // insert would lose the drive AND orphan the file. NonCancellable
+        // guarantees the pair completes once started. Within it, write to
+        // a .tmp and rename (atomic on the same filesystem) so a crash
+        // mid-write never leaves a half-written payload the uploader
+        // would then ship.
+        val row = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            val tmp = File(file.parentFile, "${file.name}.tmp")
+            tmp.writeText(payloadJson)
+            if (!tmp.renameTo(file)) {
+                // Fallback if rename fails (eg. target exists on some FS
+                // semantics) — overwrite directly.
+                file.writeText(payloadJson)
+                tmp.delete()
+            }
+            val r = PendingDrive(
+                clientDriveUuid = dto.clientDriveUuid,
+                vehicleId = dto.vehicleId,
+                startedAt = buf.startedAtMs,
+                endedAt = endedAtMs,
+                incomplete = incomplete,
+                frameCount = dto.frameCount,
+                payloadJson = "",
+                payloadFilePath = file.absolutePath,
+            )
+            dao.insert(r)
+            r
+        }
         _lastSealedAt.value = endedAtMs
         logs.info(
             "DriveSealer: drive persisted",

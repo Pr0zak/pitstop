@@ -9,9 +9,14 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -108,21 +113,65 @@ class SettingsRepository @Inject constructor(
                 ?.split(",")
                 ?.map { it.trim() }
                 ?.filter { it.isNotEmpty() }
-                ?: listOf("MobileChicken"),
+                ?: emptyList(),
             bridgeAutoTriggerActivityEnabled =
                 prefs[Keys.bridgeAutoTriggerActivityEnabled] ?: false,
         )
     }
 
+    /**
+     * Cached snapshot of the last [current] result. Read non-blocking by
+     * [currentCached] so the OkHttp [com.pitstop.http.PitstopAuthInterceptor]
+     * doesn't hit DataStore + EncryptedSharedPreferences on every HTTP
+     * call. Invalidated on every write below, and the settings half is
+     * refreshed live by the flow collector in [init].
+     */
+    @Volatile private var cachedSnapshot: SettingsWithSecrets? = null
+
+    private val cacheScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        // Keep the cached settings half fresh: any DataStore edit emits
+        // here. Secrets aren't in this flow, so each write path also
+        // invalidates explicitly; this collector covers the focused
+        // boolean setters that don't go through update().
+        cacheScope.launch {
+            settings.collect { s ->
+                val prev = cachedSnapshot
+                cachedSnapshot = if (prev != null) {
+                    prev.copy(settings = s)
+                } else {
+                    null // first read populates via current()
+                }
+            }
+        }
+    }
+
+    /** Drop the cache so the next [currentCached]/[current] rebuilds it. */
+    private fun invalidateCache() {
+        cachedSnapshot = null
+    }
+
     suspend fun current(): SettingsWithSecrets {
         val s = settings.first()
-        return SettingsWithSecrets(
+        val snap = SettingsWithSecrets(
             settings = s,
             mqttPassword = secretStore.read(SecretStore.KEY_MQTT_PASSWORD),
             ingestToken = secretStore.read(SecretStore.KEY_INGEST_TOKEN),
             queryToken = secretStore.read(SecretStore.KEY_QUERY_TOKEN),
         )
+        cachedSnapshot = snap
+        return snap
     }
+
+    /**
+     * Non-blocking snapshot read for hot paths (the auth interceptor runs
+     * on every request). Returns the cache if warm; otherwise falls back
+     * to a one-time blocking [current] to populate it. After the first
+     * request the cache stays warm until a write invalidates it.
+     */
+    fun currentCached(): SettingsWithSecrets =
+        cachedSnapshot ?: runBlocking { current() }
 
     suspend fun update(
         settings: Settings,
@@ -160,12 +209,16 @@ class SettingsRepository @Inject constructor(
         if (!mqttPassword.isNullOrBlank()) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
         if (!ingestToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)
         if (!queryToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_QUERY_TOKEN, queryToken)
+        // Secrets aren't in the settings flow — drop the cache so the next
+        // read rebuilds with the new tokens/password.
+        invalidateCache()
     }
 
     /** Explicit clear of a single secret. Used by Settings UI when the
      *  user actually wants to remove a stored credential. */
     suspend fun clearSecret(key: String) {
         secretStore.write(key, "")
+        invalidateCache()
     }
 
     /** Focused setter so the manual-sync toggle in Settings can persist

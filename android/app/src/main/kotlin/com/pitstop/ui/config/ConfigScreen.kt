@@ -134,6 +134,7 @@ fun ConfigScreen(
                 deviceMac = bridge.deviceMac,
                 error = bridge.errorMessage,
                 lastFrameMs = bridge.lastFrameAtMs,
+                lastObdFrameMs = bridge.lastObdFrameAtMs,
                 metricsActive = bridge.metricsActive,
                 offlineBufferBytes = bridge.offlineBufferBytes,
                 bleEnabled = form.bridgeBleEnabled,
@@ -242,6 +243,7 @@ private fun BridgeServiceSection(
     deviceMac: String?,
     error: String?,
     lastFrameMs: Long?,
+    lastObdFrameMs: Long?,
     metricsActive: Int,
     offlineBufferBytes: Long,
     bleEnabled: Boolean,
@@ -295,6 +297,24 @@ private fun BridgeServiceSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // OBD freshness (BLE-3): dedicated OBD-frame clock, independent of
+        // GPS / WiCAN traffic. Healthy <10s / Degraded <60s / Offline.
+        run {
+            val ageS = lastObdFrameMs?.let {
+                ((System.currentTimeMillis() - it) / 1000L).coerceAtLeast(0L)
+            }
+            val (obdText, obdColor) = when (ageS) {
+                null -> "OBD: no frames yet" to MaterialTheme.colorScheme.onSurfaceVariant
+                in 0..9 -> "OBD: healthy (${ageS}s)" to MaterialTheme.colorScheme.primary
+                in 10..59 -> "OBD: degraded (${ageS}s)" to MaterialTheme.colorScheme.onSurfaceVariant
+                else -> "OBD: offline (${ageS}s)" to MaterialTheme.colorScheme.error
+            }
+            Text(
+                obdText,
+                style = MaterialTheme.typography.bodySmall,
+                color = obdColor,
+            )
+        }
         if (offlineBufferBytes > 0) {
             Text(
                 "Offline buffer: ${humanBytes(offlineBufferBytes)} queued",
@@ -372,7 +392,7 @@ private fun BridgeServiceSection(
                     onAutoTriggerSsidsChange(v)
                 },
                 label = { Text("Car WiFi SSIDs") },
-                placeholder = { Text("MobileChicken") },
+                placeholder = { Text("e.g. MyCarHotspot") },
                 supportingText = {
                     Text(
                         "Comma-separated. Reads associated WiFi name; needs Location permission.",

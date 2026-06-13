@@ -36,10 +36,21 @@ class LiveViewModel @Inject constructor(
     private val _brokerConnected = MutableStateFlow(false)
     val brokerConnected: StateFlow<Boolean> = _brokerConnected.asStateFlow()
 
+    /**
+     * Age (seconds) of the last BLE OBD frame, or null if none yet.
+     * Ticks once a second off the dedicated [BridgeStatus.lastObdFrameAtMs]
+     * clock (BLE-3) so the Live "OBD Ns" pill counts up while the link is
+     * quiet without the metric stream itself having to fire.
+     */
+    private val _obdAgeS = MutableStateFlow<Long?>(null)
+    val obdAgeS: StateFlow<Long?> = _obdAgeS.asStateFlow()
+
     init {
         viewModelScope.launch {
             while (true) {
                 _brokerConnected.value = mqttPublisher.isConnected()
+                val last = status.value.lastObdFrameAtMs
+                _obdAgeS.value = last?.let { (System.currentTimeMillis() - it) / 1000L }
                 kotlinx.coroutines.delay(1_000L)
             }
         }

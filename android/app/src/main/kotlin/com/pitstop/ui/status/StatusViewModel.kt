@@ -269,6 +269,12 @@ class StatusViewModel @Inject constructor(
             // monthly is empty.
             mpgSeries = monthly.mapNotNull { it.mpg },
             fuelLevelIsEstimate = (estimateL != null && tankCapacityL != null),
+            // FUEL-CONFIDENCE: stale when the estimate's updated-at is
+            // > 7 days old (web parity). Only meaningful for the estimate
+            // path — the raw-sensor branch already shows its own age sub.
+            fuelLevelStale = (estimateL != null && tankCapacityL != null) &&
+                fuelLevelTimestampMs != null &&
+                (System.currentTimeMillis() - fuelLevelTimestampMs) > 7L * 24 * 60 * 60 * 1000,
         )
     }
 
@@ -304,9 +310,13 @@ class StatusViewModel @Inject constructor(
         activeDtcs.value = null
     }
 
-    fun refreshHomeData() {
+    /**
+     * Returns the launched [kotlinx.coroutines.Job] so pull-to-refresh can
+     * await actual completion (join) instead of a fixed delay — the spinner
+     * now dismisses when the data truly lands.
+     */
+    fun refreshHomeData(): kotlinx.coroutines.Job =
         viewModelScope.launch { refreshHomeDataInternal() }
-    }
 
     fun checkForUpdates() {
         viewModelScope.launch {

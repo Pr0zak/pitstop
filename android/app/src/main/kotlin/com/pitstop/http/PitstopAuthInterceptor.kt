@@ -4,7 +4,6 @@ import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.loggableUrl
 import dagger.Lazy
-import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -50,7 +49,10 @@ class PitstopAuthInterceptor @Inject constructor(
         if (originalHost in PASSTHROUGH_HOSTS) {
             return chain.proceed(original)
         }
-        val secrets = runBlocking { settingsRepository.current() }
+        // Non-blocking cached read — avoids hitting DataStore +
+        // EncryptedSharedPreferences on every request. Cache is warmed by
+        // the first request and invalidated on any settings/secret write.
+        val secrets = settingsRepository.currentCached()
         val baseUrl = secrets.settings.apiBaseUrl.trim()
             .ifEmpty { return chain.proceed(original) }
         val newBase = baseUrl.trimEnd('/').toHttpUrlOrNull()

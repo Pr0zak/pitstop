@@ -14,7 +14,7 @@ android {
     defaultConfig {
         applicationId = "com.pitstop"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         // CI passes BUILD_VERSION_NAME (from the v* tag) and BUILD_VERSION_CODE
         // (the GH Actions run number). Local builds keep safe defaults.
         versionCode = System.getenv("BUILD_VERSION_CODE")?.toIntOrNull() ?: 1
@@ -44,8 +44,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
-            // Phase B: leave minification off for now; Phase C release pipeline can flip this.
-            isMinifyEnabled = false
+            // R8 full-mode minify + resource shrink. material-icons-extended,
+            // MapLibre, and Netty (HiveMQ transport) bloat the unminified APK
+            // to ~72 MB. Keep rules for reflection-heavy deps live in
+            // proguard-rules.pro. NOTE: no release signing config is wired
+            // here (CI injects the keystore), so assembleRelease must be
+            // validated in CI / with a signing config present.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

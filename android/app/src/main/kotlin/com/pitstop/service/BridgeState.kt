@@ -34,7 +34,22 @@ data class BridgeStatus(
     val brokerConnected: Boolean = false,
     val publishedLastMinute: Int = 0,
     val totalPublished: Long = 0,
+    /**
+     * Last time ANY metric sample landed on the bus — BLE OBD frame, GPS
+     * fix, or WiCAN-MQTT metric. Drives the Live "last frame" indicator.
+     * Do NOT use this for the ADR-017 watchdogs: GPS fixes (every 5s,
+     * un-gated by engine state) and WiCAN-MQTT metrics keep it fresh
+     * even when the BLE OBD link is dead — use [lastObdFrameAtMs].
+     */
     val lastFrameAtMs: Long? = null,
+    /**
+     * Last time a parsed OBD frame arrived over the BLE link specifically
+     * (written only from the OBD parsed-frame path). The OBD-quiet (60s)
+     * and BLE-lost (3min) watchdogs gate on this so unrelated GPS/WiCAN
+     * traffic can't defeat them (ADR-017). Also the freshness signal for
+     * the BLE-3 phone_health beacon's `obd_age_s`.
+     */
+    val lastObdFrameAtMs: Long? = null,
     val metricsActive: Int = 0,
     /** Engine running / off / unknown — derived from OBD frames (see EngineState). */
     val engineState: EngineState = EngineState.Unknown,
@@ -163,6 +178,16 @@ class BridgeStateBus @Inject constructor() {
                 metricsActive = (_latestByMetric.value.keys + name).size,
             )
         }
+    }
+
+    /**
+     * Stamp the dedicated OBD-frame clock. Called ONLY from the BLE
+     * parsed-frame path so the ADR-017 watchdogs and the BLE-3
+     * `obd_age_s` beacon see a clock that GPS / WiCAN-MQTT traffic can't
+     * keep artificially fresh.
+     */
+    fun recordObdFrame(atMs: Long = System.currentTimeMillis()) {
+        _status.update { it.copy(lastObdFrameAtMs = atMs) }
     }
 
     fun reset() {

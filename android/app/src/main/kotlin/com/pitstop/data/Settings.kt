@@ -104,15 +104,14 @@ data class Settings(
      * Comma-separated WiFi SSIDs the [com.pitstop.presence.InCarDetector]
      * treats as "you're in the car" when the phone is associated with
      * one. The most reliable hands-on signal: the user's car-only
-     * hotspot SSID. Default `["MobileChicken"]` covers the developer's
-     * setup; a power user can add their own (eg. a vehicle nav unit's
-     * SSID) via the Settings UI.
+     * hotspot SSID. Empty by default; the user adds their own (eg. a
+     * vehicle nav unit's SSID, or a phone hotspot) via the Settings UI.
      *
      * Reading `WifiInfo.getSSID()` on Android Q+ requires
      * `ACCESS_FINE_LOCATION` — already declared / requested for GPS,
      * so this signal piggybacks on the existing prompt.
      */
-    val bridgeAutoTriggerSsids: List<String> = listOf("MobileChicken"),
+    val bridgeAutoTriggerSsids: List<String> = emptyList(),
     /**
      * Opt-in 4th in-car signal: subscribe to
      * [com.google.android.gms.location.ActivityRecognitionClient] and

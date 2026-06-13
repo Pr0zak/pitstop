@@ -78,9 +78,35 @@ class OfflineBuffer @Inject constructor(
      */
     suspend fun drain(publish: (topic: String, payload: String) -> Boolean): DrainResult {
         return mutex.withLock {
+            val staging = File(context.filesDir, FILE_NAME_DRAINING)
+
+            // Crash recovery: a `.draining` file means a previous pass
+            // renamed file→staging but died before re-writing the
+            // unpublished remainder. Merge it back (prepend) instead of
+            // deleting, or the whole backlog is silently lost. Prepend
+            // because staging holds the OLDER entries.
+            if (staging.exists()) {
+                runCatching {
+                    val recovered = staging.readText()
+                    if (recovered.isNotEmpty()) {
+                        val current = if (file.exists()) file.readText() else ""
+                        file.writeText(recovered + current)
+                        logBuffer.warn(
+                            "offline buffer: recovered orphaned .draining staging",
+                            mapOf("recovered_bytes" to recovered.length),
+                        )
+                    }
+                }.onFailure {
+                    logBuffer.warn(
+                        "offline buffer: .draining recovery failed",
+                        mapOf("err" to (it.message ?: it::class.java.simpleName)),
+                    )
+                }
+                staging.delete()
+            }
+
             if (!file.exists() || file.length() == 0L) return@withLock DrainResult(0, 0L)
 
-            val staging = File(context.filesDir, FILE_NAME_DRAINING)
             if (staging.exists()) staging.delete()
             if (!file.renameTo(staging)) {
                 logBuffer.warn("offline buffer drain: rename failed, skipping pass")

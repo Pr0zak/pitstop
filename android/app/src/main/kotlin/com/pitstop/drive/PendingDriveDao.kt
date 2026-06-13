@@ -75,4 +75,10 @@ interface PendingDriveDao {
 
     @Query("DELETE FROM pending_drive WHERE clientDriveUuid = :uuid")
     suspend fun deleteByUuid(uuid: String)
+
+    /** Every payload file path the queue still references (any ack
+     *  state). Used by [DriveUploader]'s orphan-file sweep to decide
+     *  which on-disk payloads have no owning row. */
+    @Query("SELECT payloadFilePath FROM pending_drive WHERE payloadFilePath IS NOT NULL")
+    suspend fun allPayloadFilePaths(): List<String>
 }

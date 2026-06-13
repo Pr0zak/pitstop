@@ -64,6 +64,10 @@ data class HeroCardData(
      *  hero is showing the legacy smoothed sensor and live BLE overlay
      *  is welcome. */
     val fuelLevelIsEstimate: Boolean = false,
+    /** FUEL-CONFIDENCE: true when the fuel-level estimate's
+     *  updated-at is older than 7 days, so the gauge shows a warn-tone
+     *  "stale" badge (web parity). */
+    val fuelLevelStale: Boolean = false,
 )
 
 @Composable
@@ -207,11 +211,33 @@ private fun FuelGaugeCard(
         shape = RoundedCornerShape(12.dp),
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                "Fuel level",
-                style = MaterialTheme.typography.labelMedium,
-                color = onSurfaceVariantColor,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Fuel level",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = onSurfaceVariantColor,
+                )
+                if (data.fuelLevelStale) {
+                    Spacer(Modifier.size(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .border(
+                                width = 1.dp,
+                                color = Color(0xFFFFB020),
+                                shape = RoundedCornerShape(4.dp),
+                            )
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    ) {
+                        Text(
+                            "STALE",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = Color(0xFFFFB020),
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.size(4.dp))
 
             Box(

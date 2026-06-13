@@ -178,17 +178,20 @@ object Pids {
         FuelLevel,
         EngineLoad,
         ManifoldPressure,
+        MafAirFlow,
         Odometer,
         StftB1, LtftB1, StftB2, LtftB2,
-        // Honda V6 PCM does NOT answer the simple-format Mode 01
-        // PIDs 0x0F (intake_air_temp), 0x10 (maf_air_flow),
-        // 0x1F (run_time_since_start) — they always come back
-        // "NO DATA". The WiCAN dongle's AutoPID handles the
-        // Honda-extended equivalents (0x66/67/68 etc.) and ships
-        // them via WiFi MQTT; WiCanSubscriber fans them into the
-        // BridgeStateBus. Polling the std-PID forms over BLE just
-        // wastes round-robin slots that could go to fuel_level +
-        // friends, and each NO DATA used to wrongly nudge the
-        // engine-state counter (OBD-1).
+        // MAF (0x10) added at ~1 Hz to fix the backend's
+        // FUEL-DECREMENT-NULL: fuel-consumed integration needs a MAF
+        // (or equivalent) airflow stream during phone-BLE drives. The
+        // WiCAN AutoPID path publishes it over WiFi in the driveway,
+        // but cellular drives (phone-only) had no airflow source. If
+        // this PCM answers 0x10 with NO DATA the response is logged
+        // and dropped harmlessly (engine-state no longer nudged per
+        // OBD-1); validation needs a real drive. Std PIDs 0x0F
+        // (intake_air_temp) + 0x1F (run_time_since_start) stay OUT —
+        // the WiCAN AutoPID handles the Honda-extended 0x66/67/68
+        // equivalents over WiFi MQTT; WiCanSubscriber fans those into
+        // the BridgeStateBus.
     )
 }

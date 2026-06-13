@@ -1,7 +1,11 @@
 package com.pitstop.drive
 
+import android.content.Context
 import com.pitstop.http.PitstopApi
 import com.pitstop.log.LogBuffer
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
@@ -32,18 +36,55 @@ class DriveUploader @Inject constructor(
     private val api: PitstopApi,
     private val json: Json,
     private val logs: LogBuffer,
+    @ApplicationContext private val context: Context,
 ) {
+    /**
+     * Serialises drain passes. The post-seal kick (bridge scope), the
+     * periodic WorkManager backstop, and the manual "Sync now" button
+     * can all call drain() concurrently — without a guard two of them
+     * could pull the same oldest-unacked row and double-upload over
+     * cellular. tryLock + early-out: a pass already in flight will
+     * cover the queue, so a concurrent caller can safely skip.
+     */
+    private val drainMutex = Mutex()
+
     /**
      * Drain unacked drives oldest-first until the queue empties or
      * the network fails. Returns the number of drives successfully
      * uploaded in this pass.
      */
     suspend fun drain(reason: String): Int {
+        if (!drainMutex.tryLock()) {
+            logs.info(
+                "DriveUploader: drain already in progress, skipping",
+                mapOf("reason" to reason),
+            )
+            return 0
+        }
+        try {
+            return drainLocked(reason)
+        } finally {
+            drainMutex.unlock()
+        }
+    }
+
+    private suspend fun drainLocked(reason: String): Int {
         val unackedAtStart = dao.unackedCount()
         logs.info(
             "DriveUploader: starting",
             mapOf("unacked" to unackedAtStart, "reason" to reason),
         )
+        // Orphan-file sweep: delete pending-drives/*.json payloads with
+        // no owning DB row and an mtime older than 7d. Covers files left
+        // behind by a crash between writeText and dao.insert, or by a row
+        // deleted without its file. Bounded by age so an in-flight seal's
+        // freshly-written file (insert not yet committed) is never swept.
+        runCatching { sweepOrphanPayloads() }.onFailure {
+            logs.warn(
+                "DriveUploader: orphan sweep failed",
+                mapOf("err" to (it.message ?: it::class.java.simpleName)),
+            )
+        }
         val cutoff = System.currentTimeMillis() - ACK_RETENTION_MS
         val pruned = dao.pruneAcked(cutoff)
         if (pruned > 0) {
@@ -176,9 +217,34 @@ class DriveUploader @Inject constructor(
         }
     }
 
+    private suspend fun sweepOrphanPayloads() {
+        val dir = File(context.filesDir, "pending-drives")
+        if (!dir.isDirectory) return
+        val files = dir.listFiles() ?: return
+        if (files.isEmpty()) return
+        val known = dao.allPayloadFilePaths().toHashSet()
+        val ageCutoff = System.currentTimeMillis() - ORPHAN_SWEEP_AGE_MS
+        var deleted = 0
+        for (f in files) {
+            if (!f.isFile) continue
+            // Skip in-flight .tmp writes and anything a row still owns.
+            if (f.name.endsWith(".tmp")) continue
+            if (f.absolutePath in known) continue
+            if (f.lastModified() > ageCutoff) continue
+            if (f.delete()) deleted++
+        }
+        if (deleted > 0) {
+            logs.info(
+                "DriveUploader: swept orphan drive payloads",
+                mapOf("deleted" to deleted),
+            )
+        }
+    }
+
     private enum class Outcome { Success, Retry, Failure }
 
     companion object {
         const val ACK_RETENTION_MS = 24L * 60 * 60 * 1000
+        const val ORPHAN_SWEEP_AGE_MS = 7L * 24 * 60 * 60 * 1000
     }
 }

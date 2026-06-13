@@ -17,14 +17,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
@@ -36,9 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.service.MetricSample
 import com.pitstop.ui.components.PillState
 import com.pitstop.ui.components.StatusPill
-import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 /**
  * Tile spec — what label, which metric key, what unit, optional formatter.
@@ -61,6 +56,7 @@ fun LiveScreen(
     val bridgeStatus by viewModel.status.collectAsStateWithLifecycle()
     val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
     val unitSystem by viewModel.unitSystem.collectAsStateWithLifecycle()
+    val obdAgeS by viewModel.obdAgeS.collectAsStateWithLifecycle()
 
     val view = LocalView.current
     DisposableEffect(view) {
@@ -71,26 +67,10 @@ fun LiveScreen(
         }
     }
 
-    // 30 fps interpolation toward target values for smooth gauge movement.
-    val displayValues = remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
-    LaunchedEffect(Unit) {
-        var lastTickNs = 0L
-        while (true) {
-            withFrameNanos { now ->
-                val dtMs = if (lastTickNs == 0L) 33L else ((now - lastTickNs) / 1_000_000L)
-                lastTickNs = now
-                val targets = metrics
-                if (targets.isEmpty()) return@withFrameNanos
-                val current = displayValues.value
-                val factor = min(1.0, dtMs / 200.0)
-                displayValues.value = targets.mapValues { (name, sample) ->
-                    val cur = current[name] ?: sample.value
-                    cur + (sample.value - cur) * factor
-                }
-            }
-            kotlinx.coroutines.delay(33)
-        }
-    }
+    // Smooth gauge movement is animated on JUST the two hero gauges via
+    // animateFloatAsState (below). The old approach allocated a whole map
+    // every 33 ms and recomposed the entire column even when converged /
+    // engine-off — replaced to cut idle CPU + recomposition churn.
 
     Scaffold(
         topBar = { com.pitstop.ui.components.PitstopTopAppBar() },
@@ -124,6 +104,20 @@ fun LiveScreen(
                         "Engine ?" to PillState.Neutral
                 }
                 StatusPill(state = enginePill, label = engineLabel, compact = true)
+                // OBD freshness pill (BLE-3): age of the last BLE OBD frame.
+                // Healthy <10s / Degraded <60s / Offline otherwise.
+                val (obdLabel, obdPill) = when (val age = obdAgeS) {
+                    null -> "OBD —" to PillState.Neutral
+                    else -> {
+                        val state = when {
+                            age < 10 -> PillState.Healthy
+                            age < 60 -> PillState.Degraded
+                            else -> PillState.Offline
+                        }
+                        "OBD ${age}s" to state
+                    }
+                }
+                StatusPill(state = obdPill, label = obdLabel, compact = true)
                 if (bridgeStatus.inCar) {
                     StatusPill(
                         state = PillState.Healthy,
@@ -134,20 +128,36 @@ fun LiveScreen(
             }
 
             // ── Hero gauges: Speed + RPM ──────────────────────────────
-            val rpm = displayValues.value["engine_rpm"] ?: metrics["engine_rpm"]?.value
-            val speedKph = displayValues.value["vehicle_speed"] ?: metrics["vehicle_speed"]?.value
+            val rpmRaw = metrics["engine_rpm"]?.value
+            val speedKphRaw = metrics["vehicle_speed"]?.value
             val isImperial = unitSystem == "imperial"
+            // animateFloatAsState gives smooth needle movement without the
+            // per-frame map allocation the old 30 fps loop did. Animate the
+            // raw value and only render "—" when the source metric is null.
+            val rpmAnim by animateFloatAsState(
+                targetValue = (rpmRaw ?: 0.0).toFloat(),
+                animationSpec = tween(durationMillis = 250),
+                label = "rpm",
+            )
+            val speedAnim by animateFloatAsState(
+                targetValue = (speedKphRaw ?: 0.0).toFloat(),
+                animationSpec = tween(durationMillis = 250),
+                label = "speed",
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 BigGauge(
                     label = "Speed",
-                    value = speedKph?.let { if (isImperial) it * 0.621371 else it },
+                    value = speedKphRaw?.let {
+                        val v = speedAnim.toDouble()
+                        if (isImperial) v * 0.621371 else v
+                    },
                     unit = if (isImperial) "mph" else "km/h",
                     digits = 0,
                     modifier = Modifier.weight(1f),
                 )
                 BigGauge(
                     label = "RPM",
-                    value = rpm,
+                    value = rpmRaw?.let { rpmAnim.toDouble() },
                     unit = "",
                     digits = 0,
                     modifier = Modifier.weight(1f),

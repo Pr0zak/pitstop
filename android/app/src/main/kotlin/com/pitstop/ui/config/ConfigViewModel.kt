@@ -48,7 +48,7 @@ data class ConfigFormState(
     val bridgeBleEnabled: Boolean = true,
     val bridgeGpsEnabled: Boolean = true,
     val bridgeAutoTrigger: Boolean = true,
-    val bridgeAutoTriggerSsids: List<String> = listOf("MobileChicken"),
+    val bridgeAutoTriggerSsids: List<String> = emptyList(),
     val bridgeAutoTriggerActivityEnabled: Boolean = false,
     val saved: Boolean = false,
 )

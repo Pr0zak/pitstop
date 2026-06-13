@@ -1,6 +1,5 @@
 package com.pitstop.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -65,7 +64,11 @@ private val LightColors = lightColorScheme(
 
 @Composable
 fun PitstopTheme(
-    useDarkTheme: Boolean = isSystemInDarkTheme(),
+    // pitstop is dark-only by design. Defaulting to the system setting
+    // dropped light-mode phones onto the half-stubbed LightColors (white
+    // bg, pink cards). Force the intended dark scheme regardless of the
+    // system theme. (Caller can still pass false to preview the stub.)
+    useDarkTheme: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val colors = if (useDarkTheme) DarkColors else LightColors

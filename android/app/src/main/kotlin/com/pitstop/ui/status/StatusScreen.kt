@@ -1,7 +1,14 @@
 package com.pitstop.ui.status
 
 import android.content.Intent
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -30,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
@@ -43,7 +52,6 @@ import com.pitstop.ui.components.MonthlySpendCard
 import com.pitstop.ui.components.MpgLifetimeCard
 import com.pitstop.ui.components.MpgYearChart
 import com.pitstop.ui.components.PitstopTopAppBar
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -96,8 +104,9 @@ fun StatusScreen(
             onRefresh = {
                 refreshing.value = true
                 coroutineScope.launch {
-                    viewModel.refreshHomeData()
-                    delay(800)
+                    // Await actual completion so the spinner dismisses when
+                    // data lands, not after a fixed delay.
+                    viewModel.refreshHomeData().join()
                     refreshing.value = false
                 }
             },
@@ -119,6 +128,13 @@ fun StatusScreen(
                         dtcs = codes,
                         onOpen = { onOpenHistory() },
                     )
+                }
+
+                // Cold start shows shimmer skeletons until the first hero
+                // payload lands, instead of a near-blank screen (every card
+                // is null-gated). Once hero != null the real cards render.
+                if (ui.hero == null) {
+                    HomeSkeleton()
                 }
 
                 // Fuel hero 2×2.
@@ -194,6 +210,45 @@ fun StatusScreen(
             }
         }
     }
+}
+
+/**
+ * Cold-start placeholder for the Home dashboard: a shimmering fuel-hero
+ * 2×2 plus a chart-height block, so the screen reads as "loading" rather
+ * than near-blank while the first payload fetches.
+ */
+@Composable
+private fun HomeSkeleton() {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ShimmerBlock(modifier = Modifier.weight(1f).height(96.dp))
+            ShimmerBlock(modifier = Modifier.weight(1f).height(96.dp))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ShimmerBlock(modifier = Modifier.weight(1f).height(120.dp))
+            ShimmerBlock(modifier = Modifier.weight(1f).height(120.dp))
+        }
+        ShimmerBlock(modifier = Modifier.fillMaxWidth().height(180.dp))
+    }
+}
+
+@Composable
+private fun ShimmerBlock(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val alpha by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 0.6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "shimmer-alpha",
+    )
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = alpha)),
+    )
 }
 
 @Composable

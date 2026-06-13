@@ -29,6 +29,7 @@ import com.pitstop.obd.ObdResponseParser
 import com.pitstop.obd.Pid
 import com.pitstop.obd.Pids
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,6 +70,7 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var wicanSubscriber: com.pitstop.mqtt.WiCanSubscriber
     @Inject lateinit var driveRecorder: com.pitstop.drive.DriveRecorder
     @Inject lateinit var driveSealer: com.pitstop.drive.DriveSealer
+    @Inject lateinit var pendingDriveDao: com.pitstop.drive.PendingDriveDao
     @Inject lateinit var widgetRefresher: com.pitstop.widget.WidgetRefresher
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -257,7 +259,11 @@ class PitstopBridgeService : Service() {
                 kotlinx.coroutines.delay(10_000L)
                 val s = stateBus.status.value
                 if (s.engineState != EngineState.On) continue
-                val lastFrame = s.lastFrameAtMs ?: continue
+                // Gate on the dedicated OBD-frame clock, NOT lastFrameAtMs:
+                // GPS (every 5s, un-gated by engine state) and WiCAN-MQTT
+                // metrics bump lastFrameAtMs and would defeat both
+                // watchdogs forever (ADR-017).
+                val lastFrame = s.lastObdFrameAtMs ?: continue
                 val ageMs = System.currentTimeMillis() - lastFrame
                 // OBD-quiet path: BLE is alive but the ECU isn't
                 // answering. Restricted to phase=Connected — a frame-age
@@ -304,6 +310,42 @@ class PitstopBridgeService : Service() {
                 stateBus.clearMetrics()
             }
         }
+        // BLE-3: phone_health beacon. Every 60s publish a small telemetry
+        // object to bridge/<slug>/phone_health so the backend (which has a
+        // matching subscriber) can surface phone-side health: OBD frame
+        // age, BLE phase, GPS age, queue depth, offline-buffer size, app
+        // version. This is telemetry, NOT drive data — it publishes even
+        // in manual-sync mode (best-effort direct publish, no offline
+        // buffering: if MQTT is down we just skip this tick).
+        scope.launch {
+            while (isActive) {
+                kotlinx.coroutines.delay(60_000L)
+                val slug = vehicleSlug
+                if (slug.isBlank()) continue
+                if (!mqttPublisher.isConnected()) continue
+                runCatching {
+                    val now = System.currentTimeMillis()
+                    val s = stateBus.status.value
+                    val obdAge = s.lastObdFrameAtMs?.let { (now - it) / 1000L } ?: -1L
+                    val gpsAge = s.lastFrameAtMs?.let { (now - it) / 1000L } ?: -1L
+                    val queue = runCatching { pendingDriveDao.unackedCount() }.getOrDefault(0)
+                    val buf = runCatching { offlineBuffer.byteCount() }.getOrDefault(0L)
+                    val phase = s.phase.name.lowercase()
+                    val payload = buildString {
+                        append("{\"t\":").append(now)
+                        append(",\"obd_age_s\":").append(obdAge)
+                        append(",\"ble_phase\":\"").append(phase).append("\"")
+                        append(",\"gps_age_s\":").append(gpsAge)
+                        append(",\"queue_drives\":").append(queue)
+                        append(",\"offline_buffer_bytes\":").append(buf)
+                        append(",\"app_version\":\"")
+                            .append(com.pitstop.BuildConfig.VERSION_NAME).append("\"")
+                        append("}")
+                    }
+                    mqttPublisher.publish("bridge/$slug/phone_health", payload)
+                }
+            }
+        }
         logBuffer.info("bridge service created")
     }
 
@@ -315,7 +357,10 @@ class PitstopBridgeService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                if (pollJob == null) startBridge()
+                // Guard on isActive, NOT == null: an error path can leave a
+                // completed (but non-null) Job assigned, which would make
+                // == null false forever and the service a permanent no-op.
+                if (pollJob?.isActive != true) startBridge()
             }
         }
         return START_STICKY
@@ -324,7 +369,11 @@ class PitstopBridgeService : Service() {
     override fun onDestroy() {
         logBuffer.info("bridge service destroying")
         scope.cancel()
-        bleManager?.disconnectDevice()
+        bleManager?.let {
+            it.setStateCallback(null)
+            it.disconnectDevice()
+            runCatching { it.close() }
+        }
         bleManager = null
         mqttPublisher.disconnect()
         presence.stop()
@@ -648,6 +697,35 @@ class PitstopBridgeService : Service() {
             return
         }
 
+        // ONE manager for the service lifetime. Nordic BleManager is
+        // designed for reconnect reuse, so we create it once and call
+        // connectToDevice() again per retry. Creating a fresh manager
+        // per attempt (the old code) leaked the previous instance — its
+        // stateCallback stayed attached and late FAILED/DISCONNECTED
+        // callbacks from attempt N would flip `phase` mid-attempt N+1,
+        // tearing down a healthy link (a contributor to status-133
+        // churn) and accruing instances overnight. The callback is set
+        // once here; it closes over the stable stateBus + onUartFrame.
+        val mgr = bleManager ?: WiCanBleManager(applicationContext, logBuffer).also {
+            it.setStateCallback(object : WiCanBleManager.UartStateCallback {
+                override fun onConnectionStateChange(state: WiCanBleManager.ConnectionState) {
+                    val phase = when (state) {
+                        WiCanBleManager.ConnectionState.READY -> BridgePhase.Connected
+                        WiCanBleManager.ConnectionState.CONNECTED -> BridgePhase.Connected
+                        WiCanBleManager.ConnectionState.CONNECTING -> BridgePhase.Connecting
+                        WiCanBleManager.ConnectionState.DISCONNECTED -> BridgePhase.Disconnected
+                        WiCanBleManager.ConnectionState.FAILED -> BridgePhase.Error
+                    }
+                    stateBus.update { s -> s.copy(phase = phase) }
+                }
+
+                override fun onDataReceived(bytes: ByteArray) {
+                    onUartFrame(bytes)
+                }
+            })
+            bleManager = it
+        }
+
         while (scope.isActive) {
             // Honour the runtime BLE-toggle flip: if the user disabled
             // the BLE collector while we were in backoff, exit the
@@ -676,24 +754,6 @@ class PitstopBridgeService : Service() {
             stateBus.update { it.copy(phase = BridgePhase.Connecting, deviceName = name, deviceMac = mac) }
             updateNotification(getString(R.string.bridge_state_connecting, name ?: mac))
 
-            val mgr = WiCanBleManager(applicationContext, logBuffer)
-            bleManager = mgr
-            mgr.setStateCallback(object : WiCanBleManager.UartStateCallback {
-                override fun onConnectionStateChange(state: WiCanBleManager.ConnectionState) {
-                    val phase = when (state) {
-                        WiCanBleManager.ConnectionState.READY -> BridgePhase.Connected
-                        WiCanBleManager.ConnectionState.CONNECTED -> BridgePhase.Connected
-                        WiCanBleManager.ConnectionState.CONNECTING -> BridgePhase.Connecting
-                        WiCanBleManager.ConnectionState.DISCONNECTED -> BridgePhase.Disconnected
-                        WiCanBleManager.ConnectionState.FAILED -> BridgePhase.Error
-                    }
-                    stateBus.update { it.copy(phase = phase) }
-                }
-
-                override fun onDataReceived(bytes: ByteArray) {
-                    onUartFrame(bytes)
-                }
-            })
             mgr.connectToDevice(device)
 
             // Wait until READY (Connected via Nordic ble means the gatt is connected;
@@ -897,7 +957,10 @@ class PitstopBridgeService : Service() {
             }
             return
         }
-        // Real OBD response → engine is awake.
+        // Real OBD response → engine is awake. Stamp the dedicated OBD
+        // clock here (the only BLE parsed-frame site) so the ADR-017
+        // watchdogs gate on a signal GPS/WiCAN traffic can't pollute.
+        stateBus.recordObdFrame()
         onEngineOnSignal()
         val pid = pidsToPoll.firstOrNull {
             it.mode == parsed.mode && it.pid == parsed.pid
@@ -995,7 +1058,9 @@ class PitstopBridgeService : Service() {
         // Integers as integers, fractional with up to 3 decimals. The backend parser
         // accepts both forms.
         return if (kotlin.math.abs(v - v.toLong()) < 1e-9) v.toLong().toString()
-        else "%.3f".format(v)
+        // Locale.US: a comma-decimal default locale would emit "12,345"
+        // and break the JSON envelope (invalid → every publish rejected).
+        else String.format(Locale.US, "%.3f", v)
     }
 
     /**
@@ -1219,21 +1284,36 @@ class PitstopBridgeService : Service() {
         // (lat/lon/alt/speed/heading/accuracy) with the original capture
         // time. Backend writes to the gps_points hypertable so trip
         // detail can render a route polyline.
+        // Locale.US on every numeric field — a comma-decimal locale would
+        // emit invalid JSON ("lat":12,345) and the backend would reject
+        // every /location publish.
         val sb = StringBuilder()
         sb.append("{\"t\":").append(loc.time.coerceAtLeast(0L))
-        sb.append(",\"lat\":").append("%.5f".format(latR))
-        sb.append(",\"lon\":").append("%.5f".format(lonR))
-        if (loc.hasAltitude()) sb.append(",\"alt\":").append("%.1f".format(loc.altitude))
-        if (loc.hasSpeed()) sb.append(",\"speed\":").append("%.2f".format(loc.speed))
-        if (loc.hasBearing()) sb.append(",\"heading\":").append("%.1f".format(loc.bearing))
-        if (loc.hasAccuracy()) sb.append(",\"acc\":").append("%.1f".format(loc.accuracy))
+        sb.append(",\"lat\":").append(String.format(Locale.US, "%.5f", latR))
+        sb.append(",\"lon\":").append(String.format(Locale.US, "%.5f", lonR))
+        if (loc.hasAltitude()) {
+            sb.append(",\"alt\":").append(String.format(Locale.US, "%.1f", loc.altitude))
+        }
+        if (loc.hasSpeed()) {
+            sb.append(",\"speed\":").append(String.format(Locale.US, "%.2f", loc.speed))
+        }
+        if (loc.hasBearing()) {
+            sb.append(",\"heading\":").append(String.format(Locale.US, "%.1f", loc.bearing))
+        }
+        if (loc.hasAccuracy()) {
+            sb.append(",\"acc\":").append(String.format(Locale.US, "%.1f", loc.accuracy))
+        }
         sb.append("}")
         publishJson("bridge/$slug/location", sb.toString())
         // Mirror to the drive recorder. Server's gps_points table
         // expects km/h speed? No — it's m/s, matching the Location
         // API. Heading + accuracy come from the same Location obj.
         driveRecorder.current()?.addGps(
-            t = loc.time.coerceAtLeast(System.currentTimeMillis()),
+            // coerceAtLeast(0L) — NOT currentTimeMillis — so the drive
+            // payload and the gps_points row carry the SAME fix time as
+            // the MQTT /location publish above (which already uses 0L).
+            // Using now() here desynced the two by the publish latency.
+            t = loc.time.coerceAtLeast(0L),
             lat = latR,
             lon = lonR,
             altM = if (loc.hasAltitude()) loc.altitude else null,
@@ -1272,7 +1352,11 @@ class PitstopBridgeService : Service() {
         stopGpsUpdates()
         pollJob?.cancel()
         pollJob = null
-        bleManager?.disconnectDevice()
+        bleManager?.let {
+            it.setStateCallback(null)
+            it.disconnectDevice()
+            runCatching { it.close() }
+        }
         bleManager = null
         mqttPublisher.disconnect()
         stateBus.reset()
@@ -1282,9 +1366,24 @@ class PitstopBridgeService : Service() {
 
     private fun startForegroundWithNotification() {
         val notification = buildNotification(getString(R.string.bridge_state_idle))
+        // Only declare the LOCATION foreground-service type when location
+        // permission is actually granted. On API 34+ startForeground()
+        // throws SecurityException (→ crash loop under START_STICKY) if we
+        // claim the LOCATION type without FINE/COARSE_LOCATION. GPS already
+        // degrades gracefully in startGpsUpdates(), so dropping the type
+        // when ungranted is safe.
+        val hasLocation = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            var t = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (hasLocation) t = t or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            t
         } else {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         }
@@ -1314,7 +1413,7 @@ class PitstopBridgeService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, PitstopApp.BRIDGE_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_stat_bluetooth)
             .setContentTitle(getString(R.string.bridge_notification_title))
             .setContentText(text)
             .setContentIntent(openIntent)

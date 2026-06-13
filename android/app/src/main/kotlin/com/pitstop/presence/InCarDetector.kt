@@ -125,7 +125,7 @@ class InCarDetector @Inject constructor(
     private var started = false
 
     @Volatile private var enabled: Boolean = false
-    @Volatile private var configuredSsids: Set<String> = setOf("MobileChicken")
+    @Volatile private var configuredSsids: Set<String> = emptySet()
     @Volatile private var activitySubscribed: Boolean = false
     @Volatile private var activityToggleOn: Boolean = false
 

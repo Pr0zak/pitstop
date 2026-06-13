@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
+import java.util.Locale
 import javax.inject.Inject
 
 data class FuelFormState(
@@ -167,7 +168,7 @@ class FuelAddViewModel @Inject constructor(
             // value from a previous vehicle's bridge — fresh fillup
             // wins.
             odometer = if (current.odometer.isBlank() || current.odometerAutoFilled) {
-                "%.0f".format(odoMi)
+                String.format(Locale.US, "%.0f", odoMi)
             } else current.odometer,
             odometerAutoFilled = current.odometer.isBlank() || current.odometerAutoFilled,
         )
@@ -187,7 +188,7 @@ class FuelAddViewModel @Inject constructor(
         // "Odometer (mi)" label). User can override.
         val mi = km * 0.621371
         _form.value = _form.value.copy(
-            odometer = "%.0f".format(mi),
+            odometer = String.format(Locale.US, "%.0f", mi),
             odometerAutoFilled = true,
         )
     }
@@ -227,7 +228,7 @@ class FuelAddViewModel @Inject constructor(
         val ppg = _form.value.pricePerGallon.toDoubleOrNull()
         val derivedTotal =
             if (gal != null && gal > 0 && ppg != null && ppg > 0)
-                "%.2f".format(gal * ppg)
+                String.format(Locale.US, "%.2f", gal * ppg)
             else _form.value.totalPrice
         update { it.copy(gallons = value, totalPrice = derivedTotal) }
     }
@@ -237,7 +238,7 @@ class FuelAddViewModel @Inject constructor(
         val gal = _form.value.gallons.toDoubleOrNull()
         val derivedTotal =
             if (gal != null && gal > 0 && ppg != null && ppg > 0)
-                "%.2f".format(gal * ppg)
+                String.format(Locale.US, "%.2f", gal * ppg)
             else _form.value.totalPrice
         update { it.copy(pricePerGallon = value, totalPrice = derivedTotal) }
     }
@@ -247,7 +248,7 @@ class FuelAddViewModel @Inject constructor(
         val gal = _form.value.gallons.toDoubleOrNull()
         val derivedPpg =
             if (total != null && total > 0 && gal != null && gal > 0)
-                "%.3f".format(total / gal)
+                String.format(Locale.US, "%.3f", total / gal)
             else _form.value.pricePerGallon
         update { it.copy(totalPrice = value, pricePerGallon = derivedPpg) }
     }
