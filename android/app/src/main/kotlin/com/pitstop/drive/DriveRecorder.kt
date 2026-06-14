@@ -77,7 +77,13 @@ class DriveRecorder @Inject constructor(
      */
     fun close(endedAtMs: Long, kind: String = "off"): DriveBuffer? {
         val buf = _open.value ?: return null
-        buf.addEngineEvent(endedAtMs, kind)
+        // `kind` ("off" / "quiet" / "ble_lost") classifies WHY the drive
+        // sealed and is carried as drive-seal metadata elsewhere. The
+        // engine_events.state column is constrained to on/off server-side,
+        // so the end event is always "off" — a quiet/ble_lost seal still
+        // means the engine stopped. (Writing the raw kind here 500'd the
+        // whole drive upload pre-fix.)
+        buf.addEngineEvent(endedAtMs, "off")
         _open.value = null
         logs.info(
             "DriveRecorder: drive closed",

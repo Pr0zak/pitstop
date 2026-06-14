@@ -256,7 +256,19 @@ async def _bulk_insert_engine_events(
 ) -> None:
     if not rows:
         return
-    records = [(e.t, vehicle_id, e.kind, "bridge") for e in rows]
+    # engine_events.state is constrained to ('on','off') (migration 0008).
+    # The phone ships its drive-seal *kind* here, which since v0.1.185 can be
+    # "quiet" (OBD-quiet watchdog) or "ble_lost" — both meaning "engine
+    # stopped / drive ended". Writing those raw tripped the CHECK constraint
+    # and 500'd the ENTIRE drive upload, so the phone could never drain its
+    # queue. Coerce anything that isn't an explicit "on" to "off" so one
+    # unknown seal kind can't poison a whole drive. (Phone side also fixed to
+    # emit "off"; this stays as the durable server-side guard for any drive
+    # already queued with the bad value.)
+    records = [
+        (e.t, vehicle_id, "on" if e.kind == "on" else "off", "bridge")
+        for e in rows
+    ]
     await conn.executemany(
         """
         INSERT INTO engine_events (time, vehicle_id, state, source)
