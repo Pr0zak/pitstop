@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -50,6 +51,8 @@ class SettingsRepository @Inject constructor(
         val bridgeAutoTriggerSsids: Preferences.Key<String> = stringPreferencesKey("bridge_auto_trigger_ssids")
         val bridgeAutoTriggerActivityEnabled: Preferences.Key<Boolean> =
             booleanPreferencesKey("bridge_auto_trigger_activity_enabled")
+        val companionAssociationId: Preferences.Key<Int> =
+            intPreferencesKey("companion_association_id")
 
         // Process-survival flag for the Activity Recognition signal.
         // ActivityTransitionUpdates fire via PendingIntent → BroadcastReceiver
@@ -116,6 +119,7 @@ class SettingsRepository @Inject constructor(
                 ?: emptyList(),
             bridgeAutoTriggerActivityEnabled =
                 prefs[Keys.bridgeAutoTriggerActivityEnabled] ?: false,
+            companionAssociationId = prefs[Keys.companionAssociationId],
         )
     }
 
@@ -267,6 +271,19 @@ class SettingsRepository @Inject constructor(
      *  the runtime permission is granted BEFORE flipping this to true. */
     suspend fun setBridgeAutoTriggerActivityEnabled(value: Boolean) {
         context.dataStore.edit { it[Keys.bridgeAutoTriggerActivityEnabled] = value }
+    }
+
+    /** Persist the CompanionDeviceManager association id after a
+     *  successful `associate()`. Managed exclusively by focused
+     *  setter/clear (NOT through [update]) so the Settings Save button —
+     *  which rebuilds [Settings] from the form — never clobbers it. */
+    suspend fun setCompanionAssociationId(id: Int) {
+        context.dataStore.edit { it[Keys.companionAssociationId] = id }
+    }
+
+    /** Clear the persisted companion association id (on unpair / disassociate). */
+    suspend fun clearCompanionAssociationId() {
+        context.dataStore.edit { it.remove(Keys.companionAssociationId) }
     }
 
     /**

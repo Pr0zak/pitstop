@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.pitstop.companion.WicanCompanionManager
 import com.pitstop.drive.scheduleDriveUploads
 import com.pitstop.log.LogBuffer
 import com.pitstop.notif.SyncReminderManager
@@ -21,6 +22,7 @@ class PitstopApp : Application(), Configuration.Provider {
     @Inject lateinit var logBuffer: LogBuffer
     @Inject lateinit var syncReminderManager: SyncReminderManager
     @Inject lateinit var inCarDetector: InCarDetector
+    @Inject lateinit var companionManager: WicanCompanionManager
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -61,6 +63,15 @@ class PitstopApp : Application(), Configuration.Provider {
         // HFP observers from PresenceTracker); the bridge service no
         // longer runs unless one of the signals fires.
         inCarDetector.start()
+        // Re-assert CompanionDeviceManager presence observation for an
+        // already-associated WiCAN. This is the reliable background
+        // auto-start path: it keeps the OS binding WicanCompanionService
+        // across reboots / process death so the bridge FGS can start from
+        // the background (via the companion FGS-from-background exemption)
+        // the moment the WiCAN is in BLE range. No-op if not yet paired or
+        // below API 31. The InCarDetector triggers above remain as
+        // best-effort fallbacks.
+        companionManager.ensureObserving()
     }
 
     /**

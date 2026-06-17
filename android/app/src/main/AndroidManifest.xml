@@ -37,6 +37,26 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
 
+    <!--
+      CompanionDeviceManager (CDM) — the reliable background auto-start path.
+      Associating the WiCAN as a companion device grants a STANDING exemption
+      from the background-FGS-start restriction (the production
+      ForegroundServiceStartNotAllowedException root cause: the app was in the
+      background with no exemption when the in-car detector tried to start the
+      bridge FGS). Both are install-time NORMAL permissions — no runtime
+      prompt; the association dialog itself is the user's consent. Harmless
+      below API 33 (the constants are recognised; the exemption simply doesn't
+      apply on OS versions that lack the restriction).
+        - REQUEST_COMPANION_RUN_IN_BACKGROUND: lets an associated companion
+          app run in the background.
+        - REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND: lets
+          the associated companion app start an FGS from the background — the
+          actual fix.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission
+        android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+
     <!-- Location: for BLE scan on legacy devices AND for GPS attached to publishes / fuel quick-add -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -112,6 +132,28 @@
             android:name=".service.PitstopBridgeService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|location" />
+
+        <!--
+          CompanionDeviceService — the OS binds this when an associated
+          companion device (the WiCAN) is being observed via
+          startObservingDevicePresence(). On API 31+ the system WAKES the app
+          process and invokes onDeviceAppeared / onDeviceDisappeared when the
+          WiCAN comes into / drops out of BLE range, which is how the bridge
+          FGS gets started reliably from the background. The exact shape here
+          matters: the system only binds a service that is exported, guarded
+          by BIND_COMPANION_DEVICE_SERVICE (so only the OS can bind it), and
+          declares the android.companion.CompanionDeviceService intent action.
+          Present below API 31 too — it's simply never bound there (we gate
+          the observe path by SDK_INT).
+        -->
+        <service
+            android:name=".companion.WicanCompanionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
 
         <!--
           Android Auto / AAOS entry point. The CarAppService action filter

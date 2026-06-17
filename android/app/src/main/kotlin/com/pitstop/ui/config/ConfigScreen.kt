@@ -95,6 +95,28 @@ fun ConfigScreen(
     val bridge by viewModel.bridgeStatus.collectAsStateWithLifecycle()
     val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
     val totalPublished by viewModel.totalPublished.collectAsStateWithLifecycle()
+    val companionAssociated by viewModel.companionAssociated.collectAsStateWithLifecycle()
+
+    // CDM association consent dialog launcher. The OS hands the manager an
+    // IntentSender; we launch it here. The result carries the resolved
+    // AssociationInfo (API 33+) / BluetoothDevice (API 31–32) — extract the
+    // association id + MAC and hand back to the VM to persist + observe.
+    val companionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        extractCompanionResult(result.resultCode, result.data)?.let { (id, mac) ->
+            viewModel.onCompanionConfirmed(id, mac)
+        } ?: viewModel.refreshCompanionState()
+    }
+    LaunchedEffect(Unit) {
+        viewModel.companionIntentSender.collect { sender ->
+            runCatching {
+                companionLauncher.launch(
+                    androidx.activity.result.IntentSenderRequest.Builder(sender).build(),
+                )
+            }
+        }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -111,6 +133,9 @@ fun ConfigScreen(
                     "Downloading v${t.version}… installer will open when ready"
                 ConfigToast.UpdateDownloadFailed ->
                     "Download failed — check Logs and try again"
+                ConfigToast.CompanionPaired -> "WiCAN paired for reliable auto-start"
+                ConfigToast.CompanionUnpaired -> "WiCAN unpaired"
+                is ConfigToast.CompanionError -> "Pairing failed: ${t.message}"
             }
             snackbarHostState.showSnackbar(msg)
         }
@@ -156,6 +181,14 @@ fun ConfigScreen(
                 onStart = { viewModel.startBridge() },
                 onStop = { viewModel.stopBridge() },
             )
+
+            if (viewModel.companionPresenceSupported) {
+                CompanionPairingSection(
+                    associated = companionAssociated,
+                    onPair = { viewModel.pairCompanion() },
+                    onUnpair = { viewModel.unpairCompanion() },
+                )
+            }
 
             BleDeviceSection(
                 deviceName = form.bleDeviceName,
@@ -480,6 +513,82 @@ private fun activeCollectorsLabel(ble: Boolean, gps: Boolean): String = when {
     gps -> "GPS only"
     else -> "Nothing enabled"
 }
+
+// ── Reliable background auto-start (CompanionDeviceManager) ──────────
+
+@Composable
+private fun CompanionPairingSection(
+    associated: Boolean,
+    onPair: () -> Unit,
+    onUnpair: () -> Unit,
+) {
+    SettingsSection(
+        title = "Reliable background auto-start",
+        description = "Pairing the WiCAN as a companion device lets pitstop start " +
+            "logging automatically the moment the dongle is in range — even from " +
+            "the background. This is what makes auto-start reliable.",
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusPill(
+                state = if (associated) PillState.Healthy else PillState.Neutral,
+                label = if (associated) "Associated" else "Not paired",
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (associated) "WiCAN companion active" else "Pair to enable",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onPair, enabled = !associated) {
+                Text("Pair WiCAN")
+            }
+            OutlinedButton(onClick = onUnpair, enabled = associated) {
+                Text("Unpair")
+            }
+        }
+    }
+}
+
+/**
+ * Pull the resolved CDM association id (+ MAC) out of the consent-dialog
+ * result. API 33+ returns an [android.companion.AssociationInfo]; API 31–32
+ * returns a [android.bluetooth.BluetoothDevice]. We surface the id where
+ * available (33+) and the MAC for the legacy observe-by-address path.
+ * Returns null on cancel / unrecognised payload — the caller just refreshes
+ * the association list in that case.
+ */
+private fun extractCompanionResult(
+    resultCode: Int,
+    data: android.content.Intent?,
+): Pair<Int, String?>? {
+    if (resultCode != android.app.Activity.RESULT_OK || data == null) return null
+    return runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val info = data.getParcelableExtra(
+                android.companion.CompanionDeviceManager.EXTRA_ASSOCIATION,
+                android.companion.AssociationInfo::class.java,
+            )
+            if (info != null) {
+                return@runCatching info.id to info.deviceMacAddress?.toString()
+            }
+        }
+        // Legacy (API 31–32) — payload is a BluetoothDevice. We don't get an
+        // integer id back here, but onAssociationCreated / the manager's
+        // myAssociations lookup persists it; pass the MAC through with a
+        // sentinel id so persist-and-observe can resolve the address.
+        @Suppress("DEPRECATION")
+        val device: android.bluetooth.BluetoothDevice? =
+            data.getParcelableExtra(android.companion.CompanionDeviceManager.EXTRA_DEVICE)
+        device?.let { COMPANION_ID_UNRESOLVED to it.address }
+    }.getOrNull()
+}
+
+/** Sentinel returned on the API 31–32 path where the consent result yields a
+ *  BluetoothDevice (MAC) but no integer association id. The manager resolves
+ *  the real id from myAssociations by MAC before observing. */
+private const val COMPANION_ID_UNRESOLVED: Int = -1
 
 // ── BLE device ─────────────────────────────────────────────────────
 

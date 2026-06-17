@@ -126,6 +126,18 @@ data class Settings(
      * by default so existing users don't see a permission prompt.
      */
     val bridgeAutoTriggerActivityEnabled: Boolean = false,
+    /**
+     * CompanionDeviceManager association id for the WiCAN, persisted after
+     * a successful `associate()`. Drives two things: (1) the Settings UI
+     * shows "Associated" vs "Not paired"; (2) on API 34+ it's the id passed
+     * to `ObservingDevicePresenceRequest.Builder().setAssociationId(...)`.
+     * Null = the WiCAN has not been associated as a companion device yet,
+     * so the reliable-background-start path is unavailable and the app
+     * falls back to the InCarDetector best-effort triggers. The id is an
+     * opaque, OS-issued integer — not vehicle-identifying — so persisting
+     * it in DataStore (unencrypted) is fine.
+     */
+    val companionAssociationId: Int? = null,
 )
 
 data class SettingsWithSecrets(

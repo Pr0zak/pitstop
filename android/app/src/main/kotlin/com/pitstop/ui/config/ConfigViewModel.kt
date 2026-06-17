@@ -4,8 +4,10 @@ import android.app.Application
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.IntentSender
 import com.pitstop.ble.BleScanner
 import com.pitstop.ble.ScannedDevice
+import com.pitstop.companion.WicanCompanionManager
 import com.pitstop.data.Settings
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
@@ -63,6 +65,9 @@ sealed interface ConfigToast {
     data class UpdateCheckError(val message: String) : ConfigToast
     data class UpdateDownloadStarted(val version: String) : ConfigToast
     object UpdateDownloadFailed : ConfigToast
+    object CompanionPaired : ConfigToast
+    object CompanionUnpaired : ConfigToast
+    data class CompanionError(val message: String) : ConfigToast
 }
 
 @HiltViewModel
@@ -76,7 +81,24 @@ class ConfigViewModel @Inject constructor(
     private val mqttPublisher: MqttPublisher,
     private val updateChecker: UpdateChecker,
     private val updateInstaller: UpdateInstaller,
+    private val companionManager: WicanCompanionManager,
 ) : AndroidViewModel(application) {
+
+    // ── CompanionDeviceManager (reliable background auto-start) ──────────
+
+    /** True on OS versions where companion presence-observe + the
+     *  FGS-from-background exemption actually apply (API 31+). The UI hides
+     *  the pairing card below this since it buys nothing there. */
+    val companionPresenceSupported: Boolean = companionManager.presenceSupported
+
+    private val _companionAssociated = MutableStateFlow(false)
+    /** True when the WiCAN is associated as a companion device. */
+    val companionAssociated: StateFlow<Boolean> = _companionAssociated.asStateFlow()
+
+    /** One-shot IntentSender the Settings screen must launch via an
+     *  ActivityResultLauncher to show the CDM association consent dialog. */
+    private val _companionIntentSender = MutableSharedFlow<IntentSender>(extraBufferCapacity = 1)
+    val companionIntentSender = _companionIntentSender.asSharedFlow()
 
     private val _checkingUpdate = MutableStateFlow(false)
     val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
@@ -160,7 +182,55 @@ class ConfigViewModel @Inject constructor(
                     secrets.settings.bridgeAutoTriggerActivityEnabled,
             )
             _formReady.value = true
+            _companionAssociated.value = companionManager.hasAssociation()
         }
+    }
+
+    /** Re-read the live companion-association state (eg. after returning to
+     *  Settings, or after the consent dialog resolves). */
+    fun refreshCompanionState() {
+        _companionAssociated.value = companionManager.hasAssociation()
+    }
+
+    /** Launch the CDM association flow for the WiCAN. The manager submits
+     *  the request asynchronously; when the OS hands back an IntentSender we
+     *  forward it to the screen (via [companionIntentSender]) to show the
+     *  consent dialog. If already associated, we just refresh state. */
+    fun pairCompanion() {
+        val mac = _form.value.bleDeviceMac
+        companionManager.associate(
+            knownMac = mac,
+            onIntentSender = { sender ->
+                viewModelScope.launch { _companionIntentSender.emit(sender) }
+            },
+            onAlreadyAssociated = {
+                refreshCompanionState()
+                viewModelScope.launch {
+                    _toast.emit(ConfigToast.CompanionPaired)
+                }
+            },
+            onError = { reason ->
+                viewModelScope.launch {
+                    _toast.emit(ConfigToast.CompanionError(reason))
+                }
+            },
+        )
+    }
+
+    /** Called by the screen after the consent dialog returns OK with the
+     *  resolved association id (+ optional MAC). Persists + starts observing. */
+    fun onCompanionConfirmed(associationId: Int, mac: String?) {
+        companionManager.onAssociationConfirmed(associationId, mac)
+        refreshCompanionState()
+        viewModelScope.launch { _toast.emit(ConfigToast.CompanionPaired) }
+    }
+
+    /** Remove the WiCAN companion association + stop observing presence. */
+    fun unpairCompanion() {
+        companionManager.unpair()
+        // Optimistic; the OS-side disassociate is async on an IO scope.
+        _companionAssociated.value = false
+        viewModelScope.launch { _toast.emit(ConfigToast.CompanionUnpaired) }
     }
 
     /**

@@ -62,6 +62,12 @@ app/src/main/kotlin/com/pitstop/
 - `POST_NOTIFICATIONS` — Android 13+ runtime, for the foreground service notification.
 - `FOREGROUND_SERVICE_CONNECTED_DEVICE` + `FOREGROUND_SERVICE_LOCATION` — manifest
   declarations for the bridge service.
+- `REQUEST_COMPANION_RUN_IN_BACKGROUND` +
+  `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` — install-time
+  NORMAL permissions (no runtime prompt). Grant the CompanionDeviceManager
+  background-FGS-start exemption that makes auto-start reliable. The association
+  dialog itself is the user's consent. Harmless below API 33. See "Reliable
+  background auto-start" below.
 
 ## Privacy
 
@@ -151,6 +157,66 @@ loops.
 - **Bonding.** WiCAN does not require pairing. If the firmware ever flips bonding on, we
   will need to call `device.createBond()` before `connectGatt`; the Nordic BleManager
   handles this automatically once we wire `shouldAutoConnect()` and bonding callbacks.
+
+## Reliable background auto-start (CompanionDeviceManager)
+
+The in-car detector ([`presence/InCarDetector`](app/src/main/kotlin/com/pitstop/presence/InCarDetector.kt))
+*detects* "you're in the car" fine, but on modern Android the actual
+`startForegroundService()` it then calls is denied with
+`ForegroundServiceStartNotAllowedException` ("mAllowStartForeground false")
+when the app is in the background with no exemption. Confirmed in production
+`client_logs`: an `auto-start bridge` line immediately followed by
+`auto-start failed: mAllowStartForeground false`.
+
+The fix is CompanionDeviceManager (CDM), in [`companion/`](app/src/main/kotlin/com/pitstop/companion/):
+
+- **[`WicanCompanionManager`](app/src/main/kotlin/com/pitstop/companion/WicanCompanionManager.kt)**
+  owns `associate()` / `disassociate()` / `startObservingDevicePresence()`.
+  Associating the WiCAN as a companion device grants the standing
+  `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND` exemption, so the
+  bridge FGS-start succeeds from the background.
+- **[`WicanCompanionService`](app/src/main/kotlin/com/pitstop/companion/WicanCompanionService.kt)**
+  (a `CompanionDeviceService`) is bound by the OS while we observe presence. When
+  the WiCAN advertises in BLE range the system WAKES our process and calls
+  `onDeviceAppeared`, where we start the bridge (respecting the
+  `bridgeAutoTrigger` toggle). `onDeviceDisappeared` stops it after a 120 s grace
+  window. CDM is the robust PRIMARY trigger; InCarDetector's AA/WiFi/AR paths
+  remain best-effort fallbacks. The bridge's `onStartCommand` is idempotent, so a
+  CDM start racing an InCarDetector start is harmless.
+
+Quirks / gotchas discovered:
+
+- **Association needs an Activity.** `associate()` hands back an `IntentSender`
+  that must be launched from an Activity (`StartIntentSenderForResult`), not the
+  manager. The flow is: VM → `associate()` → IntentSender → Settings screen
+  launcher → consent dialog → result → VM `onCompanionConfirmed()`.
+- **`onDeviceAppeared` signature differs by API.** API 33+ gets
+  `onDeviceAppeared(AssociationInfo)`; API 31–32 gets the deprecated
+  `onDeviceAppeared(String address)`. Both are implemented and dispatched by
+  `SDK_INT`; the String variant early-returns on 33+ to avoid a double start.
+- **`AssociationInfo.getId()` returns `int`** (API 31+). The API 31–32 consent
+  *result* yields a `BluetoothDevice` (MAC) with no integer id, so the manager
+  resolves the real id from `myAssociations` by MAC before observing (sentinel
+  `-1` triggers that lookup).
+- **`ObservingDevicePresenceRequest` (setAssociationId) is API 35+** and is NOT
+  in `compileSdk 35`, so we use the MAC-based `startObservingDevicePresence(String)`
+  overload uniformly for API 31+ (deprecated on 35+ but functional for a
+  MAC-addressable BLE device). Switch to the request builder behind a
+  `SDK_INT >= 35` gate when the project bumps `compileSdk`.
+- **API 26–30**: `associate()` works (legacy `associate(req, cb, handler)`), so
+  pairing is possible, but presence-observe + the FGS-from-background exemption
+  don't exist. The pairing card is hidden below API 31
+  (`companionPresenceSupported`); on those versions the InCarDetector triggers are
+  the only auto-start path.
+- **Emulator can't exercise presence.** No real BLE peripheral means
+  `onDeviceAppeared` never fires on an emulator. The Pair button + association
+  list + status card render and don't crash without a device; real on-device
+  presence-wake needs a powered WiCAN advertising in range.
+
+The association id is persisted in DataStore (`companionAssociationId`) via a
+focused setter that does NOT go through `Settings.update()` (which rebuilds
+`Settings` from the form and would clobber it). The id is an opaque OS-issued
+integer, not vehicle-identifying, so storing it unencrypted is fine.
 
 ## Future work
 
