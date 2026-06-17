@@ -181,8 +181,22 @@ async def recent_logs(
     ),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> list[dict[str, Any]]:
-    """Tail/filter view of recent log entries, ordered by server ``ts``
-    descending."""
+    """Tail/filter view of recent log entries.
+
+    Ordered (and the returned ``ts`` reported) by the *event* time —
+    ``COALESCE(client_ts, ts)`` — not the server-arrival time. Clients
+    buffer offline and ship logs in batches (drive sync, app foreground
+    flush), so every entry in a batch lands with the same arrival ``ts``;
+    ordering by that collapses real event order. ``client_ts`` carries the
+    true per-event time for phone/web/WiCAN entries, and the backend's own
+    handler stamps it too, so ``COALESCE(client_ts, ts)`` is the right
+    timeline for all sources.
+
+    The ``from``/``to`` window still filters on the arrival ``ts`` so a
+    just-synced drive (whose events may be older than the default 1 h
+    window) still shows up in the tail — correctly sequenced by event
+    time, even though some events predate ``now() - 1h``.
+    """
     if from_ is None and to is None:
         from_ = datetime.now(UTC) - timedelta(hours=1)
 
@@ -215,11 +229,20 @@ async def recent_logs(
         args.append(f"%{q}%")
         where.append(f"message ILIKE ${len(args)}")
 
-    sql = f"SELECT {_LOG_COLS} FROM client_logs"
+    # Report the event time as ``ts`` (COALESCE over the arrival column)
+    # so every consumer — web Debug view, pitstop-logs skill, raw API —
+    # displays and sorts by when the event actually happened, with no
+    # client-side change. The real arrival column is still used by the
+    # WHERE window above; the SELECT alias doesn't shadow it there.
+    recent_cols = (
+        "id, COALESCE(client_ts, ts) AS ts, source, level, message, "
+        "vehicle_id, device_id, context, client_ts"
+    )
+    sql = f"SELECT {recent_cols} FROM client_logs"
     if where:
         sql += " WHERE " + " AND ".join(where)
     args.append(limit)
-    sql += f" ORDER BY ts DESC LIMIT ${len(args)}"
+    sql += f" ORDER BY COALESCE(client_ts, ts) DESC LIMIT ${len(args)}"
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, *args)
