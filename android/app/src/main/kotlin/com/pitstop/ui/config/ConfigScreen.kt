@@ -5,6 +5,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -41,10 +45,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -53,34 +60,32 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import com.pitstop.ble.ScannedDevice
-import com.pitstop.service.BridgePhase
 import com.pitstop.ui.components.PillState
+import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.SettingsSection
 import com.pitstop.ui.components.StatusPill
-import kotlin.math.max
 
 /**
- * Settings — Material 3 system-app style. Sections grouped by access
- * frequency; cold-config rows collapse by default so the daily-use
- * surfaces don't get buried by scroll.
+ * Settings — a single scrollable page of three collapsible accordion
+ * groups, no drill-in navigation. The brand top bar stays put; tapping
+ * Settings in the bottom nav lands here and system-back behaves like any
+ * other top-level tab (no nested stack to pop).
  *
- *   ── always expanded (top) ──
- *   Bridge service     start/stop, live phase pill, last frame age
- *   OBD device         BLE picker (current pick + scan)
- *   MQTT broker        URL, user, password — with live connected pill
- *   Connectivity       manual-sync toggle + status
+ *   Connection  → server URL, vehicle slug, MQTT broker creds
+ *   Capture     → bridge collectors, auto-start, OBD device, WiCAN pairing
+ *   App         → display units, logs, version + updates
  *
- *   ── collapsed by default (set once at first config) ──
- *   Pitstop server     API base URL + ingest/query tokens
- *   Vehicle            vehicle slug for the bridge
- *   Display            imperial / metric units
- *   Logs               verbose toggle, buffered count, manual flush
+ * Accordion behaviour: exactly one group is open at a time, held in a
+ * single [rememberSaveable] key so it survives rotation. Connection is
+ * open on entry. Tapping a collapsed header opens it and folds the rest;
+ * tapping the open header collapses it.
  *
- *   ── always expanded (bottom anchor) ──
- *   App                version + build code + check-for-updates
- *
- * The "fuel-card" / Bridge-state widgets that used to live on Home now
- * live in this view. Home is the dashboard; here is where you configure.
+ * Live bridge status (status pill, active metrics, last frame, OBD
+ * freshness, offline buffer) and the Start/Stop bridge controls live on
+ * Home — this view is purely configuration. All sections share the single
+ * [ConfigViewModel] so the DataStore writes, secret-field rules, BLE scan
+ * flow, and CDM association flow are unchanged. The Save bar sits once at
+ * the bottom of the page.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,19 +93,31 @@ fun ConfigScreen(
     viewModel: ConfigViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
+    val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
     val scanResults by viewModel.scanResults.collectAsStateWithLifecycle()
     val scanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val companionAssociated by viewModel.companionAssociated.collectAsStateWithLifecycle()
     val bufferedCount by viewModel.bufferedCount.collectAsStateWithLifecycle()
     val lastFlushAt by viewModel.lastFlushAtMs.collectAsStateWithLifecycle()
-    val bridge by viewModel.bridgeStatus.collectAsStateWithLifecycle()
-    val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
-    val totalPublished by viewModel.totalPublished.collectAsStateWithLifecycle()
-    val companionAssociated by viewModel.companionAssociated.collectAsStateWithLifecycle()
+    val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
+    val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
+    val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
 
-    // CDM association consent dialog launcher. The OS hands the manager an
-    // IntentSender; we launch it here. The result carries the resolved
-    // AssociationInfo (API 33+) / BluetoothDevice (API 31–32) — extract the
-    // association id + MAC and hand back to the VM to persist + observe.
+    // Which accordion group is expanded — exactly one (or none, if the
+    // open one is tapped shut). Saved so rotation/process-death restores
+    // the user's place. Default: Connection.
+    var expandedGroup by rememberSaveable { mutableStateOf(GROUP_CONNECTION) }
+    val toggle: (String) -> Unit = { key ->
+        expandedGroup = if (expandedGroup == key) "" else key
+    }
+
+    // CDM association consent dialog launcher — hosted at the screen level
+    // so the IntentSender flow survives recomposition while the Capture
+    // group is expanded. The OS hands the manager an IntentSender; we
+    // launch it here. The result carries the resolved AssociationInfo
+    // (API 33+) / BluetoothDevice (API 31–32) — extract the association id
+    // + MAC and hand back to the VM.
     val companionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult(),
     ) { result ->
@@ -118,6 +135,8 @@ fun ConfigScreen(
         }
     }
 
+    // Snackbar host lives at the screen level so toasts raised from any
+    // group still show.
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
         viewModel.toast.collect { t ->
@@ -142,227 +161,209 @@ fun ConfigScreen(
     }
 
     Scaffold(
-        topBar = { com.pitstop.ui.components.PitstopTopAppBar() },
+        topBar = { PitstopTopAppBar() },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 4.dp),
         ) {
-            // ── always expanded: daily-use surfaces ──
-            val scope = rememberCoroutineScope()
-            BridgeServiceSection(
-                phase = bridge.phase,
-                deviceName = bridge.deviceName,
-                deviceMac = bridge.deviceMac,
-                error = bridge.errorMessage,
-                lastFrameMs = bridge.lastFrameAtMs,
-                lastObdFrameMs = bridge.lastObdFrameAtMs,
-                metricsActive = bridge.metricsActive,
-                offlineBufferBytes = bridge.offlineBufferBytes,
-                bleEnabled = form.bridgeBleEnabled,
-                gpsEnabled = form.bridgeGpsEnabled,
-                autoTrigger = form.bridgeAutoTrigger,
-                autoTriggerSsids = form.bridgeAutoTriggerSsids,
-                autoTriggerActivityEnabled = form.bridgeAutoTriggerActivityEnabled,
-                inCar = bridge.inCar,
-                onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
-                onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
-                onAutoTriggerChange = { v -> viewModel.setBridgeAutoTrigger(v) },
-                onAutoTriggerSsidsChange = { v -> viewModel.setBridgeAutoTriggerSsids(v) },
-                onAutoTriggerActivityEnabledChange = { v ->
-                    viewModel.setBridgeAutoTriggerActivityEnabled(v)
-                },
-                onShowSnackbar = { msg ->
-                    scope.launch { snackbarHostState.showSnackbar(msg) }
-                },
-                onStart = { viewModel.startBridge() },
-                onStop = { viewModel.stopBridge() },
-            )
-
-            if (viewModel.companionPresenceSupported) {
-                CompanionPairingSection(
-                    associated = companionAssociated,
-                    onPair = { viewModel.pairCompanion() },
-                    onUnpair = { viewModel.unpairCompanion() },
+            // ── Connection ──────────────────────────────────────────
+            CollapsibleGroup(
+                title = "Connection",
+                expanded = expandedGroup == GROUP_CONNECTION,
+                onToggle = { toggle(GROUP_CONNECTION) },
+            ) {
+                PitstopServerSection(
+                    form = form,
+                    update = { transform -> viewModel.update(transform) },
+                )
+                VehicleSection(
+                    slug = form.vehicleSlug,
+                    onSlugChange = { v -> viewModel.update { it.copy(vehicleSlug = v) } },
+                )
+                MqttBrokerSection(
+                    form = form,
+                    brokerConnected = brokerConnected,
+                    onReconnect = { viewModel.reconnectBroker() },
+                    update = { transform -> viewModel.update(transform) },
                 )
             }
 
-            BleDeviceSection(
-                deviceName = form.bleDeviceName,
-                deviceMac = form.bleDeviceMac,
-                scanning = scanning,
-                scanResults = scanResults,
-                onToggleScan = {
-                    if (scanning) viewModel.stopScan() else viewModel.startScan()
-                },
-                onPick = { viewModel.pickDevice(it) },
-            )
-
-            MqttBrokerSection(
-                form = form,
-                brokerConnected = brokerConnected,
-                totalPublished = totalPublished,
-                onReconnect = { viewModel.reconnectBroker() },
-                update = { transform -> viewModel.update(transform) },
-            )
-
-            ConnectivitySection(
-                manualSyncOnly = form.manualSyncOnly,
-                onChange = { v -> viewModel.setManualSyncOnly(v) },
-            )
-
-            // ── collapsed by default: set once at first config ──
-            PitstopServerSection(
-                form = form,
-                update = { transform -> viewModel.update(transform) },
-            )
-
-            VehicleSection(
-                slug = form.vehicleSlug,
-                onSlugChange = { v -> viewModel.update { it.copy(vehicleSlug = v) } },
-            )
-
-            DisplaySection(
-                unitSystem = form.unitSystem,
-                onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
-            )
-
-            LogsSection(
-                verbose = form.verboseLogging,
-                buffered = bufferedCount,
-                lastFlushMs = lastFlushAt,
-                onVerboseChange = { v -> viewModel.update { it.copy(verboseLogging = v) } },
-                onFlush = { viewModel.flushLogsNow() },
-            )
-
-            // ── bottom anchor: version + check-for-updates ──
-            val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
-            val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
-            val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
-            AppSection(
-                checking = checkingUpdate,
-                latestVersionFound = latestUpdate?.latestVersion,
-                latestIsNewer = latestUpdate?.isNewer == true,
-                hasApkAsset = latestUpdate?.apkUrl != null,
-                downloadState = downloadState,
-                onCheck = { viewModel.checkForUpdates() },
-                onDownload = { viewModel.downloadAndInstall() },
-            )
-
-            // Save bar — sticky-ish at the very bottom of the scroll.
-            Spacer(Modifier.size(20.dp))
-            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                Button(
-                    onClick = { viewModel.save() },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (form.saved) "Saved" else "Save settings")
+            // ── Capture ─────────────────────────────────────────────
+            CollapsibleGroup(
+                title = "Capture",
+                expanded = expandedGroup == GROUP_CAPTURE,
+                onToggle = { toggle(GROUP_CAPTURE) },
+            ) {
+                CaptureCollectorsSection(
+                    bleEnabled = form.bridgeBleEnabled,
+                    gpsEnabled = form.bridgeGpsEnabled,
+                    manualSyncOnly = form.manualSyncOnly,
+                    onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
+                    onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
+                    onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
+                )
+                AutoStartSection(
+                    autoTrigger = form.bridgeAutoTrigger,
+                    autoTriggerSsids = form.bridgeAutoTriggerSsids,
+                    autoTriggerActivityEnabled = form.bridgeAutoTriggerActivityEnabled,
+                    onAutoTriggerChange = { v -> viewModel.setBridgeAutoTrigger(v) },
+                    onAutoTriggerSsidsChange = { v -> viewModel.setBridgeAutoTriggerSsids(v) },
+                    onAutoTriggerActivityEnabledChange = { v ->
+                        viewModel.setBridgeAutoTriggerActivityEnabled(v)
+                    },
+                    onShowSnackbar = { msg ->
+                        scope.launch { snackbarHostState.showSnackbar(msg) }
+                    },
+                )
+                BleDeviceSection(
+                    deviceName = form.bleDeviceName,
+                    deviceMac = form.bleDeviceMac,
+                    scanning = scanning,
+                    scanResults = scanResults,
+                    onToggleScan = {
+                        if (scanning) viewModel.stopScan() else viewModel.startScan()
+                    },
+                    onPick = { viewModel.pickDevice(it) },
+                )
+                if (viewModel.companionPresenceSupported) {
+                    CompanionPairingSection(
+                        associated = companionAssociated,
+                        onPair = { viewModel.pairCompanion() },
+                        onUnpair = { viewModel.unpairCompanion() },
+                    )
                 }
             }
-            Spacer(Modifier.size(28.dp))
+
+            // ── App ─────────────────────────────────────────────────
+            CollapsibleGroup(
+                title = "App",
+                expanded = expandedGroup == GROUP_APP,
+                onToggle = { toggle(GROUP_APP) },
+            ) {
+                DisplaySection(
+                    unitSystem = form.unitSystem,
+                    onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
+                )
+                LogsSection(
+                    verbose = form.verboseLogging,
+                    buffered = bufferedCount,
+                    lastFlushMs = lastFlushAt,
+                    onVerboseChange = { v -> viewModel.update { it.copy(verboseLogging = v) } },
+                    onFlush = { viewModel.flushLogsNow() },
+                )
+                AppSection(
+                    checking = checkingUpdate,
+                    latestVersionFound = latestUpdate?.latestVersion,
+                    latestIsNewer = latestUpdate?.isNewer == true,
+                    hasApkAsset = latestUpdate?.apkUrl != null,
+                    downloadState = downloadState,
+                    onCheck = { viewModel.checkForUpdates() },
+                    onDownload = { viewModel.downloadAndInstall() },
+                )
+            }
+
+            // Single Save bar for the whole page.
+            SaveBar(saved = form.saved, onSave = { viewModel.save() })
         }
     }
 }
 
-// ── Bridge service ─────────────────────────────────────────────────
+private const val GROUP_CONNECTION = "connection"
+private const val GROUP_CAPTURE = "capture"
+private const val GROUP_APP = "app"
+
+// ── Accordion group ─────────────────────────────────────────────────
+
+/**
+ * One collapsible accordion group. The header reads as a section divider
+ * (caps title + a chevron that rotates 90° from pointing-right to
+ * pointing-down when [expanded]); the body — a stack of [SettingsSection]s
+ * supplied by the caller — is wrapped in [AnimatedVisibility]. State is
+ * fully hoisted: the parent owns the single open-group key.
+ */
+@Composable
+private fun CollapsibleGroup(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 0f else -90f,
+        label = "chevron-$title",
+    )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = if (expanded) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.rotate(chevronRotation),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                content()
+                Spacer(Modifier.size(8.dp))
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
 
 @Composable
-private fun BridgeServiceSection(
-    phase: BridgePhase,
-    deviceName: String?,
-    deviceMac: String?,
-    error: String?,
-    lastFrameMs: Long?,
-    lastObdFrameMs: Long?,
-    metricsActive: Int,
-    offlineBufferBytes: Long,
+private fun SaveBar(saved: Boolean, onSave: () -> Unit) {
+    Spacer(Modifier.size(20.dp))
+    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+        Button(
+            onClick = onSave,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (saved) "Saved" else "Save settings")
+        }
+    }
+    Spacer(Modifier.size(28.dp))
+}
+
+// ── Capture: collectors + manual-sync ───────────────────────────────
+
+@Composable
+private fun CaptureCollectorsSection(
     bleEnabled: Boolean,
     gpsEnabled: Boolean,
-    autoTrigger: Boolean,
-    autoTriggerSsids: List<String>,
-    autoTriggerActivityEnabled: Boolean,
-    inCar: Boolean,
+    manualSyncOnly: Boolean,
     onBleEnabledChange: (Boolean) -> Unit,
     onGpsEnabledChange: (Boolean) -> Unit,
-    onAutoTriggerChange: (Boolean) -> Unit,
-    onAutoTriggerSsidsChange: (String) -> Unit,
-    onAutoTriggerActivityEnabledChange: (Boolean) -> Unit,
-    onShowSnackbar: (String) -> Unit,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
+    onManualSyncChange: (Boolean) -> Unit,
 ) {
-    val (statusText, pillState) = when (phase) {
-        BridgePhase.Idle -> "Idle" to PillState.Neutral
-        BridgePhase.Scanning -> "Scanning" to PillState.Connecting
-        BridgePhase.Connecting -> "Connecting" to PillState.Connecting
-        BridgePhase.Connected -> "Running" to PillState.Healthy
-        BridgePhase.Disconnected -> "Reconnecting" to PillState.Degraded
-        BridgePhase.Error -> "Error" to PillState.Offline
-    }
-    SettingsSection(title = "Bridge service") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusPill(state = pillState, label = statusText)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = activeCollectorsLabel(bleEnabled, gpsEnabled),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        error?.let {
-            Text(
-                it,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        if (deviceName != null || deviceMac != null) {
-            Text(
-                deviceName ?: deviceMac ?: "",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-        Text(
-            "Active metrics: $metricsActive · Last frame: ${formatRelative(lastFrameMs)}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        // OBD freshness (BLE-3): dedicated OBD-frame clock, independent of
-        // GPS / WiCAN traffic. Healthy <10s / Degraded <60s / Offline.
-        run {
-            val ageS = lastObdFrameMs?.let {
-                ((System.currentTimeMillis() - it) / 1000L).coerceAtLeast(0L)
-            }
-            val (obdText, obdColor) = when (ageS) {
-                null -> "OBD: no frames yet" to MaterialTheme.colorScheme.onSurfaceVariant
-                in 0..9 -> "OBD: healthy (${ageS}s)" to MaterialTheme.colorScheme.primary
-                in 10..59 -> "OBD: degraded (${ageS}s)" to MaterialTheme.colorScheme.onSurfaceVariant
-                else -> "OBD: offline (${ageS}s)" to MaterialTheme.colorScheme.error
-            }
-            Text(
-                obdText,
-                style = MaterialTheme.typography.bodySmall,
-                color = obdColor,
-            )
-        }
-        if (offlineBufferBytes > 0) {
-            Text(
-                "Offline buffer: ${humanBytes(offlineBufferBytes)} queued",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.tertiary,
-            )
-        }
-
+    SettingsSection(
+        title = "Collectors",
+        description = "Pick what the bridge captures during a drive. Manual-sync " +
+            "saves cellular data — drives stay queued until you sync.",
+    ) {
         // Per-collector toggles. Splitting BLE from GPS lets the user run
         // a GPS-only bridge (eg. while OBD comes through the WiCAN's own
-        // WiFi → WireGuard path) or a BLE-only bridge (eg. while the
-        // phone has no fix and the user doesn't want the location-perm
-        // overhead). Disabling both + tapping Start auto-stops the
-        // service with a "nothing enabled" notification.
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        // WiFi path) or a BLE-only bridge.
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("OBD via BLE", style = MaterialTheme.typography.titleSmall)
@@ -387,26 +388,48 @@ private fun BridgeServiceSection(
             }
             Switch(checked = gpsEnabled, onCheckedChange = onGpsEnabledChange)
         }
-
-        // Auto-trigger: start the bridge automatically when the phone
-        // detects you're in the car (paired WiFi SSID, Android Auto, or
-        // paired-car HFP Bluetooth). Stops automatically once all three
-        // signals are absent for the debounce + grace window. When off,
-        // only the manual Start/Stop buttons drive the service.
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Manual-sync mode", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (manualSyncOnly) "Captures locally; tap Sync to upload"
+                    else "Streams every metric to the broker during drives",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = manualSyncOnly, onCheckedChange = onManualSyncChange)
+        }
+    }
+}
+
+// ── Capture: auto-start ─────────────────────────────────────────────
+
+@Composable
+private fun AutoStartSection(
+    autoTrigger: Boolean,
+    autoTriggerSsids: List<String>,
+    autoTriggerActivityEnabled: Boolean,
+    onAutoTriggerChange: (Boolean) -> Unit,
+    onAutoTriggerSsidsChange: (String) -> Unit,
+    onAutoTriggerActivityEnabledChange: (Boolean) -> Unit,
+    onShowSnackbar: (String) -> Unit,
+) {
+    SettingsSection(
+        title = "Auto-start",
+        description = "Starts the bridge automatically when the phone detects " +
+            "you're in the car (WiFi SSID, Android Auto, or paired-car Bluetooth).",
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Auto-start in car", style = MaterialTheme.typography.titleSmall)
                 Text(
                     if (autoTrigger) {
-                        if (inCar) "On — currently detecting car"
-                        else "Watches WiFi SSID, Android Auto, and paired-car Bluetooth"
-                    } else "Off — use Start / Stop below"
-                    ,
+                        "Watches WiFi SSID, Android Auto, and paired-car Bluetooth"
+                    } else "Off — start the bridge from Home",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (autoTrigger && inCar) {
-                        MaterialTheme.colorScheme.primary
-                    } else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Switch(checked = autoTrigger, onCheckedChange = onAutoTriggerChange)
@@ -458,7 +481,6 @@ private fun BridgeServiceSection(
                     onShowSnackbar(
                         "Permission denied — falling back to WiFi/Bluetooth signals",
                     )
-                    // Defensive: ensure persisted state matches reality.
                     onAutoTriggerActivityEnabledChange(false)
                 }
             }
@@ -481,8 +503,6 @@ private fun BridgeServiceSection(
                             onAutoTriggerActivityEnabledChange(false)
                             return@Switch
                         }
-                        // Wanted = ON. Only persist after the runtime perm
-                        // is granted; the launcher callback handles it.
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !permGranted) {
                             permLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
                         } else {
@@ -492,26 +512,7 @@ private fun BridgeServiceSection(
                 )
             }
         }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onStart,
-                enabled = (bleEnabled || gpsEnabled) &&
-                    (phase == BridgePhase.Idle || phase == BridgePhase.Error),
-            ) { Text("Start") }
-            OutlinedButton(
-                onClick = onStop,
-                enabled = phase != BridgePhase.Idle,
-            ) { Text("Stop") }
-        }
     }
-}
-
-private fun activeCollectorsLabel(ble: Boolean, gps: Boolean): String = when {
-    ble && gps -> "OBD + GPS"
-    ble -> "OBD only"
-    gps -> "GPS only"
-    else -> "Nothing enabled"
 }
 
 // ── Reliable background auto-start (CompanionDeviceManager) ──────────
@@ -640,7 +641,6 @@ private fun BleDeviceSection(
 private fun MqttBrokerSection(
     form: ConfigFormState,
     brokerConnected: Boolean,
-    totalPublished: Long,
     onReconnect: () -> Unit,
     update: ((ConfigFormState) -> ConfigFormState) -> Unit,
 ) {
@@ -648,18 +648,14 @@ private fun MqttBrokerSection(
         title = "MQTT broker",
         description = "Mosquitto on the pitstop CT. Used by the OBD bridge to publish telemetry.",
     ) {
+        // Compact connection-state hint only — the live "published N"
+        // metrics readout moved to Home (this is config, not status).
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusPill(
                 state = if (brokerConnected) PillState.Healthy else PillState.Offline,
                 label = if (brokerConnected) "Connected" else "Offline",
             )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                "Published: $totalPublished",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
+            Spacer(Modifier.weight(1f))
             OutlinedButton(onClick = onReconnect) {
                 Text(if (brokerConnected) "Reconnect" else "Connect")
             }
@@ -687,40 +683,6 @@ private fun MqttBrokerSection(
     }
 }
 
-// ── Connectivity ──────────────────────────────────────────────────
-
-/**
- * Manual-sync mode toggle. When ON the bridge keeps capturing OBD +
- * GPS locally (Live screen still updates, drives still seal to the
- * Room queue) but every outgoing MQTT publish is suppressed and the
- * post-seal auto-upload is disabled. Drives wait in the queue until
- * the user explicitly hits "Sync now" in History or the persistent
- * reminder notification.
- */
-@Composable
-private fun ConnectivitySection(
-    manualSyncOnly: Boolean,
-    onChange: (Boolean) -> Unit,
-) {
-    SettingsSection(
-        title = "Connectivity",
-        description = "Saves cellular data and battery. Drives won't appear in the live dashboard until you sync.",
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Manual-sync mode", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (manualSyncOnly) "Captures locally; tap Sync to upload"
-                    else "Streams every metric to the broker during drives",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = manualSyncOnly, onCheckedChange = onChange)
-        }
-    }
-}
-
 // ── Vehicle ────────────────────────────────────────────────────────
 
 @Composable
@@ -728,8 +690,6 @@ private fun VehicleSection(slug: String, onSlugChange: (String) -> Unit) {
     SettingsSection(
         title = "Vehicle",
         description = "MQTT topic id this bridge publishes under. Must match a vehicle on the server (mapped via Settings → Devices).",
-        collapsible = true,
-        initiallyExpanded = false,
     ) {
         OutlinedTextField(
             value = slug,
@@ -752,8 +712,6 @@ private fun PitstopServerSection(
     SettingsSection(
         title = "Pitstop server",
         description = "Reads use the Query token, writes use the Ingest token. Get both from ~/.pitstop-deploy-secrets.txt on the host.",
-        collapsible = true,
-        initiallyExpanded = false,
     ) {
         OutlinedTextField(
             value = form.apiBaseUrl,
@@ -786,11 +744,7 @@ private fun LogsSection(
     onVerboseChange: (Boolean) -> Unit,
     onFlush: () -> Unit,
 ) {
-    SettingsSection(
-        title = "Logs",
-        collapsible = true,
-        initiallyExpanded = false,
-    ) {
+    SettingsSection(title = "Logs") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Verbose logging", style = MaterialTheme.typography.titleSmall)
@@ -813,7 +767,7 @@ private fun LogsSection(
     }
 }
 
-// ── App ────────────────────────────────────────────────────────────
+// ── Display ────────────────────────────────────────────────────────
 
 /**
  * Display units toggle. Imperial / Metric segment row matching the web's
@@ -829,8 +783,6 @@ private fun DisplaySection(
     SettingsSection(
         title = "Display",
         description = "Imperial converts °C → °F, kPa → psi, g/s → lb/min, m → ft. Metric leaves canonical OBD units as-is.",
-        collapsible = true,
-        initiallyExpanded = false,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             UnitChip(label = "Imperial", selected = unitSystem == "imperial", onClick = { onChange("imperial") })
@@ -848,6 +800,8 @@ private fun UnitChip(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
+// ── App / version ──────────────────────────────────────────────────
+
 @Composable
 private fun AppSection(
     checking: Boolean,
@@ -859,7 +813,7 @@ private fun AppSection(
     onDownload: () -> Unit,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    SettingsSection(title = "App") {
+    SettingsSection(title = "Version") {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Version", style = MaterialTheme.typography.titleSmall)
@@ -972,7 +926,7 @@ private fun AppSection(
 
 private fun formatRelative(tsMs: Long?): String {
     if (tsMs == null) return "never"
-    val delta = max(0L, System.currentTimeMillis() - tsMs)
+    val delta = kotlin.math.max(0L, System.currentTimeMillis() - tsMs)
     return when {
         delta < 1_500 -> "just now"
         delta < 60_000 -> "${delta / 1000}s ago"
