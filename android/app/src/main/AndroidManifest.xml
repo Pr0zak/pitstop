@@ -82,6 +82,19 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <!--
+      Required by CompanionDeviceManager.associate() — without this declared
+      uses-feature the API throws "Must declare uses-feature
+      android.software.companion_device_setup in manifest to use this API" the
+      moment Pair WiCAN is tapped (the reliable background auto-start path).
+      required=false so the app still installs on the rare device lacking CDM;
+      the pairing UI is already gated behind presenceSupported (API 31+) and
+      null-checks the system service.
+    -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
+
+    <!--
       Android 11+ package visibility (Android 14 enforces it harder). The AA
       host enumerates apps that match the CarAppService action, but the
       reverse direction — pitstop's own checks against the AA host — needs
