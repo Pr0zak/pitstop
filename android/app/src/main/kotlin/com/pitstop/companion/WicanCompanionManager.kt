@@ -284,7 +284,22 @@ class WicanCompanionManager @Inject constructor(
         ioScope.launch {
             val s = runCatching { settings.settings.first() }.getOrNull()
                 ?: return@launch
-            val id = s.companionAssociationId ?: return@launch
+            val id = s.companionAssociationId
+            if (id == null) {
+                // Not paired. If auto-start is on, the InCarDetector triggers
+                // will be denied the background startForegroundService()
+                // (mAllowStartForeground=false) and the drive silently never
+                // starts. Leave a breadcrumb so a "didn't auto-start" report
+                // is one log query away; Settings surfaces the same prompt
+                // visually via the auto-start warning callout.
+                if (s.bridgeAutoTrigger) {
+                    logBuffer.warn(
+                        "companion: auto-start on but WiCAN not paired — " +
+                            "background bridge start will be blocked until paired",
+                    )
+                }
+                return@launch
+            }
             // Only observe if the association still exists OS-side; a user
             // could have removed it from system Settings.
             val stillAssociated = runCatching {

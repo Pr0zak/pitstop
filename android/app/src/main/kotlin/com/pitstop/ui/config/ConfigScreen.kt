@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -21,11 +23,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -39,6 +43,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -211,11 +217,14 @@ fun ConfigScreen(
                     autoTrigger = form.bridgeAutoTrigger,
                     autoTriggerSsids = form.bridgeAutoTriggerSsids,
                     autoTriggerActivityEnabled = form.bridgeAutoTriggerActivityEnabled,
+                    companionPresenceSupported = viewModel.companionPresenceSupported,
+                    companionAssociated = companionAssociated,
                     onAutoTriggerChange = { v -> viewModel.setBridgeAutoTrigger(v) },
                     onAutoTriggerSsidsChange = { v -> viewModel.setBridgeAutoTriggerSsids(v) },
                     onAutoTriggerActivityEnabledChange = { v ->
                         viewModel.setBridgeAutoTriggerActivityEnabled(v)
                     },
+                    onPairCompanion = { viewModel.pairCompanion() },
                     onShowSnackbar = { msg ->
                         scope.launch { snackbarHostState.showSnackbar(msg) }
                     },
@@ -411,9 +420,12 @@ private fun AutoStartSection(
     autoTrigger: Boolean,
     autoTriggerSsids: List<String>,
     autoTriggerActivityEnabled: Boolean,
+    companionPresenceSupported: Boolean,
+    companionAssociated: Boolean,
     onAutoTriggerChange: (Boolean) -> Unit,
     onAutoTriggerSsidsChange: (String) -> Unit,
     onAutoTriggerActivityEnabledChange: (Boolean) -> Unit,
+    onPairCompanion: () -> Unit,
     onShowSnackbar: (String) -> Unit,
 ) {
     SettingsSection(
@@ -433,6 +445,53 @@ private fun AutoStartSection(
                 )
             }
             Switch(checked = autoTrigger, onCheckedChange = onAutoTriggerChange)
+        }
+        // Auto-start is enabled but the WiCAN isn't paired as a companion
+        // device — on API 31+ the in-car triggers can detect the car but the
+        // OS denies the background startForegroundService() with
+        // mAllowStartForeground=false, so the drive silently never starts.
+        // CDM pairing is the only path that carries the FGS-from-background
+        // exemption + wakes the app. Make that prerequisite visible instead
+        // of failing silently. (The "Reliable background auto-start" card
+        // below holds the same Pair action; this just surfaces it in context.)
+        if (autoTrigger && companionPresenceSupported && !companionAssociated) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(12.dp),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Won't start from the background yet",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Text(
+                        "Android blocks starting the bridge from the background " +
+                            "unless the WiCAN is paired as a companion device. Pair " +
+                            "it so a drive auto-starts even when the app is closed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = onPairCompanion,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Text("Pair WiCAN")
+                    }
+                }
+            }
         }
         if (autoTrigger) {
             // Editable comma-separated list. Empty = the WiFi signal is
