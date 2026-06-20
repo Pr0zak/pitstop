@@ -179,9 +179,15 @@ async def post_fillup_phone(
         city=body.station_name,
         notes=body.notes,
     )
-    if is_full:
-        await _maybe_calibrate_fuel_level(pool, vehicle_id, fill.fillup_date)
-    await _apply_fillup_to_fuel_estimate(pool, fill)
+    # Best-effort: the fillup row is already committed above, so a failure in
+    # calibration/estimate must NOT 500 — otherwise the phone retries and we
+    # get duplicate fillups (the 2026-06-20 incident). Workers reconcile.
+    try:
+        if is_full:
+            await _maybe_calibrate_fuel_level(pool, vehicle_id, fill.fillup_date)
+        await _apply_fillup_to_fuel_estimate(pool, fill)
+    except Exception:
+        log.exception("phone fillup post-insert enrichment failed id=%s", new_id)
 
     log.info(
         "phone fillup ingested vehicle_slug=%s id=%s gallons=%.3f total=$%s",

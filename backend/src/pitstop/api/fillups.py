@@ -243,10 +243,19 @@ async def create_fillup(
             ) from exc
     assert row is not None
     out = _row_to_fillup(row)
-    await _attach_recomputed_mpg(pool, [out])
-    if body.is_full:
-        await _maybe_calibrate_fuel_level(pool, body.vehicle_id, body.fillup_date)
-    await _apply_fillup_to_fuel_estimate(pool, body)
+    # Post-insert enrichment + side effects are best-effort. The fillup is
+    # already committed, so a failure here must NOT surface as a 5xx — that
+    # makes the client retry and create duplicate rows (the 2026-06-20
+    # incident: a SQL bug in _maybe_calibrate_fuel_level 500'd every retry
+    # AFTER the row committed → 4 identical fillups). The fuel-state workers
+    # reconcile the estimate on their next pass regardless.
+    try:
+        await _attach_recomputed_mpg(pool, [out])
+        if body.is_full:
+            await _maybe_calibrate_fuel_level(pool, body.vehicle_id, body.fillup_date)
+        await _apply_fillup_to_fuel_estimate(pool, body)
+    except Exception:
+        log.exception("fillup post-insert enrichment failed id=%s", out.get("id"))
     return out
 
 
@@ -314,8 +323,8 @@ async def _maybe_calibrate_fuel_level(
             SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1
                AND metric = 'fuel_level'
-               AND time BETWEEN $2 - interval '30 min'
-                            AND $2 + interval '30 min'
+               AND time BETWEEN $2::timestamptz - interval '30 min'
+                            AND $2::timestamptz + interval '30 min'
                AND value_num IS NOT NULL
              ORDER BY value_num DESC
              LIMIT 1
