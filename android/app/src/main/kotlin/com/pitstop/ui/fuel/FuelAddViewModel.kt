@@ -187,8 +187,27 @@ class FuelAddViewModel @Inject constructor(
         // OBD reports km; convert to miles for the form (matches the
         // "Odometer (mi)" label). User can override.
         val mi = km * 0.621371
+        // Sanity-guard the live reading: an odometer only ever increases,
+        // so a value below the last recorded fillup — or implausibly far
+        // above it — is a corrupt OBD frame or a stale/glitched bus entry,
+        // not a real reading (the 2026-06-20 "mileage nowhere near correct"
+        // report). Don't prefill garbage: fall back to the last fillup odo
+        // as a safe floor the user can nudge up from, and log it so a
+        // recurrence is one query away.
+        val lastMi = _form.value.lastOdometer
+        val value = if (
+            lastMi == null || (mi >= lastMi - 1.0 && mi <= lastMi + MAX_MI_SINCE_LAST)
+        ) {
+            mi
+        } else {
+            logBuffer.warn(
+                "fuel: implausible auto-fill odometer rejected",
+                mapOf("computed_mi" to mi, "last_fillup_mi" to lastMi),
+            )
+            lastMi
+        }
         _form.value = _form.value.copy(
-            odometer = String.format(Locale.US, "%.0f", mi),
+            odometer = String.format(Locale.US, "%.0f", value),
             odometerAutoFilled = true,
         )
     }
@@ -375,5 +394,13 @@ class FuelAddViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    private companion object {
+        /** Max plausible miles between two fillups. A live/backend odometer
+         *  prefill more than this above the last recorded fillup is treated
+         *  as a bad reading and rejected. Generous — covers missed fillups
+         *  and long road trips without admitting garbage frames. */
+        const val MAX_MI_SINCE_LAST = 10_000.0
     }
 }
