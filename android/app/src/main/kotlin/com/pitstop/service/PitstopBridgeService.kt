@@ -1387,10 +1387,43 @@ class PitstopBridgeService : Service() {
         } else {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, type)
-        } else {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification)
+            return
+        }
+        // The bridge is now started FROM THE BACKGROUND by
+        // CompanionDeviceManager (the OS wakes us when the WiCAN appears).
+        // On API 34+ a foreground service whose type includes the
+        // while-in-use LOCATION type cannot be started from the background
+        // unless the app holds ACCESS_BACKGROUND_LOCATION — foreground
+        // FINE/COARSE alone isn't enough off-foreground. That SecurityException
+        // fires here in onCreate() and crash-loops the service under
+        // START_STICKY (the 2026-06-20 "crashes when the bridge starts in the
+        // car; sometimes works" report — foreground starts were legal, CDM
+        // background starts weren't; the never-firing CDM path had masked it).
+        // Try the full type set (so a foreground start still gives GPS its
+        // type), and on ANY failure fall back to connectedDevice-only, which
+        // is always legal from the CDM background-start exemption. GPS then
+        // degrades gracefully — startGpsUpdates() already swallows failures.
+        try {
+            startForeground(NOTIFICATION_ID, notification, type)
+        } catch (t: Throwable) {
+            logBuffer.warn(
+                "bridge: startForeground failed; retrying connectedDevice-only",
+                mapOf("err" to (t.message ?: t::class.java.simpleName), "type" to type),
+            )
+            runCatching {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            }.onFailure {
+                logBuffer.error(
+                    "bridge: startForeground retry failed",
+                    mapOf("err" to (it.message ?: it::class.java.simpleName)),
+                )
+            }
         }
     }
 

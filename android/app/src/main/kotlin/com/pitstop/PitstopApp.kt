@@ -32,6 +32,10 @@ class PitstopApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         installCrashHandler()
+        // Ship any crash persisted by the prior run's uncaught handler. The
+        // in-memory LogBuffer dies with the process, so a crash only reaches
+        // the depot if we re-enqueue it on the next launch.
+        replayPersistedCrash()
         createNotificationChannels()
         // Periodic update check (every ~6 h). KEEP policy means a
         // re-launch doesn't reset the cadence — the existing periodic
@@ -81,12 +85,14 @@ class PitstopApp : Application(), Configuration.Provider {
      * never runs its periodic flush. The first line of the stack trace
      * is the most useful — strip the rest to keep client_logs concise.
      */
+    private fun crashFile() = java.io.File(filesDir, "last-crash.json")
+
     private fun installCrashHandler() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
                 val stack = throwable.stackTraceToString().lineSequence()
-                    .take(8)
+                    .take(12)
                     .joinToString("\n")
                 logBuffer.error(
                     "uncaught exception",
@@ -97,15 +103,47 @@ class PitstopApp : Application(), Configuration.Provider {
                         "stack" to stack,
                     ),
                 )
-                // Best-effort synchronous flush so the log lands before
-                // the process dies. The shipper itself is async; this
-                // gives it a chance.
+                // Persist synchronously to disk. The in-memory LogBuffer dies
+                // with the process and the async shipper rarely flushes a
+                // startup crash in time (the Thread.sleep below is racy), so
+                // crashes were never reaching the depot. replayPersistedCrash()
+                // ships this on the next launch.
+                runCatching {
+                    val json = org.json.JSONObject()
+                        .put("thread", thread.name)
+                        .put("type", throwable::class.java.simpleName)
+                        .put("msg", throwable.message ?: "")
+                        .put("stack", stack)
+                    crashFile().writeText(json.toString())
+                }
+                // Best-effort fast-path flush when the network is already up.
                 Thread.sleep(500)
             } catch (_: Throwable) {
                 /* don't recurse */
             }
             previous?.uncaughtException(thread, throwable)
         }
+    }
+
+    /** Re-enqueue a crash persisted by the prior run's uncaught handler so it
+     *  actually reaches the log depot (the in-memory buffer didn't survive the
+     *  crash). Deletes the marker after shipping it. */
+    private fun replayPersistedCrash() {
+        val f = crashFile()
+        if (!f.exists()) return
+        runCatching {
+            val o = org.json.JSONObject(f.readText())
+            logBuffer.error(
+                "recovered crash (previous run)",
+                mapOf(
+                    "thread" to o.optString("thread"),
+                    "type" to o.optString("type"),
+                    "msg" to o.optString("msg"),
+                    "stack" to o.optString("stack"),
+                ),
+            )
+        }
+        runCatching { f.delete() }
     }
 
     private fun createNotificationChannels() {
