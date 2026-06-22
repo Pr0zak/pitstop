@@ -118,6 +118,16 @@ class WiCanBleManager(
             .enqueue()
     }
 
+    // The WiCAN's GATT attribute table isn't stable across reconnects and
+    // Android aggressively caches it, producing the 0x85 (GATT_ERROR / 133) +
+    // "services invalidated" flap that previously only cleared by forgetting +
+    // re-pairing the device in system Bluetooth (the 2026-06-21 incident;
+    // BLE-2). Telling the Nordic library to clear the service cache on every
+    // disconnect makes each reconnect rediscover fresh services — the same
+    // effect as the manual forget, done automatically. Costs one extra
+    // service-discovery round-trip per reconnect; cheap vs. a dead link.
+    override fun shouldClearCacheWhenDisconnected(): Boolean = true
+
     override fun onServicesInvalidated() {
         rx = null
         tx = null
