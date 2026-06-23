@@ -10,6 +10,7 @@ import com.pitstop.log.LogBuffer
 import com.pitstop.log.maskMac
 import no.nordicsemi.android.ble.BleManager
 import no.nordicsemi.android.ble.data.Data
+import no.nordicsemi.android.ble.observer.BondingObserver
 import java.util.UUID
 
 /**
@@ -44,6 +45,28 @@ class WiCanBleManager(
 
     fun setStateCallback(cb: UartStateCallback?) {
         stateCallback = cb
+    }
+
+    init {
+        // Observe bonding so the logs show definitively whether the WiCAN
+        // demands a bond and whether re-bonding succeeds — the 2026-06-23
+        // "needs pairing before each drive" symptom was BLE auth failures
+        // (connect status 5 = HCI Authentication Failure), i.e. a stale/missing
+        // bond, NOT the GATT cache (the v0.1.195 cache-clear logged
+        // "Refreshing failed" — blocked hidden API — and changed nothing).
+        setBondingObserver(object : BondingObserver {
+            override fun onBondingRequired(device: BluetoothDevice) {
+                logBuffer?.info("ble bonding required", mapOf("mac" to maskMac(device.address)))
+            }
+
+            override fun onBonded(device: BluetoothDevice) {
+                logBuffer?.info("ble bonded", mapOf("mac" to maskMac(device.address)))
+            }
+
+            override fun onBondingFailed(device: BluetoothDevice) {
+                logBuffer?.warn("ble bonding failed", mapOf("mac" to maskMac(device.address)))
+            }
+        })
     }
 
     override fun getMinLogPriority(): Int = Log.WARN
@@ -143,7 +166,13 @@ class WiCanBleManager(
     @SuppressLint("MissingPermission")
     fun connectToDevice(device: BluetoothDevice) {
         stateCallback?.onConnectionStateChange(ConnectionState.CONNECTING)
-        logBuffer?.info("ble connect", mapOf("mac" to maskMac(device.address)))
+        logBuffer?.info(
+            "ble connect",
+            mapOf(
+                "mac" to maskMac(device.address),
+                "bonded" to (device.bondState == BluetoothDevice.BOND_BONDED),
+            ),
+        )
         connect(device)
             .retry(3, 250)
             .useAutoConnect(false)
@@ -152,11 +181,26 @@ class WiCanBleManager(
                 logBuffer?.info("ble connected", mapOf("mac" to maskMac(device.address)))
                 stateCallback?.onConnectionStateChange(ConnectionState.CONNECTED)
             }
-            .fail { _, status ->
+            .fail { failedDevice, status ->
+                val bonded = failedDevice.bondState == BluetoothDevice.BOND_BONDED
                 logBuffer?.warn(
                     "ble connect failed",
-                    mapOf("mac" to maskMac(device.address), "status" to status),
+                    mapOf("mac" to maskMac(failedDevice.address), "status" to status, "bonded" to bonded),
                 )
+                // status 5 = HCI Authentication Failure: the WiCAN demands a
+                // bond but the stored bond's keys no longer match (it
+                // regenerated them on power-cycle/wake, or the bond is stale).
+                // This is the root of "needs pairing before each drive". Drop
+                // the bad bond so the next reconnect re-pairs fresh, automating
+                // the manual forget+re-pair. Guarded on bonded so we never
+                // remove-loop when there's nothing to remove.
+                if (status == AUTH_FAILURE_STATUS && bonded) {
+                    logBuffer?.warn(
+                        "ble: auth failure (status 5) — removing stale bond so the next connect re-pairs",
+                        mapOf("mac" to maskMac(failedDevice.address)),
+                    )
+                    removeBond().enqueue()
+                }
                 stateCallback?.onConnectionStateChange(ConnectionState.FAILED)
             }
             .enqueue()
@@ -198,6 +242,11 @@ class WiCanBleManager(
 
     companion object {
         private const val TAG = "WiCanBleManager"
+
+        /** Connection-callback status for HCI "Authentication Failure" — the
+         *  WiCAN's bond keys no longer match ours. Triggers a removeBond() so
+         *  the next connect re-pairs fresh. */
+        private const val AUTH_FAILURE_STATUS = 5
 
         private val CANDIDATE_PROFILES = listOf(
             // WiCAN-PRO v4.49 BLE channel: 0xFFF0 service.
