@@ -13,6 +13,7 @@ import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.LogShipper
 import com.pitstop.mqtt.MqttPublisher
+import com.pitstop.service.BridgePhase
 import com.pitstop.service.BridgeStateBus
 import com.pitstop.service.BridgeStatus
 import com.pitstop.update.UpdateChecker
@@ -20,6 +21,7 @@ import com.pitstop.update.UpdateInfo
 import com.pitstop.update.UpdateInstaller
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 data class ConfigFormState(
@@ -66,6 +69,7 @@ sealed interface ConfigToast {
     data class UpdateDownloadStarted(val version: String) : ConfigToast
     object UpdateDownloadFailed : ConfigToast
     object CompanionPaired : ConfigToast
+    object BridgePausedForPairing : ConfigToast
     object CompanionUnpaired : ConfigToast
     data class CompanionError(val message: String) : ConfigToast
 }
@@ -192,29 +196,77 @@ class ConfigViewModel @Inject constructor(
         _companionAssociated.value = companionManager.hasAssociation()
     }
 
+    /** True while we stopped the bridge specifically to free the BLE link for
+     *  pairing — so [restoreBridgeAfterPairingIfNeeded] knows to bring it back
+     *  once the consent flow resolves. */
+    private var pausedBridgeForPairing = false
+
     /** Launch the CDM association flow for the WiCAN. The manager submits
      *  the request asynchronously; when the OS hands back an IntentSender we
      *  forward it to the screen (via [companionIntentSender]) to show the
-     *  consent dialog. If already associated, we just refresh state. */
+     *  consent dialog. If already associated, we just refresh state.
+     *
+     *  The CDM chooser scans for the WiCAN's BLE advertisement, but a BLE
+     *  device stops advertising while connected. If the bridge holds the link,
+     *  the chooser is empty and associate() comes back `user_rejected` — the
+     *  recurring "can't pair the WiCAN" trap. So we stop the bridge first,
+     *  wait for the link to drop and the WiCAN to resume advertising, then
+     *  associate; [restoreBridgeAfterPairingIfNeeded] restarts it when the
+     *  consent flow resolves. */
     fun pairCompanion() {
-        val mac = _form.value.bleDeviceMac
-        companionManager.associate(
-            knownMac = mac,
-            onIntentSender = { sender ->
-                viewModelScope.launch { _companionIntentSender.emit(sender) }
-            },
-            onAlreadyAssociated = {
-                refreshCompanionState()
-                viewModelScope.launch {
-                    _toast.emit(ConfigToast.CompanionPaired)
+        viewModelScope.launch {
+            val phase = bridgeStatus.value.phase
+            val bridgeHeldLink = phase == BridgePhase.Connected ||
+                phase == BridgePhase.Connecting ||
+                phase == BridgePhase.Scanning
+            if (bridgeHeldLink) {
+                pausedBridgeForPairing = true
+                _toast.emit(ConfigToast.BridgePausedForPairing)
+                stopBridge()
+                // Wait for the link to actually drop, then give the WiCAN a
+                // moment to resume advertising before the chooser scans.
+                withTimeoutOrNull(5_000) {
+                    while (
+                        bridgeStatus.value.phase != BridgePhase.Idle &&
+                        bridgeStatus.value.phase != BridgePhase.Disconnected
+                    ) {
+                        delay(200)
+                    }
                 }
-            },
-            onError = { reason ->
-                viewModelScope.launch {
-                    _toast.emit(ConfigToast.CompanionError(reason))
-                }
-            },
-        )
+                delay(2_500)
+            }
+            val mac = _form.value.bleDeviceMac
+            companionManager.associate(
+                knownMac = mac,
+                onIntentSender = { sender ->
+                    viewModelScope.launch { _companionIntentSender.emit(sender) }
+                },
+                onAlreadyAssociated = {
+                    refreshCompanionState()
+                    restoreBridgeAfterPairingIfNeeded()
+                    viewModelScope.launch {
+                        _toast.emit(ConfigToast.CompanionPaired)
+                    }
+                },
+                onError = { reason ->
+                    restoreBridgeAfterPairingIfNeeded()
+                    viewModelScope.launch {
+                        _toast.emit(ConfigToast.CompanionError(reason))
+                    }
+                },
+            )
+        }
+    }
+
+    /** Restart the bridge if [pairCompanion] stopped it to free the BLE link.
+     *  Idempotent — a no-op unless we actually paused it. Called from every
+     *  resolution point of the consent flow (confirm / cancel / error). On a
+     *  successful pair CDM also auto-starts the bridge; the bridge's
+     *  onStartCommand is idempotent so a double start is harmless. */
+    fun restoreBridgeAfterPairingIfNeeded() {
+        if (!pausedBridgeForPairing) return
+        pausedBridgeForPairing = false
+        startBridge()
     }
 
     /** Called by the screen after the consent dialog returns OK with the

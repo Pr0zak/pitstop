@@ -130,6 +130,9 @@ fun ConfigScreen(
         extractCompanionResult(result.resultCode, result.data)?.let { (id, mac) ->
             viewModel.onCompanionConfirmed(id, mac)
         } ?: viewModel.refreshCompanionState()
+        // Restart the bridge if pairing had stopped it to free the BLE link
+        // (no-op unless it did). Covers both the confirm and cancel paths.
+        viewModel.restoreBridgeAfterPairingIfNeeded()
     }
     LaunchedEffect(Unit) {
         viewModel.companionIntentSender.collect { sender ->
@@ -159,6 +162,8 @@ fun ConfigScreen(
                 ConfigToast.UpdateDownloadFailed ->
                     "Download failed — check Logs and try again"
                 ConfigToast.CompanionPaired -> "WiCAN paired for reliable auto-start"
+                ConfigToast.BridgePausedForPairing ->
+                    "Stopping bridge so the WiCAN can be discovered…"
                 ConfigToast.CompanionUnpaired -> "WiCAN unpaired"
                 is ConfigToast.CompanionError -> "Pairing failed: ${t.message}"
             }
