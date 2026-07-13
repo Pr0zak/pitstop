@@ -519,13 +519,28 @@ class PitstopBridgeService : Service() {
         }
     }
 
-    // Engine-state hysteresis: WiCAN occasionally answers STOPPED for one
-    // specific PID (e.g. an unsupported one) while the engine is running.
-    // Require a few consecutive STOPPED responses with no real frame in
-    // between before we declare engine-off. A single live frame resets the
-    // counter and immediately flips to engine-on.
+    // Engine-state hysteresis: WiCAN occasionally answers STOPPED / NO DATA
+    // for a stretch while the engine is still running — a Honda i-stop
+    // auto-off at a light, a momentary CAN dropout, or the BLE link
+    // degrading for a few seconds. A real frame resets everything and
+    // immediately flips to engine-on. To declare engine-OFF we require ALL
+    // of: a run of responses, a *sustained* quiet window, and no recent
+    // vehicle motion. The bare 6-response count (~3 s) used before sealed
+    // live drives the instant the WiCAN went quiet mid-drive — the
+    // 2026-07-13 early-cutout, where a no-data burst as the car braked to a
+    // stop ended the drive ~4 min before the engine actually went off.
     private var stoppedRunLength = 0
+    private var stoppedRunStartMs = 0L
+    @Volatile private var lastMotionAtMs = 0L
     private val engineOffThreshold = 6
+    // The no-data / STOPPED burst must persist at least this long before we
+    // treat it as a real key-off. i-stop and transient CAN/BLE hiccups
+    // resume real frames well within this window and reset the streak.
+    private val engineOffQuietMs = 30_000L
+    // If the vehicle was moving this recently, a no-data burst is a link
+    // hiccup mid-drive, not a key-off — hold the drive open regardless.
+    private val recentMotionGraceMs = 15_000L
+    private val motionKph = 3.0
 
     /**
      * Single chokepoint for drive open / seal, driven off the merged
@@ -593,6 +608,7 @@ class PitstopBridgeService : Service() {
 
     private fun onEngineOnSignal() {
         stoppedRunLength = 0
+        stoppedRunStartMs = 0L
         val s = stateBus.status.value
         if (s.engineState != EngineState.On) {
             logBuffer.info("engine on")
@@ -607,12 +623,27 @@ class PitstopBridgeService : Service() {
     }
 
     private fun onEngineOffSignal() {
+        val nowMs = System.currentTimeMillis()
+        if (stoppedRunLength == 0) stoppedRunStartMs = nowMs
         stoppedRunLength += 1
+        // Debounce (2026-07-13 early-cutout fix). Seal only when the quiet
+        // is genuinely sustained AND we weren't just moving — otherwise an
+        // i-stop / CAN dropout / BLE-degradation burst would end a live
+        // drive. A real frame resets the streak via onEngineOnSignal, so a
+        // burst that resumes never crosses these gates.
         if (stoppedRunLength < engineOffThreshold) return
+        if (nowMs - stoppedRunStartMs < engineOffQuietMs) return
+        if (lastMotionAtMs > 0L && nowMs - lastMotionAtMs < recentMotionGraceMs) return
         val s = stateBus.status.value
         if (s.engineState != EngineState.Off) {
-            logBuffer.info("engine off (wican reports stopped)")
-            val tMs = System.currentTimeMillis()
+            logBuffer.info(
+                "engine off (wican reports stopped)",
+                mapOf(
+                    "quiet_ms" to (nowMs - stoppedRunStartMs),
+                    "run" to stoppedRunLength,
+                ),
+            )
+            val tMs = nowMs
             // BLE-derived Off — flip the merge input. The
             // engine-state listener handles drive sealing.
             stateBus.setBleEngineState(EngineState.Off, tMs)
@@ -975,6 +1006,12 @@ class PitstopBridgeService : Service() {
         }
 
         stateBus.publishMetric(pid.name, value)
+        // Track the last time we saw real vehicle motion — the engine-off
+        // debounce holds the drive open through a no-data burst if the car
+        // was moving moments ago (link hiccup, not a key-off).
+        if (pid.name == "vehicle_speed" && value > motionKph) {
+            lastMotionAtMs = System.currentTimeMillis()
+        }
         // Home-screen fuel widget reads from the server's /vehicles
         // endpoint — without an explicit refresh kick, it only updates
         // on Android's 30-min `updatePeriodMillis` floor (and Doze can

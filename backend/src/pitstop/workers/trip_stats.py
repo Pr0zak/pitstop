@@ -50,13 +50,24 @@ async def compute_trip_stats(
         ended_at,
     )
 
-    # Distance preference order:
-    #   1) GPS haversine sum from gps_points (accurate, immune to OBD speed
-    #      noise / dropped frames). PostGIS would be cleaner but we don't
-    #      ship the extension; the formula below is the standard 6371-km
-    #      great-circle approximation, plenty for trip totals.
-    #   2) Vehicle-speed integration (kph * dt) as a fallback when no GPS.
-    distance_km = await conn.fetchval(
+    # Distance: compute BOTH the GPS-haversine sum and the vehicle-speed
+    # integration, then take the larger.
+    #
+    #   1) GPS haversine sum from gps_points — great-circle over 6371 km
+    #      (no PostGIS shipped). Accurate when fixes are dense.
+    #   2) Vehicle-speed integration (kph * dt) from OBD.
+    #
+    # Both queries only sum segments whose neighbours are < 60 s apart, so
+    # BOTH UNDER-count when their source is sparse — never over-count. GPS
+    # goes sparse on cold-start / poor-sky drives (a handful of fixes over
+    # tens of minutes leaves >60 s gaps that all get dropped, collapsing a
+    # 12 km drive to <1 km), while OBD speed goes sparse when the ECU stops
+    # answering. Preferring GPS whenever it returned anything non-zero (the
+    # old behaviour) therefore silently under-reported sparse-GPS drives by
+    # ~20x. Taking the max lets whichever method captured more of the real
+    # segments win; the per-method sanity filters (GPS < 250 km/h step, OBD
+    # dt < 60 s) keep either from over-counting.
+    gps_km = await conn.fetchval(
         """
         WITH pairs AS (
             SELECT
@@ -92,29 +103,26 @@ async def compute_trip_stats(
         started_at,
         ended_at,
     )
-    # Fallback: speed integration if GPS gave us nothing. Older trips that
-    # predate gps_points (or vehicles without GPS plumbed through the
-    # bridge) take this path.
-    if not distance_km:
-        distance_km = await conn.fetchval(
-            """
-            SELECT COALESCE(SUM(value_num * dt) / 3600.0, 0)
-            FROM (
-                SELECT
-                    value_num,
-                    EXTRACT(EPOCH FROM (time - LAG(time) OVER (ORDER BY time)))
-                        AS dt
-                FROM pid_readings
-                WHERE vehicle_id = $1
-                  AND metric = 'vehicle_speed'
-                  AND time >= $2 AND time <= $3
-            ) s
-            WHERE dt IS NOT NULL AND dt < 60
-            """,
-            vehicle_id,
-            started_at,
-            ended_at,
-        )
+    speed_km = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(value_num * dt) / 3600.0, 0)
+        FROM (
+            SELECT
+                value_num,
+                EXTRACT(EPOCH FROM (time - LAG(time) OVER (ORDER BY time)))
+                    AS dt
+            FROM pid_readings
+            WHERE vehicle_id = $1
+              AND metric = 'vehicle_speed'
+              AND time >= $2 AND time <= $3
+        ) s
+        WHERE dt IS NOT NULL AND dt < 60
+        """,
+        vehicle_id,
+        started_at,
+        ended_at,
+    )
+    distance_km = max(float(gps_km or 0.0), float(speed_km or 0.0)) or None
 
     # Fuel used: integrate maf_air_flow (g/s) / 14.7 (stoich) / 749.9 (g/L)
     # across the trip duration. ~14.7 g air per 1 g fuel; gasoline density
