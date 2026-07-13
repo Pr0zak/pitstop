@@ -309,8 +309,7 @@ private fun HistoryListScreen(
                 val tripSelection by viewModel.tripSelection.collectAsStateWithLifecycle()
                 val mergeState by viewModel.mergeState.collectAsStateWithLifecycle()
                 val deleteState by viewModel.deleteState.collectAsStateWithLifecycle()
-                val contextSheet by viewModel.tripContextSheet.collectAsStateWithLifecycle()
-                val deletePrompt by viewModel.tripDeletePrompt.collectAsStateWithLifecycle()
+                val deleteConfirm by viewModel.deleteConfirm.collectAsStateWithLifecycle()
                 val tripSort by viewModel.tripSort.collectAsStateWithLifecycle()
                 val tripFilter by viewModel.tripSourceFilter.collectAsStateWithLifecycle()
                 TripsList(
@@ -321,29 +320,20 @@ private fun HistoryListScreen(
                     mergeState = mergeState,
                     deleteState = deleteState,
                     onToggleSelect = viewModel::toggleTripSelection,
-                    onLongPress = viewModel::openTripContextSheet,
+                    onLongPress = viewModel::longPressTrip,
                     onCancelSelection = viewModel::exitTripSelection,
                     onMerge = viewModel::mergeSelectedTrips,
+                    onDelete = viewModel::requestDeleteSelection,
                     sort = tripSort,
                     sourceFilter = tripFilter,
                     onSortChange = viewModel::setTripSort,
                     onFilterChange = viewModel::setTripSourceFilter,
                 )
-                contextSheet?.let { sheet ->
-                    TripContextSheetUi(
-                        sheet = sheet,
-                        trip = ui.trips.data.firstOrNull { it.id == sheet.tripId },
-                        onDismiss = viewModel::closeTripContextSheet,
-                        onSelectForMerge = viewModel::enterMergeFromContext,
-                        onDelete = viewModel::requestDeleteFromContext,
-                    )
-                }
-                deletePrompt?.let { prompt ->
-                    TripDeleteConfirmDialog(
-                        prompt = prompt,
-                        trip = ui.trips.data.firstOrNull { it.id == prompt.tripId },
-                        onCancel = viewModel::cancelDeletePrompt,
-                        onConfirm = viewModel::confirmDeleteTrip,
+                if (deleteConfirm) {
+                    TripsDeleteConfirmDialog(
+                        count = tripSelection.ids.size,
+                        onCancel = viewModel::cancelDeleteSelection,
+                        onConfirm = viewModel::confirmDeleteSelection,
                     )
                 }
             }
@@ -419,6 +409,7 @@ private fun TripsList(
     onLongPress: (String) -> Unit,
     onCancelSelection: () -> Unit,
     onMerge: () -> Unit,
+    onDelete: () -> Unit,
     sort: TripSortOrder,
     sourceFilter: TripSourceFilter,
     onSortChange: (TripSortOrder) -> Unit,
@@ -431,6 +422,7 @@ private fun TripsList(
                 mergeState = mergeState,
                 onCancel = onCancelSelection,
                 onMerge = onMerge,
+                onDelete = onDelete,
             )
         }
         if (deleteState !is DeleteState.Idle) {
@@ -603,9 +595,9 @@ private fun TripCard(
                 onLongClick = {
                     // In selection mode, long-press still toggles to
                     // preserve the fast-select flow. Out of selection
-                    // mode, long-press opens the context sheet (merge
-                    // / delete) instead of jumping straight into
-                    // selection.
+                    // mode, long-press enters multi-select seeded with
+                    // this trip; the selection bar then offers Merge
+                    // (≥2) or Delete (≥1).
                     if (selection.mode) onToggleSelect(trip.id) else onLongPress(trip.id)
                 },
             ),
@@ -663,76 +655,20 @@ private fun TripCard(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TripContextSheetUi(
-    sheet: TripContextSheet,
-    trip: TripDto?,
-    onDismiss: () -> Unit,
-    onSelectForMerge: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val sheetState = androidx.compose.material3.rememberModalBottomSheetState()
-    androidx.compose.material3.ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Text(
-                text = trip?.let { formatTripDate(it.startedAt) } ?: "Trip",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
-            trip?.distanceKm?.let { km ->
-                Text(
-                    text = "%.1f mi".format(km * 0.621371),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-            }
-            androidx.compose.material3.ListItem(
-                headlineContent = { Text("Select for merge") },
-                supportingContent = { Text("Pick a second trip to combine with this one") },
-                modifier = Modifier.clickable {
-                    onSelectForMerge()
-                },
-            )
-            androidx.compose.material3.ListItem(
-                headlineContent = {
-                    Text(
-                        "Delete trip",
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                },
-                supportingContent = { Text("Removes this trip from history. Can't be undone.") },
-                modifier = Modifier.clickable {
-                    onDelete()
-                },
-            )
-            Spacer(Modifier.size(8.dp))
-        }
-    }
-}
-
-@Composable
-private fun TripDeleteConfirmDialog(
-    prompt: TripDeletePrompt,
-    trip: TripDto?,
+private fun TripsDeleteConfirmDialog(
+    count: Int,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("Delete trip?") },
+        title = { Text(if (count == 1) "Delete trip?" else "Delete $count trips?") },
         text = {
-            val when_ = trip?.let { formatTripDate(it.startedAt) } ?: "this trip"
-            val miles = trip?.distanceKm?.let { " (%.1f mi)".format(it * 0.621371) } ?: ""
-            Text("Permanently delete $when_$miles? This can't be undone.")
+            Text(
+                if (count == 1) "Permanently delete this trip? This can't be undone."
+                else "Permanently delete these $count trips? This can't be undone.",
+            )
         },
         confirmButton = {
             TextButton(
@@ -753,7 +689,7 @@ private fun TripDeleteBanner(state: DeleteState) {
     val label = when (state) {
         DeleteState.Idle -> return
         DeleteState.InProgress -> "Deleting…"
-        DeleteState.Done -> "Trip deleted"
+        is DeleteState.Done -> if (state.count == 1) "1 trip deleted" else "${state.count} trips deleted"
         is DeleteState.Failed -> "Delete failed: ${state.message}"
     }
     Row(
@@ -786,6 +722,7 @@ private fun TripSelectionBar(
     mergeState: MergeState,
     onCancel: () -> Unit,
     onMerge: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -797,8 +734,8 @@ private fun TripSelectionBar(
         val label = when (mergeState) {
             MergeState.Idle -> when (selection.ids.size) {
                 0 -> "Long-press a trip to select"
-                1 -> "1 selected · pick one more to merge"
-                else -> "${selection.ids.size} selected"
+                1 -> "1 selected · Delete, or pick more to merge"
+                else -> "${selection.ids.size} selected · Merge or Delete"
             }
             MergeState.InProgress -> "Merging…"
             is MergeState.Done -> "Trips merged"
@@ -812,9 +749,17 @@ private fun TripSelectionBar(
         if (selection.mode && mergeState is MergeState.Idle) {
             OutlinedButton(onClick = onCancel) { Text("Cancel") }
             Spacer(modifier = Modifier.size(8.dp))
+            TextButton(
+                onClick = onDelete,
+                enabled = selection.ids.isNotEmpty(),
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) { Text("Delete") }
+            Spacer(modifier = Modifier.size(8.dp))
             Button(
                 onClick = onMerge,
-                enabled = selection.ids.size == 2,
+                enabled = selection.ids.size >= 2,
             ) { Text("Merge") }
         }
         if (mergeState is MergeState.InProgress) {

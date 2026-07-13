@@ -280,10 +280,12 @@ interface PitstopApi {
     suspend fun getTripDetail(@Path("id") id: String): TripDetailDto
 
     /**
-     * Manually merge two trips into one (MERGE-1). The earlier of the
-     * two (by `started_at`) absorbs the later; the server returns the
-     * kept trip with `source = "manual_merge"`. The other row is
-     * deleted server-side.
+     * Manually merge two or more trips into one (MERGE-N). The earliest
+     * leg (by `started_at`) absorbs the rest; the server returns the
+     * kept trip with `source = "manual_merge"`. The other rows are
+     * deleted server-side. `id` is just the path anchor — the server
+     * picks the earliest leg as the survivor regardless of which id it
+     * is.
      */
     @POST("api/trips/{id}/merge")
     suspend fun mergeTrips(
@@ -358,7 +360,7 @@ data class TripDto(
 
 @kotlinx.serialization.Serializable
 data class TripMergeRequest(
-    @kotlinx.serialization.SerialName("other_trip_id") val otherTripId: String,
+    @kotlinx.serialization.SerialName("other_trip_ids") val otherTripIds: List<String>,
 )
 
 /** Response shape for /api/analytics/route-trace. Each point is the

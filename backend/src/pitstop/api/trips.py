@@ -353,9 +353,38 @@ async def delete_trip(
 
 
 class TripMergeRequest(BaseModel):
-    other_trip_id: UUID = Field(
-        ..., description="Second trip to merge into the path-parameter trip."
+    """Trips to fold into the path-parameter trip.
+
+    `other_trip_ids` merges N trips at once (MERGE-N) — the common case
+    for a long drive the phone fragmented into many legs across BLE
+    dropouts. `other_trip_id` is the legacy single-trip field, still
+    accepted so older phone/web clients keep working; it's coerced into
+    the list below. At least one of the two must be supplied.
+    """
+
+    other_trip_ids: list[UUID] = Field(
+        default_factory=list,
+        description="Trips to merge into the path-parameter trip (MERGE-N).",
     )
+    other_trip_id: UUID | None = Field(
+        default=None,
+        description="Legacy single-trip field, folded into other_trip_ids.",
+    )
+
+    def target_ids(self, trip_id: UUID) -> list[UUID]:
+        """Distinct set of every trip in the merge, path trip included,
+        order-preserved (path trip first). Raises 400 if fewer than two
+        distinct trips end up in the set."""
+        seen: dict[UUID, None] = {trip_id: None}
+        for tid in [*self.other_trip_ids, *( [self.other_trip_id] if self.other_trip_id else [])]:
+            seen.setdefault(tid, None)
+        ids = list(seen)
+        if len(ids) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="merge needs at least two distinct trips",
+            )
+        return ids
 
 
 @router.post(
@@ -368,83 +397,82 @@ async def merge_trips(
     trip_id: UUID = FastAPIPath(...),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, Any]:
-    """Manually combine two trips into one. The earlier trip (by
-    started_at) absorbs the later trip; the later trip's row is
-    deleted. Stat columns are recombined: distance_km / fuel_used_l /
-    dtc_count / idle_s sum, max_rpm / max_speed_kph take the max, and
-    avg_speed_kph / avg_coolant_c are re-weighted by each leg's
-    duration. ended_at moves to the later trip's ended_at; duration_s
-    becomes the elapsed time across both legs (gap included).
+    """Manually combine two or more trips into one (MERGE-N). The
+    earliest trip (by started_at) absorbs every other; the rest are
+    deleted. Stat columns are recombined across all legs: distance_km /
+    fuel_used_l / dtc_count / idle_s sum, max_rpm / max_speed_kph take
+    the max, and avg_speed_kph / avg_coolant_c are re-weighted by each
+    leg's duration. ended_at moves to the latest leg's ended_at;
+    duration_s becomes the elapsed time from the first start to the last
+    end (all gaps included).
 
     `source` is set to `manual_merge` so trip_deriver.py treats the
     combined range as off-limits and doesn't re-split it on the next
-    cycle.
+    cycle. The kept row's `category` / `notes` are preserved (the UPDATE
+    only touches stat columns).
 
-    Both trips must belong to the same vehicle. Trips already on a
+    All trips must belong to the same vehicle. Trips already on a
     `manual_merge` row can be merged again (chains are allowed).
     """
-    if body.other_trip_id == trip_id:
-        raise HTTPException(status_code=400, detail="cannot merge a trip with itself")
+    target_ids = body.target_ids(trip_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch(
                 f"SELECT {_TRIP_COLS} FROM trips WHERE id = ANY($1::uuid[]) FOR UPDATE",
-                [trip_id, body.other_trip_id],
+                target_ids,
             )
-            if len(rows) != 2:
-                raise HTTPException(status_code=404, detail="one or both trips not found")
-            if rows[0]["vehicle_id"] != rows[1]["vehicle_id"]:
+            if len(rows) != len(target_ids):
+                raise HTTPException(status_code=404, detail="one or more trips not found")
+            vehicle_ids = {r["vehicle_id"] for r in rows}
+            if len(vehicle_ids) != 1:
                 raise HTTPException(status_code=400, detail="trips belong to different vehicles")
-            # Order by started_at — earlier trip absorbs later.
-            earlier, later = sorted(rows, key=lambda r: r["started_at"])
-            new_started = earlier["started_at"]
-            new_ended = later["ended_at"] or earlier["ended_at"]
+            # Order by started_at — earliest leg absorbs the rest.
+            legs = sorted(rows, key=lambda r: r["started_at"])
+            kept = legs[0]
+            new_started = kept["started_at"]
+            new_ended = max((r["ended_at"] or r["started_at"]) for r in legs)
             new_duration_s = int((new_ended - new_started).total_seconds())
 
-            def _sum(a, b):
-                if a is None and b is None:
-                    return None
-                return (a or 0) + (b or 0)
+            def _sum(col: str):
+                vals = [r[col] for r in legs if r[col] is not None]
+                return sum(vals) if vals else None
 
-            def _max(a, b):
-                if a is None:
-                    return b
-                if b is None:
-                    return a
-                return max(a, b)
+            def _max(col: str):
+                vals = [r[col] for r in legs if r[col] is not None]
+                return max(vals) if vals else None
 
-            def _wavg(a_val, a_dur, b_val, b_dur):
-                a = (a_val, a_dur) if a_val is not None and a_dur else None
-                b = (b_val, b_dur) if b_val is not None and b_dur else None
-                if a is None and b is None:
-                    return None
-                if a is None:
-                    return b[0]
-                if b is None:
-                    return a[0]
-                total = a[1] + b[1]
-                if total <= 0:
-                    return None
-                return float(a[0] * a[1] + b[0] * b[1]) / total
+            def _wavg(col: str):
+                # Duration-weighted mean over legs with both a value and
+                # a positive duration. Falls back to a plain mean of the
+                # values if no leg carries a usable duration.
+                num = den = 0.0
+                plain: list[float] = []
+                for r in legs:
+                    v = r[col]
+                    if v is None:
+                        continue
+                    plain.append(float(v))
+                    d = r["duration_s"] or 0
+                    if d > 0:
+                        num += float(v) * d
+                        den += d
+                if den > 0:
+                    return num / den
+                if plain:
+                    return sum(plain) / len(plain)
+                return None
 
-            distance_km = _sum(earlier["distance_km"], later["distance_km"])
-            fuel_used_l = _sum(earlier["fuel_used_l"], later["fuel_used_l"])
-            dtc_count = (earlier["dtc_count"] or 0) + (later["dtc_count"] or 0)
-            idle_s = _sum(earlier["idle_s"], later["idle_s"])
-            max_rpm = _max(earlier["max_rpm"], later["max_rpm"])
-            max_speed_kph = _max(earlier["max_speed_kph"], later["max_speed_kph"])
-            avg_speed_kph = _wavg(
-                earlier["avg_speed_kph"], earlier["duration_s"],
-                later["avg_speed_kph"], later["duration_s"],
-            )
-            avg_coolant_c = _wavg(
-                earlier["avg_coolant_c"], earlier["duration_s"],
-                later["avg_coolant_c"], later["duration_s"],
-            )
-            # Delete the later trip first to free the row, then update
-            # the earlier one. Order matters only if both happen to
-            # share an id (impossible since we checked != above).
-            await conn.execute("DELETE FROM trips WHERE id = $1", later["id"])
+            distance_km = _sum("distance_km")
+            fuel_used_l = _sum("fuel_used_l")
+            dtc_count = sum((r["dtc_count"] or 0) for r in legs)
+            idle_s = _sum("idle_s")
+            max_rpm = _max("max_rpm")
+            max_speed_kph = _max("max_speed_kph")
+            avg_speed_kph = _wavg("avg_speed_kph")
+            avg_coolant_c = _wavg("avg_coolant_c")
+            # Delete every absorbed leg, then update the kept row.
+            drop_ids = [r["id"] for r in legs if r["id"] != kept["id"]]
+            await conn.execute("DELETE FROM trips WHERE id = ANY($1::uuid[])", drop_ids)
             updated = await conn.fetchrow(
                 f"""
                 UPDATE trips SET
@@ -462,7 +490,7 @@ async def merge_trips(
                   WHERE id = $1
                 RETURNING {_TRIP_COLS}
                 """,
-                earlier["id"], new_ended, new_duration_s,
+                kept["id"], new_ended, new_duration_s,
                 distance_km, max_rpm, max_speed_kph,
                 avg_speed_kph, avg_coolant_c, fuel_used_l,
                 dtc_count, idle_s,
@@ -470,9 +498,10 @@ async def merge_trips(
             log.info(
                 "trips merged",
                 extra={
-                    "kept_id": str(earlier["id"]),
-                    "dropped_id": str(later["id"]),
-                    "vehicle_id": str(earlier["vehicle_id"]),
+                    "kept_id": str(kept["id"]),
+                    "dropped_ids": [str(i) for i in drop_ids],
+                    "leg_count": len(legs),
+                    "vehicle_id": str(kept["vehicle_id"]),
                     "new_started_at": new_started.isoformat(),
                     "new_ended_at": new_ended.isoformat(),
                     "new_duration_s": new_duration_s,

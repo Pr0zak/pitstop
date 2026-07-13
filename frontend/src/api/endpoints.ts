@@ -218,13 +218,13 @@ export async function updateTrip(id: string, payload: Partial<Trip>): Promise<Tr
 export async function deleteTrip(id: string): Promise<void> {
   await apiIngest.delete(`/trips/${id}`);
 }
-/** Merge two trips. `keepId` becomes the surviving row (the earlier
- *  one wins by `started_at` regardless, but the path-param trip is
- *  what comes back as the response). `otherId` is deleted server-side
- *  and its stats are folded in. Source becomes `manual_merge`. */
-export async function mergeTrips(keepId: string, otherId: string): Promise<Trip> {
+/** Merge two or more trips into one (MERGE-N). The earliest trip (by
+ *  `started_at`) wins as the surviving row regardless of which id is
+ *  passed as `keepId`; `otherIds` are deleted server-side and their
+ *  stats folded in. Source becomes `manual_merge`. */
+export async function mergeTrips(keepId: string, otherIds: string[]): Promise<Trip> {
   const r = await apiIngest.post<Trip>(`/trips/${keepId}/merge`, {
-    other_trip_id: otherId,
+    other_trip_ids: otherIds,
   });
   return r.data;
 }

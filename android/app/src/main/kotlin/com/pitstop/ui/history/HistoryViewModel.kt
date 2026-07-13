@@ -83,10 +83,11 @@ data class SyncConfirmPrompt(
     val reason: String,
 )
 
-/** Multi-select state for the Trips list — drives the merge-two-trips
+/** Multi-select state for the Trips list — drives the merge-N-trips
  *  UX. When `mode` is true the trip cards toggle on tap instead of
  *  opening detail, and the selection action bar appears at the top of
- *  the list. Capped at 2 selections because merge takes exactly two. */
+ *  the list. Any two or more selections can be merged into one (a long
+ *  drive the phone fragmented across BLE dropouts often needs 3+). */
 data class TripSelection(
     val mode: Boolean = false,
     val ids: Set<String> = emptySet(),
@@ -101,21 +102,12 @@ sealed class MergeState {
     data class Failed(val message: String) : MergeState()
 }
 
-/** Long-press a trip → context sheet appears with merge / delete
- *  options. Carries the long-pressed trip id so taps on the sheet
- *  know what to act on. */
-data class TripContextSheet(val tripId: String)
-
-/** Two-step delete: tapping Delete in the context sheet opens this
- *  prompt; tapping Delete in the prompt fires the API call. Carries
- *  the trip id so the dialog can name what's being deleted. */
-data class TripDeletePrompt(val tripId: String)
-
-/** Mirrors [MergeState] for the delete flow. */
+/** Mirrors [MergeState] for the multi-select delete flow. `Done`
+ *  carries how many trips were removed so the banner can pluralize. */
 sealed class DeleteState {
     data object Idle : DeleteState()
     data object InProgress : DeleteState()
-    data object Done : DeleteState()
+    data class Done(val count: Int) : DeleteState()
     data class Failed(val message: String) : DeleteState()
 }
 
@@ -144,11 +136,10 @@ class HistoryViewModel @Inject constructor(
     private val _mergeState = MutableStateFlow<MergeState>(MergeState.Idle)
     val mergeState: StateFlow<MergeState> = _mergeState.asStateFlow()
 
-    private val _tripContextSheet = MutableStateFlow<TripContextSheet?>(null)
-    val tripContextSheet: StateFlow<TripContextSheet?> = _tripContextSheet.asStateFlow()
-
-    private val _tripDeletePrompt = MutableStateFlow<TripDeletePrompt?>(null)
-    val tripDeletePrompt: StateFlow<TripDeletePrompt?> = _tripDeletePrompt.asStateFlow()
+    /** True while the "Delete N trips?" confirm dialog is showing for
+     *  the current multi-selection. */
+    private val _deleteConfirm = MutableStateFlow(false)
+    val deleteConfirm: StateFlow<Boolean> = _deleteConfirm.asStateFlow()
 
     private val _deleteState = MutableStateFlow<DeleteState>(DeleteState.Idle)
     val deleteState: StateFlow<DeleteState> = _deleteState.asStateFlow()
@@ -263,81 +254,73 @@ class HistoryViewModel @Inject constructor(
         }
     }
 
-    /** Long-press on a trip card. Opens the context sheet so the user
-     *  can choose between "Select for merge" and "Delete". This
-     *  replaced the prior direct-to-selection long-press so delete is
-     *  reachable from the same gesture without a separate affordance. */
-    fun openTripContextSheet(tripId: String) {
-        if (_tripContextSheet.value != null) return
-        _tripContextSheet.value = TripContextSheet(tripId = tripId)
-    }
+    /** Long-press on a trip card enters multi-select mode seeded with
+     *  that trip (delegated to [toggleTripSelection]). From there the
+     *  selection bar offers Delete (any ≥ 1) or Merge (any ≥ 2) — the
+     *  same model as the web Trips view. */
+    fun longPressTrip(tripId: String) = toggleTripSelection(tripId)
 
-    fun closeTripContextSheet() {
-        _tripContextSheet.value = null
-    }
-
-    /** Sheet → "Select for merge". Enters multi-select mode and seeds
-     *  it with the long-pressed trip, matching the previous direct
-     *  long-press → selection behaviour. */
-    fun enterMergeFromContext() {
-        val sheet = _tripContextSheet.value ?: return
-        _tripContextSheet.value = null
-        _tripSelection.update { sel ->
-            if (sheet.tripId in sel.ids) sel.copy(mode = true)
-            else sel.copy(mode = true, ids = sel.ids + sheet.tripId)
-        }
-    }
-
-    /** Sheet → "Delete". Closes the sheet and opens the confirm
-     *  prompt; the API call doesn't fire until the user confirms. */
-    fun requestDeleteFromContext() {
-        val sheet = _tripContextSheet.value ?: return
-        _tripContextSheet.value = null
-        _tripDeletePrompt.value = TripDeletePrompt(tripId = sheet.tripId)
-    }
-
-    fun cancelDeletePrompt() {
-        _tripDeletePrompt.value = null
-    }
-
-    /** Fire DELETE /trips/{id} for the prompted trip. Refreshes the
-     *  list on success and shows a brief Done banner. */
-    fun confirmDeleteTrip() {
-        val prompt = _tripDeletePrompt.value ?: return
+    /** Selection-bar Delete → open the "Delete N trips?" confirm. The
+     *  API calls don't fire until the user confirms. */
+    fun requestDeleteSelection() {
+        if (_tripSelection.value.ids.isEmpty()) return
         if (_deleteState.value is DeleteState.InProgress) return
-        val tripId = prompt.tripId
-        _tripDeletePrompt.value = null
+        _deleteConfirm.value = true
+    }
+
+    fun cancelDeleteSelection() {
+        _deleteConfirm.value = false
+    }
+
+    /** Fire DELETE /trips/{id} for every selected trip. Deletes are
+     *  independent, so a single failure doesn't abort the rest — the
+     *  banner reports partial failure. Refreshes and drops selection
+     *  mode when done. */
+    fun confirmDeleteSelection() {
+        if (_deleteState.value is DeleteState.InProgress) return
+        val ids = _tripSelection.value.ids.toList()
+        if (ids.isEmpty()) return
+        _deleteConfirm.value = false
         _deleteState.value = DeleteState.InProgress
-        logBuffer.info("trip delete requested", mapOf("id" to tripId))
+        logBuffer.info(
+            "trips delete requested",
+            mapOf("count" to ids.size, "ids" to ids.joinToString(",")),
+        )
         viewModelScope.launch {
-            runCatching { api.deleteTrip(tripId) }
-                .onSuccess {
-                    logBuffer.info("trip delete accepted", mapOf("id" to tripId))
-                    _deleteState.value = DeleteState.Done
-                    refresh()
-                    delay(DELETE_DISMISS_MS)
-                    if (_deleteState.value is DeleteState.Done) _deleteState.value = DeleteState.Idle
+            val failed = mutableListOf<String>()
+            for (id in ids) {
+                runCatching { api.deleteTrip(id) }.onFailure { t ->
+                    failed.add(id)
+                    logBuffer.warn(
+                        "trip delete failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName), "id" to id),
+                    )
                 }
-                .onFailure { t ->
-                    val msg = t.message ?: t::class.java.simpleName
-                    logBuffer.warn("trip delete failed", mapOf("err" to msg, "id" to tripId))
-                    _deleteState.value = DeleteState.Failed(msg)
-                    delay(DELETE_DISMISS_MS)
-                    if (_deleteState.value is DeleteState.Failed) _deleteState.value = DeleteState.Idle
-                }
+            }
+            val deleted = ids.size - failed.size
+            _deleteState.value = if (failed.isEmpty()) {
+                logBuffer.info("trips delete accepted", mapOf("count" to deleted))
+                DeleteState.Done(deleted)
+            } else {
+                DeleteState.Failed("$deleted of ${ids.size} deleted; ${failed.size} failed")
+            }
+            _tripSelection.value = TripSelection()
+            refresh()
+            delay(DELETE_DISMISS_MS)
+            if (_deleteState.value is DeleteState.Done || _deleteState.value is DeleteState.Failed) {
+                _deleteState.value = DeleteState.Idle
+            }
         }
     }
 
     /** Toggle a trip in/out of the merge selection. First selection
-     *  flips the list into selection mode. Capped at 2; further taps
-     *  on unselected trips are ignored until the user clears one. */
+     *  flips the list into selection mode. No cap — a fragmented long
+     *  drive can need many legs merged at once (MERGE-N). */
     fun toggleTripSelection(tripId: String) {
         _tripSelection.update { sel ->
             if (tripId in sel.ids) {
                 val newIds = sel.ids - tripId
                 TripSelection(mode = newIds.isNotEmpty(), ids = newIds)
-            } else if (sel.ids.size >= 2) {
-                sel
             } else {
                 sel.copy(mode = true, ids = sel.ids + tripId)
             }
@@ -348,23 +331,25 @@ class HistoryViewModel @Inject constructor(
         _tripSelection.value = TripSelection()
     }
 
-    /** Fire POST /trips/{kept}/merge for the two selected trips.
-     *  Successful merge refreshes the list, drops selection mode, and
-     *  briefly shows a Done banner. */
+    /** Fire POST /trips/{kept}/merge for every selected trip (MERGE-N).
+     *  The server picks the earliest leg as the survivor regardless of
+     *  which id anchors the path, so we just pass the first selected id
+     *  and fold the rest in. Successful merge refreshes the list, drops
+     *  selection mode, and briefly shows a Done banner. */
     fun mergeSelectedTrips() {
         val sel = _tripSelection.value
-        if (sel.ids.size != 2) return
+        if (sel.ids.size < 2) return
         if (_mergeState.value is MergeState.InProgress) return
         val ids = sel.ids.toList()
         val keep = ids[0]
-        val other = ids[1]
+        val others = ids.drop(1)
         _mergeState.value = MergeState.InProgress
         logBuffer.info(
             "trip merge requested",
-            mapOf("a" to keep, "b" to other),
+            mapOf("keep" to keep, "others" to others.joinToString(","), "count" to ids.size),
         )
         viewModelScope.launch {
-            runCatching { api.mergeTrips(keep, TripMergeRequest(otherTripId = other)) }
+            runCatching { api.mergeTrips(keep, TripMergeRequest(otherTripIds = others)) }
                 .onSuccess { merged ->
                     logBuffer.info("trip merge accepted", mapOf("kept" to merged.id))
                     _mergeState.value = MergeState.Done(merged.id)

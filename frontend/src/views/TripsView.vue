@@ -60,7 +60,7 @@ const vehicleId = computed(() => vehicles.selectedVehicleId);
 
 // ── Selection mode (mirror phone) ───────────────────────────────────
 // Tap a row in selection mode → toggle in the set. The action bar
-// shows count + Merge (only when exactly 2) + Delete (any ≥ 1) + Cancel.
+// shows count + Merge (any ≥ 2) + Delete (any ≥ 1) + Cancel.
 // "Select" button in the toolbar enters the mode; entering selection
 // suppresses the open-detail behavior on row click.
 const selectMode = ref(false);
@@ -153,15 +153,16 @@ function open(tripId: string) {
 }
 
 // ── Merge ───────────────────────────────────────────────────────────
-// Backend picks the earlier trip as the kept row regardless of which
-// id we pass as the path parameter, so we can just pass the first one.
+// Backend picks the earliest trip as the kept row regardless of which
+// id we pass as the path parameter, so we pass the first one as the
+// path trip and the rest as the fold-in list (MERGE-N).
 async function doMerge() {
-  if (selectedIds.value.size !== 2) return;
+  if (selectedIds.value.size < 2) return;
   if (action.value.kind === "in_progress") return;
   const ids = Array.from(selectedIds.value);
   action.value = { kind: "in_progress", verb: "merge" };
   try {
-    await api.mergeTrips(ids[0], ids[1]);
+    await api.mergeTrips(ids[0], ids.slice(1));
     action.value = { kind: "done", verb: "merge", message: "Trips merged" };
     selectMode.value = false;
     selectedIds.value = new Set();
@@ -249,8 +250,7 @@ const actionBarLabel = computed(() => {
       const n = selectedIds.value.size;
       if (n === 0) return "Tap a trip to select";
       if (n === 1) return "1 selected — pick one more to merge, or Delete";
-      if (n === 2) return "2 selected — Merge or Delete";
-      return `${n} selected — Delete (Merge takes exactly 2)`;
+      return `${n} selected — Merge or Delete`;
     }
   }
 });
@@ -403,7 +403,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
       <button
         type="button"
         class="primary"
-        :disabled="selectedIds.size !== 2 || action.kind === 'in_progress'"
+        :disabled="selectedIds.size < 2 || action.kind === 'in_progress'"
         @click="doMerge"
       >Merge</button>
       <button
