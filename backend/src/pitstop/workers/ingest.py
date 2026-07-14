@@ -43,6 +43,37 @@ log = logging.getLogger(__name__)
 
 VALID_SOURCES = {"wican", "bridge"}
 
+# Physical-plausibility bounds for metrics the WiCAN AutoPID decoder is known
+# to emit garbage for. Values outside these are decode artifacts — a poisoned
+# CAN odometer frame (10,496,563 km), the -37 C coolant byte-0x03 value, the
+# -97.66% fuel-trim byte-0x03 sentinel — that pollute trip averages and the
+# pid_daily/hourly continuous aggregates (which can't be re-filtered after
+# materialization). Bounds are conservative so genuine extremes survive
+# (real fuel trims stay within ±40%, operating coolant within [-20,150]).
+_METRIC_BOUNDS: dict[str, tuple[float, float]] = {
+    "odometer": (1.0, 1_000_000.0),
+    "coolant_temp": (-20.0, 215.0),
+    "intake_air_temp": (-40.0, 150.0),
+}
+_TRIM_METRICS = frozenset({
+    "stft_b1", "stft_b2", "ltft_b1", "ltft_b2",
+    "stft_sec_b1", "stft_sec_b2", "ltft_sec_b1", "ltft_sec_b2",
+})
+
+
+def _implausible(metric: str, value_num: float | None) -> bool:
+    """True when a numeric reading is outside physical plausibility for a
+    known-garbage-prone metric (see _METRIC_BOUNDS). Unlisted metrics always
+    pass — this is a targeted decoder-artifact filter, not a general clamp."""
+    if value_num is None:
+        return False
+    bounds = _METRIC_BOUNDS.get(metric)
+    if bounds is not None and not (bounds[0] <= value_num <= bounds[1]):
+        return True
+    if metric in _TRIM_METRICS and abs(value_num) > 60.0:
+        return True
+    return False
+
 # Active loopback liveness probe. Instead of tearing down a healthy
 # connection whenever the broker is merely silent (a parked car publishes
 # nothing — the old 90 s passive watchdog reconnected every ~95 s forever,
@@ -500,6 +531,17 @@ class MqttIngest:
             else:
                 value_text = json.dumps(v)
             if value_num is None and value_text is None:
+                continue
+            # Drop WiCAN decoder-garbage before it lands: a poisoned CAN
+            # odometer frame (observed 10,496,563 km), the -37 C coolant
+            # byte-0x03 artifact, or the -97.66% fuel-trim sentinel would
+            # otherwise pollute trip averages + the pid_daily/hourly
+            # continuous aggregates (which can't re-filter after the fact).
+            if _implausible(metric, value_num):
+                log.debug(
+                    "ingest: dropping implausible %s=%s (source=%s)",
+                    metric, value_num, source,
+                )
                 continue
             out.append(
                 _PendingReading(

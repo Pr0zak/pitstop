@@ -1081,6 +1081,10 @@ async def engine_hours(
              WHERE vehicle_id = $1
                AND metric = 'odometer'
                AND value_num IS NOT NULL
+               -- Reject poisoned CAN frames (observed 10,496,563 km) that
+               -- would spike the cumulative-km curve 85x. Mirrors the
+               -- sanity filter in trip_deriver._refresh_latest_odo.
+               AND value_num > 0 AND value_num < 1000000
              GROUP BY 1
              ORDER BY 1 ASC
             """,
@@ -1161,22 +1165,29 @@ async def fuel_trim_history(
 
     async with pool.acquire() as conn:
         try:
+            # Fast path: the pid_daily continuous aggregate (materialized,
+            # refreshed every ~15 min) rather than re-scanning raw
+            # compressed chunks — ~69x faster on a multi-month window.
+            # Decoder garbage (the -97.66% STFT/LTFT sentinel) is kept out
+            # by the ingest plausibility guard + a one-time backfill, so the
+            # materialized avg is clean. The current in-progress day is
+            # omitted until the next refresh — fine for a long-term drift
+            # line.
             rows = await conn.fetch(
                 """
-                SELECT time_bucket(make_interval(days => 1), time) AS bucket,
-                       metric,
-                       avg(value_num) AS avg_pct
-                  FROM pid_readings
+                SELECT bucket, metric, avg_value AS avg_pct
+                  FROM pid_daily
                  WHERE vehicle_id = $1
                    AND metric = ANY($2)
-                   AND time >= $3
-                   AND value_num IS NOT NULL
-                 GROUP BY 1, 2
-                 ORDER BY 1 ASC
+                   AND bucket >= $3
+                 ORDER BY bucket ASC
                 """,
                 vehicle_id, list(metrics), cutoff,
             )
-        except asyncpg.UndefinedFunctionError:
+        except asyncpg.UndefinedTableError:
+            # No continuous aggregate (e.g. a test DB without TimescaleDB).
+            # Raw scan with a plausibility filter so decoder garbage can't
+            # drag the average.
             rows = await conn.fetch(
                 """
                 SELECT date_trunc('day', time) AS bucket,
@@ -1187,6 +1198,7 @@ async def fuel_trim_history(
                    AND metric = ANY($2)
                    AND time >= $3
                    AND value_num IS NOT NULL
+                   AND value_num > -50 AND value_num < 50
                  GROUP BY 1, 2
                  ORDER BY 1 ASC
                 """,
@@ -1232,6 +1244,9 @@ async def odometer_history(
              WHERE vehicle_id = $1
                AND metric = 'odometer'
                AND value_num IS NOT NULL
+               -- Reject poisoned CAN frames (>1,000,000 km) so the
+               -- deduped odometer line + miles/day summary stay sane.
+               AND value_num > 0 AND value_num < 1000000
                AND time >= $2
              ORDER BY time ASC
             """,

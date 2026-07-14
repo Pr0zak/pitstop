@@ -11,6 +11,7 @@ import com.pitstop.log.maskMac
 import no.nordicsemi.android.ble.BleManager
 import no.nordicsemi.android.ble.data.Data
 import no.nordicsemi.android.ble.observer.BondingObserver
+import no.nordicsemi.android.ble.observer.ConnectionObserver
 import java.util.UUID
 
 /**
@@ -65,6 +66,38 @@ class WiCanBleManager(
 
             override fun onBondingFailed(device: BluetoothDevice) {
                 logBuffer?.warn("ble bonding failed", mapOf("mac" to maskMac(device.address)))
+            }
+        })
+
+        // Genuine-auth recovery lives here, NOT in the connect() .fail{} handler.
+        // The .fail{} callback only exposes Nordic's negative FailCallback.REASON_*
+        // constants (REASON_TIMEOUT = -5 is the WiCAN's dominant failure — the
+        // dongle simply wasn't in range/advertising), never the raw HCI status.
+        // A real bond-key mismatch (the "needs pairing before each drive" symptom,
+        // HCI Authentication Failure / GATT 0x89) is surfaced by the OS as a
+        // connection FAILURE with ConnectionObserver.REASON_UNKNOWN while the
+        // device is still BONDED on our side — the bond exists but the peer
+        // rejected it. removeBond() ONLY for that case so the next connect
+        // re-pairs fresh. We deliberately do NOT remove on REASON_LINK_LOSS /
+        // REASON_TIMEOUT / REASON_CANCELLED — those are ordinary flaps, and
+        // re-pairing on a flap is exactly the regression we're avoiding.
+        setConnectionObserver(object : ConnectionObserver {
+            override fun onDeviceConnecting(device: BluetoothDevice) = Unit
+            override fun onDeviceConnected(device: BluetoothDevice) = Unit
+            override fun onDeviceReady(device: BluetoothDevice) = Unit
+            override fun onDeviceDisconnecting(device: BluetoothDevice) = Unit
+            override fun onDeviceDisconnected(device: BluetoothDevice, reason: Int) = Unit
+
+            @SuppressLint("MissingPermission")
+            override fun onDeviceFailedToConnect(device: BluetoothDevice, reason: Int) {
+                val bonded = device.bondState == BluetoothDevice.BOND_BONDED
+                if (reason == ConnectionObserver.REASON_UNKNOWN && bonded) {
+                    logBuffer?.warn(
+                        "ble: auth failure (bonded + REASON_UNKNOWN) — removing stale bond so the next connect re-pairs",
+                        mapOf("mac" to maskMac(device.address)),
+                    )
+                    removeBond().enqueue()
+                }
             }
         })
     }
@@ -163,19 +196,36 @@ class WiCanBleManager(
         stateCallback?.onConnectionStateChange(ConnectionState.DISCONNECTED)
     }
 
+    /**
+     * @param reconnect true when we're re-attaching to a device we've already
+     *   talked to this session (the service-level backoff loop's steady state).
+     *   That path uses `useAutoConnect(true)` so the OS reconnects
+     *   opportunistically the moment the WiCAN re-advertises — cheap on battery
+     *   and it dodges the ~15 s active-scan radio timeout that produced 626/685
+     *   REASON_TIMEOUT (-5) failures over 7 days. The first attempt of a session
+     *   stays on `useAutoConnect(false)` (direct connect) for a fast first
+     *   frame; autoConnect's first attempt can lag until the next advertising
+     *   interval, which we don't want on engine-start.
+     */
     @SuppressLint("MissingPermission")
-    fun connectToDevice(device: BluetoothDevice) {
+    fun connectToDevice(device: BluetoothDevice, reconnect: Boolean = false) {
         stateCallback?.onConnectionStateChange(ConnectionState.CONNECTING)
         logBuffer?.info(
             "ble connect",
             mapOf(
                 "mac" to maskMac(device.address),
                 "bonded" to (device.bondState == BluetoothDevice.BOND_BONDED),
+                "reconnect" to reconnect,
             ),
         )
+        // No inner .retry(): one connect() = one attempt = one "ble connect
+        // failed" log line, so the service-level backoff owns retry cadence
+        // (adaptive on inCar / engine state) instead of the Nordic library
+        // silently burning three 15 s timeouts per scheduled attempt. The old
+        // .retry(3, 250) inflated a single logical failure into a ~45 s stall
+        // and one opaque log line.
         connect(device)
-            .retry(3, 250)
-            .useAutoConnect(false)
+            .useAutoConnect(reconnect)
             .timeout(15_000)
             .done {
                 logBuffer?.info("ble connected", mapOf("mac" to maskMac(device.address)))
@@ -187,20 +237,19 @@ class WiCanBleManager(
                     "ble connect failed",
                     mapOf("mac" to maskMac(failedDevice.address), "status" to status, "bonded" to bonded),
                 )
-                // status 5 = HCI Authentication Failure: the WiCAN demands a
-                // bond but the stored bond's keys no longer match (it
-                // regenerated them on power-cycle/wake, or the bond is stale).
-                // This is the root of "needs pairing before each drive". Drop
-                // the bad bond so the next reconnect re-pairs fresh, automating
-                // the manual forget+re-pair. Guarded on bonded so we never
-                // remove-loop when there's nothing to remove.
-                if (status == AUTH_FAILURE_STATUS && bonded) {
-                    logBuffer?.warn(
-                        "ble: auth failure (status 5) — removing stale bond so the next connect re-pairs",
-                        mapOf("mac" to maskMac(failedDevice.address)),
-                    )
-                    removeBond().enqueue()
-                }
+                // The .fail{} handler on a connect() request delivers Nordic's
+                // FailCallback.REASON_* constants (all NEGATIVE), NOT a raw HCI
+                // status. REASON_TIMEOUT (-5) is the dominant WiCAN failure
+                // (626/685 attempts over 7 days): the dongle simply wasn't
+                // advertising / in range. That is NOT an auth problem — removing
+                // the bond on a timeout would force a needless re-pair every
+                // time the car is asleep. So we just report FAILED and let the
+                // service backoff handle it.
+                //
+                // A genuine HCI Authentication Failure (GATT status 5 / 0x89 =
+                // 137) does NOT arrive here — Nordic surfaces it through the
+                // ConnectionObserver.onDeviceFailedToConnect path (registered in
+                // init), which is the ONLY place we removeBond().
                 stateCallback?.onConnectionStateChange(ConnectionState.FAILED)
             }
             .enqueue()
@@ -242,11 +291,6 @@ class WiCanBleManager(
 
     companion object {
         private const val TAG = "WiCanBleManager"
-
-        /** Connection-callback status for HCI "Authentication Failure" — the
-         *  WiCAN's bond keys no longer match ours. Triggers a removeBond() so
-         *  the next connect re-pairs fresh. */
-        private const val AUTH_FAILURE_STATUS = 5
 
         private val CANDIDATE_PROFILES = listOf(
             // WiCAN-PRO v4.49 BLE channel: 0xFFF0 service.

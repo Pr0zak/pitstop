@@ -69,6 +69,19 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!--
+      Background location — REQUIRED for the FOREGROUND_SERVICE_TYPE_LOCATION
+      foreground service to be startable from the background (the normal in-car
+      path: CompanionDeviceManager wakes the app when the WiCAN appears while the
+      app is backgrounded). Foreground FINE/COARSE alone is not enough off the
+      foreground on Android 10+; without "Allow all the time" granted,
+      startForeground() with the LOCATION type throws, we fall back to
+      connectedDevice-only, and GPS silently dies on screen-off drives (an
+      18-fix / 22-min drive; several multi-km trips with 0 fixes). Requested at
+      runtime as the Android 11+ two-step flow (fine first, THEN background) in
+      MainActivity — it can only be requested on its own, after fine is granted. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!--
       Activity Recognition (Task: faster in-car detection). Opt-in 4th signal
       in InCarDetector — fires on IN_VEHICLE ENTER/EXIT transitions within
       ~5–15 s of vehicle motion, independent of WiFi handoff (which can lag

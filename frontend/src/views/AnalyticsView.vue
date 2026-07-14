@@ -80,24 +80,22 @@ const dtcsQ = useAsync(
 // dep ref changes, so each of these queries reloads on vehicle switch.
 // A manual watch fired a second, redundant round of requests.)
 
-// MPG line chart
-const mpgChart = computed(() => {
-  const points = mpgQ.data.value?.points ?? [];
-  if (points.length === 0) return null;
-  const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
-  const y = points.map((p) => p.mpg ?? null);
+// MPG line chart. Split into a stable opts computed and a data computed so a
+// pure data refresh (vehicle switch, window change) hits UPlotChart's cheap
+// setData() path instead of a full destroy()+rebuild. Opts still recomputes
+// when the EPA reference line's presence/value changes (rare — vehicle switch).
+const epaMpg = computed(() => vehicles.selectedVehicle?.epa_mpg_combined ?? null);
+const mpgOpts = computed<uPlot.Options>(() => {
   // EPA reference line (Task #90). Constant value across the window
   // when the vehicle has an epa_mpg_combined set; rendered as a
   // dashed grey line under the actual-MPG primary so the user can
   // see how their real-world economy compares to the sticker.
-  const epa = vehicles.selectedVehicle?.epa_mpg_combined ?? null;
-  const epaCol = epa != null ? t.map(() => epa) : null;
-  const aligned: uPlot.AlignedData = epaCol ? [t, y, epaCol] : [t, y];
+  const epa = epaMpg.value;
   const series: uPlot.Series[] = [
     {},
     { label: "MPG", stroke: "#2f81f7", width: 2 },
   ];
-  if (epaCol) {
+  if (epa != null) {
     series.push({
       label: `EPA combined (${epa})`,
       stroke: "rgba(154,160,170,0.65)",
@@ -105,83 +103,83 @@ const mpgChart = computed(() => {
       dash: [4, 3],
     });
   }
-  const opts: uPlot.Options = {
+  return {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
     axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
     series,
   };
-  return { aligned, opts };
+});
+const mpgData = computed<uPlot.AlignedData | null>(() => {
+  const points = mpgQ.data.value?.points ?? [];
+  if (points.length === 0) return null;
+  const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
+  const y = points.map((p) => p.mpg ?? null);
+  // The per-point EPA column belongs to the aligned data; it's only present
+  // when the vehicle has a sticker value. Series count in mpgOpts matches.
+  const epa = epaMpg.value;
+  const epaCol = epa != null ? t.map(() => epa) : null;
+  return epaCol ? [t, y, epaCol] : [t, y];
 });
 
 // RPM histogram (avg per bucket → bar series via paths.bars)
-const rpmChart = computed(() => {
+const rpmOpts = computed<uPlot.Options>(() => ({
+  width: 600,
+  height: 220,
+  scales: { x: { time: true } },
+  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "avg rpm" }],
+  series: [
+    {},
+    {
+      label: "Avg RPM",
+      stroke: "#3fb950",
+      width: 1.5,
+      fill: "rgba(63, 185, 80, 0.18)",
+    },
+  ],
+}));
+const rpmData = computed<uPlot.AlignedData | null>(() => {
   const data = rpmQ.data.value ?? [];
   if (data.length === 0) return null;
   const t = data.map((d) => Math.round((Date.parse(d.bucket) || 0) / 1000));
   const y = data.map((d) => d.avg ?? null);
-  const aligned: uPlot.AlignedData = [t, y];
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "avg rpm" }],
-    series: [
-      {},
-      {
-        label: "Avg RPM",
-        stroke: "#3fb950",
-        width: 1.5,
-        fill: "rgba(63, 185, 80, 0.18)",
-      },
-    ],
-  };
-  return { aligned, opts };
+  return [t, y];
 });
 
 // Temp distribution. coolant_temp is stored canonically in °C; convert to
 // °F when the user's resolved unit system is imperial and label the axis to
 // match. (The axis was hardcoded "°F" while plotting raw °C — a 2x mislabel.)
-const tempChart = computed(() => {
-  const series: { points: typeof tempCoolantQ.data.value; label: string; color: string }[] =
-    [
-      { points: tempCoolantQ.data.value, label: "Coolant", color: "#d29922" },
-    ];
-  const all = series.filter((s) => s.points && s.points.length > 0);
-  if (all.length === 0) return null;
-  const imperial = units.resolved === "imperial";
+// Only the Coolant series is currently plotted, so the series shape is fixed;
+// opts recomputes only when the unit system flips (rare). Data holds the
+// aligned columns and refreshes cheaply via setData().
+const imperial = computed(() => units.resolved === "imperial");
+const tempOpts = computed<uPlot.Options>(() => ({
+  width: 600,
+  height: 220,
+  scales: { x: { time: true } },
+  axes: [
+    { stroke: "#9aa0aa" },
+    { stroke: "#9aa0aa", label: imperial.value ? "°F" : "°C" },
+  ],
+  series: [{}, { label: "Coolant", stroke: "#d29922", width: 1.5 }],
+}));
+const tempData = computed<uPlot.AlignedData | null>(() => {
+  const points = tempCoolantQ.data.value;
+  if (!points || points.length === 0) return null;
   const toDisplay = (c: number | null): number | null =>
-    c == null ? null : imperial ? (c * 9) / 5 + 32 : c;
-  // Build a unified time axis from the union of buckets (assumes daily alignment).
-  const tsSet = new Set<number>();
-  for (const s of all) {
-    for (const p of s.points!) {
-      tsSet.add(Math.round((Date.parse(p.bucket) || 0) / 1000));
-    }
-  }
-  const ts = Array.from(tsSet).sort((a, b) => a - b);
+    c == null ? null : imperial.value ? (c * 9) / 5 + 32 : c;
+  const ts = points
+    .map((p) => Math.round((Date.parse(p.bucket) || 0) / 1000))
+    .sort((a, b) => a - b);
   const tsIdx = new Map<number, number>();
   ts.forEach((t, i) => tsIdx.set(t, i));
-  const cols: uPlot.AlignedData = [ts];
-  const seriesDefs: uPlot.Series[] = [{}];
-  for (const s of all) {
-    const col: (number | null)[] = new Array(ts.length).fill(null);
-    for (const p of s.points!) {
-      const i = tsIdx.get(Math.round((Date.parse(p.bucket) || 0) / 1000));
-      if (i != null) col[i] = toDisplay(p.avg ?? null);
-    }
-    cols.push(col);
-    seriesDefs.push({ label: s.label, stroke: s.color, width: 1.5 });
+  const col: (number | null)[] = new Array(ts.length).fill(null);
+  for (const p of points) {
+    const i = tsIdx.get(Math.round((Date.parse(p.bucket) || 0) / 1000));
+    if (i != null) col[i] = toDisplay(p.avg ?? null);
   }
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: imperial ? "°F" : "°C" }],
-    series: seriesDefs,
-  };
-  return { aligned: cols, opts };
+  return [ts, col];
 });
 
 // Engine hours vs miles (Task #96). Backend walks
@@ -194,7 +192,22 @@ const hoursQ = useAsync(
       : Promise.resolve(null as api.EngineHours | null),
   [vehicleId],
 );
-const hoursChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+const hoursOpts = computed<uPlot.Options>(() => ({
+  width: 600,
+  height: 220,
+  scales: { x: { time: true }, hrs: {}, ratio: {} },
+  axes: [
+    { stroke: "#9aa0aa" },
+    { scale: "hrs", stroke: "#9aa0aa", label: "engine hours", side: 3 },
+    { scale: "ratio", stroke: "#9aa0aa", label: "hrs / 100 mi", side: 1, grid: { show: false } },
+  ],
+  series: [
+    {},
+    { label: "Cum. engine hrs", scale: "hrs", stroke: "#3fb950", width: 1.6 },
+    { label: "Hrs / 100 mi", scale: "ratio", stroke: "#a78bfa", width: 1.4, dash: [4, 3] },
+  ],
+}));
+const hoursData = computed<uPlot.AlignedData | null>(() => {
   const points = hoursQ.data.value?.points ?? [];
   if (points.length < 2) return null;
   const t: number[] = [];
@@ -211,22 +224,7 @@ const hoursChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } 
       ratio.push(null);
     }
   }
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true }, hrs: {}, ratio: {} },
-    axes: [
-      { stroke: "#9aa0aa" },
-      { scale: "hrs", stroke: "#9aa0aa", label: "engine hours", side: 3 },
-      { scale: "ratio", stroke: "#9aa0aa", label: "hrs / 100 mi", side: 1, grid: { show: false } },
-    ],
-    series: [
-      {},
-      { label: "Cum. engine hrs", scale: "hrs", stroke: "#3fb950", width: 1.6 },
-      { label: "Hrs / 100 mi", scale: "ratio", stroke: "#a78bfa", width: 1.4, dash: [4, 3] },
-    ],
-  };
-  return { aligned: [t, hrs, ratio] as uPlot.AlignedData, opts };
+  return [t, hrs, ratio] as uPlot.AlignedData;
 });
 
 // Long-term fuel trim drift (Task #89). LTFT trending up over
@@ -240,7 +238,17 @@ const trimQ = useAsync(
   [vehicleId],
 );
 
-const trimChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+// Which trim banks actually have samples — drives both the series defs and
+// the aligned columns. Derived once so opts + data can never desync on series
+// count. Only changes on vehicle switch (trimQ's sole dep), so the resulting
+// opts identity is stable across everything else.
+const TRIM_SPECS: Array<{ key: string; label: string; stroke: string; dash?: number[] }> = [
+  { key: "ltft_b1", label: "LTFT B1", stroke: "#2f81f7" },
+  { key: "ltft_b2", label: "LTFT B2", stroke: "#a78bfa" },
+  { key: "stft_b1", label: "STFT B1", stroke: "rgba(47,129,247,0.55)", dash: [3, 3] },
+  { key: "stft_b2", label: "STFT B2", stroke: "rgba(167,139,250,0.55)", dash: [3, 3] },
+];
+const trimBuild = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
   const series = trimQ.data.value?.series;
   if (!series) return null;
   // Union of every distinct timestamp across all 4 series so uPlot
@@ -257,13 +265,7 @@ const trimChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } |
   const cols: (number | null)[][] = [];
   const seriesDefs: uPlot.Series[] = [{}];
   // Pair colors so STFT/LTFT for each bank read together.
-  const SPECS: Array<{ key: string; label: string; stroke: string; dash?: number[] }> = [
-    { key: "ltft_b1", label: "LTFT B1", stroke: "#2f81f7" },
-    { key: "ltft_b2", label: "LTFT B2", stroke: "#a78bfa" },
-    { key: "stft_b1", label: "STFT B1", stroke: "rgba(47,129,247,0.55)", dash: [3, 3] },
-    { key: "stft_b2", label: "STFT B2", stroke: "rgba(167,139,250,0.55)", dash: [3, 3] },
-  ];
-  for (const s of SPECS) {
+  for (const s of TRIM_SPECS) {
     const col: (number | null)[] = new Array(ts.length).fill(null);
     for (const p of series[s.key] ?? []) {
       const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
@@ -280,16 +282,19 @@ const trimChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } |
     }
   }
   if (cols.length === 0) return null;
-  const aligned: uPlot.AlignedData = [ts, ...cols] as uPlot.AlignedData;
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "%" }],
-    series: seriesDefs,
+  return {
+    aligned: [ts, ...cols] as uPlot.AlignedData,
+    opts: {
+      width: 600,
+      height: 220,
+      scales: { x: { time: true } },
+      axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "%" }],
+      series: seriesDefs,
+    },
   };
-  return { aligned, opts };
 });
+const trimData = computed<uPlot.AlignedData | null>(() => trimBuild.value?.aligned ?? null);
+const trimOpts = computed<uPlot.Options | null>(() => trimBuild.value?.opts ?? null);
 
 // Cost breakdown (Task #92). Per-month spend by category for a
 // stacked bar — fuel, maintenance, registration, etc.
@@ -366,7 +371,17 @@ const odoQ = useAsync(
   [vehicleId, odoWindow],
 );
 
-const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
+const odoOpts = computed<uPlot.Options>(() => ({
+  width: 600,
+  height: 220,
+  scales: { x: { time: true } },
+  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mi" }],
+  series: [
+    {},
+    { label: "Odometer", stroke: "#2f81f7", width: 1.6, fill: "rgba(47,129,247,0.08)" },
+  ],
+}));
+const odoData = computed<uPlot.AlignedData | null>(() => {
   const pts = odoQ.data.value?.points ?? [];
   if (pts.length < 2) return null;
   const t: number[] = [];
@@ -377,17 +392,7 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
     // km → mi for display
     y.push(p.odo_km != null ? p.odo_km * 0.621371 : null);
   }
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mi" }],
-    series: [
-      {},
-      { label: "Odometer", stroke: "#2f81f7", width: 1.6, fill: "rgba(47,129,247,0.08)" },
-    ],
-  };
-  return { aligned: [t, y], opts };
+  return [t, y];
 });
 </script>
 
@@ -417,8 +422,8 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
         <section class="card">
           <h3>MPG trend</h3>
           <div v-if="mpgQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!mpgChart" class="muted">No fillups in window.</div>
-          <UPlotChart v-else :data="mpgChart.aligned" :options="mpgChart.opts" />
+          <div v-else-if="!mpgData" class="muted">No fillups in window.</div>
+          <UPlotChart v-else :data="mpgData" :options="mpgOpts" />
           <p class="muted small" v-if="mpgQ.data.value?.points.length">
             Latest: {{ fmtMpg(mpgQ.data.value.points[mpgQ.data.value.points.length - 1].mpg) }}
           </p>
@@ -427,18 +432,18 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
         <section class="card">
           <h3>Engine RPM (daily avg)</h3>
           <div v-if="rpmQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!rpmChart" class="muted">No readings.</div>
-          <UPlotChart v-else :data="rpmChart.aligned" :options="rpmChart.opts" />
+          <div v-else-if="!rpmData" class="muted">No readings.</div>
+          <UPlotChart v-else :data="rpmData" :options="rpmOpts" />
         </section>
 
         <section class="card">
           <h3>Engine temps</h3>
           <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!tempChart" class="muted">No temperature readings.</div>
-          <UPlotChart v-else :data="tempChart.aligned" :options="tempChart.opts" />
+          <div v-else-if="!tempData" class="muted">No temperature readings.</div>
+          <UPlotChart v-else :data="tempData" :options="tempOpts" />
         </section>
 
-        <section v-if="hoursChart" class="card">
+        <section v-if="hoursData" class="card">
           <header class="head-inline">
             <h3>Engine hours vs miles</h3>
             <span v-if="hoursQ.data.value" class="muted small">
@@ -448,15 +453,15 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
               </span>
             </span>
           </header>
-          <UPlotChart :data="hoursChart.aligned" :options="hoursChart.opts" />
+          <UPlotChart :data="hoursData" :options="hoursOpts" />
         </section>
 
-        <section v-if="trimChart" class="card">
+        <section v-if="trimData && trimOpts" class="card">
           <header class="head-inline">
             <h3>Fuel trim drift</h3>
             <span class="muted small">180 days · LTFT solid, STFT dashed</span>
           </header>
-          <UPlotChart :data="trimChart.aligned" :options="trimChart.opts" />
+          <UPlotChart :data="trimData" :options="trimOpts" />
           <p class="muted small">
             LTFT drifting steadily &gt;+5% suggests vacuum leak, weak O2 sensor, or
             clogging air filter. Steady &lt;-5% suggests a richening fault.
@@ -580,10 +585,10 @@ const odoChart = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | 
             </span>
           </header>
           <div v-if="odoQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!odoChart" class="muted">
+          <div v-else-if="!odoData" class="muted">
             No odometer history in this window.
           </div>
-          <UPlotChart v-else :data="odoChart.aligned" :options="odoChart.opts" />
+          <UPlotChart v-else :data="odoData" :options="odoOpts" />
         </section>
 
         <section class="card">

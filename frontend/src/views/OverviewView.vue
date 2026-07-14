@@ -25,22 +25,22 @@ const tripsQ = useAsync(
       : Promise.resolve({ items: [], total: 0 }),
   [vehicleId],
 );
-const fillupsQ = useAsync(
-  () =>
-    vehicleId.value
-      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 5 })
-      : Promise.resolve({ items: [], total: 0 }),
-  [vehicleId],
-);
-
 // 30 most-recent fillups feed the hero cards (latest $/gal, this-month
-// cost). One query covers both — server caps at 30 by default.
+// cost). One query covers both — server caps at 30 by default. The
+// recent-fillups table below shows the first 5 of these, so no separate
+// limit-5 call is needed (the limit-5 list is a strict prefix of this
+// list — same vehicle, same default ordering).
 const heroFillupsQ = useAsync(
   () =>
     vehicleId.value
       ? api.listFillups({ vehicle_id: vehicleId.value, limit: 30 })
       : Promise.resolve({ items: [], total: 0 }),
   [vehicleId],
+);
+
+// Recent-fillups table: first 5 of the hero list. Derived, not fetched.
+const recentFillups = computed(() =>
+  (heroFillupsQ.data.value?.items ?? []).slice(0, 5),
 );
 
 // Rolling-90d MPG trend feeds the consumption tile.
@@ -821,15 +821,15 @@ function dismissAnomaly(fingerprint: string) {
             <Fuel :size="14" /> Recent fillups
             <RouterLink to="/fuel" class="more">all →</RouterLink>
           </h3>
-          <div v-if="fillupsQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="fillupsQ.error.value" class="muted">
-            Failed to load: {{ fillupsQ.error.value }}
+          <div v-if="heroFillupsQ.loading.value" class="muted">Loading…</div>
+          <div v-else-if="heroFillupsQ.error.value" class="muted">
+            Failed to load: {{ heroFillupsQ.error.value }}
           </div>
-          <div v-else-if="!fillupsQ.data.value || fillupsQ.data.value.items.length === 0" class="muted">
+          <div v-else-if="recentFillups.length === 0" class="muted">
             No fillups recorded.
           </div>
           <ul v-else class="recent">
-            <li v-for="f in fillupsQ.data.value.items" :key="f.id">
+            <li v-for="f in recentFillups" :key="f.id">
               <span>{{ fmtDate(f.fillup_date) }}</span>
               <span class="muted">{{ fmtMpg(f.mpg) }} · {{ fmtMoney(toNum(f.price_total) ?? 0) }}</span>
             </li>

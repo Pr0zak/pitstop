@@ -41,7 +41,11 @@ async def compute_trip_stats(
             max(CASE WHEN metric = 'engine_rpm'      THEN value_num END) AS max_rpm,
             max(CASE WHEN metric = 'vehicle_speed'   THEN value_num END) AS max_speed_kph,
             avg(CASE WHEN metric = 'vehicle_speed'   THEN value_num END) AS avg_speed_kph,
-            avg(CASE WHEN metric = 'coolant_temp'    THEN value_num END) AS avg_coolant_c
+            -- Exclude WiCAN decoder-garbage coolant (the -37 C artifact,
+            -- byte 0x03) so it can't drag a trip's avg; real operating
+            -- coolant sits well within [-20, 150].
+            avg(CASE WHEN metric = 'coolant_temp'
+                      AND value_num BETWEEN -20 AND 150 THEN value_num END) AS avg_coolant_c
         FROM pid_readings
         WHERE vehicle_id = $1 AND time >= $2 AND time <= $3
         """,

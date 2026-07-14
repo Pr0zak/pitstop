@@ -126,8 +126,9 @@ function deltaTone(label: string, pct: number): string {
   return "neutral";
 }
 
-// Build uPlot data + options from samples.
-type ChartData = { aligned: uPlot.AlignedData; opts: uPlot.Options } | null;
+// Build uPlot data + options from samples. See chartData / chartOpts below —
+// data and options are split so a Smooth-chip toggle (data-only) hits
+// UPlotChart's setData() path instead of a full rebuild.
 
 // Series definitions keyed on metric name. Each defines its display
 // label, stroke color, axis scale, and a transform from canonical SI
@@ -313,7 +314,18 @@ function medianFilter(arr: (number | null)[], windowSize: number): (number | nul
   return out;
 }
 
-const chart = computed<ChartData>(() => {
+// The visible-series set drives BOTH the aligned-data column layout and the
+// opts (series / scales / axes). Sharing one computed keeps chartData and
+// chartOpts structurally in lock-step so they can never desync on a series
+// toggle. Neither depends on smoothLevel, so a Smooth-chip toggle only
+// re-derives chartData — chartOpts identity stays stable and UPlotChart takes
+// the cheap setData() path instead of a full destroy()+rebuild.
+const visibleSeries = computed(() => TRIP_SERIES.filter((s) => seriesVisible.value[s.metric]));
+
+// Aligned data: pivots + smooths + forward-fills the trip samples into the
+// column layout implied by visibleSeries. Recomputes on trip load, series
+// toggle, and Smooth-level change.
+const chartData = computed<uPlot.AlignedData | null>(() => {
   if (!trip.value || !trip.value.samples || trip.value.samples.length === 0) return null;
   type Sample = {
     time: string;
@@ -412,7 +424,7 @@ const chart = computed<ChartData>(() => {
     buckets.set(ts, slot);
   }
   const sortedTs = Array.from(buckets.keys()).sort((a, b) => a - b);
-  const visible = TRIP_SERIES.filter((s) => seriesVisible.value[s.metric]);
+  const visible = visibleSeries.value;
   if (visible.length === 0) return null;
 
   // Pre-compute the acceleration column when it's visible. dv/dt
@@ -482,7 +494,18 @@ const chart = computed<ChartData>(() => {
   // see the smoothedByTs build above. Doing it here on the
   // forward-filled arrays would no-op because the fill produces
   // plateaus and a median of N identical values is the same value.)
-  const aligned: uPlot.AlignedData = [t, ...arrays] as uPlot.AlignedData;
+  return [t, ...arrays] as uPlot.AlignedData;
+});
+
+// Chart options: scales / axes / series / plugins, derived purely from the
+// visible-series set + the trip's DTC markers. Deliberately independent of
+// smoothLevel so the opts object identity is stable across Smooth-chip
+// toggles (the whole point of the split). Returns null when nothing is
+// visible / no trip so the template can gate on it in parallel with chartData.
+const chartOpts = computed<uPlot.Options | null>(() => {
+  if (!trip.value) return null;
+  const visible = visibleSeries.value;
+  if (visible.length === 0) return null;
   // Build the scales object: every distinct scale used by visible series.
   const scales: Record<string, { time?: boolean }> = { x: { time: true } };
   for (const s of visible) scales[s.scale] = {};
@@ -534,7 +557,7 @@ const chart = computed<ChartData>(() => {
         },
       }
     : null;
-  const opts: uPlot.Options = {
+  return {
     width: 800,
     height: 320,
     cursor: { drag: { x: true, y: false, setScale: true } },
@@ -556,7 +579,6 @@ const chart = computed<ChartData>(() => {
       ],
     } : {}),
   };
-  return { aligned, opts };
 });
 
 // Hover marker for chart ↔ map sync. The cursor plugin below
@@ -1021,11 +1043,11 @@ async function saveMeta() {
                 @click="seriesVisible[s.metric] = !seriesVisible[s.metric]"
               >{{ s.label.replace(/ \(.*\)/, '') }}</button>
             </div>
-            <div v-if="!chart" class="muted">No metrics selected (or no samples in this trip).</div>
+            <div v-if="!chartData || !chartOpts" class="muted">No metrics selected (or no samples in this trip).</div>
             <UPlotChart
               v-else
-              :data="chart.aligned"
-              :options="chart.opts"
+              :data="chartData"
+              :options="chartOpts"
               @ready="onChartReady"
             />
           </div>

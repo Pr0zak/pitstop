@@ -493,6 +493,78 @@ async def reprocess_trips(
     }
 
 
+@router.post(
+    "/trips/recompute-phone-batch",
+    dependencies=[Depends(require_ingest_token)],
+)
+async def recompute_phone_batch_trips(
+    older_than_hours: int = Query(default=24 * 365 * 5, ge=1, le=24 * 365 * 10),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """Recompute the derived stat columns of ``phone_batch`` trips.
+
+    The periodic ``trip_deriver`` deliberately never touches phone-owned
+    trips (it only owns ``deriver``-source rows and skips phone_batch /
+    manual_merge ranges), so a fix to :func:`compute_trip_stats` — e.g. the
+    sparse-GPS ``max(gps, speed)`` distance fix or the coolant-garbage filter
+    — never reaches existing phone_batch rows. This re-runs
+    ``compute_trip_stats`` over each phone_batch trip's fixed
+    ``(started_at, ended_at)`` window and UPDATEs ONLY the derived stat
+    columns, preserving id / boundaries / source / category / notes. It is a
+    pure read over pid_readings + gps_points — deterministic and safe to run
+    repeatedly. ``manual_merge`` trips are intentionally left alone (their
+    stats are the user's fold result, not a window recompute).
+    """
+    from ..workers.trip_stats import compute_trip_stats
+
+    since = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+    updated = 0
+    changed: list[dict[str, Any]] = []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, vehicle_id, started_at, ended_at, distance_km
+              FROM trips
+             WHERE source = 'phone_batch'
+               AND started_at >= $1
+               AND ended_at IS NOT NULL
+             ORDER BY started_at
+            """,
+            since,
+        )
+        for r in rows:
+            stats = await compute_trip_stats(
+                conn, r["id"], r["vehicle_id"], r["started_at"], r["ended_at"]
+            )
+            old_km = float(r["distance_km"]) if r["distance_km"] is not None else None
+            await conn.execute(
+                """
+                UPDATE trips SET
+                    distance_km = $2, fuel_used_l = $3, max_rpm = $4,
+                    max_speed_kph = $5, avg_speed_kph = $6,
+                    avg_coolant_c = $7, idle_s = $8
+                  WHERE id = $1
+                """,
+                r["id"], stats["distance_km"], stats["fuel_used_l"],
+                stats["max_rpm"], stats["max_speed_kph"], stats["avg_speed_kph"],
+                stats["avg_coolant_c"], stats.get("idle_s"),
+            )
+            updated += 1
+            new_km = stats["distance_km"]
+            if old_km is not None and new_km is not None and abs(float(new_km) - old_km) > 0.1:
+                changed.append({
+                    "id": str(r["id"]),
+                    "old_km": round(old_km, 2),
+                    "new_km": round(float(new_km), 2),
+                })
+    log.info("admin phone_batch recompute updated=%s changed=%s", updated, len(changed))
+    return {
+        "since_iso": since.isoformat(),
+        "trips_recomputed": updated,
+        "distance_changed": changed,
+    }
+
+
 _GITHUB_REPO = os.environ.get("PITSTOP_GITHUB_REPO", "Pr0zak/pitstop")
 _GITHUB_RELEASES_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
 _release_cache: dict[str, Any] = {"data": None, "ts": 0.0}

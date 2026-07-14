@@ -69,14 +69,42 @@ WICAN_TO_CANONICAL: dict[str, str] = {
 }
 
 
+# WiCAN AutoPID "capability"/"monitor" PIDs that read a constant (0, or a
+# static support bitmap) on every poll — pure storage + continuous-aggregate
+# noise with zero analytical signal (~298k such rows observed). Dropped at
+# ingest so they never persist. Prune them from the WiCAN device poll list
+# too (wican-config skill) to also reclaim CAN/BLE airtime. `_hdr_reset` is
+# the ELM header-reset marker — needed on the DEVICE to keep the std-PID
+# cycle broadcasting, but valueless as a stored reading, so drop from storage
+# only. Matched as substrings against the unmapped WiCAN hex-prefixed name;
+# note "OxySensorsPresent" is distinct from the O2-sensor STFT metrics
+# ("15-OxySensor2_STFT") which DO carry signal and are left untouched.
+_DROP_SUBSTRINGS: tuple[str, ...] = (
+    "PIDsSupported",
+    "MonitorStatus",
+    "MonStatusDriveCycle",
+    "FuelSystemStatus",
+    "OBDStandard",
+    "OxySensorsPresent",
+)
+_DROP_EXACT: frozenset[str] = frozenset({"_hdr_reset"})
+
+
 def normalise(metric: str) -> str | None:
     """Translate a WiCAN-published metric name to pitstop's canonical name.
 
     Returns the canonical name, the original name (if no mapping exists), or
-    ``None`` to drop the metric (used for synthetic ``timestamp``-style keys
-    that duplicate values pitstop already records server-side).
+    ``None`` to drop the metric (synthetic ``timestamp`` keys, and the
+    constant capability/monitor cruft in ``_DROP_SUBSTRINGS`` / ``_DROP_EXACT``
+    that duplicate no useful signal).
     """
     target = WICAN_TO_CANONICAL.get(metric)
     if target == "_drop_":
         return None
-    return target if target is not None else metric
+    if target is not None:
+        return target
+    # Unmapped WiCAN name: drop the constant capability/monitor PIDs, else
+    # pass it through unchanged (Honda-specific metrics still get recorded).
+    if metric in _DROP_EXACT or any(sub in metric for sub in _DROP_SUBSTRINGS):
+        return None
+    return metric

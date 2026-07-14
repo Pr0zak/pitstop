@@ -449,7 +449,13 @@ function onMarkerClick(id: string, properties: Record<string, unknown>) {
 // underneath the primary series — same-calendar-month value from
 // 1y / 2y ago, projected onto the primary x-axis so users can see
 // "is this worse than last winter, or just normal?" at a glance.
-const monthlyChart = computed(() => {
+// The monthly chart's series count varies with the data (0–2 YoY ghost
+// lines), so opts and data must be built together to stay in sync. A shared
+// build computed does that; the exposed opts/data computeds slice out of it.
+// Opts identity still changes when the ghost-line set changes (window switch
+// that reveals/hides prior-year data) — correct and infrequent — but a pure
+// data refresh with the same ghost set keeps opts stable and hits setData().
+const monthlyBuild = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
   const allMonths = monthlyQ.data.value?.months ?? [];
   if (allMonths.length === 0) return null;
   // Primary slice: respect the page's window (statsCutoffMs) when
@@ -509,33 +515,47 @@ const monthlyChart = computed(() => {
       dash: [3, 3],
     });
   }
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$" }],
-    series,
+  return {
+    aligned,
+    opts: {
+      width: 600,
+      height: 220,
+      scales: { x: { time: true } },
+      axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$" }],
+      series,
+    },
   };
-  return { aligned, opts };
 });
+const monthlyData = computed<uPlot.AlignedData | null>(() => monthlyBuild.value?.aligned ?? null);
+const monthlyOpts = computed<uPlot.Options | null>(() => monthlyBuild.value?.opts ?? null);
 
-const cpmChart = computed(() => {
+const cpmOpts = computed<uPlot.Options>(() => ({
+  width: 600,
+  height: 200,
+  scales: { x: { time: true } },
+  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$/mi" }],
+  series: [{}, { label: "$/mi", stroke: "#3fb950", width: 2 }],
+}));
+const cpmData = computed<uPlot.AlignedData | null>(() => {
   const points = cpmQ.data.value?.points ?? [];
   if (points.length === 0) return null;
   const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
   const y = points.map((p) => p.cost_per_mi ?? null);
-  const aligned: uPlot.AlignedData = [t, y];
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 200,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$/mi" }],
-    series: [{}, { label: "$/mi", stroke: "#3fb950", width: 2 }],
-  };
-  return { aligned, opts };
+  return [t, y];
 });
 
-const overlayChart = computed(() => {
+const overlayOpts = computed<uPlot.Options>(() => ({
+  width: 600,
+  height: 220,
+  scales: { x: { time: true } },
+  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
+  series: [
+    {},
+    { label: "OBD MPG", stroke: "#3fb950", width: 1.5 },
+    { label: "Fillup MPG", stroke: "#2f81f7", width: 1.5, dash: [4, 3] },
+  ],
+}));
+const overlayData = computed<uPlot.AlignedData | null>(() => {
   const obd = overlayQ.data.value?.obd_mpg ?? [];
   const fillup = overlayQ.data.value?.fillup_mpg ?? [];
   if (obd.length === 0 && fillup.length === 0) return null;
@@ -555,19 +575,7 @@ const overlayChart = computed(() => {
     const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
     if (i != null) fillCol[i] = p.mpg ?? null;
   }
-  const aligned: uPlot.AlignedData = [ts, obdCol, fillCol];
-  const opts: uPlot.Options = {
-    width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
-    series: [
-      {},
-      { label: "OBD MPG", stroke: "#3fb950", width: 1.5 },
-      { label: "Fillup MPG", stroke: "#2f81f7", width: 1.5, dash: [4, 3] },
-    ],
-  };
-  return { aligned, opts };
+  return [ts, obdCol, fillCol];
 });
 
 const summary = computed(() => {
@@ -1167,22 +1175,22 @@ const mpgVsTempChart = computed(() => {
           <div v-if="chartVisible.monthly" class="card chart-card">
             <h3>Monthly spend</h3>
             <div v-if="monthlyQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!monthlyChart" class="muted">No data.</div>
-            <UPlotChart v-else :data="monthlyChart.aligned" :options="monthlyChart.opts" />
+            <div v-else-if="!monthlyData || !monthlyOpts" class="muted">No data.</div>
+            <UPlotChart v-else :data="monthlyData" :options="monthlyOpts" />
           </div>
           <div v-if="chartVisible.cpm" class="card chart-card">
             <h3>$/mile</h3>
             <div v-if="cpmQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!cpmChart" class="muted">No data.</div>
-            <UPlotChart v-else :data="cpmChart.aligned" :options="cpmChart.opts" />
+            <div v-else-if="!cpmData" class="muted">No data.</div>
+            <UPlotChart v-else :data="cpmData" :options="cpmOpts" />
           </div>
           <div v-if="chartVisible.overlay" class="card chart-card wide">
             <h3>OBD vs fillup MPG</h3>
             <div v-if="overlayQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!overlayChart" class="muted">
+            <div v-else-if="!overlayData" class="muted">
               No OBD data yet — drive with the WiCAN connected to populate this chart.
             </div>
-            <UPlotChart v-else :data="overlayChart.aligned" :options="overlayChart.opts" />
+            <UPlotChart v-else :data="overlayData" :options="overlayOpts" />
           </div>
 
           <!-- Range-to-empty KPI: depends on tank1_capacity + live fuel

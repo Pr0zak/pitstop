@@ -157,6 +157,30 @@ loops.
 - **Bonding.** WiCAN does not require pairing. If the firmware ever flips bonding on, we
   will need to call `device.createBond()` before `connectGatt`; the Nordic BleManager
   handles this automatically once we wire `shouldAutoConnect()` and bonding callbacks.
+- **Connect failures are TIMEOUTs, not auth failures.** The WiCAN link flaps hard — in one
+  7-day window only 8% of connect attempts reached the poll loop; the other 626/685 carried
+  `status = -5`. That `-5` is Nordic's `FailCallback.REASON_TIMEOUT` (the dongle simply wasn't
+  advertising / in range), **not** GATT status 5 (HCI Authentication Failure). The `.fail{}`
+  handler on a `connect()` request only ever delivers the *negative* `FailCallback.REASON_*`
+  constants, never a raw HCI status — so a `status == 5` comparison there is dead code and would
+  never fire. Do NOT `removeBond()` on a timeout: it forces a needless re-pair every time the car
+  is asleep. A genuine bond-key mismatch surfaces instead through
+  `ConnectionObserver.onDeviceFailedToConnect` as `REASON_UNKNOWN` while the device is still
+  BONDED on our side — that (and only that) is where `WiCanBleManager` calls `removeBond()`.
+- **One connect() = one attempt.** We dropped the inner `.retry(3, 250)` on `connect()` so a single
+  logical failure is a single log line and the service-level adaptive backoff owns retry cadence;
+  the old inner retry silently burned three 15 s timeouts (~45 s) per scheduled attempt behind one
+  opaque line. The first attempt of a session uses `useAutoConnect(false)` (direct connect → fast
+  first frame on engine start); every retry after that uses `useAutoConnect(true)` so the OS
+  reattaches opportunistically when the WiCAN next advertises (cheap on battery, dodges the
+  active-scan radio timeout). In-car backoff also decays now (5 s for the first ~3 attempts, then
+  climbs to 30 s) so a parked phone next to a sleeping WiCAN stops retrying every 5 s forever.
+- **Adaptive PID suppression on BLE.** Some PIDs answer only on the WiCAN WiFi/AutoPID path and
+  return `NO DATA` on every BLE poll (`maf_air_flow` = 4,061 NO DATA / 7d). The bridge counts
+  *consecutive* strict-`NO DATA` per PID (best-effort via `lastSentPid`) and drops a PID from the
+  live poll set after 5 in a row, re-probing from scratch each bridge session. `STOPPED` /
+  `UNABLE TO CONNECT` / `BUS*` are whole-bus signals (engine off / ECU unreachable) and are
+  deliberately excluded from this count.
 
 ## Reliable background auto-start (CompanionDeviceManager)
 

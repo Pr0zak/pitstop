@@ -2,6 +2,7 @@ package com.pitstop
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -39,6 +40,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.ui.config.ConfigScreen
 import com.pitstop.ui.fuel.FuelAddScreen
@@ -146,7 +149,13 @@ private fun PitstopRoot(
         }
     }
 
-    // Up-front permission request (notifications + bluetooth + location).
+    val context = LocalContext.current
+
+    // Up-front permission request (notifications + bluetooth + foreground
+    // location). ACCESS_BACKGROUND_LOCATION is deliberately NOT in this batch —
+    // Android 11+ rejects a request that bundles background with foreground
+    // location, and the OS only shows the "Allow all the time" option once
+    // fine/coarse is already granted. It's requested in the second step below.
     val perms = buildList {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -159,9 +168,37 @@ private fun PitstopRoot(
         }
     }.toTypedArray()
 
+    // Step 2 of the Android 11+ two-step location flow: "Allow all the time".
+    // On Android 11+ this MUST be its own request, launched only after fine
+    // location is granted; the system takes the user to a settings-style
+    // screen for it. Required so the bridge's FOREGROUND_SERVICE_TYPE_LOCATION
+    // survives a CDM background start (screen-off in-car GPS). No-op below
+    // Android 10, where background location is implied by fine/coarse.
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { /* No-op: startGpsUpdates / startForeground re-check at use time. */ }
+
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
-    ) { /* No-op: surfaces are responsible for re-checking before use. */ }
+    ) { grants ->
+        // Only prompt for "Allow all the time" once foreground location is in
+        // hand (either just granted here or granted on a prior launch). Below
+        // Android 10 the background permission doesn't exist as a separate grant.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val fineGranted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
+            val backgroundGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (fineGranted && !backgroundGranted) {
+                backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         launcher.launch(perms)

@@ -135,6 +135,29 @@ class PitstopBridgeService : Service() {
      *  the wrong PID; that's a hint, not a guarantee. */
     @Volatile private var lastSentPid: com.pitstop.obd.Pid? = null
 
+    /**
+     * Adaptive poll suppression (OBD-4). The Pilot answers some PIDs
+     * (notably maf_air_flow) with NO DATA on the BLE path every single
+     * poll — they only exist on the WiCAN WiFi/AutoPID path — which wastes
+     * a round-robin slot ~1×/s and inflated the no-data noise (maf_air_flow
+     * alone: 4,061 NO DATA / 7d). We count *consecutive* NO DATA attributed
+     * to a PID via [lastSentPid] and, once a PID crosses
+     * [NO_DATA_SUPPRESS_THRESHOLD], drop it from [pidsToPoll] for the rest
+     * of the session. Attribution via lastSentPid is best-effort (an
+     * out-of-order or overlapping response can name the wrong PID), so the
+     * threshold is conservative; a single real frame for that PID resets
+     * its counter. Both maps + [pidsToPoll] are reset in [startBridge] so
+     * an intermittently-supported PID gets re-probed each session.
+     *
+     * STOPPED / UNABLE TO CONNECT / BUS errors do NOT feed this — those are
+     * whole-bus "engine off / ECU unreachable" signals, not a per-PID
+     * unsupported response, and would wrongly suppress the entire set.
+     */
+    private val noDataStreakByPid = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val suppressedPids = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private var wakeLock: android.os.PowerManager.WakeLock? = null
@@ -404,6 +427,13 @@ class PitstopBridgeService : Service() {
             val s = secrets.settings
             bridgeBleEnabled = s.bridgeBleEnabled
             bridgeGpsEnabled = s.bridgeGpsEnabled
+
+            // Reset adaptive poll suppression each session so a PID that was
+            // dropped last drive (or an intermittently-supported one) gets
+            // re-probed from a clean slate (OBD-4).
+            pidsToPoll = Pids.DEFAULT
+            noDataStreakByPid.clear()
+            suppressedPids.clear()
 
             // Both collectors off → the bridge would do nothing useful.
             // Self-stop and surface a notification so the user sees why.
@@ -785,7 +815,14 @@ class PitstopBridgeService : Service() {
             stateBus.update { it.copy(phase = BridgePhase.Connecting, deviceName = name, deviceMac = mac) }
             updateNotification(getString(R.string.bridge_state_connecting, name ?: mac))
 
-            mgr.connectToDevice(device)
+            // First attempt of a session = direct connect (fast first frame on
+            // engine start). Every retry after that = autoConnect so the OS
+            // reattaches opportunistically when the WiCAN next advertises,
+            // instead of us burning a 15 s active-scan radio timeout per attempt
+            // (the 626/685 REASON_TIMEOUT failures). reconnectAttempt is 0 on the
+            // first pass and reset to 0 on every successful link, so a fresh
+            // engine-start still gets the fast direct path.
+            mgr.connectToDevice(device, reconnect = reconnectAttempt > 0)
 
             // Wait until READY (Connected via Nordic ble means the gatt is connected;
             // initialize() flips it to READY). Time out at 20s.
@@ -832,8 +869,25 @@ class PitstopBridgeService : Service() {
             //   - else → existing exponential 1→30s.
             val priorEngine = stateBus.status.value.engineState
             val inCar = stateBus.status.value.inCar
+            // In-car cap decay (BLE-5): the old branch pinned inCar at a 5 s
+            // cap forever, so a phone parked next to a sleeping / out-of-range
+            // WiCAN retried every 5 s indefinitely — each retry a ~15 s radio
+            // timeout, burning battery for nothing. Keep 5 s for the first few
+            // attempts (fast first frame on engine start, when the WiCAN is
+            // waking) then climb toward 30 s once several consecutive attempts
+            // have failed (dominant failure is REASON_TIMEOUT — WiCAN not
+            // advertising). reconnectAttempt resets to 0 on a successful link,
+            // so it IS the consecutive-failure count; a genuine engine-start
+            // re-entry gets the fast 5 s path again. The wakeEvents/inCar merge
+            // below still breaks the backoff early on a real can/status:online
+            // or fresh AA/BT signal, so the decay never delays a real reconnect.
+            val inCarBackoffSec = when {
+                reconnectAttempt <= IN_CAR_FAST_ATTEMPTS -> 5
+                reconnectAttempt <= IN_CAR_FAST_ATTEMPTS + 2 -> 15
+                else -> IN_CAR_BACKOFF_CAP_SEC
+            }
             val backoffSec = when {
-                inCar -> baseSec.coerceAtMost(5)
+                inCar -> baseSec.coerceIn(5, inCarBackoffSec)
                 priorEngine == EngineState.Off && reconnectAttempt >= 3 -> 60
                 else -> baseSec
             }
@@ -917,6 +971,28 @@ class PitstopBridgeService : Service() {
         }
     }
 
+    /**
+     * Adaptive suppression bookkeeping for a strict "NO DATA" attributed to
+     * [pid] (best-effort via lastSentPid). After [NO_DATA_SUPPRESS_THRESHOLD]
+     * consecutive NO DATA we drop the PID from [pidsToPoll] for the rest of
+     * the session so the round-robin stops wasting a slot on it. A single real
+     * parsed frame for the PID clears its streak (see [onUartFrame]).
+     */
+    private fun onNoDataForPid(pid: com.pitstop.obd.Pid?) {
+        val name = pid?.name ?: return
+        if (name in suppressedPids) return
+        val streak = (noDataStreakByPid[name] ?: 0) + 1
+        noDataStreakByPid[name] = streak
+        if (streak >= NO_DATA_SUPPRESS_THRESHOLD) {
+            suppressedPids.add(name)
+            pidsToPoll = pidsToPoll.filter { it.name != name }
+            logBuffer.info(
+                "obd pid suppressed (consecutive NO DATA on BLE)",
+                mapOf("pid" to name, "streak" to streak, "active_pids" to pidsToPoll.size),
+            )
+        }
+    }
+
     private fun onUartFrame(bytes: ByteArray) {
         // Append, then attempt to parse. ELM-style frames terminate with '>' (the prompt);
         // raw CAN frames are usually one notify packet. If we don't find a terminator
@@ -968,13 +1044,30 @@ class PitstopBridgeService : Service() {
                         line == "?"
                 }
             if (signal != null) {
-                logBuffer.info(
-                    "obd no-data response",
-                    mapOf(
-                        "response" to signal.take(20),
-                        "last_pid" to (lastSentPid?.name ?: "?"),
-                    ),
-                )
+                // Log ONCE per no-data run, not on every quiet poll frame. This
+                // line was ~90% of all client_logs (38,983 rows/7d, shipped
+                // upstream over cellular) because the WiCAN answers STOPPED/NO
+                // DATA every poll while the engine is off or a PID is
+                // unsupported. stoppedRunLength is still 0 here (onEngineOffSignal
+                // increments it just below), so ==0 means "entering a fresh run"
+                // — we keep the first occurrence + last_pid for diagnosability
+                // and suppress the rest until a real frame resets the streak via
+                // onEngineOnSignal. This does NOT touch the engine-off debounce
+                // in onEngineOffSignal (v0.1.199).
+                if (stoppedRunLength == 0) {
+                    logBuffer.info(
+                        "obd no-data response",
+                        mapOf(
+                            "response" to signal.take(20),
+                            "last_pid" to (lastSentPid?.name ?: "?"),
+                        ),
+                    )
+                }
+                // Only a strict "NO DATA" is a per-PID "unsupported on BLE"
+                // signal. STOPPED / UNABLE TO CONNECT / BUS* are whole-bus
+                // (engine off / ECU unreachable) and must not suppress
+                // individual PIDs.
+                if (signal.startsWith("NO DATA")) onNoDataForPid(lastSentPid)
                 onEngineOffSignal()
                 return
             }
@@ -1005,6 +1098,10 @@ class PitstopBridgeService : Service() {
             return
         }
 
+        // A real frame for this PID clears its NO-DATA streak so an
+        // intermittently-supported PID never accumulates toward suppression
+        // across scattered no-data blips.
+        noDataStreakByPid.remove(pid.name)
         stateBus.publishMetric(pid.name, value)
         // Track the last time we saw real vehicle motion — the engine-off
         // debounce holds the drive open through a no-data burst if the car
@@ -1496,6 +1593,26 @@ class PitstopBridgeService : Service() {
     companion object {
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.pitstop.bridge.STOP"
+
+        /**
+         * Consecutive strict-NO-DATA responses attributed to a single PID
+         * before we drop it from the active poll set for the session (OBD-4).
+         * Conservative because lastSentPid attribution is best-effort — a
+         * lower value risks suppressing a PID that lost a couple of frames to
+         * response overlap rather than genuine non-support.
+         */
+        private const val NO_DATA_SUPPRESS_THRESHOLD = 5
+
+        /**
+         * In-car BLE reconnect backoff decay (BLE-5). The first
+         * [IN_CAR_FAST_ATTEMPTS] failed attempts stay at a 5 s cap for a fast
+         * first frame on engine start; after that the cap climbs (5 → 15 →
+         * [IN_CAR_BACKOFF_CAP_SEC]) so a parked phone next to a sleeping /
+         * out-of-range WiCAN stops hammering the radio every 5 s. A real
+         * wakeEvents / inCar signal still breaks the backoff early.
+         */
+        private const val IN_CAR_FAST_ATTEMPTS = 3
+        private const val IN_CAR_BACKOFF_CAP_SEC = 30
 
         /**
          * Topic-last-segment names that still publish to MQTT even
