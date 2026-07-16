@@ -55,6 +55,22 @@ object AppModule {
             },
         )
         .addNetworkInterceptor(cacheRewriteInterceptor)
+        // Read-only GETs back the pull-to-refresh spinners (Home, History,
+        // Heatmap). Cap their read timeout well under the 60 s upload
+        // timeout below so a slow/stalled endpoint can't leave the refresh
+        // arrow spinning for the better part of a minute — the call fails
+        // fast, the ViewModel's runCatching clears its loading flag, and the
+        // spinner retracts. POST uploads keep the full 60 s read window.
+        .addInterceptor { chain ->
+            val request = chain.request()
+            if (request.method == "GET") {
+                chain.withConnectTimeout(8, TimeUnit.SECONDS)
+                    .withReadTimeout(20, TimeUnit.SECONDS)
+                    .proceed(request)
+            } else {
+                chain.proceed(request)
+            }
+        }
         .connectTimeout(10, TimeUnit.SECONDS)
         // Drive uploads can carry multi-MB JSON payloads (20k+ frames is
         // routine) and the server holds the request while writing the

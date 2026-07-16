@@ -409,6 +409,14 @@ class HistoryViewModel @Inject constructor(
             }
             val vehicleId = vehicles.firstOrNull { it.slug == slug }?.id ?: run {
                 logBuffer.warn("history: configured slug not found", mapOf("slug" to slug))
+                // Clear loading so the pull-to-refresh spinner can't strand.
+                _ui.update {
+                    it.copy(
+                        trips = it.trips.copy(loading = false),
+                        fillups = it.fillups.copy(loading = false),
+                        dtcs = it.dtcs.copy(loading = false),
+                    )
+                }
                 return@launch
             }
 

@@ -52,7 +52,9 @@ class HeatmapViewModel @Inject constructor(
             }
             val slug = secrets.settings.vehicleSlug.trim()
             if (slug.isEmpty() || secrets.settings.apiBaseUrl.isBlank()) {
-                _state.update { it.copy(error = "Set vehicle + server in Settings") }
+                // Clear loading too — otherwise a refresh fired while a prior
+                // load is still in flight strands the pull-to-refresh spinner.
+                _state.update { it.copy(loading = false, error = "Set vehicle + server in Settings") }
                 return@launch
             }
             _state.update { it.copy(loading = true, error = null) }
