@@ -388,10 +388,11 @@ class WicanCompanionManager @Inject constructor(
                 return@launch
             }
             // Collapse any duplicate associations for the WiCAN down to one
-            // before observing — two associations for the same MAC make the OS
-            // deliver every presence event twice (see the 2026-07-18 trip-split
-            // incident). Persist the survivor so the next cycle short-circuits.
-            val observeId = pruneDuplicateAssociations(manager, id, s.bleDeviceMac) ?: id
+            // before observing — extra associations make the OS deliver every
+            // presence event twice (the duplicate `device appeared` in the
+            // 2026-07-18 logs). Persist the survivor so the next cycle
+            // short-circuits.
+            val observeId = pruneDuplicateAssociations(manager, id) ?: id
             if (observeId != id) {
                 runCatching { settings.setCompanionAssociationId(observeId) }
             }
@@ -466,6 +467,15 @@ class WicanCompanionManager @Inject constructor(
         // Prefer the stored WiCAN MAC; fall back to the association's own MAC.
         val address = mac ?: macForAssociation(manager, id)
         if (address != null) {
+            // Stop any existing observation for this MAC first. ensureObserving()
+            // runs on every app start / process wake, and repeated
+            // startObservingDevicePresence() calls STACK observers for the same
+            // device — the OS then delivers duplicate onDeviceAppeared/
+            // Disappeared callbacks even with a single association. The stop is a
+            // no-op when nothing is observed, so this makes the registration
+            // idempotent: exactly one observer afterward.
+            @Suppress("DEPRECATION")
+            runCatching { manager.stopObservingDevicePresence(address) }
             @Suppress("DEPRECATION")
             manager.startObservingDevicePresence(address)
         } else {
@@ -492,50 +502,43 @@ class WicanCompanionManager @Inject constructor(
         }.getOrNull()
 
     /**
-     * Remove duplicate CDM associations for the WiCAN, keeping exactly one.
+     * Collapse duplicate CDM associations for the WiCAN down to exactly one.
      *
      * A re-pair — or the stale-bond auto-recovery — can register a SECOND
-     * association pointing at the same MAC without disassociating the first.
-     * We observe presence *by MAC*, so the OS then delivers
-     * [WicanCompanionService.onDeviceAppeared] / `onDeviceDisappeared` once per
-     * association. The extra callbacks double-start the bridge and drove the
-     * every-~2-min presence flap that split one continuous drive into ~14
-     * trips (2026-07-18): each spurious "disappeared" stopped the bridge,
-     * which disconnected BLE, which made the WiCAN advertise again → a fresh
-     * "appeared" restarted a new drive.
+     * association without disassociating the first. Because the OS then
+     * delivers [WicanCompanionService.onDeviceAppeared] / `onDeviceDisappeared`
+     * once per association, the extra callbacks double-start the bridge (the
+     * duplicate `device appeared` seen in the 2026-07-18 logs).
      *
-     * Keeps the persisted id (or the lowest id when the persisted one isn't
-     * among the matches) and disassociates the rest. Only associations sharing
-     * the WiCAN MAC are touched — anything else the user associated is left
-     * alone. Returns the id to keep, or the passed-in [persistedId] on any
-     * failure so the caller still has something to observe.
+     * [CompanionDeviceManager.getMyAssociations] is scoped to THIS package, and
+     * pitstop only ever associates the WiCAN — so every association here is a
+     * WiCAN association and any extra is a duplicate. Keep the persisted id (or
+     * the lowest) and disassociate the rest. We deliberately do NOT filter by
+     * MAC: `AssociationInfo.deviceMacAddress` can be null (observed in the
+     * field), which made the earlier MAC-anchored version silently prune
+     * nothing. Returns the id to keep, or [persistedId] on any failure.
      */
     @SuppressLint("MissingPermission")
     @RequiresApi(Build.VERSION_CODES.S)
     private fun pruneDuplicateAssociations(
         manager: CompanionDeviceManager,
         persistedId: Int?,
-        knownMac: String?,
     ): Int? = runCatching {
         val associations = manager.myAssociations
+        // Diagnostic: makes it possible to confirm from client_logs whether a
+        // lingering duplicate is extra associations (count > 1, pruned here) or
+        // stacked observations (count == 1, handled by startObserving's
+        // stop-before-start).
+        logBuffer.info(
+            "companion: associations on record",
+            mapOf(
+                "count" to associations.size,
+                "ids" to associations.joinToString(",") { it.id.toString() },
+            ),
+        )
         if (associations.size <= 1) return@runCatching persistedId ?: associations.firstOrNull()?.id
-        // Anchor on the WiCAN MAC so we only ever prune duplicates of OUR
-        // device. Prefer the caller's known MAC; fall back to the persisted
-        // association's MAC.
-        val mac = knownMac?.takeIf { it.isNotBlank() }
-            ?: persistedId?.let { pid ->
-                associations.firstOrNull { it.id == pid }?.deviceMacAddress?.toString()
-            }
-        val matching = if (mac != null) {
-            associations.filter { it.deviceMacAddress?.toString().equals(mac, ignoreCase = true) }
-        } else {
-            // No MAC to disambiguate. The app only ever associates the WiCAN,
-            // so every association is presumed ours — safe to collapse to one.
-            associations
-        }
-        if (matching.size <= 1) return@runCatching persistedId ?: matching.firstOrNull()?.id
-        val keep = matching.firstOrNull { it.id == persistedId } ?: matching.minByOrNull { it.id }!!
-        for (a in matching) {
+        val keep = associations.firstOrNull { it.id == persistedId } ?: associations.minByOrNull { it.id }!!
+        for (a in associations) {
             if (a.id == keep.id) continue
             runCatching {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
