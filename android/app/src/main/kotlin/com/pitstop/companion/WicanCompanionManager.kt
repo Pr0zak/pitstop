@@ -15,11 +15,16 @@ import android.os.ParcelUuid
 import androidx.annotation.RequiresApi
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
+import com.pitstop.service.BridgeStateBus
+import com.pitstop.service.PitstopBridgeService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.Executor
@@ -67,11 +72,83 @@ class WicanCompanionManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settings: SettingsRepository,
     private val logBuffer: LogBuffer,
+    private val stateBus: BridgeStateBus,
 ) {
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mainExecutor = Executor { r -> mainHandler.post(r) }
+
+    @Volatile private var idleStopJob: Job? = null
+
+    /**
+     * Arm the "stop the bridge once the drive is genuinely idle" backstop.
+     *
+     * Called from [WicanCompanionService.onDeviceDisappeared]. CDM reports the
+     * WiCAN as "disappeared" the moment the bridge holds a GATT link to it (it
+     * stops advertising once connected) and does NOT re-fire when that connected
+     * device later sleeps — so the CDM service is unbound for most of the drive
+     * and cannot host this wait. We run it here on the process-lifetime
+     * [ioScope] (kept alive by the bridge foreground service for the drive's
+     * duration) so it survives the service unbind, then send ACTION_STOP once
+     * [BridgeStateBus.isDriveLikelyActive] has stayed false — the WiCAN has
+     * slept and the drive is over. Stopping earlier would seal a live drive and
+     * split it into many trips (2026-07-18); never stopping would leak the FGS
+     * after a park. Idempotent: a later disappear re-arms, an appear cancels.
+     */
+    fun scheduleIdleStop() {
+        idleStopJob?.cancel()
+        idleStopJob = ioScope.launch {
+            delay(STOP_GRACE_MS)
+            // Confirm the drive is idle over IDLE_CONFIRM_POLLS *consecutive*
+            // polls before stopping (hysteresis). A single transient
+            // isDriveLikelyActive()==false at a drive boundary — or a brief
+            // reconnect gap — must not seal a live drive; any sign of life
+            // resets the count, and a genuine restart flips it back to active.
+            var idlePolls = 0
+            while (isActive) {
+                if (stateBus.isDriveLikelyActive()) {
+                    idlePolls = 0
+                } else if (++idlePolls >= IDLE_CONFIRM_POLLS) {
+                    break
+                }
+                delay(ALIVE_POLL_MS)
+            }
+            if (!isActive) return@launch
+            // Honor the manual contract (v0.1.173): with auto-start off, only
+            // the user's manual Stop ends a session — this CDM backstop must
+            // never tear down a manually-started bridge. Symmetric with
+            // onAppeared's toggle gate; re-checked here so a toggle flipped
+            // during the wait is respected. Default to "manual" (skip) on any
+            // read failure — never auto-stop on uncertainty. runCatching would
+            // swallow a CancellationException from cancelIdleStop() arriving
+            // during this suspend, so re-check isActive afterward: without it a
+            // stop could fire against a drive onDeviceAppeared is simultaneously
+            // restarting.
+            val auto = runCatching { settings.settings.first().bridgeAutoTrigger }.getOrDefault(false)
+            if (!isActive) return@launch
+            if (!auto) {
+                logBuffer.info("companion: idle-stop skipped — auto-start off (manual session)")
+                return@launch
+            }
+            runCatching {
+                logBuffer.info("companion: bridge stop (idle)")
+                context.startService(PitstopBridgeService.stopIntent(context))
+            }.onFailure {
+                logBuffer.warn(
+                    "companion: bridge stop failed",
+                    mapOf("err" to (it.message ?: it::class.java.simpleName)),
+                )
+            }
+        }
+    }
+
+    /** Cancel a pending idle-stop — the WiCAN reappeared, so a drive is (still)
+     *  under way and the bridge must stay up. */
+    fun cancelIdleStop() {
+        idleStopJob?.cancel()
+        idleStopJob = null
+    }
 
     private val cdm: CompanionDeviceManager? by lazy {
         runCatching {
@@ -310,8 +387,16 @@ class WicanCompanionManager @Inject constructor(
                 runCatching { settings.clearCompanionAssociationId() }
                 return@launch
             }
-            runCatching { startObserving(manager, id, s.bleDeviceMac) }
-                .onSuccess { logBuffer.info("companion: observing presence", mapOf("association_id" to id)) }
+            // Collapse any duplicate associations for the WiCAN down to one
+            // before observing — two associations for the same MAC make the OS
+            // deliver every presence event twice (see the 2026-07-18 trip-split
+            // incident). Persist the survivor so the next cycle short-circuits.
+            val observeId = pruneDuplicateAssociations(manager, id, s.bleDeviceMac) ?: id
+            if (observeId != id) {
+                runCatching { settings.setCompanionAssociationId(observeId) }
+            }
+            runCatching { startObserving(manager, observeId, s.bleDeviceMac) }
+                .onSuccess { logBuffer.info("companion: observing presence", mapOf("association_id" to observeId)) }
                 .onFailure {
                     logBuffer.warn(
                         "companion: ensureObserving failed",
@@ -406,6 +491,73 @@ class WicanCompanionManager @Inject constructor(
                 ?.deviceMacAddress?.toString()
         }.getOrNull()
 
+    /**
+     * Remove duplicate CDM associations for the WiCAN, keeping exactly one.
+     *
+     * A re-pair — or the stale-bond auto-recovery — can register a SECOND
+     * association pointing at the same MAC without disassociating the first.
+     * We observe presence *by MAC*, so the OS then delivers
+     * [WicanCompanionService.onDeviceAppeared] / `onDeviceDisappeared` once per
+     * association. The extra callbacks double-start the bridge and drove the
+     * every-~2-min presence flap that split one continuous drive into ~14
+     * trips (2026-07-18): each spurious "disappeared" stopped the bridge,
+     * which disconnected BLE, which made the WiCAN advertise again → a fresh
+     * "appeared" restarted a new drive.
+     *
+     * Keeps the persisted id (or the lowest id when the persisted one isn't
+     * among the matches) and disassociates the rest. Only associations sharing
+     * the WiCAN MAC are touched — anything else the user associated is left
+     * alone. Returns the id to keep, or the passed-in [persistedId] on any
+     * failure so the caller still has something to observe.
+     */
+    @SuppressLint("MissingPermission")
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun pruneDuplicateAssociations(
+        manager: CompanionDeviceManager,
+        persistedId: Int?,
+        knownMac: String?,
+    ): Int? = runCatching {
+        val associations = manager.myAssociations
+        if (associations.size <= 1) return@runCatching persistedId ?: associations.firstOrNull()?.id
+        // Anchor on the WiCAN MAC so we only ever prune duplicates of OUR
+        // device. Prefer the caller's known MAC; fall back to the persisted
+        // association's MAC.
+        val mac = knownMac?.takeIf { it.isNotBlank() }
+            ?: persistedId?.let { pid ->
+                associations.firstOrNull { it.id == pid }?.deviceMacAddress?.toString()
+            }
+        val matching = if (mac != null) {
+            associations.filter { it.deviceMacAddress?.toString().equals(mac, ignoreCase = true) }
+        } else {
+            // No MAC to disambiguate. The app only ever associates the WiCAN,
+            // so every association is presumed ours — safe to collapse to one.
+            associations
+        }
+        if (matching.size <= 1) return@runCatching persistedId ?: matching.firstOrNull()?.id
+        val keep = matching.firstOrNull { it.id == persistedId } ?: matching.minByOrNull { it.id }!!
+        for (a in matching) {
+            if (a.id == keep.id) continue
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    manager.disassociate(a.id)
+                } else {
+                    @Suppress("DEPRECATION")
+                    a.deviceMacAddress?.toString()?.let { manager.disassociate(it) }
+                }
+            }.onFailure {
+                logBuffer.warn(
+                    "companion: prune disassociate failed",
+                    mapOf("err" to (it.message ?: it::class.java.simpleName), "id" to a.id),
+                )
+            }
+            logBuffer.info(
+                "companion: pruned duplicate association",
+                mapOf("removed_id" to a.id, "kept_id" to keep.id),
+            )
+        }
+        keep.id
+    }.getOrElse { persistedId }
+
     @SuppressLint("MissingPermission")
     @RequiresApi(Build.VERSION_CODES.S)
     private fun existingAssociationId(
@@ -472,5 +624,16 @@ class WicanCompanionManager @Inject constructor(
     companion object {
         const val WICAN_SERVICE_UUID = "0000FFF0-0000-1000-8000-00805F9B34FB"
         const val WICAN_NAME_REGEX = ".*wican.*"
+
+        /** Grace after a CDM "disappeared" before the idle-stop wait begins —
+         *  rides out a momentary BLE drop near the car. */
+        private const val STOP_GRACE_MS: Long = 120_000L
+
+        /** Re-check cadence while waiting for an active drive to end. */
+        private const val ALIVE_POLL_MS: Long = 30_000L
+
+        /** Consecutive idle polls required before the idle-stop fires, so a
+         *  single transient "not active" reading can't seal a live drive. */
+        private const val IDLE_CONFIRM_POLLS: Int = 2
     }
 }

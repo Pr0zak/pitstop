@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -234,7 +235,28 @@ class InCarDetector @Inject constructor(
                     pendingStopJob?.cancel()
                     pendingStopJob = ownScope.launch {
                         delay(STOP_GRACE_MS)
-                        stopBridge("in-car signal down")
+                        // Don't tear the bridge down while a drive is still
+                        // live (BLE connected / engine on / recent OBD frame).
+                        // A flappy presence signal — an AR IN_VEHICLE EXIT at a
+                        // long light, a brief HFP/WiFi drop — must not seal an
+                        // in-progress BLE drive and split it (the same failure
+                        // the CDM path had, 2026-07-18). Require IDLE_CONFIRM_POLLS
+                        // consecutive idle polls (hysteresis) so a single
+                        // transient reading can't seal a live drive, then stop —
+                        // which still guarantees teardown once the user has
+                        // really left and the WiCAN sleeps. In GPS-only mode the
+                        // hint above already flipped engineState Off, so this
+                        // confirms idle immediately.
+                        var idlePolls = 0
+                        while (isActive) {
+                            if (stateBus.isDriveLikelyActive()) {
+                                idlePolls = 0
+                            } else if (++idlePolls >= IDLE_CONFIRM_POLLS) {
+                                break
+                            }
+                            delay(ALIVE_POLL_MS)
+                        }
+                        if (isActive) stopBridge("in-car signal down")
                     }
                 }
             }
@@ -513,6 +535,14 @@ class InCarDetector @Inject constructor(
          *  in-driveway lull (eg. user shuts off the hotspot, runs back
          *  inside, comes out, turns it back on). */
         private const val STOP_GRACE_MS: Long = 120_000L
+
+        /** Re-check cadence while waiting for an active drive to end before the
+         *  presence-down stop tears the bridge down. */
+        private const val ALIVE_POLL_MS: Long = 30_000L
+
+        /** Consecutive idle polls required before the presence-down stop fires,
+         *  so a single transient "not active" reading can't seal a live drive. */
+        private const val IDLE_CONFIRM_POLLS: Int = 2
 
         private fun stripQuotes(s: String): String =
             s.trim().let { v ->

@@ -132,6 +132,25 @@ class BridgeStateBus @Inject constructor() {
     }
 
     /**
+     * True while the bridge is still doing real work — a live GATT link
+     * (phase Connected), the engine running, or an OBD frame within the
+     * BLE-lost window. The auto-stop paths — CDM presence in
+     * [com.pitstop.companion.WicanCompanionService] and the
+     * [com.pitstop.presence.InCarDetector] — consult this before tearing the
+     * foreground service down, so a spurious "device gone / you left" signal
+     * mid-drive can't seal the in-progress drive (which split one drive into
+     * ~14 trips on 2026-07-18). Once everything has genuinely gone quiet
+     * (parked, WiCAN asleep) it returns false and teardown proceeds.
+     */
+    fun isDriveLikelyActive(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val s = _status.value
+        if (s.phase == BridgePhase.Connected) return true
+        if (s.engineState == EngineState.On) return true
+        val lastObd = s.lastObdFrameAtMs ?: return false
+        return (nowMs - lastObd) < BLE_LOST_WINDOW_MS
+    }
+
+    /**
      * Record the BLE/OBD view of the engine. Callers feed this from
      * the WiCAN response parser (engine-on / STOPPED), the OBD-quiet
      * watchdog, and the BLE-lost watchdog. The merged
@@ -206,5 +225,11 @@ class BridgeStateBus @Inject constructor() {
     fun clearMetrics() {
         _latestByMetric.value = emptyMap()
         _status.update { it.copy(metricsActive = 0) }
+    }
+
+    companion object {
+        /** Matches the BLE-lost watchdog window in PitstopBridgeService — an
+         *  OBD frame newer than this means a drive is still plausibly live. */
+        private const val BLE_LOST_WINDOW_MS = 3L * 60L * 1000L
     }
 }

@@ -12,9 +12,7 @@ import com.pitstop.service.PitstopBridgeService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -37,15 +35,24 @@ import javax.inject.Inject
  * robust PRIMARY trigger; the InCarDetector AA/WiFi/AR paths remain best-effort
  * fallbacks. The bridge's onStartCommand is idempotent (guards on an active
  * poll job), so a CDM start racing an InCarDetector start is harmless.
+ *
+ * Teardown is deliberately NOT hosted here. CDM reports the WiCAN as
+ * "disappeared" the instant the bridge holds a GATT link to it — it stops
+ * advertising once connected — so `onDeviceDisappeared` fires near the START of
+ * a drive and the OS unbinds this service for the rest of it. A stop timer
+ * scheduled on this service's own scope would be cancelled on that unbind and
+ * never fire (leaking the FGS after a park). So `onDeviceDisappeared` merely
+ * delegates the "stop once the drive is idle" wait to the process-lifetime
+ * [WicanCompanionManager], which outlives the service binding.
  */
 @AndroidEntryPoint
 class WicanCompanionService : CompanionDeviceService() {
 
     @Inject lateinit var settings: SettingsRepository
     @Inject lateinit var logBuffer: LogBuffer
+    @Inject lateinit var companionManager: WicanCompanionManager
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var pendingStopJob: Job? = null
 
     // ── API 33+ (AssociationInfo) ──────────────────────────────────────
 
@@ -87,8 +94,9 @@ class WicanCompanionService : CompanionDeviceService() {
                 "association_id" to (associationId ?: -1),
             ),
         )
-        pendingStopJob?.cancel()
-        pendingStopJob = null
+        // The WiCAN is (still) in range — a drive is (re)starting, so cancel any
+        // pending idle-stop the manager armed on a prior disappear.
+        companionManager.cancelIdleStop()
         scope.launch {
             runCatching {
                 // Respect the user's auto-start toggle. If they turned
@@ -116,29 +124,11 @@ class WicanCompanionService : CompanionDeviceService() {
     @SuppressLint("MissingPermission")
     private fun onDisappeared() {
         logBuffer.info("companion: device disappeared")
-        // Mirror InCarDetector's grace window so a brief BLE drop in the
-        // driveway doesn't immediately tear the bridge down. The bridge's
-        // own engine-state + BLE-lost watchdogs (ADR-017) seal the open
-        // drive independently; this stop is the "we're parked + the WiCAN is
-        // gone" backstop.
-        pendingStopJob?.cancel()
-        pendingStopJob = scope.launch {
-            delay(STOP_GRACE_MS)
-            runCatching {
-                logBuffer.info("companion: bridge stop")
-                startService(PitstopBridgeService.stopIntent(this@WicanCompanionService))
-            }.onFailure {
-                logBuffer.warn(
-                    "companion: bridge stop failed",
-                    mapOf("err" to (it.message ?: it::class.java.simpleName)),
-                )
-            }
-        }
-    }
-
-    companion object {
-        /** Matches [com.pitstop.presence.InCarDetector.STOP_GRACE_MS] intent —
-         *  hold the bridge through a momentary BLE drop near the car. */
-        private const val STOP_GRACE_MS: Long = 120_000L
+        // Delegate the "stop the bridge once the drive is truly idle" wait to
+        // the process-lifetime manager. It survives this service's imminent
+        // unbind and only stops the FGS once the WiCAN has slept and the drive
+        // is over — stopping earlier would seal a live drive and split it into
+        // many trips (2026-07-18); never stopping would leak the FGS.
+        companionManager.scheduleIdleStop()
     }
 }
