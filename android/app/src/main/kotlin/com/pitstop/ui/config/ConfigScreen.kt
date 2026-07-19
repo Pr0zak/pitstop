@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,11 +27,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -38,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -45,6 +48,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +57,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
@@ -61,15 +67,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import com.pitstop.ble.ScannedDevice
+import com.pitstop.http.VehicleDto
 import com.pitstop.ui.components.PillState
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.SettingsSection
 import com.pitstop.ui.components.StatusPill
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * Settings — a single scrollable page of three collapsible accordion
@@ -97,18 +106,46 @@ import com.pitstop.ui.components.StatusPill
 @Composable
 fun ConfigScreen(
     viewModel: ConfigViewModel = hiltViewModel(),
+    pendingSetupLinkFlow: kotlinx.coroutines.flow.MutableStateFlow<String?>? = null,
 ) {
+    // Consume a pitstop://setup?… deep link forwarded by MainActivity: import
+    // it once, then clear so a recompose doesn't re-import.
+    val pendingSetupLink = pendingSetupLinkFlow?.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingSetupLink?.value) {
+        val link = pendingSetupLink?.value
+        if (!link.isNullOrBlank()) {
+            viewModel.importSetupLink(link)
+            pendingSetupLinkFlow?.value = null
+        }
+    }
     val form by viewModel.form.collectAsStateWithLifecycle()
     val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
     val scanResults by viewModel.scanResults.collectAsStateWithLifecycle()
     val scanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val companionAssociated by viewModel.companionAssociated.collectAsStateWithLifecycle()
+    val pairingInProgress by viewModel.pairingInProgress.collectAsStateWithLifecycle()
+    val autoStartStatus by viewModel.autoStartStatus.collectAsStateWithLifecycle()
     val bufferedCount by viewModel.bufferedCount.collectAsStateWithLifecycle()
     val lastFlushAt by viewModel.lastFlushAtMs.collectAsStateWithLifecycle()
     val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
     val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
     val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
+    val connTest by viewModel.connTest.collectAsStateWithLifecycle()
+    val brokerTest by viewModel.brokerTest.collectAsStateWithLifecycle()
+    val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
+    val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+
+    // Persist any unsaved edits when the user leaves Settings (tab switch /
+    // back). Without this, the form lives in viewModelScope and swiping away
+    // mid-edit silently discards the whole connection config. Gated on
+    // formReady so a fast dispose before the form loads from disk can't write
+    // blanks; the blank-secret guard in update() protects the tokens too.
+    DisposableEffect(Unit) {
+        onDispose {
+            if (viewModel.formReady.value && !viewModel.form.value.saved) viewModel.save()
+        }
+    }
 
     // Which accordion group is expanded — exactly one (or none, if the
     // open one is tapped shut). Saved so rotation/process-death restores
@@ -166,9 +203,24 @@ fun ConfigScreen(
                     "Stopping bridge so the WiCAN can be discovered…"
                 ConfigToast.CompanionUnpaired -> "WiCAN unpaired"
                 is ConfigToast.CompanionError -> "Pairing failed: ${t.message}"
+                is ConfigToast.SetupImported ->
+                    if (t.fields.isEmpty()) "Setup link imported"
+                    else "Imported ${t.fields.joinToString(", ")}"
+                ConfigToast.SetupLinkInvalid ->
+                    "Clipboard isn't a pitstop setup link"
+                ConfigToast.SetupLinkEmpty ->
+                    "That setup link had nothing to import"
             }
             snackbarHostState.showSnackbar(msg)
         }
+    }
+
+    pendingImport?.let { payload ->
+        ImportConfirmDialog(
+            payload = payload,
+            onConfirm = { viewModel.confirmImport() },
+            onCancel = { viewModel.cancelImport() },
+        )
     }
 
     Scaffold(
@@ -190,16 +242,33 @@ fun ConfigScreen(
             ) {
                 PitstopServerSection(
                     form = form,
+                    connTest = connTest,
+                    onTest = { viewModel.testConnection() },
+                    onEdit = { viewModel.resetConnTest() },
+                    onImportLink = {
+                        val pasted = clipboard.getText()?.text
+                        if (pasted.isNullOrBlank()) {
+                            scope.launch {
+                                snackbarHostState.showSnackbar("Clipboard is empty")
+                            }
+                        } else {
+                            viewModel.importSetupLink(pasted)
+                        }
+                    },
                     update = { transform -> viewModel.update(transform) },
                 )
                 VehicleSection(
                     slug = form.vehicleSlug,
+                    connTest = connTest,
                     onSlugChange = { v -> viewModel.update { it.copy(vehicleSlug = v) } },
                 )
                 MqttBrokerSection(
                     form = form,
                     brokerConnected = brokerConnected,
+                    brokerTest = brokerTest,
                     onReconnect = { viewModel.reconnectBroker() },
+                    onTestBroker = { viewModel.testBroker() },
+                    onEditBroker = { viewModel.resetBrokerTest() },
                     update = { transform -> viewModel.update(transform) },
                 )
             }
@@ -218,18 +287,20 @@ fun ConfigScreen(
                     onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
                     onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
                 )
+                AutoStartStatusCard(
+                    status = autoStartStatus,
+                    pairing = pairingInProgress,
+                    onPair = { viewModel.pairCompanion() },
+                )
                 AutoStartSection(
                     autoTrigger = form.bridgeAutoTrigger,
                     autoTriggerSsids = form.bridgeAutoTriggerSsids,
                     autoTriggerActivityEnabled = form.bridgeAutoTriggerActivityEnabled,
-                    companionPresenceSupported = viewModel.companionPresenceSupported,
-                    companionAssociated = companionAssociated,
                     onAutoTriggerChange = { v -> viewModel.setBridgeAutoTrigger(v) },
                     onAutoTriggerSsidsChange = { v -> viewModel.setBridgeAutoTriggerSsids(v) },
                     onAutoTriggerActivityEnabledChange = { v ->
                         viewModel.setBridgeAutoTriggerActivityEnabled(v)
                     },
-                    onPairCompanion = { viewModel.pairCompanion() },
                     onShowSnackbar = { msg ->
                         scope.launch { snackbarHostState.showSnackbar(msg) }
                     },
@@ -247,6 +318,7 @@ fun ConfigScreen(
                 if (viewModel.companionPresenceSupported) {
                     CompanionPairingSection(
                         associated = companionAssociated,
+                        pairing = pairingInProgress,
                         onPair = { viewModel.pairCompanion() },
                         onUnpair = { viewModel.unpairCompanion() },
                     )
@@ -269,6 +341,9 @@ fun ConfigScreen(
                     lastFlushMs = lastFlushAt,
                     onVerboseChange = { v -> viewModel.update { it.copy(verboseLogging = v) } },
                     onFlush = { viewModel.flushLogsNow() },
+                    onCopyDiagnostics = {
+                        clipboard.setText(AnnotatedString(viewModel.buildDiagnostics()))
+                    },
                 )
                 AppSection(
                     checking = checkingUpdate,
@@ -375,6 +450,40 @@ private fun CaptureCollectorsSection(
         description = "Pick what the bridge captures during a drive. Manual-sync " +
             "saves cellular data — drives stay queued until you sync.",
     ) {
+        // Plain-language summary of the resulting mode, derived from the two
+        // collector toggles — so the consequence of "both off" (capturing
+        // nothing) reads at a glance instead of being a silent footgun.
+        val nothing = !bleEnabled && !gpsEnabled
+        val captureLabel = when {
+            bleEnabled && gpsEnabled -> "Capturing OBD + GPS"
+            bleEnabled -> "Capturing OBD only"
+            gpsEnabled -> "Capturing GPS only"
+            else -> "Not capturing anything"
+        }
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+            Text(
+                captureLabel,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (nothing) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                if (manualSyncOnly) "Uploads on demand — sync from History"
+                else "Uploads live over cellular",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (nothing) {
+                Text(
+                    "⚠ Both collectors are off — the bridge won't record anything.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.size(8.dp))
         // Per-collector toggles. Splitting BLE from GPS lets the user run
         // a GPS-only bridge (eg. while OBD comes through the WiCAN's own
         // WiFi path) or a BLE-only bridge.
@@ -425,12 +534,9 @@ private fun AutoStartSection(
     autoTrigger: Boolean,
     autoTriggerSsids: List<String>,
     autoTriggerActivityEnabled: Boolean,
-    companionPresenceSupported: Boolean,
-    companionAssociated: Boolean,
     onAutoTriggerChange: (Boolean) -> Unit,
     onAutoTriggerSsidsChange: (String) -> Unit,
     onAutoTriggerActivityEnabledChange: (Boolean) -> Unit,
-    onPairCompanion: () -> Unit,
     onShowSnackbar: (String) -> Unit,
 ) {
     SettingsSection(
@@ -451,53 +557,9 @@ private fun AutoStartSection(
             }
             Switch(checked = autoTrigger, onCheckedChange = onAutoTriggerChange)
         }
-        // Auto-start is enabled but the WiCAN isn't paired as a companion
-        // device — on API 31+ the in-car triggers can detect the car but the
-        // OS denies the background startForegroundService() with
-        // mAllowStartForeground=false, so the drive silently never starts.
-        // CDM pairing is the only path that carries the FGS-from-background
-        // exemption + wakes the app. Make that prerequisite visible instead
-        // of failing silently. (The "Reliable background auto-start" card
-        // below holds the same Pair action; this just surfaces it in context.)
-        if (autoTrigger && companionPresenceSupported && !companionAssociated) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.errorContainer)
-                    .padding(12.dp),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Warning,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.size(20.dp),
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Won't start from the background yet",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                    Text(
-                        "Android blocks starting the bridge from the background " +
-                            "unless the WiCAN is paired as a companion device. Pair " +
-                            "it so a drive auto-starts even when the app is closed.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    TextButton(
-                        onClick = onPairCompanion,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                    ) {
-                        Text("Pair WiCAN")
-                    }
-                }
-            }
-        }
+        // The "won't start from the background without pairing" warning now
+        // lives in the AutoStartStatusCard above (its "Needs pairing" verdict +
+        // Pair button), so it isn't duplicated here.
         if (autoTrigger) {
             // Editable comma-separated list. Empty = the WiFi signal is
             // disabled (AA + BT still fire). Persists on every keystroke
@@ -584,6 +646,7 @@ private fun AutoStartSection(
 @Composable
 private fun CompanionPairingSection(
     associated: Boolean,
+    pairing: Boolean,
     onPair: () -> Unit,
     onUnpair: () -> Unit,
 ) {
@@ -605,15 +668,181 @@ private fun CompanionPairingSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onPair, enabled = !associated) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Disabled + spinner during the bridge-stop → advertising wait so
+            // the dongle can be discovered. Without this the button looked inert
+            // for several seconds and users tapped it repeatedly.
+            Button(onClick = onPair, enabled = !associated && !pairing) {
+                if (pairing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text("Pair WiCAN")
             }
-            OutlinedButton(onClick = onUnpair, enabled = associated) {
+            OutlinedButton(onClick = onUnpair, enabled = associated && !pairing) {
                 Text("Unpair")
             }
         }
+        if (pairing) {
+            Text(
+                "Freeing the dongle for pairing — stopping the live link so it " +
+                    "starts advertising, then the system pairing dialog will appear…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
+}
+
+// ── Auto-start status (task #18) ────────────────────────────────────
+
+/**
+ * The one card that answers "will a drive start on its own, and why isn't it?".
+ * Leads with an armed/needs-pairing/off verdict, then a live ledger of each
+ * in-car signal so a missed auto-start is diagnosable at a glance. Consolidates
+ * what used to be scattered across the warning banner + companion card.
+ */
+@Composable
+private fun AutoStartStatusCard(
+    status: AutoStartStatus,
+    pairing: Boolean,
+    onPair: () -> Unit,
+) {
+    val (verdictState, verdictLabel) = when (status.verdict) {
+        AutoStartVerdict.Armed -> PillState.Healthy to "Armed"
+        AutoStartVerdict.NeedsPairing -> PillState.Degraded to "Needs pairing"
+        AutoStartVerdict.Off -> PillState.Neutral to "Off"
+    }
+    SettingsSection(
+        title = "Auto-start status",
+        description = "Whether pitstop will start logging on its own — and which " +
+            "in-car signal it's watching right now.",
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            StatusPill(state = verdictState, label = verdictLabel)
+            Text(
+                text = when (status.verdict) {
+                    AutoStartVerdict.Armed ->
+                        if (status.inCarNow) "In the car now — ready to log."
+                        else "Ready — waiting for an in-car signal."
+                    AutoStartVerdict.NeedsPairing ->
+                        "Pair the WiCAN so drives can start from the background."
+                    AutoStartVerdict.Off ->
+                        "Turn on Auto-start below to log drives automatically."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        if (status.verdict == AutoStartVerdict.NeedsPairing) {
+            Button(onClick = onPair, enabled = !pairing) {
+                if (pairing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("Pair WiCAN")
+            }
+        }
+
+        // Live signal ledger — only meaningful once auto-start is on.
+        if (status.verdict != AutoStartVerdict.Off) {
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Text(
+                "LIVE SIGNALS",
+                style = MaterialTheme.typography.labelSmall,
+                letterSpacing = 0.8.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SignalRow(
+                "In car right now",
+                if (status.inCarNow) SignalState.Active else SignalState.Idle,
+                active = "Yes", idle = "No", disabled = "No",
+            )
+            SignalRow(
+                "Car WiFi",
+                status.wifi,
+                active = "Connected", idle = "No match", disabled = "No SSIDs set",
+            )
+            SignalRow(
+                "Android Auto / car Bluetooth",
+                status.projection,
+                active = "Connected", idle = "Not connected", disabled = "Not connected",
+            )
+            SignalRow(
+                "Motion (in vehicle)",
+                status.motion,
+                active = "Driving", idle = "Still", disabled = "Off",
+            )
+        }
+
+        Text(
+            lastAutoStartLabel(status.lastAutoStartAtMs),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** One signal ledger row: label on the left, a compact state pill on the right. */
+@Composable
+private fun SignalRow(
+    label: String,
+    state: SignalState,
+    active: String,
+    idle: String,
+    disabled: String,
+) {
+    val (pill, text) = when (state) {
+        SignalState.Active -> PillState.Healthy to active
+        SignalState.Idle -> PillState.Neutral to idle
+        SignalState.Disabled -> PillState.Neutral to disabled
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (state == SignalState.Disabled) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            modifier = Modifier.weight(1f),
+        )
+        StatusPill(state = pill, label = text, compact = true)
+    }
+}
+
+/** "Last auto-started N min ago" / "Never auto-started yet". Non-live (computed
+ *  at composition) — good enough for a status footer. */
+private fun lastAutoStartLabel(atMs: Long): String {
+    if (atMs <= 0L) return "Never auto-started yet"
+    val diff = System.currentTimeMillis() - atMs
+    val rel = when {
+        diff < 0L -> "just now"
+        diff < 60_000L -> "just now"
+        diff < 3_600_000L -> "${diff / 60_000L} min ago"
+        diff < 86_400_000L -> "${diff / 3_600_000L} hr ago"
+        else -> "${diff / 86_400_000L} d ago"
+    }
+    return "Last auto-started $rel"
 }
 
 /**
@@ -705,13 +934,27 @@ private fun BleDeviceSection(
 private fun MqttBrokerSection(
     form: ConfigFormState,
     brokerConnected: Boolean,
+    brokerTest: BrokerTest,
     onReconnect: () -> Unit,
+    onTestBroker: () -> Unit,
+    onEditBroker: () -> Unit,
     update: ((ConfigFormState) -> ConfigFormState) -> Unit,
 ) {
     SettingsSection(
         title = "MQTT broker",
-        description = "Mosquitto on the pitstop CT. Used by the OBD bridge to publish telemetry.",
+        description = "Live telemetry transport for the OBD bridge.",
     ) {
+        // MQTT is never used in manual-sync mode (drives ship over HTTP), so
+        // hide the whole credential surface + its scary "Offline" pill.
+        if (form.manualSyncOnly) {
+            Text(
+                "Not used in manual-sync mode — drives upload over HTTP. " +
+                    "Turn off manual-sync to stream live telemetry.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@SettingsSection
+        }
         // Compact connection-state hint only — the live "published N"
         // metrics readout moved to Home (this is config, not status).
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -726,15 +969,23 @@ private fun MqttBrokerSection(
         }
         OutlinedTextField(
             value = form.brokerUrl,
-            onValueChange = { v -> update { it.copy(brokerUrl = v) } },
+            onValueChange = { v -> onEditBroker(); update { it.copy(brokerUrl = v) } },
             label = { Text("Broker URL") },
             placeholder = { Text("tcp://10.0.0.x:1883") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        val derivedBroker = form.apiBaseUrl.toHttpUrlOrNull()?.host?.let { "tcp://$it:1883" }
+        if (form.brokerUrl.isBlank() && derivedBroker != null) {
+            Text(
+                "Leave blank to use $derivedBroker (your Pitstop server host).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         OutlinedTextField(
             value = form.mqttUser,
-            onValueChange = { v -> update { it.copy(mqttUser = v) } },
+            onValueChange = { v -> onEditBroker(); update { it.copy(mqttUser = v) } },
             label = { Text("MQTT username") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -742,27 +993,131 @@ private fun MqttBrokerSection(
         SecretField(
             label = "MQTT password",
             value = form.mqttPassword,
-            onValueChange = { v -> update { it.copy(mqttPassword = v) } },
+            onValueChange = { v -> onEditBroker(); update { it.copy(mqttPassword = v) } },
         )
+        BrokerStatusRow(brokerTest = brokerTest, onTest = onTestBroker)
+    }
+}
+
+/** Status chip (reuses [StatusPill]) + "Test broker" button — a throwaway MQTT
+ *  connect that validates the broker URL + credentials without touching the
+ *  live bridge connection. Mirrors [ConnStatusRow] for the server. */
+@Composable
+private fun BrokerStatusRow(brokerTest: BrokerTest, onTest: () -> Unit) {
+    val (state, label) = when (val b = brokerTest) {
+        BrokerTest.Idle -> PillState.Neutral to "Not tested"
+        BrokerTest.InProgress -> PillState.Connecting to "Testing…"
+        BrokerTest.Ok -> PillState.Healthy to "Broker reachable"
+        BrokerTest.BadUrl -> PillState.Offline to "Check the broker URL"
+        BrokerTest.BadAuth -> PillState.Offline to "Rejected — check user / password"
+        is BrokerTest.Unreachable -> PillState.Offline to "Can't reach the broker"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        StatusPill(state = state, label = label, compact = true)
+        Spacer(Modifier.weight(1f))
+        OutlinedButton(onClick = onTest, enabled = brokerTest != BrokerTest.InProgress) {
+            if (brokerTest == BrokerTest.InProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text("Test broker")
+        }
     }
 }
 
 // ── Vehicle ────────────────────────────────────────────────────────
 
 @Composable
-private fun VehicleSection(slug: String, onSlugChange: (String) -> Unit) {
+private fun VehicleSection(slug: String, connTest: ConnTest, onSlugChange: (String) -> Unit) {
     SettingsSection(
         title = "Vehicle",
-        description = "MQTT topic id this bridge publishes under. Must match a vehicle on the server (mapped via Settings → Devices).",
+        description = "Which vehicle this phone logs as. Test the connection above to load the list from your server.",
     ) {
-        OutlinedTextField(
-            value = slug,
-            onValueChange = onSlugChange,
-            label = { Text("Vehicle slug") },
-            placeholder = { Text("e.g. pilot19") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        val vehicles = (connTest as? ConnTest.Ok)?.vehicles.orEmpty()
+        if (vehicles.isNotEmpty()) {
+            // Picker fed by the test-connection /vehicles response — a mistyped
+            // slug is impossible once the server is reachable.
+            Column {
+                vehicles.forEach { v ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSlugChange(v.slug) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = slug == v.slug, onClick = { onSlugChange(v.slug) })
+                        Spacer(Modifier.width(4.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(vehicleLabel(v), style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                v.slug,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback until a successful test: keep manual entry, but nudge
+            // toward the zero-typo picker.
+            OutlinedTextField(
+                value = slug,
+                onValueChange = onSlugChange,
+                label = { Text("Vehicle slug") },
+                placeholder = { Text("e.g. pilot19") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Tip: tap Test connection above to pick from your server's vehicles instead of typing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+private fun vehicleLabel(v: VehicleDto): String {
+    val label = listOfNotNull(v.year?.toString(), v.make, v.model).joinToString(" ")
+    return label.ifBlank { v.name }
+}
+
+/** Status chip (reuses [StatusPill]) + Test-connection button, sitting under
+ *  the token fields so a 401/unreachable lands next to the cause. */
+@Composable
+private fun ConnStatusRow(connTest: ConnTest, onTest: () -> Unit) {
+    val (state, label) = when (val c = connTest) {
+        ConnTest.Idle -> PillState.Neutral to "Not tested"
+        ConnTest.InProgress -> PillState.Connecting to "Testing…"
+        is ConnTest.Ok -> PillState.Healthy to
+            "Connected · ${c.vehicles.size} vehicle${if (c.vehicles.size == 1) "" else "s"}"
+        ConnTest.BadUrl -> PillState.Offline to "Check the URL"
+        ConnTest.BadToken -> PillState.Offline to "401 — check the Query token"
+        is ConnTest.Unreachable -> PillState.Offline to "Can't reach the server"
+        is ConnTest.ServerError -> PillState.Degraded to "Server error ${c.code}"
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StatusPill(state = state, label = label, compact = true)
+        Spacer(Modifier.weight(1f))
+        OutlinedButton(onClick = onTest, enabled = connTest != ConnTest.InProgress) {
+            if (connTest == ConnTest.InProgress) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Text("Test connection")
+            }
+        }
     }
 }
 
@@ -771,30 +1126,64 @@ private fun VehicleSection(slug: String, onSlugChange: (String) -> Unit) {
 @Composable
 private fun PitstopServerSection(
     form: ConfigFormState,
+    connTest: ConnTest,
+    onTest: () -> Unit,
+    onEdit: () -> Unit,
+    onImportLink: () -> Unit,
     update: ((ConfigFormState) -> ConfigFormState) -> Unit,
 ) {
     SettingsSection(
         title = "Pitstop server",
         description = "Reads use the Query token, writes use the Ingest token. Get both from ~/.pitstop-deploy-secrets.txt on the host.",
     ) {
+        // One-tap credential handoff: paste a pitstop://setup?… link and it
+        // fills the URL + both tokens (+ vehicle/MQTT if present) at once, so
+        // nobody has to thumb-type two 40-char tokens on a phone.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Have a setup link?",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedButton(onClick = onImportLink) {
+                Icon(
+                    imageVector = Icons.Filled.ContentPaste,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Paste link")
+            }
+        }
+        val urlError = form.apiBaseUrl.isNotBlank() && form.apiBaseUrl.toHttpUrlOrNull() == null
+        val urlSupport: (@Composable () -> Unit)? =
+            if (urlError) { { Text("Enter a full URL like http://10.0.0.x:8080") } } else null
         OutlinedTextField(
             value = form.apiBaseUrl,
-            onValueChange = { v -> update { it.copy(apiBaseUrl = v) } },
+            onValueChange = { v -> update { it.copy(apiBaseUrl = v) }; onEdit() },
             label = { Text("API base URL") },
             placeholder = { Text("http://10.0.0.x:8080") },
+            isError = urlError,
+            supportingText = urlSupport,
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         SecretField(
             label = "Ingest token",
             value = form.ingestToken,
-            onValueChange = { v -> update { it.copy(ingestToken = v) } },
+            onValueChange = { v -> update { it.copy(ingestToken = v) }; onEdit() },
         )
         SecretField(
             label = "Query token",
             value = form.queryToken,
-            onValueChange = { v -> update { it.copy(queryToken = v) } },
+            onValueChange = { v -> update { it.copy(queryToken = v) }; onEdit() },
         )
+        ConnStatusRow(connTest = connTest, onTest = onTest)
     }
 }
 
@@ -807,6 +1196,7 @@ private fun LogsSection(
     lastFlushMs: Long?,
     onVerboseChange: (Boolean) -> Unit,
     onFlush: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
 ) {
     SettingsSection(title = "Logs") {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -827,6 +1217,9 @@ private fun LogsSection(
         )
         OutlinedButton(onClick = onFlush, modifier = Modifier.fillMaxWidth()) {
             Text("Send logs now")
+        }
+        TextButton(onClick = onCopyDiagnostics, modifier = Modifier.fillMaxWidth()) {
+            Text("Copy diagnostics")
         }
     }
 }

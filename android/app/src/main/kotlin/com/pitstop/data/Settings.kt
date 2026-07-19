@@ -1,5 +1,7 @@
 package com.pitstop.data
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+
 /**
  * App-level configuration. The password and ingest token are persisted through
  * [SecretStore] (Tink-backed) and are NOT stored in DataStore.
@@ -139,6 +141,19 @@ data class Settings(
      */
     val companionAssociationId: Int? = null,
 )
+
+/**
+ * The MQTT broker URL to actually connect to. When the user left [brokerUrl]
+ * blank, derive `tcp://<api-host>:1883` from [apiBaseUrl] — but do this LIVE at
+ * every read, never persisted. Persisting the derived value would pin the broker
+ * to whatever server host was configured at save time, so a later apiBaseUrl
+ * host change would silently leave live MQTT pointing at the dead old host.
+ * Returns "" only when both fields are unusable.
+ */
+fun Settings.effectiveBrokerUrl(): String =
+    brokerUrl.ifBlank {
+        apiBaseUrl.toHttpUrlOrNull()?.host?.let { "tcp://$it:1883" }.orEmpty()
+    }
 
 data class SettingsWithSecrets(
     val settings: Settings,

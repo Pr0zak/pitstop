@@ -8,6 +8,7 @@ import com.hivemq.client.mqtt.mqtt3.lifecycle.Mqtt3ClientDisconnectedContext
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.loggableUrl
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -246,6 +247,63 @@ class MqttPublisher @Inject constructor(
             it.disconnect()
         }
         client = null
+    }
+
+    /**
+     * One-shot connection probe for the Settings "Test broker" button.
+     * Builds a THROWAWAY client — it never touches [client] or the live
+     * singleton connection — connects with the supplied credentials, then
+     * disconnects immediately. Returns normally on success; throws on failure
+     * so the caller can map the cause to a user-facing message.
+     *
+     * No automatic reconnect (a bad password must fail fast, not loop
+     * NOT_AUTHORIZED) and a hard [timeoutMs] ceiling so an unreachable host
+     * can't hang the UI. [Mqtt3ConnAckException] surfaces auth/protocol
+     * rejects; anything else (DNS, refused, timeout) arrives as a plain
+     * exception the caller treats as "unreachable".
+     */
+    suspend fun testConnect(
+        brokerUrl: String,
+        username: String,
+        password: String,
+        timeoutMs: Long = 8_000,
+    ) {
+        val (host, port, ssl) = parseBrokerUrl(brokerUrl)
+        val builder = MqttClient.builder()
+            .useMqttVersion3()
+            .identifier("pitstop-test-${UUID.randomUUID()}")
+            .serverHost(host)
+            .serverPort(port)
+        if (ssl) builder.sslWithDefaultConfig()
+        val probe = builder.buildAsync()
+
+        try {
+            withTimeout(timeoutMs) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    val connectBuilder = probe.connectWith()
+                        .keepAlive(20)
+                        .cleanSession(true)
+                    if (username.isNotBlank()) {
+                        connectBuilder.simpleAuth()
+                            .username(username)
+                            .password(password.toByteArray(Charsets.UTF_8))
+                            .applySimpleAuth()
+                    }
+                    connectBuilder.send().whenComplete { _, t ->
+                        if (t == null) {
+                            cont.resume(Unit)
+                        } else {
+                            cont.resumeWithException(
+                                if (t is Mqtt3ConnAckException) t else RuntimeException(t.message, t),
+                            )
+                        }
+                    }
+                    cont.invokeOnCancellation { runCatching { probe.disconnect() } }
+                }
+            }
+        } finally {
+            runCatching { probe.disconnect() }
+        }
     }
 
     private data class Endpoint(val host: String, val port: Int, val ssl: Boolean)

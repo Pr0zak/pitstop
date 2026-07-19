@@ -42,8 +42,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.ui.config.ConfigScreen
+import com.pitstop.ui.onboarding.OnboardingGateViewModel
+import com.pitstop.ui.onboarding.SetupWizardScreen
 import com.pitstop.ui.fuel.FuelAddScreen
 import com.pitstop.ui.history.HistoryScreen
 import com.pitstop.ui.live.LiveScreen
@@ -59,6 +62,10 @@ class MainActivity : ComponentActivity() {
     /** Cleared by the launcher when a deep-link intent fires and the
      *  pager scrolls there; subsequent recomposes don't re-navigate. */
     private val pendingTabIndex = MutableStateFlow<Int?>(null)
+
+    /** A pitstop://setup?… link tapped from a QR page / message. Consumed once
+     *  by ConfigScreen (which imports it) then cleared. */
+    private val pendingSetupLink = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,9 +84,15 @@ class MainActivity : ComponentActivity() {
         // ACTION_SYNC_DRIVES is fired by the SyncReminderManager
         // notification body tap — land on History (tab 2) so the user
         // can see the queued drives + tap "Sync now".
-        val initialTab = when (intent?.action) {
-            ACTION_ADD_FILLUP -> 3
-            ACTION_SYNC_DRIVES -> 2
+        // A pitstop://setup?… VIEW intent lands on Settings (tab 4) and hands
+        // the link to ConfigScreen to import.
+        val setupLink = intent?.takeIf { it.action == Intent.ACTION_VIEW }
+            ?.data?.takeIf { it.scheme == "pitstop" }?.toString()
+        if (setupLink != null) pendingSetupLink.value = setupLink
+        val initialTab = when {
+            setupLink != null -> 4
+            intent?.action == ACTION_ADD_FILLUP -> 3
+            intent?.action == ACTION_SYNC_DRIVES -> 2
             else -> 0
         }
         setContent {
@@ -91,6 +104,7 @@ class MainActivity : ComponentActivity() {
                     PitstopRoot(
                         initialTab = initialTab,
                         pendingTabFlow = pendingTabIndex,
+                        pendingSetupLinkFlow = pendingSetupLink,
                     )
                 }
             }
@@ -105,6 +119,13 @@ class MainActivity : ComponentActivity() {
         when (intent.action) {
             ACTION_ADD_FILLUP -> pendingTabIndex.value = 3
             ACTION_SYNC_DRIVES -> pendingTabIndex.value = 2
+            Intent.ACTION_VIEW -> {
+                val link = intent.data?.takeIf { it.scheme == "pitstop" }?.toString()
+                if (link != null) {
+                    pendingSetupLink.value = link
+                    pendingTabIndex.value = 4
+                }
+            }
         }
     }
 
@@ -133,7 +154,28 @@ private val tabDestinations = listOf(
 private fun PitstopRoot(
     initialTab: Int = 0,
     pendingTabFlow: MutableStateFlow<Int?>? = null,
+    pendingSetupLinkFlow: MutableStateFlow<String?>? = null,
+    gateViewModel: OnboardingGateViewModel = hiltViewModel(),
 ) {
+    // First-run gate (#12): while un-onboarded + unconfigured, the setup wizard
+    // replaces the whole pager. `null` = still loading settings — render nothing
+    // rather than flash the pager before swapping to the wizard.
+    val showWizard by gateViewModel.showWizard.collectAsStateWithLifecycle()
+    when (showWizard) {
+        // Settings still loading — render nothing (a blank frame) and return, so
+        // the pager isn't briefly drawn under a fresh install before the wizard
+        // swaps in. Returning here (not just `Unit`) is what prevents that flash.
+        null -> return
+        true -> {
+            SetupWizardScreen(
+                onDone = { gateViewModel.markComplete() },
+                pendingSetupLinkFlow = pendingSetupLinkFlow,
+            )
+            return
+        }
+        false -> Unit // fall through to the pager
+    }
+
     val pagerState = rememberPagerState(initialPage = initialTab) { tabDestinations.size }
     val scope = rememberCoroutineScope()
 
@@ -256,11 +298,14 @@ private fun PitstopRoot(
                     onOpenHistory = {
                         scope.launch { pagerState.animateScrollToPage(2) }
                     },
+                    onOpenSettings = {
+                        scope.launch { pagerState.animateScrollToPage(4) }
+                    },
                 )
                 1 -> LiveScreen()
                 2 -> HistoryScreen()
                 3 -> FuelAddScreen()
-                4 -> ConfigScreen()
+                4 -> ConfigScreen(pendingSetupLinkFlow = pendingSetupLinkFlow)
             }
         }
     }

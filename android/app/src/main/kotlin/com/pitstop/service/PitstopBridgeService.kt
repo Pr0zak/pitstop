@@ -20,6 +20,7 @@ import com.pitstop.PitstopApp
 import com.pitstop.R
 import com.pitstop.ble.WiCanBleManager
 import com.pitstop.data.SettingsRepository
+import com.pitstop.data.effectiveBrokerUrl
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.LogShipper
 import com.pitstop.log.loggableUrl
@@ -462,7 +463,7 @@ class PitstopBridgeService : Service() {
                 "bridge start",
                 mapOf(
                     "vehicle_slug" to vehicleSlug,
-                    "broker" to loggableUrl(s.brokerUrl),
+                    "broker" to loggableUrl(s.effectiveBrokerUrl()),
                     "ble_mac" to maskMac(s.bleDeviceMac),
                     "ble_enabled" to bridgeBleEnabled,
                     "gps_enabled" to bridgeGpsEnabled,
@@ -481,7 +482,7 @@ class PitstopBridgeService : Service() {
                     // BridgeStatePill renders "Idle" for that, which is
                     // honest about not maintaining a BLE connection).
                     phase = if (bridgeBleEnabled) BridgePhase.Connecting else BridgePhase.Idle,
-                    brokerUrl = s.brokerUrl.takeIf { url -> url.isNotBlank() },
+                    brokerUrl = s.effectiveBrokerUrl().takeIf { url -> url.isNotBlank() },
                     deviceName = s.bleDeviceName,
                     deviceMac = s.bleDeviceMac,
                 )
@@ -492,7 +493,7 @@ class PitstopBridgeService : Service() {
             // (eg. heartbeat) and the moment BLE comes up we don't want to wait on a
             // TCP handshake. MQTT is shared infrastructure for both collectors so it
             // starts regardless of which one is enabled.
-            launch { connectMqttWithRetry(s.brokerUrl, s.mqttUser, secrets.mqttPassword) }
+            launch { connectMqttWithRetry(s.effectiveBrokerUrl(), s.mqttUser, secrets.mqttPassword) }
             // Drain backlog whenever the broker is reachable. Runs forever
             // until the bridge is stopped.
             launch { runOfflineDrainLoop() }

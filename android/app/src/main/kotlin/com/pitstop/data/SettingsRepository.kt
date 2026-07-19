@@ -63,6 +63,18 @@ class SettingsRepository @Inject constructor(
             booleanPreferencesKey("ar_in_vehicle_state")
         val inVehicleStateAtMs: Preferences.Key<Long> =
             longPreferencesKey("ar_in_vehicle_state_at_ms")
+
+        // When the bridge was last started by the auto-trigger (InCarDetector),
+        // as opposed to a manual Home/Settings start. Surfaced in the Settings
+        // "Auto-start status" card so the user can confirm auto-start is
+        // actually firing.
+        val lastAutoStartAtMs: Preferences.Key<Long> =
+            longPreferencesKey("last_auto_start_at_ms")
+
+        // Set once the user finishes (or skips) the first-run setup wizard, so
+        // the wizard never gates the pager again.
+        val onboardingComplete: Preferences.Key<Boolean> =
+            booleanPreferencesKey("onboarding_complete")
     }
 
     /**
@@ -210,9 +222,13 @@ class SettingsRepository @Inject constructor(
         // no way to recover except retyping. (This was the cause of the
         // 0.1.82 → broker NOT_AUTHORIZED loop.)
         // Explicit clears go through clearSecret() below.
-        if (!mqttPassword.isNullOrBlank()) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword)
-        if (!ingestToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken)
-        if (!queryToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_QUERY_TOKEN, queryToken)
+        // Trim secrets before persisting — a stray leading/trailing space or a
+        // newline pasted onto a token produces a silent 401/NOT_AUTHORIZED that
+        // only surfaces two screens away. (mqttPassword is trimmed too; a real
+        // password shouldn't have edge whitespace on this LAN-only broker.)
+        if (!mqttPassword.isNullOrBlank()) secretStore.write(SecretStore.KEY_MQTT_PASSWORD, mqttPassword.trim())
+        if (!ingestToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_INGEST_TOKEN, ingestToken.trim())
+        if (!queryToken.isNullOrBlank()) secretStore.write(SecretStore.KEY_QUERY_TOKEN, queryToken.trim())
         // Secrets aren't in the settings flow — drop the cache so the next
         // read rebuilds with the new tokens/password.
         invalidateCache()
@@ -305,6 +321,26 @@ class SettingsRepository @Inject constructor(
             it[Keys.inVehicleState] = value
             it[Keys.inVehicleStateAtMs] = atMs
         }
+    }
+
+    /** Epoch-ms of the last auto-triggered bridge start (0 = never). Powers the
+     *  "Last auto-started" line in the Settings auto-start status card. */
+    val lastAutoStartAtMs: Flow<Long> =
+        context.dataStore.data.map { it[Keys.lastAutoStartAtMs] ?: 0L }
+
+    /** Stamp the auto-start clock. Called by [com.pitstop.presence.InCarDetector]
+     *  the moment it fires a background bridge start. */
+    suspend fun writeLastAutoStart(atMs: Long) {
+        context.dataStore.edit { it[Keys.lastAutoStartAtMs] = atMs }
+    }
+
+    /** True once the first-run setup wizard has been finished or skipped. */
+    val onboardingComplete: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.onboardingComplete] ?: false }
+
+    /** Mark the first-run wizard done so it never gates the pager again. */
+    suspend fun setOnboardingComplete(value: Boolean) {
+        context.dataStore.edit { it[Keys.onboardingComplete] = value }
     }
 
     companion object {

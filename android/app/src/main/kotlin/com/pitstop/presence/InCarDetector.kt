@@ -281,6 +281,9 @@ class InCarDetector @Inject constructor(
 
     private fun startBridge(reason: String) {
         logBuffer.info("auto-start bridge", mapOf("reason" to reason))
+        // Stamp the auto-start clock so the Settings status card can show "last
+        // auto-started N min ago" — the user's proof that auto-start is working.
+        ownScope.launch { settings.writeLastAutoStart(System.currentTimeMillis()) }
         runCatching {
             ContextCompat.startForegroundService(
                 context,

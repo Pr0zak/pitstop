@@ -38,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -77,6 +78,7 @@ import kotlinx.coroutines.launch
 fun StatusScreen(
     viewModel: StatusViewModel = hiltViewModel(),
     onOpenHistory: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -139,10 +141,17 @@ fun StatusScreen(
                     )
                 }
 
-                // Cold start shows shimmer skeletons until the first hero
-                // payload lands, instead of a near-blank screen (every card
-                // is null-gated). Once hero != null the real cards render.
-                if (ui.hero == null) {
+                // Fresh install (no server/vehicle) → a setup CTA instead of
+                // shimmering forever. refreshHomeData() bails when unconfigured,
+                // so the skeleton would never resolve. Once configured, cold
+                // start shows the shimmer until the first hero payload lands.
+                if (!ui.configured) {
+                    SetupPromptCard(
+                        hasServer = ui.hasServer,
+                        hasVehicle = ui.hasVehicle,
+                        onSetUp = onOpenSettings,
+                    )
+                } else if (ui.hero == null) {
                     HomeSkeleton()
                 }
 
@@ -346,6 +355,72 @@ private fun humanBytes(b: Long): String = when {
     b < 1024 -> "$b B"
     b < 1024 * 1024 -> "%.1f KB".format(b / 1024.0)
     else -> "%.2f MB".format(b / 1024.0 / 1024.0)
+}
+
+/**
+ * Shown on Home when the app isn't configured yet (no server URL or vehicle
+ * slug). Replaces the never-resolving shimmer with a named state, a two-item
+ * checklist, and a button that jumps to Settings.
+ */
+@Composable
+private fun SetupPromptCard(
+    hasServer: Boolean,
+    hasVehicle: Boolean,
+    onSetUp: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("🔌", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Finish setup to see your data",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                "Connect pitstop to your server to load fuel, MPG and trips.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                SetupChecklistRow(done = hasServer, label = "Server", missing = "not set")
+                SetupChecklistRow(done = hasVehicle, label = "Vehicle", missing = "not picked")
+            }
+            Button(
+                onClick = onSetUp,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            ) { Text("Set up now") }
+        }
+    }
+}
+
+@Composable
+private fun SetupChecklistRow(done: Boolean, label: String, missing: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            if (done) "✓" else "✕",
+            color = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        )
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.weight(1f))
+        if (!done) {
+            Text(
+                missing,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
 }
 
 /**

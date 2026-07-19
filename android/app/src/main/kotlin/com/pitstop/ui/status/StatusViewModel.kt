@@ -66,7 +66,14 @@ data class StatusUiState(
      *  BridgeStatePill flips to a "Local-only" badge when this is on
      *  AND the bridge is otherwise running. */
     val manualSyncOnly: Boolean = false,
-)
+    /** Server URL + vehicle slug are set. Used by Home to tell an
+     *  unconfigured fresh install (show the setup CTA) apart from a
+     *  configured-but-still-loading one (show the shimmer skeleton). */
+    val hasServer: Boolean = false,
+    val hasVehicle: Boolean = false,
+) {
+    val configured: Boolean get() = hasServer && hasVehicle
+}
 
 @HiltViewModel
 class StatusViewModel @Inject constructor(
@@ -423,6 +430,8 @@ class StatusViewModel @Inject constructor(
                 monthlySpend = spend,
                 activeDtcs = dtcs,
                 manualSyncOnly = bridge.settings.manualSyncOnly,
+                hasServer = bridge.settings.apiBaseUrl.isNotBlank(),
+                hasVehicle = bridge.settings.vehicleSlug.isNotBlank(),
             )
         }.stateIn(
             scope = viewModelScope,

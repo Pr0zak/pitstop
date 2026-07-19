@@ -151,6 +151,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Credential handoff (#13): a pitstop://setup?server=…&query=…
+                 &ingest=…&vehicle=… link (tap from a QR page / chat / email)
+                 opens the app, lands on Settings, and imports the config so no
+                 one has to thumb-type two 40-char tokens. Parsed by
+                 SetupLink.parse; routed via MainActivity.onCreate/onNewIntent. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="pitstop" android:host="setup" />
+            </intent-filter>
             <!-- Static launcher shortcut (#121): long-press the app
                  icon to get "Add fillup", or drag it to the home
                  screen as a single-cell shortcut. The shortcut's
