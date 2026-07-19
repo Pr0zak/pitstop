@@ -27,6 +27,16 @@ Self-hosted vehicle telemetry and fuel-tracking app.
 
 <p align="center"><img src="docs/screenshots/heatmap.png" alt="GPS density heatmap" width="900"><br><em>GPS density heatmap — every drive, coloured by how often each ~11&nbsp;m cell is visited</em></p>
 
+### Android companion app
+
+<p align="center">
+  <img src="docs/screenshots/app-home.png" alt="Home dashboard" width="215">
+  <img src="docs/screenshots/app-history.png" alt="Trip history" width="215">
+  <img src="docs/screenshots/app-tripdetail.png" alt="Trip detail" width="215">
+  <img src="docs/screenshots/app-fuel.png" alt="Log a fillup" width="215">
+</p>
+<p align="center"><em>Home dashboard · trip history · trip detail with OBD timeline · log a fillup</em></p>
+
 ## Stack
 
 - **Backend:** FastAPI (async), aiomqtt, asyncpg, alembic
