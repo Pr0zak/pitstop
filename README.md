@@ -10,7 +10,22 @@ Self-hosted vehicle telemetry and fuel-tracking app.
 - Stores trips, readings, fillups, expenses, GPS tracks, and engine on/off events in TimescaleDB. Trip detection is post-processed every 5 minutes from the raw stream so noisy real-time signals (LWT blips, late buffer drains, dual-provider GPS noise) don't poison the trip table.
 - Vue 3 dashboard: live gauges, trip history with map polylines, fuel/MPG analytics, station map, maintenance reminders, hero cards for cost-per-mile / best-MPG / etc.
 - Imports historical fuel data from Fuelio (Sygic) CSV exports — including the `(optional)`-suffixed columns for GPS, station ID, notes, and price that older tooling missed.
-- Companion Android app (Kotlin + Jetpack Compose): bridges OBD over BLE → MQTT during driving, surfaces live gauges, picks up WiCAN AutoPID metrics from the broker, supports adaptive BLE backoff via Android Auto + paired-car-Bluetooth presence detection, and offers an in-app self-update flow.
+- Companion Android app (Kotlin + Jetpack Compose): bridges OBD over BLE → MQTT during driving, surfaces live gauges, picks up WiCAN AutoPID metrics from the broker, and reliably auto-starts/stops the capture service in the background via a CompanionDeviceManager association with the WiCAN (plus Android Auto + paired-car-Bluetooth presence as fallbacks). In-app self-update flow.
+
+## Screenshots
+
+> Rendered from the running app on a synthetic demo dataset — no real vehicle, location, or fuel data.
+
+<p align="center"><img src="docs/screenshots/overview.png" alt="Overview dashboard — fuel level, MPG, cost-per-mile, recent trips, active DTCs" width="900"></p>
+
+|  |  |
+|---|---|
+| ![Trip history](docs/screenshots/trips.png) | ![Trip detail with route + OBD timeline](docs/screenshots/trip-detail.png) |
+| **Trip history** — grouped by day, broken down by purpose | **Trip detail** — speed/RPM/coolant timeline + GPS route |
+| ![Analytics](docs/screenshots/analytics.png) | ![Fuel log](docs/screenshots/fuel.png) |
+| **Analytics** — MPG trend, engine temps, cost breakdown | **Fuel** — fillup history, MPG, stations map, imports |
+
+<p align="center"><img src="docs/screenshots/heatmap.png" alt="GPS density heatmap" width="900"><br><em>GPS density heatmap — every drive, coloured by how often each ~11&nbsp;m cell is visited</em></p>
 
 ## Stack
 
