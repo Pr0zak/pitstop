@@ -1,9 +1,11 @@
 package com.pitstop.ui.status
 
 import android.app.Application
+import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.pitstop.companion.WicanCompanionManager
 import com.pitstop.data.SettingsRepository
 import com.pitstop.http.CostPerMilePointDto
 import com.pitstop.http.DtcDto
@@ -71,8 +73,30 @@ data class StatusUiState(
      *  configured-but-still-loading one (show the shimmer skeleton). */
     val hasServer: Boolean = false,
     val hasVehicle: Boolean = false,
+    /** Auto-start master toggle ([com.pitstop.data.Settings.bridgeAutoTrigger]). */
+    val autoStartOn: Boolean = false,
+    /** WiCAN is paired as a CompanionDeviceManager companion — read from the
+     *  live CDM association list (WicanCompanionManager.hasAssociation()), the
+     *  same source Settings uses, so the two screens can't disagree. */
+    val companionPaired: Boolean = false,
 ) {
-    val configured: Boolean get() = hasServer && hasVehicle
+    /**
+     * Auto-start is ON but the WiCAN isn't paired on API 31+, so the OS will
+     * block the background service start and drives silently never auto-log —
+     * the recurring CDM trap. Mirrors ConfigViewModel's AutoStartVerdict
+     * NeedsPairing branch (bridgeAutoTrigger && companionPresenceSupported &&
+     * !companionAssociated); companionPresenceSupported is SDK_INT >= S.
+     */
+    val captureNeedsPairing: Boolean
+        get() = autoStartOn &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !companionPaired
+
+    /** Show the Home setup card until server + vehicle are set AND (if the user
+     *  wants auto-start) the WiCAN is paired — so a "configured but never
+     *  paired" install stops looking healthy while drives silently don't log.
+     *  A deliberate manual-start user (auto-start off) is never nagged. */
+    val configured: Boolean get() = hasServer && hasVehicle && !captureNeedsPairing
 }
 
 @HiltViewModel
@@ -85,6 +109,7 @@ class StatusViewModel @Inject constructor(
     logShipper: LogShipper,
     private val updateChecker: UpdateChecker,
     private val api: PitstopApi,
+    private val companionManager: WicanCompanionManager,
     private val bridgeStateBus: BridgeStateBus = stateBus,
 ) : AndroidViewModel(application) {
 
@@ -432,6 +457,17 @@ class StatusViewModel @Inject constructor(
                 manualSyncOnly = bridge.settings.manualSyncOnly,
                 hasServer = bridge.settings.apiBaseUrl.isNotBlank(),
                 hasVehicle = bridge.settings.vehicleSlug.isNotBlank(),
+                autoStartOn = bridge.settings.bridgeAutoTrigger,
+                // Read the SAME live source the rest of the app uses
+                // (WicanCompanionManager.hasAssociation() → CDM myAssociations on
+                // API 31+), NOT the persisted companionAssociationId — otherwise
+                // Home and Settings can disagree about "paired" (e.g. the OS
+                // association removed externally while the id lingers), and Home
+                // would stay silent in exactly the background-start-broken case
+                // this nudge exists to catch. The combine re-fires on settings /
+                // status changes (incl. companionAssociationId on pair/unpair),
+                // so this is re-read on every relevant event.
+                companionPaired = companionManager.hasAssociation(),
             )
         }.stateIn(
             scope = viewModelScope,

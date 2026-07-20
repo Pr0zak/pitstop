@@ -149,6 +149,8 @@ fun StatusScreen(
                     SetupPromptCard(
                         hasServer = ui.hasServer,
                         hasVehicle = ui.hasVehicle,
+                        autoStartOn = ui.autoStartOn,
+                        needsPairing = ui.captureNeedsPairing,
                         onSetUp = onOpenSettings,
                     )
                 } else if (ui.hero == null) {
@@ -366,22 +368,33 @@ private fun humanBytes(b: Long): String = when {
 private fun SetupPromptCard(
     hasServer: Boolean,
     hasVehicle: Boolean,
+    autoStartOn: Boolean,
+    needsPairing: Boolean,
     onSetUp: () -> Unit,
 ) {
+    // Two flavours share one card: the fresh-install "connect your server" state
+    // and the subtler "everything's set but the WiCAN isn't paired, so drives
+    // silently never auto-log" state. The headline adapts so the pairing case
+    // doesn't tell an already-connected user to "connect to your server".
+    val serverIncomplete = !hasServer || !hasVehicle
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("🔌", style = MaterialTheme.typography.headlineMedium)
+            Text(if (serverIncomplete) "🔌" else "📡", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Finish setup to see your data",
+                if (serverIncomplete) "Finish setup to see your data" else "One step from auto-logging",
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center,
             )
             Text(
-                "Connect pitstop to your server to load fuel, MPG and trips.",
+                if (serverIncomplete) {
+                    "Connect pitstop to your server to load fuel, MPG and trips."
+                } else {
+                    "Pair the WiCAN so drives start logging on their own — even when the app is closed."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -392,11 +405,20 @@ private fun SetupPromptCard(
             ) {
                 SetupChecklistRow(done = hasServer, label = "Server", missing = "not set")
                 SetupChecklistRow(done = hasVehicle, label = "Vehicle", missing = "not picked")
+                // The auto-start row only appears when the user wants auto-start;
+                // a deliberate manual-start user isn't shown a "not armed" nag.
+                if (autoStartOn) {
+                    SetupChecklistRow(
+                        done = !needsPairing,
+                        label = "Auto-start",
+                        missing = "pair the WiCAN",
+                    )
+                }
             }
             Button(
                 onClick = onSetUp,
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            ) { Text("Set up now") }
+            ) { Text(if (serverIncomplete) "Set up now" else "Pair WiCAN") }
         }
     }
 }

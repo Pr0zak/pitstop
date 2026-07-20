@@ -38,6 +38,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Card
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -149,8 +150,10 @@ fun ConfigScreen(
 
     // Which accordion group is expanded — exactly one (or none, if the
     // open one is tapped shut). Saved so rotation/process-death restores
-    // the user's place. Default: Connection.
-    var expandedGroup by rememberSaveable { mutableStateOf(GROUP_CONNECTION) }
+    // the user's place. Default: all collapsed — the SetupWizard now owns
+    // first-run, and each collapsed header self-reports its status, so the
+    // landing view is the pinned auto-start strip + four status-bearing headers.
+    var expandedGroup by rememberSaveable { mutableStateOf("") }
     val toggle: (String) -> Unit = { key ->
         expandedGroup = if (expandedGroup == key) "" else key
     }
@@ -223,6 +226,37 @@ fun ConfigScreen(
         )
     }
 
+    // Status subtitles rendered on each collapsed group header (IA move #2) —
+    // every folded group self-reports so the accordion reads as a health
+    // dashboard without opening anything.
+    val (connState, connLabel) = when (val c = connTest) {
+        is ConnTest.Ok -> PillState.Healthy to form.vehicleSlug.ifBlank { "Connected" }
+        ConnTest.InProgress -> PillState.Connecting to "Testing…"
+        ConnTest.BadUrl -> PillState.Offline to "Check URL"
+        ConnTest.BadToken -> PillState.Offline to "Check token"
+        is ConnTest.Unreachable -> PillState.Offline to "Unreachable"
+        is ConnTest.ServerError -> PillState.Degraded to "Server ${c.code}"
+        ConnTest.Idle ->
+            if (form.apiBaseUrl.isBlank()) PillState.Neutral to "Not set"
+            else PillState.Neutral to "Not tested"
+    }
+    val (autoState, autoLabel) = when (autoStartStatus.verdict) {
+        AutoStartVerdict.Armed -> PillState.Healthy to "Armed"
+        AutoStartVerdict.NeedsPairing -> PillState.Degraded to "Needs pairing"
+        AutoStartVerdict.Off -> PillState.Neutral to "Off"
+    }
+    val capturingNothing = !form.bridgeBleEnabled && !form.bridgeGpsEnabled
+    val captureLabel = when {
+        form.bridgeBleEnabled && form.bridgeGpsEnabled -> "OBD + GPS"
+        form.bridgeBleEnabled -> "OBD only"
+        form.bridgeGpsEnabled -> "GPS only"
+        else -> "Nothing"
+    }
+    val captureState = if (capturingNothing) PillState.Offline else PillState.Healthy
+    val (appState, appLabel) =
+        if (latestUpdate?.isNewer == true) PillState.Degraded to "Update ready"
+        else PillState.Neutral to "Up to date"
+
     Scaffold(
         topBar = { PitstopTopAppBar() },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -234,11 +268,26 @@ fun ConfigScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(vertical = 4.dp),
         ) {
+            // Pinned auto-start status strip (IA move #1) — always visible
+            // above the accordion so the #1 "why didn't my drive log?" answer
+            // is zero-tap.
+            AutoStartStrip(
+                status = autoStartStatus,
+                pairing = pairingInProgress,
+                onPair = { viewModel.pairCompanion() },
+                onCopyDiagnostics = {
+                    clipboard.setText(AnnotatedString(viewModel.buildDiagnostics()))
+                    scope.launch { snackbarHostState.showSnackbar("Diagnostics copied") }
+                },
+            )
+
             // ── Connection ──────────────────────────────────────────
             CollapsibleGroup(
                 title = "Connection",
                 expanded = expandedGroup == GROUP_CONNECTION,
                 onToggle = { toggle(GROUP_CONNECTION) },
+                subtitle = connLabel,
+                subtitleState = connState,
             ) {
                 PitstopServerSection(
                     form = form,
@@ -273,25 +322,14 @@ fun ConfigScreen(
                 )
             }
 
-            // ── Capture ─────────────────────────────────────────────
+            // ── Auto-start ──────────────────────────────────────────
             CollapsibleGroup(
-                title = "Capture",
-                expanded = expandedGroup == GROUP_CAPTURE,
-                onToggle = { toggle(GROUP_CAPTURE) },
+                title = "Auto-start",
+                expanded = expandedGroup == GROUP_AUTOSTART,
+                onToggle = { toggle(GROUP_AUTOSTART) },
+                subtitle = autoLabel,
+                subtitleState = autoState,
             ) {
-                CaptureCollectorsSection(
-                    bleEnabled = form.bridgeBleEnabled,
-                    gpsEnabled = form.bridgeGpsEnabled,
-                    manualSyncOnly = form.manualSyncOnly,
-                    onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
-                    onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
-                    onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
-                )
-                AutoStartStatusCard(
-                    status = autoStartStatus,
-                    pairing = pairingInProgress,
-                    onPair = { viewModel.pairCompanion() },
-                )
                 AutoStartSection(
                     autoTrigger = form.bridgeAutoTrigger,
                     autoTriggerSsids = form.bridgeAutoTriggerSsids,
@@ -305,6 +343,31 @@ fun ConfigScreen(
                         scope.launch { snackbarHostState.showSnackbar(msg) }
                     },
                 )
+                if (viewModel.companionPresenceSupported) {
+                    CompanionPairingSection(
+                        associated = companionAssociated,
+                        pairing = pairingInProgress,
+                        onUnpair = { viewModel.unpairCompanion() },
+                    )
+                }
+            }
+
+            // ── Devices & capture ───────────────────────────────────
+            CollapsibleGroup(
+                title = "Devices & capture",
+                expanded = expandedGroup == GROUP_DEVICES,
+                onToggle = { toggle(GROUP_DEVICES) },
+                subtitle = captureLabel,
+                subtitleState = captureState,
+            ) {
+                CaptureCollectorsSection(
+                    bleEnabled = form.bridgeBleEnabled,
+                    gpsEnabled = form.bridgeGpsEnabled,
+                    manualSyncOnly = form.manualSyncOnly,
+                    onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
+                    onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
+                    onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
+                )
                 BleDeviceSection(
                     deviceName = form.bleDeviceName,
                     deviceMac = form.bleDeviceMac,
@@ -315,14 +378,6 @@ fun ConfigScreen(
                     },
                     onPick = { viewModel.pickDevice(it) },
                 )
-                if (viewModel.companionPresenceSupported) {
-                    CompanionPairingSection(
-                        associated = companionAssociated,
-                        pairing = pairingInProgress,
-                        onPair = { viewModel.pairCompanion() },
-                        onUnpair = { viewModel.unpairCompanion() },
-                    )
-                }
             }
 
             // ── App ─────────────────────────────────────────────────
@@ -330,6 +385,8 @@ fun ConfigScreen(
                 title = "App",
                 expanded = expandedGroup == GROUP_APP,
                 onToggle = { toggle(GROUP_APP) },
+                subtitle = appLabel,
+                subtitleState = appState,
             ) {
                 DisplaySection(
                     unitSystem = form.unitSystem,
@@ -363,7 +420,8 @@ fun ConfigScreen(
 }
 
 private const val GROUP_CONNECTION = "connection"
-private const val GROUP_CAPTURE = "capture"
+private const val GROUP_AUTOSTART = "autostart"
+private const val GROUP_DEVICES = "devices"
 private const val GROUP_APP = "app"
 
 // ── Accordion group ─────────────────────────────────────────────────
@@ -380,6 +438,8 @@ private fun CollapsibleGroup(
     title: String,
     expanded: Boolean,
     onToggle: () -> Unit,
+    subtitle: String? = null,
+    subtitleState: PillState = PillState.Neutral,
     content: @Composable () -> Unit,
 ) {
     val chevronRotation by animateFloatAsState(
@@ -403,6 +463,14 @@ private fun CollapsibleGroup(
                 else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
+            // While collapsed, the header self-reports its status so the folded
+            // accordion reads as a health dashboard — no tap needed to see
+            // "reachable" / "OBD+GPS" / "up to date". Hidden when expanded (the
+            // body shows the real detail).
+            if (!expanded && subtitle != null) {
+                StatusPill(state = subtitleState, label = subtitle, compact = true)
+                Spacer(Modifier.size(10.dp))
+            }
             Icon(
                 imageVector = Icons.Filled.ExpandMore,
                 contentDescription = if (expanded) "Collapse $title" else "Expand $title",
@@ -647,14 +715,14 @@ private fun AutoStartSection(
 private fun CompanionPairingSection(
     associated: Boolean,
     pairing: Boolean,
-    onPair: () -> Unit,
     onUnpair: () -> Unit,
 ) {
     SettingsSection(
         title = "Reliable background auto-start",
         description = "Pairing the WiCAN as a companion device lets pitstop start " +
             "logging automatically the moment the dongle is in range — even from " +
-            "the background. This is what makes auto-start reliable.",
+            "the background. This is what makes auto-start reliable. Pair it from " +
+            "the status strip at the top when auto-start needs it.",
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusPill(
@@ -663,29 +731,13 @@ private fun CompanionPairingSection(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                if (associated) "WiCAN companion active" else "Pair to enable",
+                if (associated) "WiCAN companion active" else "Pair to enable reliable auto-start",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // Disabled + spinner during the bridge-stop → advertising wait so
-            // the dongle can be discovered. Without this the button looked inert
-            // for several seconds and users tapped it repeatedly.
-            Button(onClick = onPair, enabled = !associated && !pairing) {
-                if (pairing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text("Pair WiCAN")
-            }
+            Spacer(Modifier.weight(1f))
+            // The strip owns the Pair CTA (it only matters when auto-start needs
+            // it); the group keeps Unpair for removing an existing association.
             OutlinedButton(onClick = onUnpair, enabled = associated && !pairing) {
                 Text("Unpair")
             }
@@ -701,100 +753,112 @@ private fun CompanionPairingSection(
     }
 }
 
-// ── Auto-start status (task #18) ────────────────────────────────────
+// ── Auto-start status strip (task #18 + IA move #1) ─────────────────
 
 /**
- * The one card that answers "will a drive start on its own, and why isn't it?".
- * Leads with an armed/needs-pairing/off verdict, then a live ledger of each
- * in-car signal so a missed auto-start is diagnosable at a glance. Consolidates
- * what used to be scattered across the warning banner + companion card.
+ * The always-pinned strip above the accordion that answers "will a drive start
+ * on its own, and why isn't it?" at zero taps — the #1 recurring reason to open
+ * Settings. Leads with an armed / needs-pairing / off verdict. When it needs
+ * pairing it opens up: the Pair CTA + a live ledger of each in-car signal so a
+ * missed auto-start is diagnosable in place. When armed (or off) it collapses to
+ * one quiet line so the landing view stays short. A "Copy diagnostics" shortcut
+ * sits with the verdict so a red state is one tap from a shareable snapshot.
  */
 @Composable
-private fun AutoStartStatusCard(
+private fun AutoStartStrip(
     status: AutoStartStatus,
     pairing: Boolean,
     onPair: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
 ) {
     val (verdictState, verdictLabel) = when (status.verdict) {
         AutoStartVerdict.Armed -> PillState.Healthy to "Armed"
         AutoStartVerdict.NeedsPairing -> PillState.Degraded to "Needs pairing"
         AutoStartVerdict.Off -> PillState.Neutral to "Off"
     }
-    SettingsSection(
-        title = "Auto-start status",
-        description = "Whether pitstop will start logging on its own — and which " +
-            "in-car signal it's watching right now.",
+    val needsPairing = status.verdict == AutoStartVerdict.NeedsPairing
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            StatusPill(state = verdictState, label = verdictLabel)
-            Text(
-                text = when (status.verdict) {
-                    AutoStartVerdict.Armed ->
-                        if (status.inCarNow) "In the car now — ready to log."
-                        else "Ready — waiting for an in-car signal."
-                    AutoStartVerdict.NeedsPairing ->
-                        "Pair the WiCAN so drives can start from the background."
-                    AutoStartVerdict.Off ->
-                        "Turn on Auto-start below to log drives automatically."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
-            )
-        }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StatusPill(state = verdictState, label = verdictLabel)
+                Text(
+                    text = when (status.verdict) {
+                        AutoStartVerdict.Armed ->
+                            if (status.inCarNow) "In the car now — ready to log."
+                            else "Auto-start armed."
+                        AutoStartVerdict.NeedsPairing ->
+                            "Pair the WiCAN so drives can start from the background."
+                        AutoStartVerdict.Off ->
+                            "Off — start drives manually from Home."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
-        if (status.verdict == AutoStartVerdict.NeedsPairing) {
-            Button(onClick = onPair, enabled = !pairing) {
-                if (pairing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(8.dp))
+            if (needsPairing) {
+                Button(onClick = onPair, enabled = !pairing) {
+                    if (pairing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text("Pair WiCAN")
                 }
-                Text("Pair WiCAN")
+                // Live signal ledger — shown only when there's a problem to
+                // diagnose (needs-pairing); when armed/off it stays collapsed.
+                HorizontalDivider(Modifier.padding(vertical = 2.dp))
+                Text(
+                    "LIVE SIGNALS",
+                    style = MaterialTheme.typography.labelSmall,
+                    letterSpacing = 0.8.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SignalRow(
+                    "In car right now",
+                    if (status.inCarNow) SignalState.Active else SignalState.Idle,
+                    active = "Yes", idle = "No", disabled = "No",
+                )
+                SignalRow(
+                    "Car WiFi",
+                    status.wifi,
+                    active = "Connected", idle = "No match", disabled = "No SSIDs set",
+                )
+                SignalRow(
+                    "Android Auto / car Bluetooth",
+                    status.projection,
+                    active = "Connected", idle = "Not connected", disabled = "Not connected",
+                )
+                SignalRow(
+                    "Motion (in vehicle)",
+                    status.motion,
+                    active = "Driving", idle = "Still", disabled = "Off",
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    lastAutoStartLabel(status.lastAutoStartAtMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onCopyDiagnostics) { Text("Copy diagnostics") }
             }
         }
-
-        // Live signal ledger — only meaningful once auto-start is on.
-        if (status.verdict != AutoStartVerdict.Off) {
-            HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            Text(
-                "LIVE SIGNALS",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 0.8.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            SignalRow(
-                "In car right now",
-                if (status.inCarNow) SignalState.Active else SignalState.Idle,
-                active = "Yes", idle = "No", disabled = "No",
-            )
-            SignalRow(
-                "Car WiFi",
-                status.wifi,
-                active = "Connected", idle = "No match", disabled = "No SSIDs set",
-            )
-            SignalRow(
-                "Android Auto / car Bluetooth",
-                status.projection,
-                active = "Connected", idle = "Not connected", disabled = "Not connected",
-            )
-            SignalRow(
-                "Motion (in vehicle)",
-                status.motion,
-                active = "Driving", idle = "Still", disabled = "Off",
-            )
-        }
-
-        Text(
-            lastAutoStartLabel(status.lastAutoStartAtMs),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
