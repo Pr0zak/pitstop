@@ -72,8 +72,13 @@ fun LiveScreen(
     // every 33 ms and recomposed the entire column even when converged /
     // engine-off — replaced to cut idle CPU + recomposition churn.
 
+    // No brand bar — the bottom nav already labels this screen, and the
+    // 48 dp it cost is better spent on live tiles. contentWindowInsets
+    // is zeroed because MainActivity's outer Scaffold already consumed
+    // the system bars; without it this page re-applies the status-bar
+    // inset and leaves an empty band on top.
     Scaffold(
-        topBar = { com.pitstop.ui.components.PitstopTopAppBar() },
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
         Column(
             modifier = Modifier

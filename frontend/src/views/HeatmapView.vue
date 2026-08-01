@@ -269,7 +269,7 @@ watch(vehicleId, () => {
 <template>
   <div class="heatmap-view">
     <header class="head">
-      <h1>Heatmap</h1>
+      <h1>Map</h1>
       <div class="controls">
         <div class="toggle">
           <button type="button" :class="{ active: mode === 'density' }" @click="mode = 'density'">Density</button>

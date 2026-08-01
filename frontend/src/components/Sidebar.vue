@@ -118,7 +118,7 @@ const items = [
   { to: "/fleet", label: "Fleet", icon: LayoutGrid },
   { to: "/live", label: "Live", icon: Activity },
   { to: "/trips", label: "Trips", icon: Route },
-  { to: "/heatmap", label: "Heatmap", icon: MapIcon },
+  { to: "/heatmap", label: "Map", icon: MapIcon },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/fuel", label: "Fuel", icon: Fuel },
   { to: "/maintenance", label: "Maintenance", icon: Wrench },

@@ -32,6 +32,10 @@ import kotlin.math.sin
  * balanced between the (optional) navigationIcon and the actions slot,
  * matching how Material You system apps frame their headers on Pixel.
  */
+/** Height of the brand bar. Below Material's 64 dp default because the
+ *  bar holds no per-screen title — see the expandedHeight note below. */
+private val BRAND_BAR_HEIGHT = 48.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PitstopTopAppBar(
@@ -74,6 +78,11 @@ fun PitstopTopAppBar(
         ),
         scrollBehavior = scrollBehavior,
         windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        // The bar carries only a wordmark (no per-screen title), so the
+        // 64 dp Material default is mostly dead space above content that
+        // wants the room — map, lists, charts. 48 dp still clears the
+        // minimum touch target for whatever the `actions` slot holds.
+        expandedHeight = BRAND_BAR_HEIGHT,
     )
 }
 

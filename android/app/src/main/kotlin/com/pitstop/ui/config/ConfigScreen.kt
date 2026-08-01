@@ -257,8 +257,13 @@ fun ConfigScreen(
         if (latestUpdate?.isNewer == true) PillState.Degraded to "Update ready"
         else PillState.Neutral to "Up to date"
 
+    // No brand bar — the bottom nav already labels this screen, and
+    // Settings is a long scroll that wants the vertical room.
     Scaffold(
-        topBar = { PitstopTopAppBar() },
+        // Outer Scaffold (MainActivity) already consumed the system-bar
+        // insets; re-applying them here leaves an empty status-bar-tall
+        // band above the first setting.
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(

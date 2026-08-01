@@ -56,7 +56,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.pitstop.http.DtcDto
+import com.pitstop.http.CostPerMilePointDto
 import com.pitstop.http.FillupDto
+import com.pitstop.http.MonthlySpendPointDto
 import com.pitstop.http.TripDto
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.history.detail.DtcDetailScreen
@@ -95,10 +97,19 @@ fun HistoryScreen() {
     }
 
     Scaffold(
+        // MainActivity's outer Scaffold already consumed the system-bar
+        // insets for the whole pager. Without this override, a page whose
+        // topBar renders nothing falls back to contentWindowInsets and
+        // re-applies the status-bar inset a second time — an empty band
+        // exactly one status bar tall above the content.
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         topBar = {
-            if (onListRoute) {
-                PitstopTopAppBar()
-            } else {
+            // No brand bar on the list route. The tab row sits directly
+            // below it and the bottom nav already names the screen, so
+            // the wordmark was costing 48 dp on the app's densest
+            // surface (map + lists). Detail routes keep a bar because
+            // they need the back affordance.
+            if (!onListRoute) {
                 CenterAlignedTopAppBar(
                     title = {
                         Text(
@@ -296,7 +307,7 @@ private fun HistoryListScreen(
             }
         }
         SecondaryTabRow(selectedTabIndex = selectedTab) {
-            listOf("Trips", "Fillups", "DTCs", "Heatmap").forEachIndexed { i, label ->
+            listOf("Trips", "Fillups", "DTCs", "Map").forEachIndexed { i, label ->
                 Tab(
                     selected = selectedTab == i,
                     onClick = { selectedTab = i },
@@ -348,6 +359,8 @@ private fun HistoryListScreen(
                     filter = fillupFilter,
                     onSortChange = viewModel::setFillupSort,
                     onFilterChange = viewModel::setFillupFilter,
+                    costPerMile = ui.costPerMile,
+                    monthlySpend = ui.monthlySpend,
                 )
             }
             2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh, onOpen = onOpenDtcCode)
@@ -781,8 +794,17 @@ private fun FillupsList(
     filter: FillupFilter,
     onSortChange: (FillupSortOrder) -> Unit,
     onFilterChange: (FillupFilter) -> Unit,
+    costPerMile: List<CostPerMilePointDto> = emptyList(),
+    monthlySpend: List<MonthlySpendPointDto> = emptyList(),
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        // At-a-glance stats above the log. Hides itself when there's
+        // nothing computable (fresh install, no MPG chain yet).
+        FillupStatsHeader(
+            fillups = state.data,
+            costPerMile = costPerMile,
+            monthlySpend = monthlySpend,
+        )
         FillupsFilterBar(sort, filter, onSortChange, onFilterChange)
 
         val groups = remember(state.data, sort, filter) {

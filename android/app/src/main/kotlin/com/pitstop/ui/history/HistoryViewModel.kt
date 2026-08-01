@@ -5,8 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.pitstop.data.SettingsRepository
 import com.pitstop.drive.DriveUploader
 import com.pitstop.drive.PendingDriveDao
+import com.pitstop.http.CostPerMilePointDto
+import com.pitstop.http.CostPerMileResponse
 import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
+import com.pitstop.http.MonthlySpendPointDto
+import com.pitstop.http.MonthlySpendResponse
 import com.pitstop.http.PitstopApi
 import com.pitstop.http.TripDto
 import com.pitstop.http.TripMergeRequest
@@ -40,6 +44,11 @@ data class HistoryUiState(
     val trips: HistoryListState<TripDto> = HistoryListState(),
     val fillups: HistoryListState<FillupDto> = HistoryListState(),
     val dtcs: HistoryListState<DtcDto> = HistoryListState(),
+    /** Backs the Fillups-tab stat strip. Both are best-effort — a
+     *  failure leaves them null and the strip just hides those tiles
+     *  rather than failing the whole tab. */
+    val costPerMile: List<CostPerMilePointDto> = emptyList(),
+    val monthlySpend: List<MonthlySpendPointDto> = emptyList(),
 )
 
 /** Sort orders for the Trips list (TRIPS-1). Default is RecentFirst —
@@ -438,8 +447,17 @@ class HistoryViewModel @Inject constructor(
             val dtcsDeferred = async {
                 runCatching { api.getDtcs(vehicleId, activeOnly = false) }
             }
-            val (tripsResult, fillupsResult, dtcsResult) = awaitAll(
-                tripsDeferred, fillupsDeferred, dtcsDeferred,
+            // Stat-strip inputs for the Fillups tab. Deliberately
+            // best-effort: these feed a decorative header, so a failure
+            // must not surface as a list error.
+            val cpmDeferred = async {
+                runCatching { api.getCostPerMile(vehicleId) }
+            }
+            val spendDeferred = async {
+                runCatching { api.getMonthlySpend(vehicleId) }
+            }
+            val (tripsResult, fillupsResult, dtcsResult, cpmResult, spendResult) = awaitAll(
+                tripsDeferred, fillupsDeferred, dtcsDeferred, cpmDeferred, spendDeferred,
             )
 
             _ui.update { current ->
@@ -449,7 +467,13 @@ class HistoryViewModel @Inject constructor(
                 val fillups = (fillupsResult as Result<List<FillupDto>>)
                 @Suppress("UNCHECKED_CAST")
                 val dtcs = (dtcsResult as Result<List<DtcDto>>)
+                @Suppress("UNCHECKED_CAST")
+                val cpm = (cpmResult as Result<CostPerMileResponse>)
+                @Suppress("UNCHECKED_CAST")
+                val spend = (spendResult as Result<MonthlySpendResponse>)
                 current.copy(
+                    costPerMile = cpm.getOrNull()?.points ?: emptyList(),
+                    monthlySpend = spend.getOrNull()?.months ?: emptyList(),
                     trips = HistoryListState(
                         data = trips.getOrNull() ?: emptyList(),
                         loading = false,

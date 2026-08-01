@@ -9,7 +9,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -19,6 +23,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.pitstop.ui.history.detail.densityColor
 import com.pitstop.ui.history.detail.speedColor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -110,6 +116,24 @@ fun MapLibreHeatmapView(
         }
     }
 
+    // Serialising ~25k segments to GeoJSON is ~100k Double.toString
+    // calls. Doing that inline in the style-loaded callback pinned the
+    // main thread past the 5 s input-dispatch deadline and ANR'd (traced
+    // to rebuildLayer's StringBuilder). Build it on Dispatchers.Default
+    // and hand the finished string to the map thread.
+    var featuresJson by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(points) {
+        featuresJson = if (points.size < 2) null
+        else withContext(Dispatchers.Default) { buildFeatureCollection(points) }
+    }
+
+    // Read the state HERE, in the composition scope. Reading it only
+    // inside the getMapAsync callback below would defer the read past
+    // snapshot observation, so composition never records a dependency,
+    // the composable never recomposes when the off-thread build lands,
+    // and the layer is never planted (map renders empty at world zoom).
+    val json = featuresJson
+
     Box(modifier = modifier) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -117,7 +141,7 @@ fun MapLibreHeatmapView(
             update = { view ->
                 runCatching {
                     view.getMapAsync { map ->
-                        runCatching { applyToMap(map, points, mode, stations, mapState) }
+                        runCatching { applyToMap(map, points, json, mode, stations, mapState) }
                             .onFailure { Log.w(TAG, "applyToMap failed", it) }
                     }
                 }.onFailure { Log.w(TAG, "getMapAsync failed", it) }
@@ -129,7 +153,8 @@ fun MapLibreHeatmapView(
 /** Per-MapView state. Survives recompositions via `remember { ... }`. */
 private class HeatmapMapState {
     var styleLoaded: Boolean = false
-    var lastPointsRef: List<List<Double>>? = null
+    /** Identity of the last GeoJSON string planted into the style. */
+    var lastJsonRef: String? = null
     var fittedBounds: Boolean = false
     var lastStationsRef: List<Pair<Double, Double>>? = null
 }
@@ -197,6 +222,7 @@ private fun lineColorExpr(mode: HeatmapMode): Expression = when (mode) {
 private fun applyToMap(
     map: MapLibreMap,
     points: List<List<Double>>,
+    featuresJson: String?,
     mode: HeatmapMode,
     stations: List<Pair<Double, Double>>,
     state: HeatmapMapState,
@@ -210,7 +236,7 @@ private fun applyToMap(
         // the layer in the load callback.
         map.setStyle(STYLE_URL) { style ->
             state.styleLoaded = true
-            runCatching { rebuildLayer(map, style, points, mode, state) }
+            runCatching { rebuildLayer(map, style, points, featuresJson, mode, state) }
                 .onFailure { Log.w(TAG, "rebuildLayer (initial) failed", it) }
             runCatching { applyStations(style, stations, state) }
                 .onFailure { Log.w(TAG, "applyStations (initial) failed", it) }
@@ -219,10 +245,13 @@ private fun applyToMap(
     }
 
     val style = map.style ?: return  // style being reloaded; skip
-    val pointsChanged = points !== state.lastPointsRef
+    // Key on the built JSON, not the points list: the JSON arrives a
+    // beat later (built off-thread), and keying on points alone would
+    // mark the layer "done" on the pass where json is still null.
+    val dataChanged = featuresJson !== state.lastJsonRef
     val hasLayer = style.getLayer(LAYER) != null
-    if (pointsChanged || !hasLayer) {
-        runCatching { rebuildLayer(map, style, points, mode, state) }
+    if (dataChanged || !hasLayer) {
+        runCatching { rebuildLayer(map, style, points, featuresJson, mode, state) }
             .onFailure { Log.w(TAG, "rebuildLayer failed", it) }
     } else {
         // Same data, just a mode toggle — swap the line-color
@@ -292,15 +321,13 @@ private fun applyMode(style: Style, mode: HeatmapMode) {
     layer.setProperties(PropertyFactory.lineColor(lineColorExpr(mode)))
 }
 
-private fun rebuildLayer(
-    map: MapLibreMap,
-    style: Style,
-    points: List<List<Double>>,
-    mode: HeatmapMode,
-    state: HeatmapMapState,
-) {
-    if (points.size < 2) return
-
+/**
+ * Serialise the trace to a GeoJSON FeatureCollection string. Pure and
+ * CPU-bound — MUST be called off the main thread (see the ANR note at
+ * the call site). Each feature carries BOTH colour attributes so a mode
+ * toggle is a paint swap and never re-serialises.
+ */
+internal fun buildFeatureCollection(points: List<List<Double>>): String {
     // Visit count per ~11 m cell — drives the density color tier.
     val counts = HashMap<Long, Int>(points.size)
     for (p in points) {
@@ -329,6 +356,20 @@ private fun rebuildLayer(
         )
     }
     featuresJson.append("]}")
+    return featuresJson.toString()
+}
+
+private fun rebuildLayer(
+    map: MapLibreMap,
+    style: Style,
+    points: List<List<Double>>,
+    featuresJson: String?,
+    mode: HeatmapMode,
+    state: HeatmapMapState,
+) {
+    // Nothing to plant until the off-thread build lands; a later
+    // recomposition re-enters with the finished string.
+    if (points.size < 2 || featuresJson == null) return
 
     style.getLayer(LAYER)?.let { style.removeLayer(it) }
     style.getSource(SOURCE)?.let { style.removeSource(it) }
@@ -338,7 +379,7 @@ private fun rebuildLayer(
     // rather than just dimming it. 0 disables simplification; safe
     // because the point stream is already server-side strided.
     style.addSource(
-        GeoJsonSource(SOURCE, featuresJson.toString(), GeoJsonOptions().withTolerance(0f)),
+        GeoJsonSource(SOURCE, featuresJson, GeoJsonOptions().withTolerance(0f)),
     )
 
     val layer = LineLayer(LAYER, SOURCE).apply {
@@ -352,7 +393,7 @@ private fun rebuildLayer(
     }
     style.addLayer(layer)
 
-    state.lastPointsRef = points
+    state.lastJsonRef = featuresJson
 
     // Only fit-bounds the first time we render non-empty data. After
     // that we leave the camera alone so mode toggles + refreshes

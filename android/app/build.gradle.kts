@@ -77,6 +77,9 @@ android {
         named("main") {
             java.srcDirs("src/main/kotlin")
         }
+        named("test") {
+            java.srcDirs("src/test/kotlin")
+        }
     }
 
     packaging {
