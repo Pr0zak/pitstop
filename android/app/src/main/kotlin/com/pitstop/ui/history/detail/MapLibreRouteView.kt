@@ -191,9 +191,13 @@ private fun renderRoute(
     }
     featuresJson.append("]}")
 
+    // tolerance 0: these are short per-pair LineStrings and the GeoJSON
+    // tiler drops any line shorter than the simplification tolerance,
+    // which thinned the route out as you zoomed away from the trip.
     val source = org.maplibre.android.style.sources.GeoJsonSource(
         SOURCE_ROUTE,
         featuresJson.toString(),
+        org.maplibre.android.style.sources.GeoJsonOptions().withTolerance(0f),
     )
     style.getLayer(LAYER_ROUTE)?.let { style.removeLayer(it) }
     style.getSource(SOURCE_ROUTE)?.let { style.removeSource(it) }

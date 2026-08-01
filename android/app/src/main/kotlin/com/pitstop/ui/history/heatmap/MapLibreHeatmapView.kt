@@ -32,6 +32,7 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 
 private const val TAG = "PitstopHeatmap"
@@ -48,7 +49,7 @@ private const val TAG = "PitstopHeatmap"
  * basemap and discrete density tiers via [densityColor] in
  * TripDetailHelpers.
  */
-enum class HeatmapMode { Density, Speed }
+enum class HeatmapMode { Density, Speed, Single }
 
 @Composable
 fun MapLibreHeatmapView(
@@ -157,6 +158,36 @@ private const val STYLE_URL =
     "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 private const val MAX_GAP_S = 30L
 
+/** Single-colour mode paints every trip the same, so the map reads as
+ *  "where have I driven" with no per-segment encoding competing for
+ *  attention. Matches web's SINGLE_COLOR. */
+private const val SINGLE_COLOR = "#F97316"
+
+/** Zoom-ramped width + opacity with a low-zoom floor. Flat 3 px / 0.78
+ *  made zoomed-out routes alpha-blend into the basemap; mirrors the
+ *  web LINE_WIDTH / LINE_OPACITY ramps. */
+private fun lineWidthExpr(): Expression = Expression.interpolate(
+    Expression.linear(), Expression.zoom(),
+    Expression.stop(4, 1.8f),
+    Expression.stop(9, 2.2f),
+    Expression.stop(12, 2.6f),
+    Expression.stop(14, 3.0f),
+    Expression.stop(16, 4.0f),
+)
+
+private fun lineOpacityExpr(): Expression = Expression.interpolate(
+    Expression.linear(), Expression.zoom(),
+    Expression.stop(6, 1.0f),
+    Expression.stop(11, 0.9f),
+    Expression.stop(14, 0.78f),
+)
+
+private fun lineColorExpr(mode: HeatmapMode): Expression = when (mode) {
+    HeatmapMode.Single -> Expression.literal(SINGLE_COLOR)
+    HeatmapMode.Density -> Expression.get("densityColor")
+    HeatmapMode.Speed -> Expression.get("speedColor")
+}
+
 /**
  * Single entrypoint called on every recomposition. Branches based on
  * whether the style has been loaded and whether the data reference
@@ -258,8 +289,7 @@ private fun applyStations(
 
 private fun applyMode(style: Style, mode: HeatmapMode) {
     val layer = style.getLayer(LAYER) as? LineLayer ?: return
-    val attr = if (mode == HeatmapMode.Density) "densityColor" else "speedColor"
-    layer.setProperties(PropertyFactory.lineColor(Expression.get(attr)))
+    layer.setProperties(PropertyFactory.lineColor(lineColorExpr(mode)))
 }
 
 private fun rebuildLayer(
@@ -302,16 +332,22 @@ private fun rebuildLayer(
 
     style.getLayer(LAYER)?.let { style.removeLayer(it) }
     style.getSource(SOURCE)?.let { style.removeSource(it) }
-    style.addSource(GeoJsonSource(SOURCE, featuresJson.toString()))
+    // Every feature is a single 2-point segment, and the GeoJSON tiler
+    // DROPS any line whose tile-space length falls under the
+    // simplification tolerance — so zooming out culled the whole trace
+    // rather than just dimming it. 0 disables simplification; safe
+    // because the point stream is already server-side strided.
+    style.addSource(
+        GeoJsonSource(SOURCE, featuresJson.toString(), GeoJsonOptions().withTolerance(0f)),
+    )
 
-    val colorAttr = if (mode == HeatmapMode.Density) "densityColor" else "speedColor"
     val layer = LineLayer(LAYER, SOURCE).apply {
         setProperties(
-            PropertyFactory.lineWidth(3.0f),
-            PropertyFactory.lineOpacity(0.78f),
+            PropertyFactory.lineWidth(lineWidthExpr()),
+            PropertyFactory.lineOpacity(lineOpacityExpr()),
             PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
             PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
-            PropertyFactory.lineColor(Expression.get(colorAttr)),
+            PropertyFactory.lineColor(lineColorExpr(mode)),
         )
     }
     style.addLayer(layer)

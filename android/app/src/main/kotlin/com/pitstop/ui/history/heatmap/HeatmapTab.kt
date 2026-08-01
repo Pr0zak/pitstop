@@ -63,6 +63,11 @@ fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
                 onClick = { viewModel.setMode(HeatmapMode.Speed) },
                 label = { Text("Speed") },
             )
+            FilterChip(
+                selected = mode == HeatmapMode.Single,
+                onClick = { viewModel.setMode(HeatmapMode.Single) },
+                label = { Text("Single") },
+            )
             // Stations toggle — overlays a fuel-pump dot at every
             // historical fillup that carries GPS. Independent of the
             // density/speed mode (which colors the route polylines).
@@ -122,7 +127,14 @@ fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (mode == HeatmapMode.Density) {
+            if (mode == HeatmapMode.Single) {
+                Swatch(Color(0xFFF97316))
+                Text(
+                    "all trips, one colour",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (mode == HeatmapMode.Density) {
                 Text("1×", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Swatch(Color(0xFF475569))
                 Swatch(Color(0xFF06B6D4))

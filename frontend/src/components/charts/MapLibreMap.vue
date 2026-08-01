@@ -136,6 +136,10 @@ function applyRoute() {
     map.addSource("trip-route", {
       type: "geojson",
       data: buildRouteData(),
+      // routeSegments are short per-pair LineStrings; geojson-vt drops
+      // lines shorter than the simplification tolerance, which made the
+      // route thin out / disappear when zoomed out. 0 = keep them all.
+      tolerance: 0,
     });
     map.addLayer({
       id: "trip-route",

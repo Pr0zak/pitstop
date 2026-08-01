@@ -5,11 +5,17 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { getRouteTrace, type RouteTraceResponse } from "@/api/endpoints";
 
-type Mode = "density" | "speed";
+type Mode = "density" | "speed" | "single";
+
+const MODE_KEY = "pitstop_heatmap_mode";
+function loadMode(): Mode {
+  const v = localStorage.getItem(MODE_KEY);
+  return v === "speed" || v === "single" || v === "density" ? v : "density";
+}
 
 const vehicles = useVehiclesStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
-const mode = ref<Mode>("density");
+const mode = ref<Mode>(loadMode());
 
 const data = ref<RouteTraceResponse | null>(null);
 const loading = ref(false);
@@ -79,6 +85,23 @@ function densityColor(count: number): string {
   if (count <= 50) return "#f97316";  // orange — commute
   return "#ef4444";                   // red — heavy
 }
+
+// Single-colour mode: every trip painted the same, so the map reads as
+// "where have I driven" without any per-segment encoding competing for
+// attention. Orange survives both basemaps.
+const SINGLE_COLOR = "#f97316";
+
+// Widths and opacity are zoom-ramped with a floor so a fully zoomed-out
+// map still shows solid routes instead of sub-pixel hairlines that
+// alpha-blend into the basemap.
+const LINE_WIDTH = [
+  "interpolate", ["linear"], ["zoom"],
+  4, 1.8, 9, 2.0, 12, 2.4, 14, 2.8, 16, 4.0,
+] as unknown as maplibregl.ExpressionSpecification;
+const LINE_OPACITY = [
+  "interpolate", ["linear"], ["zoom"],
+  6, 1.0, 11, 0.9, 14, 0.78,
+] as unknown as maplibregl.ExpressionSpecification;
 
 // Round lat/lon to 4 decimals (~11 m cells) for visit-count keying.
 function cellKey(lat: number, lon: number): string {
@@ -159,7 +182,16 @@ function applyData() {
     // a layer. Drop whichever survived and rebuild both cleanly.
     if (map.getLayer("trace")) map.removeLayer("trace");
     if (map.getSource("trace")) map.removeSource("trace");
-    map.addSource("trace", { type: "geojson", data: fc });
+    map.addSource("trace", {
+      type: "geojson",
+      data: fc,
+      // Each feature is a single 2-point segment. geojson-vt drops any
+      // line whose tile-space length is under the simplification
+      // tolerance, so with the default (0.375) every segment vanished
+      // as you zoomed out and the traces faded to nothing. 0 disables
+      // simplification — the point stream is already server-strided.
+      tolerance: 0,
+    });
     map.addLayer({
       id: "trace",
       type: "line",
@@ -168,11 +200,8 @@ function applyData() {
       paint: {
         // Initial colour overridden immediately by applyMode below.
         "line-color": ["get", "densityColor"],
-        "line-opacity": 0.78,
-        "line-width": [
-          "interpolate", ["linear"], ["zoom"],
-          10, 1.2, 14, 2.5, 16, 4.0,
-        ],
+        "line-opacity": LINE_OPACITY,
+        "line-width": LINE_WIDTH,
       },
     });
   }
@@ -196,19 +225,22 @@ function applyData() {
 
 function applyMode() {
   if (!map?.getLayer("trace")) return;
-  const attr = mode.value === "density" ? "densityColor" : "speedColor";
-  map.setPaintProperty(
-    "trace",
-    "line-color",
-    ["get", attr] as unknown as maplibregl.ExpressionSpecification,
-  );
-  // Density tiers are discrete and self-explanatory; speed is a hue
-  // ramp where overlap can mislead. Both get the same opacity for
-  // consistency — higher than the previous density-overlap trick.
-  map.setPaintProperty("trace", "line-opacity", 0.78);
+  // Single mode paints a constant; the other two read the per-segment
+  // colour baked into feature properties, so switching is a paint swap
+  // with no re-tiling.
+  const color: maplibregl.ExpressionSpecification | string =
+    mode.value === "single"
+      ? SINGLE_COLOR
+      : (["get", mode.value === "density" ? "densityColor" : "speedColor"] as unknown as maplibregl.ExpressionSpecification);
+  map.setPaintProperty("trace", "line-color", color);
+  map.setPaintProperty("trace", "line-opacity", LINE_OPACITY);
+  map.setPaintProperty("trace", "line-width", LINE_WIDTH);
 }
 
-watch(mode, applyMode);
+watch(mode, (m) => {
+  try { localStorage.setItem(MODE_KEY, m); } catch { /* ignore */ }
+  applyMode();
+});
 
 onMounted(() => {
   if (!root.value) return;
@@ -242,6 +274,7 @@ watch(vehicleId, () => {
         <div class="toggle">
           <button type="button" :class="{ active: mode === 'density' }" @click="mode = 'density'">Density</button>
           <button type="button" :class="{ active: mode === 'speed' }" @click="mode = 'speed'">Speed</button>
+          <button type="button" :class="{ active: mode === 'single' }" @click="mode = 'single'">Single</button>
         </div>
         <label class="dark">
           <input type="checkbox" :checked="darkMode"
@@ -263,6 +296,10 @@ watch(vehicleId, () => {
         <span class="ramp ramp-speed"></span>
         <span class="muted small">fast (~80 mph)</span>
       </div>
+      <div v-else-if="mode === 'single'" class="legend">
+        <span class="swatch" :style="{ background: SINGLE_COLOR }"></span>
+        <span class="muted small">all trips, one colour</span>
+      </div>
       <div v-else class="legend">
         <span class="muted small">1×</span>
         <span class="swatch" style="background:#475569"></span>
@@ -281,6 +318,9 @@ watch(vehicleId, () => {
         Each pair of consecutive GPS fixes is one polyline segment.
         <span v-if="mode === 'density'">
           Segment colour = how many GPS fixes fell in the same ~11 m cell. Slate / cyan are rare; orange / red are commute corridors.
+        </span>
+        <span v-else-if="mode === 'single'">
+          Every trip painted the same colour — overlap alone shows which roads get driven most.
         </span>
         <span v-else>
           Per-segment colour from continuous speed (matches the trip-detail map).
