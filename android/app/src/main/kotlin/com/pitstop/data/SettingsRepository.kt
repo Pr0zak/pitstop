@@ -73,6 +73,7 @@ class SettingsRepository @Inject constructor(
 
         // Set once the user finishes (or skips) the first-run setup wizard, so
         // the wizard never gates the pager again.
+        val heatmapMode: Preferences.Key<String> = stringPreferencesKey("heatmap_mode")
         val onboardingComplete: Preferences.Key<Boolean> =
             booleanPreferencesKey("onboarding_complete")
     }
@@ -341,6 +342,23 @@ class SettingsRepository @Inject constructor(
     /** Mark the first-run wizard done so it never gates the pager again. */
     suspend fun setOnboardingComplete(value: Boolean) {
         context.dataStore.edit { it[Keys.onboardingComplete] = value }
+    }
+
+    /**
+     * Last-selected Map-tab colouring ("Density" / "Speed" / "Single"),
+     * matching web's `pitstop_heatmap_mode` in localStorage.
+     *
+     * Stored as its own key rather than a [Settings] field on purpose:
+     * [Settings] is written as a whole object by the config form, so
+     * folding a map preference into it would make the map screen able to
+     * clobber server/token fields (the blank-overwrite race Settings
+     * already guards against). Null until the user picks a mode.
+     */
+    val heatmapMode: Flow<String?> =
+        context.dataStore.data.map { it[Keys.heatmapMode]?.takeIf { m -> m.isNotBlank() } }
+
+    suspend fun setHeatmapMode(mode: String) {
+        context.dataStore.edit { it[Keys.heatmapMode] = mode }
     }
 
     companion object {

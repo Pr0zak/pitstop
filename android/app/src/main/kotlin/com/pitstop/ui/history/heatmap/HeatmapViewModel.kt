@@ -9,6 +9,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -42,7 +43,18 @@ class HeatmapViewModel @Inject constructor(
     private val _showStations = MutableStateFlow(false)
     val showStations: StateFlow<Boolean> = _showStations.asStateFlow()
 
-    init { refresh() }
+    init {
+        // Restore the last-picked colouring so the choice survives an app
+        // restart, matching the web client's localStorage behaviour. Read
+        // once (not collected) — the user's in-session taps are the only
+        // other writer, so a live collector would just echo them back.
+        viewModelScope.launch {
+            val saved = runCatching { settings.heatmapMode.first() }.getOrNull()
+            val restored = HeatmapMode.entries.firstOrNull { it.name == saved }
+            if (restored != null) _mode.value = restored
+        }
+        refresh()
+    }
 
     fun refresh() {
         viewModelScope.launch {
@@ -104,6 +116,12 @@ class HeatmapViewModel @Inject constructor(
 
     fun setMode(m: HeatmapMode) {
         _mode.value = m
+        // Persist best-effort: a DataStore write failure must not break
+        // the toggle the user just tapped.
+        viewModelScope.launch {
+            runCatching { settings.setHeatmapMode(m.name) }
+                .onFailure { logBuffer.warn("heatmap mode persist failed", mapOf("err" to (it.message ?: ""))) }
+        }
     }
 
     fun toggleStations() {
