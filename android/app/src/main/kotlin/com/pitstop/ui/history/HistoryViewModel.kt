@@ -439,7 +439,11 @@ class HistoryViewModel @Inject constructor(
 
             // Fan out — three independent fetches.
             val tripsDeferred = async {
-                runCatching { api.getTrips(vehicleId, limit = 30) }
+                // 200, not 30: the stat header aggregates a 14-day
+                // window, and at ~9 trips/day 30 rows is barely three
+                // days — the totals would silently under-report. Also
+                // gives the list itself more history to scroll.
+                runCatching { api.getTrips(vehicleId, limit = 200) }
             }
             val fillupsDeferred = async {
                 runCatching { api.getFillups(vehicleId, limit = 30) }

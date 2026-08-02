@@ -429,6 +429,12 @@ private fun TripsList(
     onFilterChange: (TripSourceFilter) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        // Week totals + 14-day distance chart. Yields the space to the
+        // selection bar during multi-select, and hides itself when the
+        // charted window has no distance.
+        if (!selection.mode && mergeState is MergeState.Idle) {
+            TripStatsHeader(trips = state.data)
+        }
         if (selection.mode || mergeState !is MergeState.Idle) {
             TripSelectionBar(
                 selection = selection,
