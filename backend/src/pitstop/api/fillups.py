@@ -21,7 +21,7 @@ from fastapi import Path as FastAPIPath
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
 from ..schemas import FillupCreate, FillupOut, FillupUpdate
-from ..services.fuel_state import persist_estimate, reset_on_fillup
+from ..services.fuel_state import derive_empty_pct, persist_estimate, reset_on_fillup
 
 log = logging.getLogger(__name__)
 
@@ -253,6 +253,7 @@ async def create_fillup(
         await _attach_recomputed_mpg(pool, [out])
         if body.is_full:
             await _maybe_calibrate_fuel_level(pool, body.vehicle_id, body.fillup_date)
+            await _maybe_calibrate_fuel_empty(pool, body)
         await _apply_fillup_to_fuel_estimate(pool, body)
     except Exception:
         log.exception("fillup post-insert enrichment failed id=%s", out.get("id"))
@@ -345,6 +346,82 @@ async def _maybe_calibrate_fuel_level(
                AND $2 <= 100
             """,
             vehicle_id, float(raw),
+        )
+
+
+async def _maybe_calibrate_fuel_empty(
+    pool: asyncpg.Pool, body: FillupCreate
+) -> None:
+    """Calibrate the LOW end of the sender curve from a fill-to-full.
+
+    A full fillup states exactly how much fuel was in the tank before the
+    pump: ``tank_capacity - pumped``. Pairing that with the raw sender
+    reading taken just BEFORE the fillup gives a second point on the
+    curve (the full-tank ceiling from 0016 is the first), and the line
+    through them yields the reading the sender shows when dry.
+
+    Only deep fills calibrate. A splash-and-dash tells us almost nothing
+    about the bottom of the curve, and a small measurement error there
+    swings the extrapolated intercept wildly — so require the tank to
+    have been at most MAX_PRE_FILL_FRACTION full beforehand.
+    """
+    # Pre-fill level must be at or below this fraction of tank for the
+    # observation to constrain the low end usefully.
+    MAX_PRE_FILL_FRACTION = 0.40
+
+    async with pool.acquire() as conn:
+        v = await conn.fetchrow(
+            """
+            SELECT tank_capacity_l, fuel_unit,
+                   COALESCE(fuel_level_calibration_pct, 100.0) AS cal_pct
+              FROM vehicles WHERE id = $1
+            """,
+            body.vehicle_id,
+        )
+        if v is None or v["tank_capacity_l"] is None or not body.fuel_volume:
+            return
+        tank_l = float(v["tank_capacity_l"])
+        raw_vol = float(body.fuel_volume)
+        pumped_l = raw_vol * 3.78541 if v["fuel_unit"] == 1 else raw_vol
+        remaining_l = tank_l - pumped_l
+        if remaining_l < 0 or remaining_l > tank_l * MAX_PRE_FILL_FRACTION:
+            return
+
+        # Freshest sensor reading strictly BEFORE the fillup. Deliberately
+        # not the ±30 min window _maybe_calibrate_fuel_level uses — that
+        # one wants the post-fill bump, this one wants the pre-fill level.
+        sensor_before = await conn.fetchval(
+            """
+            SELECT value_num FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = 'fuel_level'
+               AND time BETWEEN $2::timestamptz - interval '2 hours'
+                            AND $2::timestamptz
+               AND value_num IS NOT NULL
+             ORDER BY time DESC
+             LIMIT 1
+            """,
+            body.vehicle_id, body.fillup_date,
+        )
+        if sensor_before is None:
+            return
+
+        empty_pct = derive_empty_pct(
+            sensor_pct_before=float(sensor_before),
+            liters_remaining_before=remaining_l,
+            tank_capacity_l=tank_l,
+            calibration_pct=float(v["cal_pct"]),
+        )
+        if empty_pct is None:
+            return
+        await conn.execute(
+            "UPDATE vehicles SET fuel_level_empty_pct = $2 WHERE id = $1",
+            body.vehicle_id, empty_pct,
+        )
+        log.info(
+            "fuel empty-point calibrated vehicle=%s sensor_before=%.2f%% "
+            "remaining=%.2fL -> empty_pct=%.2f%%",
+            body.vehicle_id, float(sensor_before), remaining_l, empty_pct,
         )
 
 

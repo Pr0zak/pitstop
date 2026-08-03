@@ -42,20 +42,90 @@ class EstimateUpdate:
 
 
 def sensor_pct_to_liters(
-    sensor_pct: float, tank_capacity_l: float, calibration_pct: float = 100.0
+    sensor_pct: float,
+    tank_capacity_l: float,
+    calibration_pct: float = 100.0,
+    empty_pct: float | None = None,
 ) -> float:
     """Convert raw fuel-level percentage to liters using per-vehicle calibration.
 
-    The calibration ceiling (from migration 0016) maps the sensor's
-    physical-max reading to 100% of tank. If a vehicle reads 85% on a
-    full tank, calibration_pct=85; a current reading of 42.5 means
-    50% real = tank_capacity_l * 0.5 liters.
+    TWO-POINT map (migration 0019). The sender curve is anchored at both
+    ends:
+
+      * ``calibration_pct`` (0016) — raw reading on a physically FULL
+        tank. Honda's PID 0x2F stops below 100 because the float arm
+        bottoms out above the fill line.
+      * ``empty_pct`` (0019) — raw reading on an EMPTY tank. The same
+        float arm also stops ABOVE the bottom, so the sender never
+        reaches 0.
+
+    Assuming raw 0 == empty (the old one-point behaviour) over-reports
+    remaining fuel, and the error is worst at the bottom of the tank
+    where it matters most: measured on the Pilot, a raw 14.902% mapped to
+    3.18 gal when the tank actually held 2.10 gal — 51% high, and the
+    driver was on the low-fuel light.
+
+    ``empty_pct=None`` restores the one-point behaviour, so a vehicle
+    that has never calibrated its low end renders exactly as before.
     """
     if calibration_pct <= 0:
         calibration_pct = 100.0
-    pct_real = (sensor_pct / calibration_pct) * 100.0
+    # A bogus empty point (negative, or at/above the full point) would
+    # invert or explode the slope — fall back to one-point rather than
+    # emit nonsense.
+    low = 0.0
+    if empty_pct is not None and 0.0 <= empty_pct < calibration_pct:
+        low = float(empty_pct)
+    span = calibration_pct - low
+    if span <= 0:
+        return 0.0
+    pct_real = ((sensor_pct - low) / span) * 100.0
     pct_real = max(0.0, min(100.0, pct_real))
     return tank_capacity_l * pct_real / 100.0
+
+
+def derive_empty_pct(
+    *,
+    sensor_pct_before: float,
+    liters_remaining_before: float,
+    tank_capacity_l: float,
+    calibration_pct: float,
+) -> float | None:
+    """Solve for the sender's EMPTY reading from one low-tank observation.
+
+    A fill-to-full tells us exactly how much fuel was in the tank
+    beforehand: ``tank_capacity - pumped``. Pair that with the raw sender
+    reading taken just before the pump and we have a second point on the
+    curve; the full-tank calibration is the first. Two points define the
+    line, and its x-intercept is the reading the sender shows when dry.
+
+        real% = (sensor% - empty%) / (calibration% - empty%) * 100
+
+    Returns None when the observation can't constrain the low end —
+    caller should leave the existing calibration alone.
+    """
+    if tank_capacity_l <= 0 or calibration_pct <= 0:
+        return None
+    if not (0.0 <= sensor_pct_before < calibration_pct):
+        return None
+    real_pct = liters_remaining_before / tank_capacity_l * 100.0
+    if not (0.0 <= real_pct < 100.0):
+        return None
+    # Slope in real-% per sensor-%. Guard the degenerate case where the
+    # observation sits on top of the full point.
+    denom = calibration_pct - sensor_pct_before
+    if denom <= 0:
+        return None
+    slope = (100.0 - real_pct) / denom
+    if slope <= 0:
+        return None
+    empty = sensor_pct_before - real_pct / slope
+    # A sender that reads negative-when-dry is physically meaningless,
+    # and one that reads a third of scale when dry is a bad observation
+    # rather than a real calibration.
+    if not (0.0 <= empty <= min(30.0, calibration_pct * 0.5)):
+        return None
+    return empty
 
 
 def reset_on_fillup(
@@ -141,6 +211,7 @@ def snap_to_sensor(
     current_estimate_l: float | None,
     when: datetime,
     snap_threshold_l: float = 5.0,
+    empty_pct: float | None = None,
 ) -> EstimateUpdate | None:
     """Snap the estimate to the sensor reading when the sensor should be stable.
 
@@ -151,7 +222,9 @@ def snap_to_sensor(
     Returns None when no update is needed (estimate is already within
     snap_threshold of the sensor reading).
     """
-    sensor_l = sensor_pct_to_liters(sensor_pct, tank_capacity_l, calibration_pct)
+    sensor_l = sensor_pct_to_liters(
+        sensor_pct, tank_capacity_l, calibration_pct, empty_pct
+    )
     if current_estimate_l is None:
         return EstimateUpdate(
             liters=sensor_l,

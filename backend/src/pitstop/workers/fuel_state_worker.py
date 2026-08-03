@@ -208,6 +208,7 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
             """
             SELECT id, tank_capacity_l,
                    COALESCE(fuel_level_calibration_pct, 100.0) AS cal_pct,
+                   fuel_level_empty_pct,
                    fuel_level_estimate_l
               FROM vehicles
              WHERE tank_capacity_l IS NOT NULL
@@ -284,6 +285,11 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                 sensor_pct=sensor_pct,
                 tank_capacity_l=float(v["tank_capacity_l"]),
                 calibration_pct=float(v["cal_pct"]),
+                empty_pct=(
+                    float(v["fuel_level_empty_pct"])
+                    if v["fuel_level_empty_pct"] is not None
+                    else None
+                ),
                 current_estimate_l=(
                     float(v["fuel_level_estimate_l"])
                     if v["fuel_level_estimate_l"] is not None

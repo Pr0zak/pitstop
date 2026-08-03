@@ -29,6 +29,7 @@ _VEHICLE_SELECT = """
         v.active, v.pid_profile_id,
         v.latest_odo_km, v.latest_odo_at,
         v.fuel_level_calibration_pct,
+        v.fuel_level_empty_pct,
         v.tank_capacity_l,
         v.fuel_level_estimate_l,
         v.fuel_level_estimate_updated_at,
@@ -43,15 +44,18 @@ _VEHICLE_SELECT = """
 
 
 def _normalize_latest(
-    latest: dict[str, Any], calibration_pct: float
+    latest: dict[str, Any],
+    calibration_pct: float,
+    empty_pct: float | None = None,
 ) -> dict[str, Any]:
     """Apply per-vehicle fuel_level calibration to the JSONB ``latest`` map.
 
     Honda (and others) clip PID 0x2F below 100 even on a physically full
-    tank. The fillup endpoint snapshots the highest reading near each
-    is_full=true fillup into ``vehicles.fuel_level_calibration_pct``; we
-    divide here so widget / hero card render 100 % on a full tank.
-    Raw value is preserved under ``value_num_raw`` for the debug view."""
+    tank, AND stop above 0 on an empty one. The fillup endpoint snapshots
+    the full-tank ceiling into ``fuel_level_calibration_pct`` and solves
+    the dry reading into ``fuel_level_empty_pct``; we map between them so
+    the widget / hero card read 100 % full and 0 % dry. Raw value is
+    preserved under ``value_num_raw`` for the debug view."""
     if calibration_pct <= 0 or calibration_pct >= 100:
         return latest
     entry = latest.get("fuel_level") if isinstance(latest, dict) else None
@@ -60,7 +64,12 @@ def _normalize_latest(
     raw = entry.get("value_num")
     if not isinstance(raw, (int, float)):
         return latest
-    normalized = min(100.0, float(raw) / calibration_pct * 100.0)
+    low = 0.0
+    if empty_pct is not None and 0.0 <= float(empty_pct) < calibration_pct:
+        low = float(empty_pct)
+    normalized = min(
+        100.0, max(0.0, (float(raw) - low) / (calibration_pct - low) * 100.0)
+    )
     out = dict(latest)
     out["fuel_level"] = {**entry, "value_num": normalized, "value_num_raw": float(raw)}
     return out
@@ -116,9 +125,19 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
             else None
         ),
         "fuel_level_estimate_updated_at": row["fuel_level_estimate_updated_at"],
+        "fuel_level_empty_pct": (
+            float(row["fuel_level_empty_pct"])
+            if row["fuel_level_empty_pct"] is not None
+            else None
+        ),
         "latest": _normalize_latest(
             row["latest"] or {},
             float(row["fuel_level_calibration_pct"] or 100.0),
+            (
+                float(row["fuel_level_empty_pct"])
+                if row["fuel_level_empty_pct"] is not None
+                else None
+            ),
         ),
         "pid_profile": (
             {"name": row["profile_name"], "description": row["profile_description"]}
