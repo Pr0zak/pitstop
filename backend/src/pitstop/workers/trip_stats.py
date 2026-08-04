@@ -131,25 +131,42 @@ async def compute_trip_stats(
     # Fuel used: integrate maf_air_flow (g/s) / 14.7 (stoich) / 749.9 (g/L)
     # across the trip duration. ~14.7 g air per 1 g fuel; gasoline density
     # ~0.7499 kg/L, so g_fuel / 749.9 = L_fuel.
-    fuel_used_l = await conn.fetchval(
-        """
-        SELECT COALESCE(SUM(value_num * dt) / 14.7 / 749.9, 0)
-        FROM (
-            SELECT
-                value_num,
-                EXTRACT(EPOCH FROM (time - LAG(time) OVER (ORDER BY time)))
-                    AS dt
-            FROM pid_readings
-            WHERE vehicle_id = $1
-              AND metric = 'maf_air_flow'
-              AND time >= $2 AND time <= $3
-        ) s
-        WHERE dt IS NOT NULL AND dt < 60
-        """,
-        vehicle_id,
-        started_at,
-        ended_at,
-    )
+    # Two airflow sources, tried in order. `maf_air_flow` is Mode 01 PID
+    # 0x10 (and the WiCAN's alias for it); `maf_sensor_a` is PID 0x66,
+    # added phone-side because 0x10 has never answered on the Pilot —
+    # every historical maf_air_flow row came from the WiCAN, so when that
+    # stopped publishing on 2026-07-25 fuel_used_l went to 0 for every
+    # trip and the estimator fell back to a flat EPA decrement.
+    #
+    # They are integrated SEPARATELY and the first non-trivial result
+    # wins. Summing them would double-count on a PCM that answers both.
+    fuel_used_l = None
+    for airflow_metric in ("maf_air_flow", "maf_sensor_a"):
+        candidate = await conn.fetchval(
+            """
+            SELECT COALESCE(SUM(value_num * dt) / 14.7 / 749.9, 0)
+            FROM (
+                SELECT
+                    value_num,
+                    EXTRACT(EPOCH FROM (time - LAG(time) OVER (ORDER BY time)))
+                        AS dt
+                FROM pid_readings
+                WHERE vehicle_id = $1
+                  AND metric = $4
+                  AND time >= $2 AND time <= $3
+            ) s
+            WHERE dt IS NOT NULL AND dt < 60
+            """,
+            vehicle_id,
+            started_at,
+            ended_at,
+            airflow_metric,
+        )
+        if candidate is not None and float(candidate) >= 0.05:
+            fuel_used_l = candidate
+            break
+    if fuel_used_l is None:
+        fuel_used_l = 0
 
     # Fallback: derive fuel_used from the fuel_level delta when MAF isn't
     # available. Honda Pilot's poll list doesn't include PID 0x10 (MAF)

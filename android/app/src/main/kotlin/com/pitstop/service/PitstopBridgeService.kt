@@ -155,6 +155,14 @@ class PitstopBridgeService : Service() {
      * unsupported response, and would wrongly suppress the entire set.
      */
     private val noDataStreakByPid = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Once-per-run dedupe for the two formerly-silent OBD drop paths.
+     *  Cleared in startBridge alongside the no-data streaks so each drive
+     *  reports its own failures exactly once. */
+    private val unmatchedFrameLogged: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val parserNullLogged: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val suppressedPids = java.util.Collections.newSetFromMap(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
     )
@@ -434,6 +442,8 @@ class PitstopBridgeService : Service() {
             // re-probed from a clean slate (OBD-4).
             pidsToPoll = Pids.DEFAULT
             noDataStreakByPid.clear()
+            unmatchedFrameLogged.clear()
+            parserNullLogged.clear()
             suppressedPids.clear()
 
             // Both collectors off → the bridge would do nothing useful.
@@ -1089,13 +1099,34 @@ class PitstopBridgeService : Service() {
         onEngineOnSignal()
         val pid = pidsToPoll.firstOrNull {
             it.mode == parsed.mode && it.pid == parsed.pid
-        } ?: return
+        }
+        if (pid == null) {
+            // Previously a bare `?: return` — a completely silent drop. A
+            // PCM that echoes a mode/PID we didn't ask for (or answers a
+            // polled PID with a different echo) vanished without a trace,
+            // which is how MAF stayed broken for weeks: zero readings AND
+            // zero diagnostics. Rate-limited per mode/PID so an
+            // unrecognised frame at 1 Hz can't flood the depot.
+            val key = "%02X%02X".format(parsed.mode, parsed.pid)
+            if (unmatchedFrameLogged.add(key)) {
+                logBuffer.warn(
+                    "obd response for unpolled pid",
+                    mapOf("echo" to key, "data_bytes" to parsed.data.size),
+                )
+            }
+            return
+        }
         val value = pid.parser(parsed.data)
         if (value == null) {
-            logBuffer.warn(
-                "obd value parser returned null",
-                mapOf("pid" to pid.name, "data_bytes" to parsed.data.size),
-            )
+            // Also rate-limited: a PID whose parser rejects every response
+            // (too few bytes, unsupported-sensor bitmap) would otherwise
+            // log once per second for the whole drive.
+            if (parserNullLogged.add(pid.name)) {
+                logBuffer.warn(
+                    "obd value parser returned null",
+                    mapOf("pid" to pid.name, "data_bytes" to parsed.data.size),
+                )
+            }
             return
         }
 

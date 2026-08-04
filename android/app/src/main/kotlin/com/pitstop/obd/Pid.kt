@@ -118,6 +118,38 @@ object Pids {
         },
     )
 
+    /**
+     * Mode 01 PID 0x66 — "Mass air flow sensor". A second airflow source,
+     * because 0x10 above has never produced a single reading on the 2019
+     * Pilot: 22,593 historical `maf_air_flow` rows were ALL published by
+     * the WiCAN, none by the phone. The WiCAN's AutoPID profile had BOTH
+     * `10-MAFAirFlowRate` and `66-MAFSensorA` enabled and the backend
+     * aliases both to `maf_air_flow`, so which one this PCM actually
+     * answers was never recorded. Poll both and find out.
+     *
+     * Deliberately published under its OWN metric name rather than
+     * `maf_air_flow`: if this PCM answers both, a shared name would put
+     * two independent sample streams into one metric and the backend's
+     * fuel integration would DOUBLE-COUNT the burn.
+     *
+     * Layout: A = sensor-support bitmap (bit0 = A present, bit1 = B),
+     * B,C = sensor A in g/s scaled x32, D,E = sensor B. We read sensor A
+     * and only when the bitmap claims it exists.
+     */
+    val MafSensorA = Pid(
+        name = "maf_sensor_a",
+        mode = 0x01,
+        pid = 0x66,
+        periodMs = 1_000,
+        parser = { bytes ->
+            val support = byte(bytes, 0) ?: return@Pid null
+            if (support and 0x01 == 0) return@Pid null  // sensor A not present
+            val b = byte(bytes, 1) ?: return@Pid null
+            val c = byte(bytes, 2) ?: return@Pid null
+            ((b * 256) + c) / 32.0  // g/s
+        },
+    )
+
     val Odometer = Pid(
         name = "odometer",
         mode = 0x01,
@@ -179,6 +211,7 @@ object Pids {
         EngineLoad,
         ManifoldPressure,
         MafAirFlow,
+        MafSensorA,
         Odometer,
         StftB1, LtftB1, StftB2, LtftB2,
         // MAF (0x10) added at ~1 Hz to fix the backend's
