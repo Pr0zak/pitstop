@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useVehiclesStore } from "@/stores/vehicles";
+import { useUnitsStore } from "@/stores/units";
 import { fmtRelative } from "@/composables/useFormat";
 import { Plus, Pencil, X } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
@@ -8,9 +9,54 @@ import type { Vehicle } from "@/api/types";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 const store = useVehiclesStore();
+const units = useUnitsStore();
+
+const KM_PER_MI = 1.609344;
+const KM_TO_MI = (km: number) => km / KM_PER_MI;
+const MI_TO_KM = (mi: number) => mi * KM_PER_MI;
+
+/** `v-model.number` leaves the raw string in place when it doesn't parse, so a
+ *  cleared numeric input arrives here as "" rather than undefined. Collapse
+ *  every non-numeric shape to null — for the odometer offset that's meaningful:
+ *  NULL means "not calibrated", which is distinct from a measured 0. */
+function toNumOrNull(v: unknown): number | null {
+  if (v === "" || v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 const showModal = ref(false);
 const editing = ref<Vehicle | null>(null);
+
+/** Distance unit for the odometer-offset input. Honours an explicit
+ *  metric/imperial preference; under 'auto' it reads the vehicle being edited,
+ *  because the units store's own auto-resolution follows the *selected*
+ *  vehicle, which isn't necessarily the row whose modal is open. */
+const editorImperial = computed<boolean>(() => {
+  if (units.preference === "metric") return false;
+  if (units.preference === "imperial") return true;
+  const v = editing.value;
+  if (!v) return units.resolved === "imperial";
+  return v.dist_unit === 1 || v.fuel_unit === 1 || v.fuel_unit === 2;
+});
+const offsetUnit = computed(() => (editorImperial.value ? "mi" : "km"));
+
+/** km (storage) → the offset input's display unit. undefined for an
+ *  uncalibrated vehicle so the input renders blank rather than "0". */
+function kmToOffsetInput(km: number | null | undefined): number | undefined {
+  if (km == null) return undefined;
+  const v = editorImperial.value ? KM_TO_MI(km) : km;
+  return Math.round(v * 10) / 10;
+}
+
+/** The offset input's display unit → km (storage). */
+function offsetInputToKm(raw: unknown): number | null {
+  const n = toNumOrNull(raw);
+  if (n == null) return null;
+  const km = editorImperial.value ? MI_TO_KM(n) : n;
+  return Math.round(km * 1000) / 1000;
+}
+
 const form = ref({
   name: "",
   slug: "",
@@ -30,6 +76,11 @@ const form = ref({
   // percentage. Distinct from Fuelio's tank1_capacity (user-unit, used by
   // the legacy range-to-empty card).
   tank_capacity_l: undefined as number | undefined,
+  // Odometer offset in the USER'S distance unit (see [editorImperial]) — the
+  // column is km, so this is converted on load and on save. undefined = the
+  // field is blank = "not calibrated" (stored as NULL), which is deliberately
+  // distinct from a measured 0.
+  odometer_offset: undefined as number | undefined,
 });
 
 function slugify(s: string): string {
@@ -69,6 +120,7 @@ function openCreate() {
     purchase_date: "",
     epa_mpg_combined: undefined,
     tank_capacity_l: undefined,
+    odometer_offset: undefined,
   };
   showModal.value = true;
   submitError.value = null;
@@ -91,6 +143,7 @@ function openEdit(v: Vehicle) {
     purchase_date: v.purchase_date ?? "",
     epa_mpg_combined: v.epa_mpg_combined ?? undefined,
     tank_capacity_l: v.tank_capacity_l ?? undefined,
+    odometer_offset: kmToOffsetInput(v.odometer_offset_km),
   };
   showModal.value = true;
   submitError.value = null;
@@ -114,6 +167,7 @@ async function submit() {
       purchase_date: form.value.purchase_date || null,
       epa_mpg_combined: form.value.epa_mpg_combined ?? null,
       tank_capacity_l: form.value.tank_capacity_l ?? null,
+      odometer_offset_km: offsetInputToKm(form.value.odometer_offset),
     };
     if (editing.value) {
       await api.updateVehicle(editing.value.id, payload);
@@ -282,6 +336,23 @@ async function confirmRemove() {
                 <small class="muted">
                   Usable tank volume in liters. Feeds the fuel-level
                   estimate and range-to-empty.
+                </small>
+              </label>
+              <label>
+                Odometer offset ({{ offsetUnit }})
+                <input
+                  type="number"
+                  step="0.1"
+                  v-model.number="form.odometer_offset"
+                  :placeholder="editorImperial ? 'e.g. 32' : 'e.g. 51'"
+                />
+                <small class="muted">
+                  How far the car's OBD odometer runs ahead of the dash
+                  (OBD&nbsp;−&nbsp;dash) — the engine computer and the
+                  instrument cluster keep separate counters. Fillup odometers
+                  are read off the dash, so this keeps live readings
+                  comparable. Negative if the OBD reads low; leave blank if
+                  you haven't measured it.
                 </small>
               </label>
             </div>

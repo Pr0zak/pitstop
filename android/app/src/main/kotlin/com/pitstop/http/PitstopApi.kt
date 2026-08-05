@@ -86,6 +86,20 @@ data class VehicleDto(
     @SerialName("tank_capacity_l") val tankCapacityL: Double? = null,
     @SerialName("fuel_level_estimate_l") val fuelLevelEstimateL: Double? = null,
     @SerialName("fuel_level_estimate_updated_at") val fuelLevelEstimateUpdatedAt: String? = null,
+    /** Measured (PCM − dash) odometer difference in KILOMETRES, backend
+     *  migration 0020. The OBD `odometer` PID and `latest_odo_km` come
+     *  from the PCM; fillup odometers are typed off the instrument
+     *  cluster, and on this Pilot the PCM runs ~51 km (~32 mi) AHEAD.
+     *  Positive means the PCM reads high, so clients SUBTRACT it to land
+     *  on a dash-equivalent number. Presentation only — nothing rewrites
+     *  stored readings. Null = "not calibrated", which is deliberately
+     *  distinct from a measured 0.0.
+     *
+     *  Defaulted (like every optional field here) because
+     *  kotlinx-serialization is strict: without it, any backend older
+     *  than migration 0020 would blow up deserialisation of the whole
+     *  vehicle list. */
+    @SerialName("odometer_offset_km") val odometerOffsetKm: Double? = null,
 )
 
 @Serializable

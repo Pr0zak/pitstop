@@ -202,6 +202,10 @@ fun LiveScreen(
                         formatter = { v -> com.pitstop.util.UnitFormat.pressureKpa(v, unitSystem, 0)
                             .substringBefore(" ") },
                     ),
+                    // PID 0x9E. Published in kg/h and rendered as-is — there
+                    // is no imperial convention for exhaust mass flow worth
+                    // inventing, so both unit systems see kg/h.
+                    TileSpec("Exhaust flow", "engine_exhaust_flow", "kg/h", 1),
                 ),
                 metrics = metrics,
             )
@@ -211,10 +215,73 @@ fun LiveScreen(
                 title = "Fuel system",
                 tiles = listOf(
                     TileSpec("Fuel level", "fuel_level", "%", 0),
+                    // PID 0x9D. The metric is GRAMS PER SECOND; a mass rate
+                    // means nothing at a glance, so convert to a volume rate
+                    // at gasoline's 749.9 g/L: g/s × 3600 / 749.9 = L/h.
+                    // Derived the same way the GPS-speed tile is (m/s → mph):
+                    // TileSpec.formatter gets the raw canonical value and
+                    // returns just the number, the unit label is appended by
+                    // SmallTile.
+                    //
+                    // Keyed on `engine_fuel_rate`, NOT the legacy `fuel_rate`
+                    // — the latter is the WiCAN's broken built-in 0x9D
+                    // decoder whose 11,586 historical rows are all 0.000.
+                    TileSpec(
+                        "Fuel rate", "engine_fuel_rate", "L/h", 1,
+                        formatter = { v -> "%.1f".format(v * 3600.0 / 749.9) },
+                    ),
                     TileSpec("STFT B1", "stft_b1", "%", 1),
                     TileSpec("LTFT B1", "ltft_b1", "%", 1),
                     TileSpec("STFT B2", "stft_b2", "%", 1),
                     TileSpec("LTFT B2", "ltft_b2", "%", 1),
+                    // PID 0x23 — gauge pressure, reads ~3500 kPa on the Pilot.
+                    // Converted with the same helper the MAP tile uses so the
+                    // imperial toggle gives psi.
+                    TileSpec(
+                        "Fuel rail", "fuel_rail_pressure",
+                        unit = if (isImperial) "psi" else "kPa", digits = 0,
+                        formatter = { v -> com.pitstop.util.UnitFormat.pressureKpa(v, unitSystem, 0)
+                            .substringBefore(" ") },
+                    ),
+                    // PID 0x44 — commanded fuel/air EQUIVALENCE ratio (lambda),
+                    // not the 14.7:1 mass ratio. 1.000 = stoich, and closed-loop
+                    // cruise sits within a percent of it, so 3 decimals is the
+                    // minimum that shows any movement at all.
+                    TileSpec("Cmd AFR", "commanded_afr_ratio", "λ", 3),
+                ),
+                metrics = metrics,
+            )
+
+            // ── Emissions ─────────────────────────────────────────────
+            // Catalyst temps run ~560 °C at cruise; O2 sensor 1 is the
+            // pre-cat closed-loop sensor. EGR + evap purge are commanded
+            // duty percentages, not measured positions.
+            LiveSection(
+                title = "Emissions",
+                tiles = listOf(
+                    TileSpec(
+                        "Cat B1", "catalyst_temp_b1",
+                        unit = if (isImperial) "°F" else "°C", digits = 0,
+                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
+                            .substringBefore(" ") },
+                    ),
+                    TileSpec(
+                        "Cat B2", "catalyst_temp_b2",
+                        unit = if (isImperial) "°F" else "°C", digits = 0,
+                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
+                            .substringBefore(" ") },
+                    ),
+                    // PID 0x24, wide-range sensor. Only the LAMBDA field is
+                    // shown: the same PID's voltage field is invariant in the
+                    // stored data (2 distinct values across 29,103 rows, flat
+                    // 2.000 for the last six weeks), so it is left unaliased
+                    // at ingest and never reaches a canonical metric name.
+                    // 3 decimals — closed-loop lambda lives inside ±5% of 1.
+                    TileSpec("O2 S1 λ", "o2_s1_lambda", "λ", 3),
+                    // Both sit near zero for most of a drive — 0 digits would
+                    // render a permanent "0".
+                    TileSpec("Cmd EGR", "commanded_egr", "%", 1),
+                    TileSpec("Evap purge", "commanded_evap_purge", "%", 1),
                 ),
                 metrics = metrics,
             )

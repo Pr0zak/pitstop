@@ -35,6 +35,7 @@ _VEHICLE_SELECT = """
         v.fuel_level_estimate_updated_at,
         v.purchase_price, v.purchase_date,
         v.epa_mpg_combined,
+        v.odometer_offset_km,
         s.last_seen_at, s.last_metric, COALESCE(s.latest, '{}'::jsonb) AS latest,
         p.name AS profile_name, p.description AS profile_description
       FROM vehicles v
@@ -106,6 +107,13 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
         "purchase_date": row["purchase_date"],
         "epa_mpg_combined": (
             float(row["epa_mpg_combined"]) if row["epa_mpg_combined"] is not None else None
+        ),
+        # PCM counter minus dash cluster, in km. Presentation-only — raw
+        # pid_readings are never rewritten (0020 migration).
+        "odometer_offset_km": (
+            float(row["odometer_offset_km"])
+            if row["odometer_offset_km"] is not None
+            else None
         ),
         "last_seen_at": row["last_seen_at"],
         "last_metric": row["last_metric"],

@@ -369,9 +369,11 @@ fun ConfigScreen(
                     bleEnabled = form.bridgeBleEnabled,
                     gpsEnabled = form.bridgeGpsEnabled,
                     manualSyncOnly = form.manualSyncOnly,
+                    extendedPidsEnabled = form.extendedPidsEnabled,
                     onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
                     onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
                     onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
+                    onExtendedPidsChange = { v -> viewModel.setExtendedPidsEnabled(v) },
                 )
                 BleDeviceSection(
                     deviceName = form.bleDeviceName,
@@ -514,9 +516,11 @@ private fun CaptureCollectorsSection(
     bleEnabled: Boolean,
     gpsEnabled: Boolean,
     manualSyncOnly: Boolean,
+    extendedPidsEnabled: Boolean,
     onBleEnabledChange: (Boolean) -> Unit,
     onGpsEnabledChange: (Boolean) -> Unit,
     onManualSyncChange: (Boolean) -> Unit,
+    onExtendedPidsChange: (Boolean) -> Unit,
 ) {
     SettingsSection(
         title = "Collectors",
@@ -596,6 +600,30 @@ private fun CaptureCollectorsSection(
                 )
             }
             Switch(checked = manualSyncOnly, onCheckedChange = onManualSyncChange)
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        // Opt-in Mode 22 PIDs (ZF TCM: ATF temp + gear). Default OFF and
+        // explicitly labelled experimental — enabling it makes the bridge
+        // change the ELM session header mid-poll to address the transmission
+        // module. The restore is guarded several ways, but a header left set
+        // would make every following standard PID be answered by the wrong
+        // module, so the user should know what they are switching on.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Transmission PIDs (experimental)",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    if (extendedPidsEnabled)
+                        "Polling ATF temperature + gear from the transmission module"
+                    else "Adds ATF temperature and current gear. Unverified on this " +
+                        "hardware — turn off if OBD readings look wrong.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = extendedPidsEnabled, onCheckedChange = onExtendedPidsChange)
         }
     }
 }

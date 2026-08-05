@@ -55,10 +55,20 @@ class MafSensorATest {
         assertEquals("maf_sensor_a", Pids.MafSensorA.name)
         assertEquals(0x66, Pids.MafSensorA.pid)
         assert(Pids.DEFAULT.contains(Pids.MafSensorA))
-        assert(Pids.DEFAULT.contains(Pids.MafAirFlow))
         assertEquals(
-            2,
+            1,
             Pids.DEFAULT.count { it.name == "maf_air_flow" || it.name == "maf_sensor_a" },
         )
+    }
+
+    @Test
+    fun `0x10 is defined but not polled - measured unsupported on this PCM`() {
+        // Live-probed 2026-07-31: this PCM does not advertise support for
+        // 0x10 and never answers it, so polling it burned a round-robin
+        // slot per cycle for a guaranteed NO DATA. 0x66 is the airflow
+        // source that answers. The definition stays for other vehicles.
+        assertEquals("maf_air_flow", Pids.MafAirFlow.name)
+        assertEquals(0x10, Pids.MafAirFlow.pid)
+        assert(!Pids.DEFAULT.contains(Pids.MafAirFlow))
     }
 }

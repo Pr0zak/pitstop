@@ -68,6 +68,10 @@ data class ConfigFormState(
     val aaTilesDiag: List<String> = emptyList(),
     val unitSystem: String = "imperial",
     val manualSyncOnly: Boolean = false,
+    /** Opt-in Mode 22 extended PIDs (ZF TCM: ATF temp + gear). NOT part of the
+     *  Settings object — it has its own DataStore key, so persistForm must
+     *  never write it and the loader reads it separately. */
+    val extendedPidsEnabled: Boolean = false,
     val bridgeBleEnabled: Boolean = true,
     val bridgeGpsEnabled: Boolean = true,
     val bridgeAutoTrigger: Boolean = true,
@@ -317,6 +321,10 @@ class ConfigViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             val secrets = settingsRepository.current()
+            // Read separately: extendedPidsEnabled lives in its own DataStore
+            // key, deliberately outside the Settings object.
+            val extendedPidsInitial =
+                runCatching { settingsRepository.extendedPidsEnabledNow() }.getOrDefault(false)
             _form.value = ConfigFormState(
                 brokerUrl = secrets.settings.brokerUrl,
                 mqttUser = secrets.settings.mqttUser,
@@ -334,6 +342,7 @@ class ConfigViewModel @Inject constructor(
                 bleDeviceName = secrets.settings.bleDeviceName,
                 verboseLogging = secrets.settings.verboseLogging,
                 manualSyncOnly = secrets.settings.manualSyncOnly,
+                extendedPidsEnabled = extendedPidsInitial,
                 bridgeBleEnabled = secrets.settings.bridgeBleEnabled,
                 bridgeGpsEnabled = secrets.settings.bridgeGpsEnabled,
                 bridgeAutoTrigger = secrets.settings.bridgeAutoTrigger,
@@ -530,6 +539,29 @@ class ConfigViewModel @Inject constructor(
                 .onFailure { t ->
                     logBuffer.warn(
                         "config: manualSyncOnly auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    /**
+     * Opt-in Mode 22 extended PIDs. Writes its OWN DataStore key rather than
+     * going through persistForm: the whole-object Settings write must never be
+     * able to clobber it (and vice versa).
+     *
+     * Default OFF on purpose. These PIDs change the ELM session header to reach
+     * the ZF TCM, and a header left un-restored makes every subsequent standard
+     * PID be answered by the wrong module — the failure that collapsed the
+     * dongle's own published payload from 62 keys to 19. See ADR-022.
+     */
+    fun setExtendedPidsEnabled(value: Boolean) {
+        _form.value = _form.value.copy(extendedPidsEnabled = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setExtendedPidsEnabled(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: extendedPidsEnabled auto-save failed",
                         mapOf("err" to (t.message ?: t::class.java.simpleName)),
                     )
                 }

@@ -254,6 +254,25 @@ Shipped in v0.1.120 (split fix) + v0.1.121 (BLE-lost watchdog).
 
 ## ADR-018 — WiCAN PID 0x68 firmware bug: poll IAT as a custom Mode 01 PID
 
+> **PARTIALLY SUPERSEDED 2026-08-04 by ADR-022.** Point 3 below — "Mode 22 documented as
+> gateway-blocked on 2019 Pilot Elite" — is **wrong**. Mode 22 is reachable. The earlier
+> probes used the Honda-transaxle DID (`2201`) against powertrain headers, but this Elite
+> has the **ZF 9HP**, whose DIDs live in the `30xx` block on module **`0x1E`**. That module
+> returns `7F 22 31` (*requestOutOfRange*) for an unknown DID — proof the service is
+> supported and only the DID was absent, not that a gateway is filtering. ATF temperature
+> (`22 3083`, `payload[17] − 40`) and gear position (`22 3086`, `payload[23]`) are both
+> verified live; gear matched a blind D→R→N→D shift sequence 4/4.
+>
+> The 136.4 °F false positive described below is now fully explained rather than merely
+> distrusted: `payload[0]` is the `0x62` positive-response echo, and `0x62 = 98 →
+> 98 × 9/5 − 40 = 136.4`. It is constant on every successful Mode 22 response.
+>
+> Points 1 and 2 (IAT via custom PID `0168`, and keeping `68-IntakeAirTempSens1`
+> unaliased) **remain correct and necessary** — the firmware's `0x68` decoder still has
+> `bit_start = 39`, reading the sensor-support bitmap instead of the temperature.
+> See `docs/research/honda-pilot-pids.md` for the measured detail.
+
+
 **Context.** Honda V6 PCMs (incl. 2019 Pilot) expose intake air temp only via SAE J1979 PID `0x68` (dual-sensor variant), not the simple-format `0x0F`. Trying to use `0x0F` as a custom PID returns NO DATA from this PCM. WiCAN-PRO firmware v4.49 Beta-06 has a confirmed decoder bug for std PID `0x68` on its MQTT publish path: it emits byte 0 of the response (the supported-sensors bitmap = `0x01`) instead of byte 1 (the actual temp). Applied to the `A-40` formula that yields a constant `-39 °C` regardless of real intake air temp. The UI Test button on the same device reads byte 1 correctly (~69 °C plausible), so the bug is in the publish path, not the bus query.
 
 Bisect confirmed via custom Mode 01 PID `0168` with byte probes B0..B8 over MQTT:
@@ -334,3 +353,73 @@ Discussion #615 was on older firmware. Beta-06 implements actual radio coexisten
 
 Test ran 2026-05-24 driveway. ADR-019 written same day, no code change required.
 
+
+---
+
+## ADR-020 — Fuel consumed comes from the ECU's own fuel rate (PID 0x9D), not MAF integration
+
+**Context.** `trips.fuel_used_l` was 0 or NULL on every trip after 2026-07-25, so the fuel-level estimator ran entirely on a flat EPA decrement (22 mpg) and could not tell a hard 10 miles from an easy 10.
+
+Root cause: `maf_air_flow` has **never** come from the phone. All 22,593 historical rows were published by the WiCAN, which only reaches MQTT over home WiFi — i.e. the driveway, not drives. The phone polled PID `0x10` for MAF, but live probing showed **this ECU does not advertise `0x10` at all**; the real MAF source is `0x66`. So on every cellular drive there was no airflow stream, nothing to integrate, and the fuel-level-delta fallback couldn't cover: a mid-trip fillup makes the delta negative, and post-fill slosh trips the 0.40 L/km sanity cap.
+
+Probing also found PID `0x9D` (engine fuel rate) *is* supported and returns live moving data — the firmware's decoder was zeroing it (see `docs/research/honda-pilot-pids.md`).
+
+**Decision.**
+
+1. **Prefer `engine_fuel_rate` (PID 0x9D) over any airflow source.** It is the ECU's own fuel calculation, so power enrichment and deceleration fuel cut-off are already folded in. Integrating MAF assumes stoichiometric 14.7:1 forever — under-reporting at WOT and over-reporting on every lift-off.
+2. **Sources are integrated separately, first credible result wins — never summed.** Summing would double-count on a PCM that answers both a fuel rate and a MAF.
+3. **Species-typed units.** Sources declare `FlowSpecies.FUEL` or `.AIR`; the air:fuel ratio and gasoline density are applied in exactly one pure function and appear in no SQL. A fuel flow converts by density alone; an air flow divides by stoich first. Confusing the two is a 14.7x error, so it is made structurally impossible rather than documented.
+4. **A source must cover ≥50% of the trip's OBD-active seconds.** These integrals silently under-count (gaps >60 s are dropped), so a sliver of coverage yields a small positive number that passes a magnitude-only gate. Real case from the database: 120 s of driveway WiCAN coverage on a 1397 s / 12.65 km trip integrated to 0.056 L ≈ **530 MPG** — and because it cleared the floor it also suppressed the tank-delta fallback that would have produced a sane figure. The 0.40 L/km cap is an upper bound and cannot catch it.
+
+   The denominator is **activity, not wall clock**. A trip's `ended_at` is the engine-off event, which the phone's BLE-lost watchdog stamps ~3 minutes after the last OBD frame (60 s for the OBD-quiet watchdog), and a mid-drive BLE flap silences every phone metric at once. Dividing by `ended_at − started_at` would charge that silence to the fuel source and reject a stream that covered every second the car was reporting — turning a correct figure into a blank, which is the very bug this ADR exists to fix. `obd_active_seconds` sums the same `dt < 60` segments over *all* metrics, so numerator and denominator share one convention and the gate stays aimed at its actual target: one source covering a fraction of the period the others covered.
+5. **The WiCAN's own `9D-EngineFuelRate` name stays unaliased**, quarantined under its hex name exactly like `68-IntakeAirTempSens1`. That name is the *broken* decoder (11,586 rows, min = max = 0). Aliasing it would let a single `wican-config` re-enable interleave 1 Hz of zeros with the working custom-PID stream under the same canonical name, roughly halving the integral — still clearing the credibility floor, so it would win silently and inflate MPG about 2x.
+
+**Consequence.**
+
+- Fuel per trip reflects how the car was actually driven, not a constant.
+- The estimator degrades gracefully: fuel rate → MAF → tank-delta → EPA.
+- The 50% coverage gate means a driveway-only capture now yields *no* fuel figure rather than a wrong one — deliberately preferring a gap to a plausible lie.
+
+---
+
+## ADR-021 — Per-vehicle odometer offset, user-configurable
+
+**Context.** The PCM's distance counter and the instrument cluster are separate modules and do not agree — on this Pilot the OBD odometer reads ~51 km (32 mi) above the dash. Fillup odometers are recorded from the **dash**; the app prefills them from the **PID**. Mixing the two injects a one-time 32-mile jump into the odo chain, and recomputed MPG is `Δodo ÷ volume`, so the tank straddling the switch is silently corrupted.
+
+Separately, the web Live view rendered the raw `odometer` metric with no conversion and no unit label. The metric is kilometres, so an imperial user read `126959` as miles when it meant 78,889 mi.
+
+**Decision.**
+
+1. New nullable `vehicles.odometer_offset_km`, editable in the UI. **NULL means "not calibrated" and is distinct from a measured 0.0.**
+2. The column stores **(PCM − dash)**; clients **subtract** it to land on the dash-equivalent number the user actually reads.
+3. **Presentation and prefill only — raw `pid_readings` are never mutated.** The stored reading stays what the PCM said.
+4. Applied consistently at every surface that shows an odometer to a human: web Live tile, web fillup modal, phone fillup prefill. A corrected number on one surface and a raw one on another is worse than neither.
+5. On the phone the offset is applied **before** the existing plausibility guard, because that guard compares against the last fillup odometer, which is already dash-sourced.
+
+**Consequence.**
+
+- The odo chain stays internally consistent, so MPG is not corrupted by source-mixing.
+- Distances are labelled everywhere; the km-shown-as-miles class of bug is closed.
+- Vehicles with no measured offset behave exactly as before.
+
+---
+
+## ADR-022 — Extended (Mode 22) PIDs are polled by the phone, not the dongle
+
+**Context.** ATF temperature (`22 3083`) and gear position (`22 3086`) are reachable on the ZF 9HP TCM at module `0x1E` — both verified live, gear against a blind 4/4 shift sequence. Reaching them requires setting a non-default ELM transmit header (`ATSH18DA1EF1`).
+
+Adding such a PID to the dongle's `auto_pid` table **collapsed its published payload from 62 keys to 19** and was rolled back. ELM headers are sticky and `Init` runs *before* a request, never after, so a header set for ATF persists into whatever standard PID polls next — those are then answered by the wrong module. `auto_pid` offers no "after" hook, and `_hdr_reset` is merely another entry competing in the same round-robin. Lengthening the period reduces the collapse frequency without eliminating it.
+
+**Decision.**
+
+1. **Extended PIDs are polled over the phone's BLE session**, where the poller controls exact command ordering: set header → request → restore. This is also the transport that is live *during drives*, which is when ATF and gear mean anything.
+2. **The header restore must be structurally unavoidable** — on the failure path as well as the success path. A session left on `18DA1EF1` silently corrupts every subsequent standard reading, which is exactly the 62→19 collapse observed on the dongle.
+3. **Opt-in, default off**, behind its own settings key. Unproven behaviour must not be able to disturb a working capture path.
+4. **The restore is two commands on two lines** — `ATSH7DF\r` then `ATCRA\r`. An ELM327 parses exactly one command per CR-terminated line, so the concatenated `ATSH7DFATCRA` is read as `AT SH` with the argument `7DFATCRA` (not 3/6/8 hex digits — `T` and `R` aren't hex), answered with `?`, and the header is left exactly where it was. The dongle's own working custom-PID config uses the CR-separated form (`"init": "ATSH7DF\rATCRA"`, ADR-018 §1), which is the same evidence. A restore that is a silent no-op is worse than no restore at all, because point 2's guarantee then reads as satisfied.
+5. Left explicitly unverified: whether the dongle's BLE bridge accepts `AT` commands mid-session. It accepts ELM-style PID requests, but header commands specifically have not been confirmed on-vehicle.
+
+**Consequence.**
+
+- ATF and gear become reachable without risking the 57-PID standard stream.
+- The blast radius of the unproven part is a feature that does nothing until enabled.
+- VCM cylinder-deactivation state (`22 2615`, byte 53) remains unreachable regardless — the dongle truncates ISO-TP reassembly at ~34 payload bytes.

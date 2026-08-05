@@ -266,14 +266,22 @@ class WiCanBleManager(
      * spam hundreds of identical lines into the depot. */
     private var lastSkippedWarnAt: Long = 0
 
-    fun writeCommand(ascii: String) {
+    /**
+     * @return true when the write was actually enqueued, false when there was
+     * no rx characteristic to write to (link down / not yet discovered). The
+     * caller usually ignores this; the ELM header-restore path in
+     * [com.pitstop.service.PitstopBridgeService] does NOT — a dropped restore
+     * leaves the adapter addressed at a non-default module, so it has to know
+     * the difference between "sent" and "silently discarded".
+     */
+    fun writeCommand(ascii: String): Boolean {
         val target = rx ?: run {
             val now = System.currentTimeMillis()
             if (now - lastSkippedWarnAt > 5_000L) {
                 lastSkippedWarnAt = now
                 logBuffer?.warn("ble write skipped: no rx characteristic (will reconnect)")
             }
-            return
+            return false
         }
         logBuffer?.debug("ble write", mapOf("cmd" to ascii.trim()))
         writeCharacteristic(
@@ -281,6 +289,7 @@ class WiCanBleManager(
             ascii.toByteArray(Charsets.US_ASCII),
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         ).enqueue()
+        return true
     }
 
     private data class UartProfile(

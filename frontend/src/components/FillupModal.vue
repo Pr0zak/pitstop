@@ -87,10 +87,29 @@ const tankCount = computed(() => props.vehicle.tank_count ?? 1);
  *  vehicles.latest_odo_km — the freshest pid_readings odometer value;
  *  convert to miles when the vehicle's dist_unit says so. Rounded to
  *  nearest whole unit so the input doesn't surface decimal-millimetre
- *  precision the user has to delete. */
+ *  precision the user has to delete.
+ *
+ *  `latest_odo_km` is PCM-sourced, but the number the user is about to
+ *  confirm is the one on the DASH, and the two are separate modules with
+ *  separate counters — on the Pilot the PCM runs tens of km ahead.
+ *  `odometer_offset_km` (migration 0020) is the measured (PCM − dash)
+ *  difference, so a positive value means the PCM reads high and we
+ *  SUBTRACT it; NULL = "not calibrated" → 0, i.e. exactly the previous
+ *  behaviour for every uncalibrated vehicle.
+ *
+ *  The subtraction happens in KILOMETRES, before the km→mi conversion:
+ *  the column is km, and applying it to the miles value would be a 1.61x
+ *  error in the correction itself.
+ *
+ *  This MUST stay in step with LiveView's odometer tile and the phone's
+ *  FuelAddViewModel.autoFillOdometer(). A prefill that silently carries
+ *  the PCM offset into a dash-sourced odo chain corrupts the Δodo that
+ *  recomputed MPG divides by — for that interval AND the next one, which
+ *  is the entire reason the offset exists. */
 function prefillOdoForVehicle(v: Vehicle): number | undefined {
-  const km = v.latest_odo_km;
-  if (km == null || !Number.isFinite(km)) return undefined;
+  const rawKm = v.latest_odo_km;
+  if (rawKm == null || !Number.isFinite(rawKm)) return undefined;
+  const km = rawKm - (v.odometer_offset_km ?? 0);
   // dist_unit: 0 = km, 1 = mi (per Fuelio import; see types.ts)
   const isMiles = (v.dist_unit ?? 0) === 1;
   const out = isMiles ? km * 0.621371 : km;

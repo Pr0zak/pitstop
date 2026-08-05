@@ -76,6 +76,12 @@ class SettingsRepository @Inject constructor(
         val heatmapMode: Preferences.Key<String> = stringPreferencesKey("heatmap_mode")
         val onboardingComplete: Preferences.Key<Boolean> =
             booleanPreferencesKey("onboarding_complete")
+
+        // Opt-in Mode 22 "extended" PIDs (ZF TCM: ATF temp + gear position).
+        // Its own key, written only by setExtendedPidsEnabled below — see the
+        // accessor docs for why it stays out of the whole-object write.
+        val extendedPidsEnabled: Preferences.Key<Boolean> =
+            booleanPreferencesKey("extended_pids_enabled")
     }
 
     /**
@@ -333,6 +339,37 @@ class SettingsRepository @Inject constructor(
      *  the moment it fires a background bridge start. */
     suspend fun writeLastAutoStart(atMs: Long) {
         context.dataStore.edit { it[Keys.lastAutoStartAtMs] = atMs }
+    }
+
+    /**
+     * Opt-in Mode 22 "extended" PIDs — ATF temperature + gear position off the
+     * ZF transmission controller, polled over the phone's BLE session.
+     *
+     * **Defaults to false and stays false unless the user asks for it.** These
+     * PIDs address a non-default module, which means a sticky TX-header change
+     * on the ELM session for every poll; that is a real (measured, on the
+     * WiCAN) way to break the rest of the PID stream if the restore ever slips.
+     * Nobody gets that risk by upgrading — they have to opt in.
+     *
+     * Deliberately its own DataStore key rather than a [Settings] field: the
+     * config form writes [Settings] as a whole object, so a field there can be
+     * clobbered by any screen that saves a partially-populated form. Written
+     * only by [setExtendedPidsEnabled]; [update] never touches this key.
+     *
+     * Observed live by [com.pitstop.service.PitstopBridgeService], so flipping
+     * it adds/removes the extended PIDs from the round-robin mid-drive without
+     * restarting the bridge.
+     */
+    val extendedPidsEnabled: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.extendedPidsEnabled] ?: false }
+
+    /** One-shot read for bridge start-up, before the flow collector lands. */
+    suspend fun extendedPidsEnabledNow(): Boolean =
+        context.dataStore.data.first()[Keys.extendedPidsEnabled] ?: false
+
+    /** Focused setter for the extended-PID opt-in. */
+    suspend fun setExtendedPidsEnabled(value: Boolean) {
+        context.dataStore.edit { it[Keys.extendedPidsEnabled] = value }
     }
 
     /** True once the first-run setup wizard has been finished or skipped. */

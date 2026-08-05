@@ -183,8 +183,41 @@ class WiCanSubscriber @Inject constructor(
             "5C-EngineOilTemp" to "engine_oil_temp",
             "62-ActualEngTorqPct" to "engine_torque_pct",
             "63-EngRefTorq" to "engine_reference_torque",
-            "9D-EngineFuelRate" to "fuel_rate",
+            // `9D-EngineFuelRate` is DELIBERATELY ABSENT, matching the backend
+            // (`wican_aliases.py`). That name is the dongle's BROKEN built-in
+            // 0x9D decoder — 11,586 stored rows with min = max = 0. The live
+            // fuel rate is a WiCAN *custom* PID published directly as
+            // `engine_fuel_rate` (g/s), which is what the Live tile is keyed
+            // on and which passes through here unmapped. Aliasing the broken
+            // name onto any canonical metric would put a stream of zeros on
+            // the same bus as the working one.
             "A6-Odometer" to "odometer",
+            // Emissions / mixture block. These MUST be here for the Live
+            // screen's "Emissions" + "Fuel system" tiles to ever show a
+            // number: the phone's own BLE poll set (Pids.DEFAULT) does not
+            // request any of them, so the WiCAN's WiFi MQTT publish is the
+            // only source, and an unmapped key passes through under its hex
+            // name — which no tile is keyed on.
+            "23-FuelRailGaug" to "fuel_rail_pressure",
+            "2C-CmdEGR" to "commanded_egr",
+            "2E-CmdEvapPurge" to "commanded_evap_purge",
+            "32-EvapSysVaporPres" to "evap_vapor_pressure",
+            "3C-CatTempBank1Sens1" to "catalyst_temp_b1",
+            "3D-CatTempBank2Sens1" to "catalyst_temp_b2",
+            "44-FuelAirCmdEquiv" to "commanded_afr_ratio",
+            "47-AbsThrottlePosB" to "throttle_pos_b",
+            "49-AbsThrottlePosD" to "throttle_pos_d",
+            "4A-AbsThrottlePosE" to "throttle_pos_e",
+            "8E-EngineFrictionPercentTorque" to "friction_torque_pct",
+            // O2 sensors. `24-OxySensor1_Volt` is deliberately absent — the
+            // backend leaves it unaliased because it is decoder-dead (2
+            // distinct values in 29,103 stored rows; a flat 2.000 for the
+            // last six weeks).
+            "24-OxySensor1_FAER" to "o2_s1_lambda",
+            "15-OxySensor2_Volt" to "o2_s2_voltage",
+            "15-OxySensor2_STFT" to "o2_s2_stft",
+            "19-OxySensor6_Volt" to "o2_s6_voltage",
+            "19-OxySensor6_STFT" to "o2_s6_stft",
             "06-ShortFuelTrimBank1" to "stft_b1",
             "07-LongFuelTrimBank1" to "ltft_b1",
             "08-ShortFuelTrimBank2" to "stft_b2",

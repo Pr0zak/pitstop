@@ -134,11 +134,54 @@ const torque = computed(() => num("engine_torque_pct"));
 const refTorque = computed(() => num("engine_reference_torque"));
 
 // Fuel + economy
-const fuelRate = computed(() => num("fuel_rate")); // l/h
+// Fuel rate. The canonical metric is `engine_fuel_rate` (OBD PID 0x9D) in
+// GRAMS PER SECOND; this tile and the economy widget below want l/h.
+//
+// The legacy `fuel_rate` metric is deliberately only a fallback: the WiCAN's
+// built-in 0x9D decoder is broken and published a constant 0.000 for 11,586
+// readings before it stopped altogether on 2026-05-23, which is why this tile
+// and instant-economy silently showed nothing for months. The live value now
+// comes from a custom WiCAN PID (and the phone's own 0x9D poll), both of which
+// publish g/s under `engine_fuel_rate`.
+const FUEL_G_PER_L = 749.9; // gasoline density ~0.7499 kg/L
+const fuelRate = computed(() => {
+  const gPerS = num("engine_fuel_rate");
+  if (gPerS != null) return (gPerS * 3600) / FUEL_G_PER_L; // g/s -> l/h
+  return num("fuel_rate"); // legacy, already l/h
+});
+// Exhaust mass flow, OBD PID 0x9E, published in KILOGRAMS PER HOUR under
+// `engine_exhaust_flow`. Left in kg/h like the other mass-flow tiles (MAF is
+// g/s, MAP/baro are kPa) rather than converted per unit system.
+const exhaustFlow = computed(() => num("engine_exhaust_flow"));
 const stftB1 = computed(() => num("stft_b1"));
 const ltftB1 = computed(() => num("ltft_b1"));
 const stftB2 = computed(() => num("stft_b2"));
 const ltftB2 = computed(() => num("ltft_b2"));
+
+// Mixture + fuel delivery
+// `commanded_afr_ratio` (PID 0x44) is the PCM's commanded air-fuel
+// EQUIVALENCE ratio — lambda, not the 14.7:1 mass ratio — and `o2_s1_lambda`
+// (PID 0x24) is what the upstream wide-range sensor actually measured. Both
+// live within a couple of percent of 1.000 in closed loop, so they render at
+// three decimals: rounding to the 1 dp the other tiles use would flatten the
+// entire meaningful range into a constant "1.0".
+//
+// There is deliberately NO O2-sensor-1 voltage tile: PID 0x24's voltage field
+// is invariant in the stored data (2 distinct values across 29,103 rows, a
+// flat 2.000 for the last six weeks), so it is left unaliased at ingest and
+// has no canonical metric to render. Lambda is that sensor's real output.
+const cmdAfr = computed(() => num("commanded_afr_ratio"));
+const o2S1Lambda = computed(() => num("o2_s1_lambda"));
+const fuelRail = computed(() => num("fuel_rail_pressure"));
+
+// Emissions + aftertreatment
+// Catalyst temps are stored in °C like every other temp metric, so they go
+// through fmtTempC and follow the imperial toggle. The two commanded-actuator
+// percentages have no imperial variant.
+const catB1 = computed(() => num("catalyst_temp_b1"));
+const catB2 = computed(() => num("catalyst_temp_b2"));
+const cmdEgr = computed(() => num("commanded_egr"));
+const cmdEvapPurge = computed(() => num("commanded_evap_purge"));
 
 // Air / atmosphere
 const iat = computed(() => num("intake_air_temp"));
@@ -147,9 +190,42 @@ const baro = computed(() => num("barometric_pressure"));
 const timing = computed(() => num("timing_advance"));
 
 // Trip context
-const odometer = computed(() => num("odometer"));
+// Odometer. The OBD metric is KILOMETRES; this tile used to render it raw and
+// unlabelled, so an imperial user read "126959" as miles when it was really
+// 126,959 km = 78,889 mi.
+//
+// `odometer_offset_km` is a per-vehicle correction the user sets on the Vehicles
+// page. The PCM's internal distance counter and the instrument cluster are
+// separate modules and do not agree — on the Pilot the PID reads ~51 km (32 mi)
+// above the dash. That matters because fillup odometers are recorded from the
+// DASH, and mixing the two sources into one odo chain corrupts the Δodo that
+// recomputed MPG divides by.
+//
+// The column stores (PCM − dash), so a positive offset means the PCM reads high
+// and we SUBTRACT to land on the dash-equivalent number the user expects to see.
+const odometerKm = computed(() => {
+  const raw = num("odometer");
+  if (raw == null) return null;
+  return raw - (vehicles.selectedVehicle?.odometer_offset_km ?? 0);
+});
+const odometer = computed(() => {
+  const km = odometerKm.value;
+  if (km == null) return null;
+  return useImperial.value ? km * 0.621371 : km;
+});
+const distUnit = computed(() => (useImperial.value ? "mi" : "km"));
+// Kept as its own name so the odometer tile's template reads unambiguously;
+// both distance tiles in this section share one unit.
+const odometerUnit = distUnit;
 const timeSinceStart = computed(() => num("time_since_engine_start"));
-const distSinceClear = computed(() => num("distance_since_code_clear"));
+// PID 0x31, also KILOMETRES — same class of bug as the odometer above, and it
+// sits in the same section. No offset applies (it is a since-code-clear
+// counter, not the odo chain), but it still needs the conversion and the label.
+const distSinceClear = computed(() => {
+  const km = num("distance_since_code_clear");
+  if (km == null) return null;
+  return useImperial.value ? km * 0.621371 : km;
+});
 
 // === Derived widgets =====================================================
 
@@ -319,6 +395,12 @@ function trimClass(v: number | null): string {
             <h3>Fuel rate</h3>
             <div class="big">{{ fmtFuelRateLh(fuelRate) }}</div>
           </div>
+          <div class="card tile">
+            <h3>Exhaust flow</h3>
+            <div class="big">
+              {{ exhaustFlow != null ? exhaustFlow.toFixed(1) + " kg/h" : "—" }}
+            </div>
+          </div>
           <div class="card tile highlight">
             <h3>{{ useImperial ? "Instant MPG" : "Instant l/100km" }}</h3>
             <div class="big">
@@ -341,6 +423,57 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>LTFT B2</h3>
             <div class="big" :class="trimClass(ltftB2)">{{ fmtTrim(ltftB2) }}</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Mixture / fuel delivery -->
+      <section>
+        <h3 class="section-title">Mixture &amp; fuel delivery</h3>
+        <div class="tiles">
+          <div class="card tile">
+            <h3>Commanded AFR</h3>
+            <div class="big">
+              {{ cmdAfr != null ? cmdAfr.toFixed(3) : "—" }}
+              <span class="unit">λ</span>
+            </div>
+          </div>
+          <div class="card tile">
+            <h3>O2 S1 lambda</h3>
+            <div class="big">
+              {{ o2S1Lambda != null ? o2S1Lambda.toFixed(3) : "—" }}
+              <span class="unit">λ</span>
+            </div>
+            <div class="muted small">upstream wide-range</div>
+          </div>
+          <div class="card tile">
+            <h3>Fuel rail</h3>
+            <div class="big">
+              {{ fuelRail != null ? fuelRail.toFixed(0) + " kPa" : "—" }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Emissions / aftertreatment -->
+      <section>
+        <h3 class="section-title">Emissions &amp; aftertreatment</h3>
+        <div class="tiles">
+          <div class="card tile">
+            <h3>Catalyst B1</h3>
+            <div class="big">{{ fmtTempC(catB1) }}</div>
+          </div>
+          <div class="card tile">
+            <h3>Catalyst B2</h3>
+            <div class="big">{{ fmtTempC(catB2) }}</div>
+          </div>
+          <div class="card tile">
+            <h3>Commanded EGR</h3>
+            <div class="big">{{ fmtPct(cmdEgr) }}</div>
+          </div>
+          <div class="card tile">
+            <h3>Evap purge</h3>
+            <div class="big">{{ fmtPct(cmdEvapPurge) }}</div>
           </div>
         </div>
       </section>
@@ -380,7 +513,7 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Odometer</h3>
-            <div class="big">{{ fmtInt(odometer) }}</div>
+            <div class="big">{{ fmtInt(odometer) }} <span class="unit">{{ odometerUnit }}</span></div>
           </div>
           <div class="card tile">
             <h3>Run time</h3>
@@ -388,7 +521,9 @@ function trimClass(v: number | null): string {
           </div>
           <div class="card tile">
             <h3>Distance since DTC clear</h3>
-            <div class="big">{{ fmtInt(distSinceClear) }}</div>
+            <div class="big">
+              {{ fmtInt(distSinceClear) }} <span class="unit">{{ distUnit }}</span>
+            </div>
           </div>
         </div>
       </section>

@@ -67,6 +67,16 @@ export interface Vehicle {
   tank_capacity_l?: number | null;
   fuel_level_estimate_l?: number | null;
   fuel_level_estimate_updated_at?: string | null;
+  // User-measured (PCM counter − dash cluster) difference, in KILOMETRES
+  // (migration 0020). The odometer we ingest over OBD comes from the PCM;
+  // the odometer the user reads — and types into a fillup — comes from the
+  // instrument cluster, and on some vehicles the two counters disagree by
+  // tens of km. A positive value means the PCM reads HIGH, so clients
+  // SUBTRACT it to render a dash-equivalent number.
+  //
+  // NULL = "not calibrated", which is deliberately distinct from a measured
+  // 0.0. Presentation-only: nothing server-side rewrites stored readings.
+  odometer_offset_km?: number | null;
 }
 
 export interface Profile {

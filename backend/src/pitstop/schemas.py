@@ -116,6 +116,7 @@ class VehicleUpdate(BaseModel):
     purchase_price: float | None = None
     purchase_date: date | None = None
     epa_mpg_combined: float | None = None
+    odometer_offset_km: float | None = None
 
     @field_validator("slug")
     @classmethod
@@ -150,6 +151,14 @@ class VehicleOut(VehicleBase):
     purchase_date: date | None = None
     # EPA combined MPG sticker for "rated vs actual" overlay (Task #90).
     epa_mpg_combined: float | None = None
+    # User-measured (PCM odometer − dash cluster odometer), in km (0020
+    # migration). The PCM and instrument cluster are separate modules with
+    # separate counters; fillup odos are typed off the dash while
+    # latest_odo_km / the `odometer` metric come from the PCM, so mixing
+    # sources corrupts the Δodo that recomputed MPG divides by. NULL means
+    # "not calibrated". Presentation/prefill correction only — stored
+    # pid_readings are never adjusted server-side.
+    odometer_offset_km: float | None = None
     # Per-vehicle fuel-level calibration ceiling (0016 migration).
     # Honda PID 0x2F caps below 100 even on a physically full tank;
     # this is the raw % observed at the most recent is_full=true

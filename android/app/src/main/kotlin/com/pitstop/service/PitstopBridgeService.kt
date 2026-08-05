@@ -26,6 +26,8 @@ import com.pitstop.log.LogShipper
 import com.pitstop.log.loggableUrl
 import com.pitstop.log.maskMac
 import com.pitstop.mqtt.MqttPublisher
+import com.pitstop.obd.ElmSession
+import com.pitstop.obd.IsoTp
 import com.pitstop.obd.ObdResponseParser
 import com.pitstop.obd.Pid
 import com.pitstop.obd.Pids
@@ -127,6 +129,49 @@ class PitstopBridgeService : Service() {
      * cause a burst once it comes back.
      */
     private val lastBeaconAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * Cached snapshot of `SettingsRepository.extendedPidsEnabled` — the opt-in
+     * for the ZF TCM's Mode 22 PIDs (ATF temp + gear). Default **off**; the
+     * extended PIDs never enter [pidsToPoll] unless this is true, so an
+     * upgrading user's poll behaviour is byte-for-byte what it was.
+     */
+    @Volatile private var extendedPidsEnabled: Boolean = false
+
+    /**
+     * The extended PID whose response we're currently waiting on, if any.
+     * Multi-frame ISO-TP answers can't be attributed by the mode/PID echo the
+     * way single-frame ones are (the echo is a DID split across the payload,
+     * and the reassembly has to happen before anything is readable), so the
+     * request records who asked. Cleared on the answer, on
+     * [EXTENDED_PENDING_TTL_MS] expiry (see [expireStaleExtendedRequest]), and
+     * whenever extended polling stops.
+     */
+    @Volatile private var pendingExtended: Pid? = null
+    @Volatile private var pendingExtendedAtMs: Long = 0L
+
+    /**
+     * True whenever we may have left a non-default TX header on the ELM
+     * session. Set BEFORE the header write (not after), so a cancellation or
+     * process death between the write and the restore still leaves the flag
+     * in the "needs cleaning" state for the next poll tick / next session to
+     * act on. See [restoreDefaultHeaderIfDirty].
+     */
+    @Volatile private var sessionHeaderDirty: Boolean = false
+
+    /**
+     * Guards [sessionHeaderDirty] together with the ELM write it describes.
+     * The flag alone is not enough: "set the flag then write ATSH" and "test
+     * the flag, write the restore, clear it" run on different threads (poll
+     * loop on IO, settings-toggle collector on IO, onDestroy on main), and
+     * interleaving them can retire a restore that the header change had not
+     * yet been sent for.
+     */
+    private val headerLock = Any()
+
+    /** Once-per-run dedupe for extended-PID negative responses (7F ...). */
+    private val extendedNrcLogged: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** Last PID the round-robin scheduler wrote to the WiCAN. Used so
      *  that when a NO DATA / STOPPED / UNABLE TO CONNECT response comes
@@ -250,6 +295,24 @@ class PitstopBridgeService : Service() {
                     )
                     applyGpsToggle()
                     refreshNotificationForActive()
+                }
+            }
+        }
+        // Extended (Mode 22) PID opt-in. Its own DataStore key + its own flow,
+        // so it can't be clobbered by a whole-object Settings save. Flipping it
+        // adds/removes the ZF TCM PIDs from the round-robin mid-drive; turning
+        // it OFF also forces a header restore so we can't be left addressing
+        // the transmission controller.
+        scope.launch {
+            settingsRepository.extendedPidsEnabled.collect { enabled ->
+                val prior = extendedPidsEnabled
+                extendedPidsEnabled = enabled
+                if (prior != enabled) {
+                    logBuffer.info(
+                        "extended (mode 22) pids toggled",
+                        mapOf("enabled" to enabled),
+                    )
+                    applyExtendedPidToggle()
                 }
             }
         }
@@ -401,6 +464,8 @@ class PitstopBridgeService : Service() {
     override fun onDestroy() {
         logBuffer.info("bridge service destroying")
         scope.cancel()
+        pendingExtended = null
+        restoreDefaultHeaderIfDirty()
         bleManager?.let {
             it.setStateCallback(null)
             it.disconnectDevice()
@@ -437,14 +502,23 @@ class PitstopBridgeService : Service() {
             bridgeBleEnabled = s.bridgeBleEnabled
             bridgeGpsEnabled = s.bridgeGpsEnabled
 
+            // Read the extended-PID opt-in synchronously rather than trusting
+            // the flow collector in onCreate to have landed its first emission
+            // before we build the poll set.
+            extendedPidsEnabled = runCatching {
+                settingsRepository.extendedPidsEnabledNow()
+            }.getOrDefault(false)
+
             // Reset adaptive poll suppression each session so a PID that was
             // dropped last drive (or an intermittently-supported one) gets
             // re-probed from a clean slate (OBD-4).
-            pidsToPoll = Pids.DEFAULT
+            pidsToPoll = if (extendedPidsEnabled) Pids.DEFAULT + Pids.EXTENDED else Pids.DEFAULT
             noDataStreakByPid.clear()
             unmatchedFrameLogged.clear()
             parserNullLogged.clear()
+            extendedNrcLogged.clear()
             suppressedPids.clear()
+            pendingExtended = null
 
             // Both collectors off → the bridge would do nothing useful.
             // Self-stop and surface a notification so the user sees why.
@@ -961,8 +1035,24 @@ class PitstopBridgeService : Service() {
         val now = System.currentTimeMillis()
         for (pid in pidsToPoll) nextDue[pid.name] = now
 
+        // Fresh ELM session: assert the default header once before the first
+        // request so we can never inherit a stale TX header from a session
+        // that ended mid-sequence (BLE drop, process death, force-stop).
+        // Only when extended polling is on — with it off we never send a
+        // header command at all and the wire traffic is exactly what it was.
+        if (extendedPidsEnabled) {
+            sessionHeaderDirty = true
+            restoreDefaultHeaderIfDirty()
+        }
+
         while (scope.isActive) {
             if (stateBus.status.value.phase != BridgePhase.Connected) return
+
+            // Retire an extended request the module never answered. Done here,
+            // on a clock that ticks regardless of what arrives on the wire,
+            // because the rx path can't be relied on to do it (see
+            // [expireStaleExtendedRequest]).
+            expireStaleExtendedRequest()
 
             val t = System.currentTimeMillis()
             val due = pidsToPoll
@@ -971,7 +1061,16 @@ class PitstopBridgeService : Service() {
 
             if (due != null) {
                 lastSentPid = due
-                bleManager?.writeCommand(due.command())
+                if (due.isExtended) {
+                    sendExtendedRequest(due)
+                } else {
+                    // Belt and braces: a standard PID must never inherit a
+                    // module-specific TX header. Normally already clean (the
+                    // extended path restores in a finally); this catches the
+                    // case where that restore write itself couldn't be sent.
+                    restoreDefaultHeaderIfDirty()
+                    bleManager?.writeCommand(due.command())
+                }
                 nextDue[due.name] = t + due.periodMs
             }
 
@@ -979,6 +1078,107 @@ class PitstopBridgeService : Service() {
             val nextWake = pidsToPoll.minOf { nextDue[it.name] ?: t }
             val sleep = (nextWake - System.currentTimeMillis()).coerceIn(50L, 1_000L)
             delay(sleep)
+        }
+    }
+
+    /**
+     * Send one Mode 22 request that needs a module-specific TX header, then
+     * put the header back.
+     *
+     * The restore lives in a `finally`, not on the success path, because
+     * leaving the session addressed at the transmission controller silently
+     * breaks every standard PID that follows — the exact failure the WiCAN
+     * demonstrated when a header-changing PID joined its round-robin and its
+     * published stream fell from 62 keys to 19. Cancellation (bridge stop,
+     * BLE drop mid-sequence) and a thrown write both have to end with the
+     * default header restored.
+     *
+     * `writeCommand` is non-suspending — Nordic's BleManager enqueues the
+     * write and returns — so the restore still goes out from a `finally` that
+     * runs during coroutine cancellation, where a suspending call would be
+     * skipped.
+     */
+    private suspend fun sendExtendedRequest(pid: Pid) {
+        val mgr = bleManager ?: return
+        try {
+            pendingExtended = pid
+            pendingExtendedAtMs = System.currentTimeMillis()
+            for (cmd in pid.initCommands) {
+                // Mark dirty BEFORE the write: if we die between the write and
+                // the restore, the flag is already set and the next poll tick
+                // (or the next session's start-up restore) cleans up.
+                //
+                // Both under [headerLock] as ONE unit. The flag and the write
+                // are touched from three threads — the poll loop (IO), the
+                // settings collector that services the opt-in toggle (IO), and
+                // onDestroy (main). Without the lock this interleaving loses
+                // the header for good:
+                //   poll:   sessionHeaderDirty = true
+                //   toggle: sees dirty, writes the restore, clears the flag
+                //   poll:   writes ATSH18DA1EF1   <- adapter now on the TCM
+                //   poll:   finally -> flag is false, no restore is sent
+                synchronized(headerLock) {
+                    sessionHeaderDirty = true
+                    mgr.writeCommand(cmd + "\r")
+                }
+                delay(EXTENDED_INIT_SETTLE_MS)
+            }
+            mgr.writeCommand(pid.command())
+            // Give the adapter time to emit the whole multi-frame block before
+            // the next command lands behind it. The response itself is handled
+            // asynchronously in onUartFrame; this is purely about not stepping
+            // on the adapter mid-reassembly.
+            delay(EXTENDED_RESPONSE_WINDOW_MS)
+        } finally {
+            restoreDefaultHeaderIfDirty()
+        }
+    }
+
+    /**
+     * Put the ELM session back on the default OBD broadcast header if we may
+     * have moved it. Idempotent and safe to call from anywhere, including a
+     * cancellation path — it does no suspending work.
+     */
+    private fun restoreDefaultHeaderIfDirty() = synchronized(headerLock) {
+        if (!sessionHeaderDirty) return@synchronized
+        // No link at all: keep the flag SET. The adapter may well still be
+        // sitting on the module header (the WiCAN's ELM session outlives our
+        // BLE link — that is the whole reason stopBridge tries to restore),
+        // and an in-memory flag costs nothing to carry until either the poll
+        // loop or the next stop can act on it.
+        val mgr = bleManager ?: return@synchronized
+        val sent = runCatching {
+            // One CR-terminated line per AT command — see
+            // ElmSession.DEFAULT_HEADER_RESTORE for why chaining them breaks.
+            ElmSession.DEFAULT_HEADER_RESTORE.all { mgr.writeCommand(it + "\r") }
+        }.getOrElse { e ->
+            logBuffer.warn(
+                "obd: default-header restore write failed",
+                mapOf("err" to (e.message ?: e::class.java.simpleName)),
+            )
+            false
+        }
+        // Only clear when the write really went out. writeCommand returns
+        // false when there is no rx characteristic — it swallows that case
+        // silently, and clearing on it would record a restore that never
+        // reached the adapter, leaving every later standard PID answered by
+        // the transmission controller.
+        if (sent) sessionHeaderDirty = false
+    }
+
+    /**
+     * Rebuild the poll set when the extended-PID opt-in flips mid-session.
+     * Suppressed PIDs (OBD-4) stay suppressed across the rebuild so a PID the
+     * ECU refuses doesn't come back just because an unrelated toggle moved.
+     */
+    private fun applyExtendedPidToggle() {
+        val base = if (extendedPidsEnabled) Pids.DEFAULT + Pids.EXTENDED else Pids.DEFAULT
+        pidsToPoll = base.filter { it.name !in suppressedPids }
+        if (!extendedPidsEnabled) {
+            pendingExtended = null
+            // Turning the feature off mid-request must not leave the session
+            // pointed at the transmission controller.
+            restoreDefaultHeaderIfDirty()
         }
     }
 
@@ -1014,18 +1214,50 @@ class PitstopBridgeService : Service() {
             return
         }
 
+        // Before anything reads [pendingExtended] — the raw-CAN branch below
+        // is gated on it being null, so a request that aged out unanswered
+        // must be retired here rather than only inside handleExtendedFrame,
+        // which that branch can never reach.
+        expireStaleExtendedRequest()
+
         val terminator = rxBuffer.indexOf('>')
         val frameText = if (terminator >= 0) {
             val out = rxBuffer.substring(0, terminator)
             rxBuffer.delete(0, terminator + 1)
             out
-        } else if (bytes.size in 8..16 && bytes[0].toInt() and 0xF0 == 0) {
+        } else if (
+            pendingExtended == null &&
+            bytes.size in 8..16 &&
+            bytes[0].toInt() and 0xF0 == 0
+        ) {
             // Looks like a raw single-frame CAN response — don't wait for '>'.
+            //
+            // Suppressed while a multi-frame request is outstanding: this
+            // branch DISCARDS the accumulated rxBuffer, and a notify packet in
+            // the middle of an ISO-TP block that happens to start with '\r'
+            // (0x0D — high nibble 0, so it matches) would tear the block in
+            // half and lose the frames already buffered.
+            //
+            // The suppression is BOUNDED, never a latch: an unanswered request
+            // is retired by expireStaleExtendedRequest() above on a wall clock
+            // and charged as a NO DATA, so an adapter that speaks only raw CAN
+            // (and therefore can never reach the '>' branch, nor answer a Mode
+            // 22 request at all) drops the extended PIDs from the poll set
+            // after NO_DATA_SUPPRESS_THRESHOLD tries and this path reopens for
+            // good. Without that, the first extended request would stop every
+            // standard reading for the rest of the session.
             rxBuffer.clear()
             String(bytes, Charsets.US_ASCII)
         } else {
             return
         }
+
+        // Extended (Mode 22 / multi-frame ISO-TP) responses first, and ONLY
+        // while such a request is outstanding. handleExtendedFrame returns
+        // false for anything that isn't the answer we're waiting on, so the
+        // standard single-frame path below is reached unchanged in every case
+        // that matters to it.
+        if (pendingExtended != null && handleExtendedFrame(frameText)) return
 
         val parsed = ObdResponseParser.parse(frameText.toByteArray(Charsets.US_ASCII))
         if (parsed == null) {
@@ -1134,6 +1366,15 @@ class PitstopBridgeService : Service() {
         // intermittently-supported PID never accumulates toward suppression
         // across scattered no-data blips.
         noDataStreakByPid.remove(pid.name)
+        recordMetric(pid, value)
+    }
+
+    /**
+     * Fan one decoded PID sample out to the Live screen, MQTT and the drive
+     * recorder. Shared by the standard single-frame path and the extended
+     * ISO-TP path so a metric can't end up on two thirds of the surfaces.
+     */
+    private fun recordMetric(pid: Pid, value: Double) {
         stateBus.publishMetric(pid.name, value)
         // Track the last time we saw real vehicle motion — the engine-off
         // debounce holds the drive open through a no-data burst if the car
@@ -1152,6 +1393,96 @@ class PitstopBridgeService : Service() {
         // upload (#117) has every PID frame even when the live MQTT
         // stream drops bytes.
         driveRecorder.current()?.addPid(System.currentTimeMillis(), pid.name, value)
+    }
+
+    /**
+     * Try to consume [frameText] as the answer to the outstanding extended
+     * request. Returns true when it was handled (decoded, or definitively
+     * rejected by the ECU) and false when the caller should carry on to the
+     * standard single-frame parser.
+     *
+     * Deliberately conservative about claiming a frame:
+     *  - only runs while a request is actually outstanding,
+     *  - only claims blocks that reassemble AND start with 0x62 (a positive
+     *    Mode 22 response) or 0x7F (a negative one),
+     *  - only claims them when the DID echo matches what we asked for.
+     * Anything else falls through untouched, so a Mode 01 answer that lands
+     * in the same window still reaches its own parser.
+     *
+     * Engine state is deliberately NOT touched here. The engine-on/-off
+     * machine is driven entirely by the 1 Hz Mode 01 stream (ADR-017); adding
+     * a second, opt-in, 0.5 Hz input to it would change drive-sealing
+     * behaviour for a feature that is supposed to be purely additive.
+     */
+    /**
+     * Retire an extended request that has passed [EXTENDED_PENDING_TTL_MS]
+     * without an answer, and charge it to the same adaptive-suppression
+     * bookkeeping a standard NO DATA uses.
+     *
+     * This CANNOT live inside [handleExtendedFrame] alone. That function is
+     * only reachable once [onUartFrame] has produced a frame, and the only
+     * branch that produces one without an ELM `>` prompt — the raw-CAN fast
+     * path — is itself gated on there being no outstanding extended request.
+     * On an adapter that never emits `>` (raw binary CAN notifies) that is a
+     * latch: the first extended request sets [pendingExtended], every
+     * subsequent notify falls through to `return`, the TTL is never evaluated,
+     * and *every standard Mode 01 reading stops for the rest of the session*.
+     * Expiring on a wall clock breaks the latch; feeding [onNoDataForPid]
+     * means an extended PID the hardware can never answer is dropped from the
+     * poll set after [NO_DATA_SUPPRESS_THRESHOLD] tries instead of blocking
+     * the fast path once per cadence forever.
+     */
+    private fun expireStaleExtendedRequest() {
+        val pid = pendingExtended ?: return
+        if (System.currentTimeMillis() - pendingExtendedAtMs <= EXTENDED_PENDING_TTL_MS) return
+        pendingExtended = null
+        onNoDataForPid(pid)
+    }
+
+    private fun handleExtendedFrame(frameText: String): Boolean {
+        // Expiry is handled by [expireStaleExtendedRequest] on the way in, so
+        // anything still pending here is inside its TTL.
+        val pid = pendingExtended ?: return false
+        val payload = IsoTp.reassemble(frameText) ?: return false
+        if (payload.isEmpty()) return false
+        when (payload[0].toInt() and 0xFF) {
+            0x7F -> {
+                // Negative response: 7F <sid> <nrc>. The module heard us and
+                // said no — a real answer, so consume it, but log once per run
+                // instead of once per poll.
+                pendingExtended = null
+                if (extendedNrcLogged.add(pid.name)) {
+                    val nrc = payload.getOrNull(2)?.toInt()?.and(0xFF)
+                    logBuffer.warn(
+                        "obd extended pid rejected by module",
+                        mapOf(
+                            "pid" to pid.name,
+                            "nrc" to (nrc?.let { "%02X".format(it) } ?: "?"),
+                        ),
+                    )
+                }
+                return true
+            }
+            0x62 -> Unit
+            else -> return false // not a Mode 22 answer — let the normal path see it
+        }
+        if (!pid.matchesDidEcho(payload)) return false
+        pendingExtended = null
+        val value = pid.parser(payload)
+        if (value == null) {
+            // Short / truncated block, or a gear code with no known meaning.
+            // Rate-limited like the standard parser-null path.
+            if (parserNullLogged.add(pid.name)) {
+                logBuffer.warn(
+                    "obd extended value parser returned null",
+                    mapOf("pid" to pid.name, "payload_bytes" to payload.size),
+                )
+            }
+            return true
+        }
+        noDataStreakByPid.remove(pid.name)
+        recordMetric(pid, value)
+        return true
     }
 
     /**
@@ -1518,6 +1849,13 @@ class PitstopBridgeService : Service() {
         stopGpsUpdates()
         pollJob?.cancel()
         pollJob = null
+        // Last chance to hand the adapter back on the default header. If the
+        // WiCAN keeps its ELM session across our disconnect, the next bridge
+        // start must not find it still addressed at the transmission
+        // controller. (The poll loop also re-asserts on entry — this is the
+        // other half of the same guarantee.)
+        pendingExtended = null
+        restoreDefaultHeaderIfDirty()
         bleManager?.let {
             it.setStateCallback(null)
             it.disconnectDevice()
@@ -1645,6 +1983,24 @@ class PitstopBridgeService : Service() {
          */
         private const val IN_CAR_FAST_ATTEMPTS = 3
         private const val IN_CAR_BACKOFF_CAP_SEC = 30
+
+        /**
+         * Pacing for the opt-in Mode 22 path. Kept deliberately small: a
+         * header change plus a request plus a restore is three writes where a
+         * standard PID is one, and the whole point of the 10 s / 2 s cadences
+         * on the extended PIDs is that they cost the round-robin almost
+         * nothing.
+         *
+         *  - [EXTENDED_INIT_SETTLE_MS]: let the adapter digest `ATSH...`
+         *    before the request rides in behind it.
+         *  - [EXTENDED_RESPONSE_WINDOW_MS]: let the multi-frame block finish
+         *    arriving before the header restore is written.
+         *  - [EXTENDED_PENDING_TTL_MS]: after this, an unanswered request
+         *    stops being able to claim an incoming frame.
+         */
+        private const val EXTENDED_INIT_SETTLE_MS = 40L
+        private const val EXTENDED_RESPONSE_WINDOW_MS = 150L
+        private const val EXTENDED_PENDING_TTL_MS = 2_000L
 
         /**
          * Topic-last-segment names that still publish to MQTT even

@@ -51,6 +51,11 @@ data class VehicleOption(
     val slug: String,
     val name: String,
     val active: Boolean,
+    /** Measured (PCM − dash) odometer difference in km, or null when the
+     *  vehicle has never been calibrated. Carried on the option so the
+     *  odometer prefill can correct itself when the picker changes
+     *  vehicles. See [FuelAddViewModel.autoFillOdometer]. */
+    val odometerOffsetKm: Double? = null,
 )
 
 /** Fuelio's fuel-type enum + display label. */
@@ -130,6 +135,7 @@ class FuelAddViewModel @Inject constructor(
                     slug = it.slug,
                     name = it.name,
                     active = it.active ?: true,
+                    odometerOffsetKm = it.odometerOffsetKm,
                 )
             },
             selectedVehicleSlug = resolvedSlug,
@@ -181,9 +187,31 @@ class FuelAddViewModel @Inject constructor(
         // fall back to the per-vehicle latest_odo_km the backend gives us
         // — the form was opening blank for users who hadn't driven since
         // the last app launch (in-memory bus was empty).
-        val km = stateBus.latestByMetric.value["odometer"]?.value
+        val pcmKm = stateBus.latestByMetric.value["odometer"]?.value
             ?: vehicleLatestOdoKm
             ?: return
+        // Both of those sources are PCM-sourced, and the number the user is
+        // about to confirm is the one on the DASH. The PCM and the
+        // instrument cluster are separate modules keeping separate counters
+        // — on this Pilot the PCM runs ~51 km (~32 mi) AHEAD. Fillup odos
+        // are dash-typed, so prefilling a raw PCM reading pushes the whole
+        // offset into the Δodo that recomputed MPG divides by, corrupting
+        // that interval AND the next one.
+        //
+        // `odometer_offset_km` (backend migration 0020) is the user's
+        // measured (PCM − dash) difference, so a positive value means the
+        // PCM reads high and we subtract it. Null = "not calibrated" ->
+        // 0.0, i.e. exactly today's behaviour for every other vehicle.
+        //
+        // Subtracted BEFORE the plausibility guard below, deliberately: the
+        // guard compares against lastOdometer, which comes off a fillup and
+        // is therefore already dash-sourced. Guarding a raw PCM number
+        // against a dash number would measure the offset, not a glitch.
+        val offsetKm = _form.value.vehicles
+            .firstOrNull { it.slug == _form.value.selectedVehicleSlug }
+            ?.odometerOffsetKm
+            ?: 0.0
+        val km = pcmKm - offsetKm
         // OBD reports km; convert to miles for the form (matches the
         // "Odometer (mi)" label). User can override.
         val mi = km * 0.621371
