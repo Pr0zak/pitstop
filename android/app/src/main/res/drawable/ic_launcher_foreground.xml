@@ -1,34 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Pitstop launcher foreground: arc-ticks-redline-needle on Android's
-  108x108 dp adaptive-icon canvas. Safe zone is the centre 66x66 dp.
-  Background is the design token bg ramp (#0A0C10) declared in
-  res/values/ic_launcher_background.xml.
+  108x108 dp adaptive-icon canvas. Background is the design token bg ramp
+  (#0A0C10) declared in res/values/ic_launcher_background.xml.
 
-  Geometry mirrors the web favicon at viewBox 0 0 64 64. The mark's
-  visual bounding box in source coords is x [8, 56], y [9, 50] —
-  width 48, height 41, center (32, 29.5).
+  ONE construction rule, in source coords (viewBox 0 0 64 64), shared with
+  frontend/public/favicon.svg — the two files must stay identical:
 
-  Scale = 1.35 with a 4.18 dp upward optical shift.
+      centre C = (32, 33)     radius R = 24     tick inner radius = 19.5
+      angle a measured from 12 o'clock, clockwise positive
+      point(a, r) = (32 + r*sin a,  33 - r*cos a)
 
-  The Pixel launcher's circle mask has radius ~36 dp around the canvas
-  centre (72 dp visible diameter). The mark's extreme corners — the
-  cool-body arc start (15.03, 50) and the redline corner symmetric to
-  it — sit 26.61 source-units from the bbox centre. At scale 1.35
-  that's 26.61 × 1.35 = 35.92 dp from canvas centre, which just fits
-  inside the mask with ~0.1 dp margin. Larger scale starts clipping;
-  smaller looks "not cinched" against the visible circle edge.
+  EVERY arc endpoint and EVERY tick endpoint is point() evaluated at its
+  angle. Nothing here is hand-placed. Regenerating is a five-line script;
+  eyeballing a coordinate is how the previous version drifted.
 
-  Translate is nudged 4.18 dp above bbox-centred so the painted ink —
-  concentrated in the upper half of the bbox because the U-shape opens
-  downward — sits at the visible circle centre instead of reading as
-  low inside the mask. Earlier 1.18 dp shift was visibly under-corrected
-  on the Pixel launcher; the black mask gap above the dial looked
-  larger than the gap below.
+  What that drift looked like, so it is recognisable if it recurs: the
+  +95 deg junction where the cool arc meets the redline was 0.61 units
+  outside R, which is enough to move the centre an SVG arc actually sweeps
+  through. The cool arc ended up centred on (32.50, 33.54) and the redline
+  on (32.85, 32.22) — 1.37 units apart, neither on the hub — so the ring
+  was visibly non-concentric with the launcher's circle mask (a black
+  crescent, thick at the top, thin at the bottom) and the two arcs met at
+  a kink. Four of the seven ticks were also off-circle, +-45 by 8.77 units
+  and +-105 by 5.01, leaving them floating in the dial face instead of
+  meeting the arc. The needle tip sat at r=15.19 against a documented 80%
+  of R = 19.20.
 
-      translate_x = 54 - 32 * 1.35 = 10.8
-      translate_y_bbox = 54 - 29.5 * 1.35 = 14.175
-      translate_y      = 10.0  (= bbox_centred - 4.18 dp up)
+  Placement on the 108 dp canvas:
+
+      scale        = 1.35
+      translate_x  = 54 - 32 * 1.35 = 10.80
+      translate_y  = 54 - 33 * 1.35 =  9.45
+
+  That puts the DIAL centre exactly on the canvas centre. It is deliberately
+  geometric, not optically nudged: the mark reads as a circle, so its
+  perceived centre is its geometric one, and the ring of background around
+  it is what the eye actually measures. The previous 4.18 dp "optical"
+  shift was derived from the ink bounding box (32, 29.5) rather than the
+  dial, which pushed the dial 0.55 dp low and added to the crescent above.
+
+  Mask fit: furthest ink from the dial centre is R + strokeWidth/2 = 25.75,
+  i.e. 34.76 dp scaled, against the circle mask's ~36 dp radius — 1.24 dp
+  of margin. Raising the scale eats that margin and starts clipping the
+  +-135 deg arc ends.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -38,7 +53,7 @@
 
     <group
         android:translateX="10.8"
-        android:translateY="10.0"
+        android:translateY="9.45"
         android:scaleX="1.35"
         android:scaleY="1.35">
 
@@ -49,7 +64,7 @@
             android:strokeWidth="3.5"
             android:strokeLineCap="butt"
             android:fillColor="#00000000"
-            android:pathData="M 15.03 50 A 24 24 0 1 1 55.86 39.04" />
+            android:pathData="M 15.03 49.97 A 24 24 0 1 1 55.91 35.09" />
 
         <!-- Redline segment: +95 deg to +135 deg, coral accent -->
         <path
@@ -57,21 +72,22 @@
             android:strokeWidth="3.5"
             android:strokeLineCap="round"
             android:fillColor="#00000000"
-            android:pathData="M 55.86 39.04 A 24 24 0 0 1 48.97 50" />
+            android:pathData="M 55.91 35.09 A 24 24 0 0 1 48.97 49.97" />
 
-        <!-- Major ticks every 30 deg from -135 to +135. -->
+        <!-- Major ticks: R=24 inward to 19.5, at -135/-105/-45/0/+45/+105/+135.
+             The spacing is irregular but symmetric (30/60/45/45/60/30). -->
         <!-- -135 -->
         <path android:strokeColor="#E7E9EE" android:strokeAlpha="0.9"
               android:strokeWidth="1.4" android:strokeLineCap="round"
-              android:pathData="M 15.03 50 L 18.21 46.82" />
+              android:pathData="M 15.03 49.97 L 18.21 46.79" />
         <!-- -105 -->
         <path android:strokeColor="#E7E9EE" android:strokeAlpha="0.9"
               android:strokeWidth="1.4" android:strokeLineCap="round"
-              android:pathData="M 13.76 38.27 L 18.13 37.10" />
+              android:pathData="M 8.82 39.21 L 13.16 38.05" />
         <!-- -45 -->
         <path android:strokeColor="#E7E9EE" android:strokeAlpha="0.9"
               android:strokeWidth="1.4" android:strokeLineCap="round"
-              android:pathData="M 20.74 22.74 L 23.92 25.92" />
+              android:pathData="M 15.03 16.03 L 18.21 19.21" />
         <!-- 0 (top) -->
         <path android:strokeColor="#E7E9EE" android:strokeAlpha="0.9"
               android:strokeWidth="1.4" android:strokeLineCap="round"
@@ -79,28 +95,28 @@
         <!-- +45 -->
         <path android:strokeColor="#E7E9EE" android:strokeAlpha="0.9"
               android:strokeWidth="1.4" android:strokeLineCap="round"
-              android:pathData="M 43.26 22.74 L 40.08 25.92" />
+              android:pathData="M 48.97 16.03 L 45.79 19.21" />
         <!-- +105 (inside redline) -->
         <path android:strokeColor="#FF5B3A"
               android:strokeWidth="1.4" android:strokeLineCap="round"
-              android:pathData="M 50.24 38.27 L 45.87 37.10" />
+              android:pathData="M 55.18 39.21 L 50.84 38.05" />
         <!-- +135 (inside redline) -->
         <path android:strokeColor="#FF5B3A"
               android:strokeWidth="1.4" android:strokeLineCap="round"
-              android:pathData="M 48.97 50 L 45.79 46.82" />
+              android:pathData="M 48.97 49.97 L 45.79 46.79" />
 
         <!--
-          Triangular needle from hub (32, 33) toward the redline
-          boundary tick at (50.24, 38.27), tip at 80% radius.
-          Coordinates match the web variant precisely so the
-          launcher icon and the in-app mark are pixel-identical
-          when scaled to the same size.
+          Triangular needle: tip at 80% of R (19.2) on the +105 deg
+          bearing, so it lands on the inner end of the redline boundary
+          tick. Base is +-1.2 PERPENDICULAR to that same bearing through
+          the hub — previously the base was square to +117 deg while the
+          tip pointed at +106, which skewed the triangle.
         -->
         <path
             android:fillColor="#E7E9EE"
-            android:pathData="M 46.59 37.22 L 31.45 34.07 L 32.55 31.93 Z" />
+            android:pathData="M 50.55 37.97 L 32.31 31.84 L 31.69 34.16 Z" />
 
-        <!-- Hub dot — accent, slightly larger to match the needle variant -->
+        <!-- Hub dot — accent, on the dial centre -->
         <path
             android:fillColor="#FF5B3A"
             android:pathData="M 32 33 m -2.6 0 a 2.6 2.6 0 1 0 5.2 0 a 2.6 2.6 0 1 0 -5.2 0 z" />

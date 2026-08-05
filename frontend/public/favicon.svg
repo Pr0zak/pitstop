@@ -6,28 +6,43 @@
 >
   <!-- pitstop favicon — arc-ticks-redline-needle 270°.
        Hard-coded colors so the SVG renders correctly outside the app's
-       theme context. Centre 32,33; radius 24; redline +95°→+135°.
-       Triangular needle points at the redline boundary. -->
+       theme context.
+
+       ONE construction rule, shared verbatim with the Android launcher
+       icon at android/app/src/main/res/drawable/ic_launcher_foreground.xml
+       (same viewBox, so the two must hold identical coordinates):
+
+           centre C = (32, 33)   radius R = 24   tick inner radius = 19.5
+           angle a from 12 o'clock, clockwise positive
+           point(a, r) = (32 + r*sin a,  33 - r*cos a)
+
+       Every arc and tick endpoint below is point() at its angle — none of
+       it is hand-placed. The earlier hand-placed version had the +95°
+       junction 0.61 units off-circle, which pulled the cool arc's swept
+       centre to (32.50, 33.54) and the redline's to (32.85, 32.22): two
+       arcs 1.37 units apart, neither concentric with the hub. Four ticks
+       were off-circle too (±45 by 8.77, ±105 by 5.01). -->
   <rect width="64" height="64" rx="12" fill="#0a0c10"/>
   <!-- Cool arc body: -135° → +95° -->
-  <path d="M 15.03 50 A 24 24 0 1 1 55.86 39.04"
+  <path d="M 15.03 49.97 A 24 24 0 1 1 55.91 35.09"
         stroke="#e7e9ee" stroke-width="3.5" stroke-linecap="butt"
         fill="none" opacity="0.92"/>
   <!-- Redline segment: +95° → +135° -->
-  <path d="M 55.86 39.04 A 24 24 0 0 1 48.97 50"
+  <path d="M 55.91 35.09 A 24 24 0 0 1 48.97 49.97"
         stroke="#ff5b3a" stroke-width="3.5" stroke-linecap="round"
         fill="none"/>
-  <!-- Major ticks (cool) -->
-  <line x1="15.03" y1="50"    x2="18.21" y2="46.82" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
-  <line x1="13.76" y1="38.27" x2="18.13" y2="37.10" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
-  <line x1="20.74" y1="22.74" x2="23.92" y2="25.92" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <!-- Major ticks (cool): R=24 inward to 19.5 -->
+  <line x1="15.03" y1="49.97" x2="18.21" y2="46.79" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="8.82"  y1="39.21" x2="13.16" y2="38.05" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="15.03" y1="16.03" x2="18.21" y2="19.21" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
   <line x1="32"    y1="9"     x2="32"    y2="13.5"  stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
-  <line x1="43.26" y1="22.74" x2="40.08" y2="25.92" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
+  <line x1="48.97" y1="16.03" x2="45.79" y2="19.21" stroke="#e7e9ee" stroke-width="1.4" stroke-linecap="round" opacity="0.9"/>
   <!-- Major ticks inside redline (accent) -->
-  <line x1="50.24" y1="38.27" x2="45.87" y2="37.10" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
-  <line x1="48.97" y1="50"    x2="45.79" y2="46.82" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
-  <!-- Triangular needle: tip at 80% radius toward boundary tick -->
-  <path d="M 46.59 37.22 L 31.45 34.07 L 32.55 31.93 Z" fill="#e7e9ee"/>
+  <line x1="55.18" y1="39.21" x2="50.84" y2="38.05" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
+  <line x1="48.97" y1="49.97" x2="45.79" y2="46.79" stroke="#ff5b3a" stroke-width="1.4" stroke-linecap="round"/>
+  <!-- Triangular needle: tip at 80% of R on the +105° bearing; base ±1.2
+       perpendicular to that same bearing through the hub. -->
+  <path d="M 50.55 37.97 L 32.31 31.84 L 31.69 34.16 Z" fill="#e7e9ee"/>
   <!-- Hub dot — slightly larger to anchor the needle -->
   <circle cx="32" cy="33" r="2.6" fill="#ff5b3a"/>
 </svg>

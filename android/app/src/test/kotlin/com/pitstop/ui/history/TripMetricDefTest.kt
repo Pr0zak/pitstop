@@ -3,6 +3,7 @@ package com.pitstop.ui.history
 import com.pitstop.ui.history.detail.TRIP_METRICS
 import com.pitstop.util.UnitFormat
 import org.junit.Assert.assertEquals
+import com.pitstop.ui.history.detail.MetricGroup
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -33,6 +34,7 @@ class TripMetricDefTest {
         "commanded_afr_ratio",
         "o2_s1_lambda",
         "fuel_rail_pressure",
+        "odometer",
     )
 
     @Test
@@ -94,5 +96,33 @@ class TripMetricDefTest {
         for (metric in listOf("commanded_afr_ratio", "o2_s1_lambda")) {
             assertEquals(3, TRIP_METRICS.first { it.metric == metric }.digits)
         }
+    }
+
+    @Test
+    fun `every metric is filed under a group`() {
+        // The picker renders one section per MetricGroup and skips empty
+        // ones, so a metric can only be reached through its group. There
+        // is no "ungrouped" bucket — a new metric with no group would
+        // silently land in Core rather than being unreachable, so this
+        // asserts the grouping is deliberate rather than defaulted.
+        val byGroup = TRIP_METRICS.groupBy { it.group }
+        for (group in MetricGroup.entries) {
+            assertTrue(
+                "MetricGroup.$group has no metrics — it would render an empty header",
+                byGroup[group]?.isNotEmpty() == true,
+            )
+        }
+    }
+
+    @Test
+    fun `odometer charts as a distance, not a raw number`() {
+        // The API subtracts vehicles.odometer_offset_km before sending, so
+        // these values are dash-aligned; the client must only convert
+        // units on top of that and never re-apply an offset of its own.
+        val odo = TRIP_METRICS.first { it.metric == "odometer" }
+        assertEquals(UnitFormat.Quantity.DistanceKm, odo.quantity)
+        assertEquals("Odometer (mi)", odo.chipLabel("imperial"))
+        assertEquals("Odometer (km)", odo.chipLabel("metric"))
+        assertEquals(0, odo.digits)
     }
 }

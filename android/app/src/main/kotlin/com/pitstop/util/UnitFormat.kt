@@ -60,6 +60,10 @@ object UnitFormat {
         SpeedMps("km/h", "mph", toMetric = { it * 3.6 }, toImperial = { it * 2.23694 }),
 
         DistanceKm("km", "mi", toImperial = { it * 0.621371 }),
+
+        /** Fuel volume — tank size, gas used on a trip, fillup amount. */
+        VolumeL("L", "gal", toImperial = { it * L_TO_USGAL }),
+
         AltitudeM("m", "ft", toImperial = { it * 3.28084 }),
         PressureKpa("kPa", "psi", toImperial = { it * 0.145038 }),
 

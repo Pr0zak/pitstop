@@ -88,9 +88,17 @@ fun PitstopTopAppBar(
 
 /**
  * Tiny arc-ticks-redline-needle mark drawn directly with Compose
- * Canvas. Same geometry as the web favicon: 270° arc from -135° to
- * +135°, redline runs +95° → +135°. Major ticks every 30°. A small
- * triangular needle points from the hub toward the redline boundary.
+ * Canvas: 270° arc from -135° to +135°, redline +95° → +135°, ticks
+ * every 30°, triangular needle from the hub to the redline boundary.
+ *
+ * A SIMPLIFIED variant of the launcher icon / favicon, not a copy — at
+ * top-bar size the differences are invisible, and everything here is
+ * derived from `cx`/`cy`/`radius` so it cannot drift the way hand-placed
+ * coordinates did. Two deliberate differences from the icon: ticks are a
+ * regular 30° sweep (the icon uses an irregular symmetric 7) and the
+ * needle sits on the +95° boundary rather than +105°. The comment that
+ * used to claim "same geometry as the web favicon" was not true of
+ * either.
  */
 @Composable
 private fun BrandMark(sizeDp: Int) {
@@ -100,7 +108,13 @@ private fun BrandMark(sizeDp: Int) {
     Canvas(modifier = Modifier.size(sizeDp.dp)) {
         val w = size.minDimension
         val cx = w / 2f
-        val cy = w / 2f + w * 0.04f
+        // Dial centre = box centre, geometrically. This used to carry a
+        // +4 % downward nudge, which left 0.18w of slack above the arc
+        // against 0.10w below — the mark read as sitting low in the bar,
+        // the same off-centre complaint the launcher icon had. The mark
+        // is a circle, so its perceived centre IS its geometric centre;
+        // there is nothing here for an optical shift to correct.
+        val cy = w / 2f
         val radius = w * 0.36f
         val arcStroke = (w * 0.06f).coerceAtLeast(1.5f)
         val tickLen = w * 0.14f

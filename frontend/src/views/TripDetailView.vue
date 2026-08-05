@@ -226,6 +226,15 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
     // convert, so the chart never mixes unit systems within one dimension.
     { metric: "fuel_rail_pressure",     label: `Rail press (${presUnit})`,           stroke: "#fb7185", scale: "railp",   axisLabel: presUnit,               transform: kpaToDisp,                      defaultVisible: false },
 
+    // --- Distance -------------------------------------------------------
+    // Absolute odometer, already offset-corrected by the API (get_trip
+    // subtracts vehicles.odometer_offset_km), so these values match the
+    // dash. Its own scale, necessarily: ~200 000 on one axis with anything
+    // else would flatten every other series into the baseline.
+    // Published by the WiCAN only — absent on a cellular-only trip, where
+    // the chip dims like any other unpolled metric.
+    { metric: "odometer",               label: imp ? "Odometer (mi)" : "Odometer (km)", stroke: "#8b949e", scale: "odo", axisLabel: imp ? "mi" : "km",   transform: (v) => (imp ? v * 0.621371 : v), defaultVisible: false, decimals: 0 },
+
     // Derived series — computed below from successive vehicle_speed
     // samples (dv/dt → m/s², converted to g). Won't be found in
     // pid_readings; the chart loop synthesises the column.

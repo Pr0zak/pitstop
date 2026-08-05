@@ -77,6 +77,19 @@ _TRIP_SAMPLE_METRICS: tuple[str, ...] = (
     "o2_s1_lambda",
     # kPa (~3500 on this fleet). Fuel-delivery diagnostic; kPa*0.145038=psi.
     "fuel_rail_pressure",
+    # --- Distance ---------------------------------------------------------
+    # km, absolute (~200 000 on this fleet), so it is the one series whose
+    # RAW value would contradict the car: this PCM reads a fixed distance
+    # above the dash cluster, which is what vehicles.odometer_offset_km
+    # measures. get_trip() therefore subtracts the offset from every
+    # odometer sample before it leaves the API -- see _apply_odo_offset.
+    # Charting it raw would put the timeline ~50 km off the number on the
+    # dash *and* off the Fillup form, which already corrects.
+    #
+    # Only the WiCAN publishes odometer (the phone bridge has no PID for
+    # it), so on a cellular-only trip this series is simply absent and the
+    # clients drop the toggle -- they filter to metrics that have data.
+    "odometer",
 )
 
 # Metrics that are live in pid_readings but deliberately NOT charted, kept
@@ -220,6 +233,16 @@ async def get_trip(
         if row is None:
             raise HTTPException(status_code=404, detail="trip not found")
 
+        # Per-vehicle display corrections, both applied server-side so every
+        # client agrees with the dash without re-deriving the policy:
+        #   fuel_level_calibration_pct -> normalizes fuel_level to a real 100%
+        #   odometer_offset_km         -> PCM reads high vs the cluster
+        veh = await conn.fetchrow(
+            "SELECT fuel_level_calibration_pct, odometer_offset_km "
+            "  FROM vehicles WHERE id = $1",
+            row["vehicle_id"],
+        )
+
         # Sample readings: bucket the trip into <= _TRIP_SAMPLE_TARGET_POINTS
         # points per metric for every metric in _TRIP_SAMPLE_METRICS.
         started = row["started_at"]
@@ -272,11 +295,31 @@ async def get_trip(
             )
 
     out = _row_to_trip(row)
+
+    # The measured (PCM - dash cluster) delta, in km. Applied to every
+    # odometer value this endpoint returns -- the chart series AND the
+    # start/end stats below -- so an odometer read anywhere in the app
+    # matches the number on the dash. Mirrors what FillupModal.vue does
+    # to the live odometer when pre-filling a fillup.
+    odo_offset = (
+        float(veh["odometer_offset_km"])
+        if veh is not None and veh["odometer_offset_km"] is not None
+        else 0.0
+    )
+
+    def _apply_odo_offset(metric: str, value: float | None) -> float | None:
+        if value is None or metric != "odometer":
+            return value
+        return value - odo_offset
+
     out["samples"] = [
         {
             "time": r["time"],
             "metric": r["metric"],
-            "value_num": float(r["value_num"]) if r["value_num"] is not None else None,
+            "value_num": _apply_odo_offset(
+                r["metric"],
+                float(r["value_num"]) if r["value_num"] is not None else None,
+            ),
         }
         for r in sample_rows
     ]
@@ -327,12 +370,6 @@ async def get_trip(
             """,
             row["vehicle_id"], ended,
         )
-        # Calibration ceiling so the start/end values displayed match
-        # the hero card (normalized so 100 % == full tank).
-        veh_cal = await conn.fetchval(
-            "SELECT fuel_level_calibration_pct FROM vehicles WHERE id = $1",
-            row["vehicle_id"],
-        )
         # DTCs that fired during the trip window (Task #110).
         dtc_rows = await conn.fetch(
             """
@@ -344,11 +381,16 @@ async def get_trip(
             """,
             row["vehicle_id"], started, ended,
         )
-    out["odo_start_km"] = float(odo_start) if odo_start is not None else None
-    out["odo_end_km"] = float(odo_end) if odo_end is not None else None
+    # Offset-corrected, same as the odometer chart series above -- these two
+    # numbers and that line are the same quantity and must not disagree.
+    out["odo_start_km"] = (
+        float(odo_start) - odo_offset if odo_start is not None else None
+    )
+    out["odo_end_km"] = float(odo_end) - odo_offset if odo_end is not None else None
     # Normalize fuel boundaries against the per-vehicle calibration so
     # the displayed start/end matches the gauge (Honda 0x2F caps below
     # 100 raw on a full tank — see v0.1.159 calibration capture).
+    veh_cal = veh["fuel_level_calibration_pct"] if veh is not None else None
     cal = float(veh_cal) if veh_cal is not None and float(veh_cal) > 0 else 100.0
     def _norm(raw: Any) -> float | None:
         if raw is None:

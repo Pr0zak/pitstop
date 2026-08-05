@@ -53,6 +53,26 @@ def test_fuel_and_exhaust_metrics_added() -> None:
         assert metric in _TRIP_SAMPLE_METRICS
 
 
+def test_odometer_is_charted_and_offset_corrected() -> None:
+    """Odometer is the one charted metric whose raw value contradicts the
+    car: this PCM reads a fixed distance above the dash cluster.
+
+    Charting it therefore only makes sense together with the correction, so
+    this asserts both halves — the metric being on the list AND get_trip
+    subtracting `odometer_offset_km` before returning it. Shipping the first
+    without the second puts the timeline ~50 km off both the dash and the
+    fillup form (which already corrects, in FillupModal.vue).
+    """
+    assert "odometer" in _TRIP_SAMPLE_METRICS
+    src = _TRIPS_SRC.read_text()
+    assert "odometer_offset_km" in src, "offset never read from vehicles"
+    assert "_apply_odo_offset" in src, "samples not offset-corrected"
+    # The boundary stats are the same quantity as the chart line and must
+    # not disagree with it.
+    assert "float(odo_start) - odo_offset" in src
+    assert "float(odo_end) - odo_offset" in src
+
+
 def test_low_signal_metrics_stay_excluded() -> None:
     """Constants, decoder-dead fields, and near-duplicates of a series
     already on the chart. Each one costs a full metric's worth of payload

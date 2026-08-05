@@ -18,6 +18,16 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+/**
+ * Persisted timeline series selection. [loaded] false means DataStore has
+ * not emitted yet; [metrics] null means the user has never chosen. Only
+ * `loaded && metrics != null` may override the per-metric defaults.
+ */
+data class StoredSeries(
+    val loaded: Boolean,
+    val metrics: Set<String>?,
+)
+
 data class TripDetailUi(
     val loading: Boolean = true,
     val error: String? = null,
@@ -30,7 +40,7 @@ class TripDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val api: PitstopApi,
     private val logBuffer: LogBuffer,
-    settingsRepository: com.pitstop.data.SettingsRepository,
+    private val settingsRepository: com.pitstop.data.SettingsRepository,
 ) : ViewModel() {
 
     private val tripId: String = savedStateHandle.get<String>("id")
@@ -50,6 +60,25 @@ class TripDetailViewModel @Inject constructor(
             kotlinx.coroutines.flow.SharingStarted.Eagerly,
             "imperial",
         )
+
+    /**
+     * Series the user last had on the timeline, or null while DataStore is
+     * still loading / has never been written. The screen must distinguish
+     * those two from an empty set — see [SettingsRepository.tripSeriesMetrics]
+     * — so this is wrapped rather than defaulted to emptySet().
+     */
+    val storedSeries: StateFlow<StoredSeries> = settingsRepository.tripSeriesMetrics
+        .map { StoredSeries(loaded = true, metrics = it) }
+        .stateIn(
+            viewModelScope,
+            kotlinx.coroutines.flow.SharingStarted.Eagerly,
+            StoredSeries(loaded = false, metrics = null),
+        )
+
+    /** Persist an explicit user toggle. Never called for a fallback. */
+    fun setSeries(metrics: Set<String>) {
+        viewModelScope.launch { settingsRepository.setTripSeriesMetrics(metrics) }
+    }
 
     init {
         load()

@@ -1,6 +1,7 @@
 package com.pitstop.ui.history.detail
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -25,6 +27,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +65,7 @@ fun TripDetailScreen(
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val unitSystem by viewModel.unitSystem.collectAsStateWithLifecycle()
+    val storedSeries by viewModel.storedSeries.collectAsStateWithLifecycle()
     when {
         ui.loading && ui.trip == null -> CenteredSpinner(modifier)
         ui.error != null && ui.trip == null -> CenteredError(ui.error ?: "Unknown error", modifier)
@@ -70,17 +74,27 @@ fun TripDetailScreen(
             trip = ui.trip!!,
             route = ui.route,
             unitSystem = unitSystem,
+            storedSeries = storedSeries,
+            onPersistSeries = viewModel::setSeries,
             onOpenDtc = onOpenDtc,
             modifier = modifier,
         )
     }
 }
 
+/**
+ * Visible to the debug design gallery (src/debug) so the REAL screen can
+ * be rendered against synthetic data on an emulator — verifying the
+ * shipping composable rather than a mock of it. `internal`, so this is
+ * still module-private in a release build.
+ */
 @Composable
-private fun Loaded(
+internal fun Loaded(
     trip: TripDetailDto,
     route: List<com.pitstop.http.RoutePointDto>,
     unitSystem: String,
+    storedSeries: StoredSeries,
+    onPersistSeries: (Set<String>) -> Unit,
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
     modifier: Modifier,
 ) {
@@ -104,20 +118,44 @@ private fun Loaded(
     val availableMetrics = remember(seriesMap) {
         TRIP_METRICS.filter { seriesMap[it.metric]?.points?.isNotEmpty() == true }
     }
-    var visibleMetrics by remember(availableMetrics) {
-        // Speed + RPM are the only default-on series. Fall back to the
-        // first available metric (rather than "all of them") when
-        // neither is present — with 17 chartable metrics, showing
-        // everything on a partially-instrumented trip would render an
-        // unreadable phone-width chart.
+    // Speed + RPM are the only default-on series. Fall back to the first
+    // available metric (rather than "all of them") when neither is
+    // present — with 18 chartable metrics, showing everything on a
+    // partially-instrumented trip would render an unreadable chart.
+    val defaultMetrics = remember(availableMetrics) {
         val defaults = availableMetrics.filter { it.defaultVisible }.map { it.metric }
-        mutableStateOf(
-            when {
-                defaults.isNotEmpty() -> defaults.toSet()
-                availableMetrics.isNotEmpty() -> setOf(availableMetrics.first().metric)
-                else -> emptySet()
-            },
-        )
+        when {
+            defaults.isNotEmpty() -> defaults.toSet()
+            availableMetrics.isNotEmpty() -> setOf(availableMetrics.first().metric)
+            else -> emptySet()
+        }
+    }
+    // Null until we've decided what to show, which needs BOTH the trip's
+    // available metrics and the persisted choice. Seeding straight from
+    // `defaultMetrics` would flash Speed+RPM and then swap once DataStore
+    // arrives a frame later.
+    var visibleMetrics by remember(availableMetrics) { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(availableMetrics, storedSeries) {
+        if (visibleMetrics != null || !storedSeries.loaded) return@LaunchedEffect
+        val stored = storedSeries.metrics
+        visibleMetrics = when {
+            stored == null -> defaultMetrics
+            // Intersect with what this trip actually has: a stored choice
+            // of "Fuel rate" means nothing on a cellular trip that never
+            // captured it. Falling back to defaults there is better than
+            // an empty chart -- and this fallback is NOT persisted, so the
+            // real choice survives for trips that do have the data.
+            else -> stored.intersect(availableMetrics.map { it.metric }.toSet())
+                .ifEmpty { defaultMetrics }
+        }
+    }
+    val shown = visibleMetrics ?: emptySet()
+    // Only an explicit tap writes back. Anything derived above is a
+    // display fallback and must not overwrite what the user picked.
+    val toggle: (String) -> Unit = { m ->
+        val next = if (m in shown) shown - m else shown + m
+        visibleMetrics = next
+        onPersistSeries(next)
     }
 
     Column(
@@ -142,9 +180,9 @@ private fun Loaded(
             )
         }
 
-        HeroStatsCard(trip)
+        HeroStatsCard(trip, unitSystem)
 
-        SecondaryStatsCard(trip)
+        SecondaryStatsCard(trip, unitSystem)
 
         // Timeline chart + chip row, only when we have at least one
         // series with data.
@@ -161,31 +199,39 @@ private fun Loaded(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        "Timeline",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    SeriesChipRow(
-                        available = availableMetrics,
-                        visible = visibleMetrics,
-                        unitSystem = unitSystem,
-                        onToggle = { m ->
-                            visibleMetrics = if (m in visibleMetrics) {
-                                visibleMetrics - m
-                            } else {
-                                visibleMetrics + m
-                            }
-                        },
+                    var pickerOpen by remember { mutableStateOf(false) }
+                    TimelineControls(
+                        selectedCount = shown.size,
                         smoothLevel = smoothLevel,
                         onCycleSmooth = { smoothLevel = smoothLevel.next() },
+                        onOpenPicker = { pickerOpen = true },
                     )
+                    ActiveSeriesRow(
+                        available = availableMetrics,
+                        visible = shown,
+                        unitSystem = unitSystem,
+                        onToggle = toggle,
+                    )
+                    if (pickerOpen) {
+                        SeriesPickerSheet(
+                            available = availableMetrics,
+                            visible = shown,
+                            unitSystem = unitSystem,
+                            onToggle = toggle,
+                            onReset = {
+                                visibleMetrics = defaultMetrics
+                                onPersistSeries(defaultMetrics)
+                            },
+                            onDismiss = { pickerOpen = false },
+                        )
+                    }
                     // Convert every plotted point into the active unit
                     // system here, once, so the chart body stays unit-
                     // agnostic and the axis ticks always agree with the
                     // chip label.
-                    val display = remember(visibleMetrics, seriesMap, unitSystem) {
+                    val display = remember(shown, seriesMap, unitSystem) {
                         availableMetrics
-                            .filter { it.metric in visibleMetrics }
+                            .filter { it.metric in shown }
                             .mapNotNull { def ->
                                 seriesMap[def.metric]?.let { s ->
                                     DisplaySeries(
@@ -204,7 +250,10 @@ private fun Loaded(
                                 }
                             }
                     }
-                    LineChart(series = display)
+                    // Taller than the old 220 dp: variant B's single
+                    // legend row freed ~300 dp, and the chart is what the
+                    // card exists to show.
+                    LineChart(series = display, height = 260.dp)
                 }
             }
         }
@@ -308,8 +357,14 @@ private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
 }
 
 @Composable
-private fun HeroStatsCard(trip: TripDetailDto) {
-    val mi = trip.distanceKm?.let(::kmToMi)
+private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
+    val dist = UnitFormat.Quantity.DistanceKm
+    val speed = UnitFormat.Quantity.SpeedKph
+    // MPG stays MPG in both unit systems, deliberately. Unlike the values
+    // around it, it is not a quantity in a convertible unit — it is a
+    // named figure of merit, and the metric equivalent (L/100km) inverts
+    // the scale, so "higher is better" would silently flip. Converting it
+    // needs its own label and its own decision; it is not a units bug.
     val mpg = if (trip.distanceKm != null && trip.fuelUsedL != null && trip.fuelUsedL > 0.4) {
         val gal = lToGal(trip.fuelUsedL)
         if (gal > 0) kmToMi(trip.distanceKm) / gal else null
@@ -334,7 +389,7 @@ private fun HeroStatsCard(trip: TripDetailDto) {
                 StatCell("Duration", fmtDuration(trip.durationS), Modifier.weight(1f))
                 StatCell(
                     "Distance",
-                    mi?.let { "%.1f mi".format(it) } ?: "—",
+                    dist.format(trip.distanceKm, unitSystem, 1),
                     Modifier.weight(1f),
                 )
                 StatCell(
@@ -346,7 +401,7 @@ private fun HeroStatsCard(trip: TripDetailDto) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatCell(
                     "Max speed",
-                    trip.maxSpeedKph?.let { "${kphToMph(it).roundToInt()} mph" } ?: "—",
+                    speed.format(trip.maxSpeedKph, unitSystem, 0),
                     Modifier.weight(1f),
                 )
                 StatCell(
@@ -356,7 +411,7 @@ private fun HeroStatsCard(trip: TripDetailDto) {
                 )
                 StatCell(
                     "Avg speed",
-                    trip.avgSpeedKph?.let { "${kphToMph(it).roundToInt()} mph" } ?: "—",
+                    speed.format(trip.avgSpeedKph, unitSystem, 0),
                     Modifier.weight(1f),
                 )
             }
@@ -365,7 +420,8 @@ private fun HeroStatsCard(trip: TripDetailDto) {
 }
 
 @Composable
-private fun SecondaryStatsCard(trip: TripDetailDto) {
+private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
+    val dist = UnitFormat.Quantity.DistanceKm
     val rows = buildList<Pair<String, String>> {
         // Avg speed moved up into the 3×2 hero grid — don't duplicate.
         trip.idleS?.let {
@@ -374,35 +430,39 @@ private fun SecondaryStatsCard(trip: TripDetailDto) {
             add("Idle time" to if (m > 0) "${m}m ${s}s" else "${s}s")
         }
         if (trip.dtcCount > 0) add("DTCs fired" to trip.dtcCount.toString())
-        // Odometer start/finish with delta, only when both endpoints
-        // are known (WiCAN didn't always publish odometer in window).
+        // Odometer start → end on ONE row. This was three rows ("Odo
+        // start", "Odo end", "Distance (odo Δ)") for a single fact, and
+        // the delta duplicates the hero card's Distance.
+        //
+        // Server-side these are already offset-corrected against the
+        // vehicle's odometer_offset_km, so they read the same as the dash.
         if (trip.odoStartKm != null && trip.odoEndKm != null) {
-            val startMi = kmToMi(trip.odoStartKm)
-            val endMi = kmToMi(trip.odoEndKm)
-            val deltaMi = endMi - startMi
-            add("Odo start" to "%,.0f mi".format(startMi))
-            add("Odo end" to "%,.0f mi".format(endMi))
-            add("Distance (odo Δ)" to "%.1f mi".format(deltaMi))
+            val u = dist.unit(unitSystem)
+            add(
+                "Odometer" to "%,.0f → %,.0f %s".format(
+                    dist.convert(trip.odoStartKm, unitSystem),
+                    dist.convert(trip.odoEndKm, unitSystem),
+                    u,
+                ),
+            )
         }
         // Fuel level start/end (already calibration-normalized server-side).
         if (trip.fuelLevelStartPct != null && trip.fuelLevelEndPct != null) {
             add("Fuel level" to "${trip.fuelLevelStartPct.roundToInt()}% → ${trip.fuelLevelEndPct.roundToInt()}%")
         }
-        // Gas-used estimate — computed by trip_detector from either MAF
-        // integration (preferred) or fuel_level delta (OBD-5 fallback).
-        // Flagged "(est.)" since both paths carry sensor noise — most
-        // useful for long trips on partial tanks.
+        // Gas-used estimate — computed by trip_stats from the ECU fuel
+        // rate (preferred) or a MAF integral. Flagged "(est.)" since both
+        // carry sensor noise; most useful on long trips.
         trip.fuelUsedL?.takeIf { it > 0.01 }?.let { lit ->
-            val gal = lit / 3.78541
-            add("Gas used (est.)" to "%.2f gal".format(gal))
+            add("Gas used (est.)" to UnitFormat.Quantity.VolumeL.format(lit, unitSystem, 2))
         }
         trip.avgCoolantC?.let {
-            add("Avg coolant" to "${cToF(it).roundToInt()}°F")
+            add("Avg coolant" to UnitFormat.Quantity.TempC.format(it, unitSystem, 0))
         }
         if (trip.weatherTempC != null) {
-            val f = cToF(trip.weatherTempC).roundToInt()
+            val t = UnitFormat.Quantity.TempC.format(trip.weatherTempC, unitSystem, 0)
             val wmo = wmoLabel(trip.weatherCode)
-            add("Weather" to "${f}°F${wmo?.let { ", $it" } ?: ""}")
+            add("Weather" to "$t${wmo?.let { ", $it" } ?: ""}")
         }
         trip.endedAt?.let {
             add("Ended" to fmtClockLocal(it))
@@ -421,13 +481,12 @@ private fun SecondaryStatsCard(trip: TripDetailDto) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
+            // Spacing, not a rule between every pair. Eight hairlines in a
+            // nine-row list is what made this read as a dense table rather
+            // than a summary; the label/value contrast already separates
+            // the rows.
             for ((i, kv) in rows.withIndex()) {
-                if (i > 0) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 6.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
-                }
+                if (i > 0) Spacer(Modifier.height(10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -467,71 +526,209 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+/**
+ * Timeline header: title, plus the two chart controls. Both live on the
+ * title row rather than owning rows of their own — Smooth used to sit
+ * alone on a right-aligned line, which cost a full row to show one chip.
+ */
 @Composable
-private fun SeriesChipRow(
+private fun TimelineControls(
+    selectedCount: Int,
+    smoothLevel: SmoothLevel,
+    onCycleSmooth: () -> Unit,
+    onOpenPicker: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Timeline",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f),
+        )
+        val smoothOn = smoothLevel != SmoothLevel.Off
+        AssistChip(
+            onClick = onCycleSmooth,
+            label = {
+                Text(
+                    if (smoothOn) "Smooth (${smoothLevel.label})" else "Smooth",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = if (smoothOn) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                labelColor = if (smoothOn) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            ),
+        )
+        Spacer(Modifier.width(6.dp))
+        AssistChip(
+            onClick = onOpenPicker,
+            label = {
+                Text("Series ($selectedCount)", style = MaterialTheme.typography.labelMedium)
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            ),
+        )
+    }
+}
+
+/**
+ * The plotted series, as a single scrolling legend. Only what's ON is
+ * here — the full list lives in [SeriesPickerSheet]. This is the whole
+ * point of the layout: the old wrapping FlowRow of every metric grew a
+ * row each time a metric was added and pushed the chart off-screen.
+ *
+ * Tapping a chip removes that series, which is also what makes the
+ * colour dot load-bearing: it maps the chip to its line on the chart.
+ */
+@Composable
+private fun ActiveSeriesRow(
     available: List<TripMetricDef>,
     visible: Set<String>,
     unitSystem: String,
     onToggle: (String) -> Unit,
-    smoothLevel: SmoothLevel,
-    onCycleSmooth: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // Series toggles — the metric selection. Wraps as needed.
-        androidx.compose.foundation.layout.FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            for (def in available) {
-                val on = def.metric in visible
-                AssistChip(
-                    onClick = { onToggle(def.metric) },
-                    label = {
-                        Text(
-                            def.chipLabel(unitSystem),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = if (on) def.color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        labelColor = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                )
-            }
-        }
-        // Smooth chip lives on its own line, right-aligned — it's a
-        // chart control, not a series selector. Previously it sat at
-        // the tail of the FlowRow which read as "another metric".
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            val smoothOn = smoothLevel != SmoothLevel.Off
-            AssistChip(
-                onClick = onCycleSmooth,
-                label = {
-                    Text(
-                        "Smooth (${smoothLevel.label})",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = if (smoothOn) {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    },
-                    labelColor = if (smoothOn) {
-                        MaterialTheme.colorScheme.onSecondaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                ),
-            )
+    val active = available.filter { it.metric in visible }
+    if (active.isEmpty()) {
+        Text(
+            "No series selected — tap Series to add one",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        for (def in active) {
+            MetricChip(def, on = true, unitSystem = unitSystem, onToggle = onToggle)
         }
     }
+}
+
+/**
+ * Full metric list, grouped by [MetricGroup]. A sheet rather than an
+ * inline expander so the picker gets the height to show all 18 at once,
+ * wrapped and fully readable — no horizontal clipping, which is what
+ * made the always-visible scrolling-rail alternatives worse.
+ */
+@OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    ExperimentalLayoutApi::class,
+)
+@Composable
+private fun SeriesPickerSheet(
+    available: List<TripMetricDef>,
+    visible: Set<String>,
+    unitSystem: String,
+    onToggle: (String) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = androidx.compose.material3.rememberModalBottomSheetState(
+            skipPartiallyExpanded = true,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Series",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                androidx.compose.material3.TextButton(onClick = onReset) { Text("Reset") }
+            }
+            // Only groups with data on THIS trip get a header — an
+            // "Emissions" heading over nothing reads as a broken capture.
+            for (group in MetricGroup.entries) {
+                val inGroup = available.filter { it.group == group }
+                if (inGroup.isEmpty()) continue
+                Text(
+                    group.title.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                androidx.compose.foundation.layout.FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (def in inGroup) {
+                        MetricChip(
+                            def,
+                            on = def.metric in visible,
+                            unitSystem = unitSystem,
+                            onToggle = onToggle,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One metric toggle. The leading dot carries the series' chart colour so
+ * the legend row and the chart lines can be matched by eye.
+ */
+@Composable
+private fun MetricChip(
+    def: TripMetricDef,
+    on: Boolean,
+    unitSystem: String,
+    onToggle: (String) -> Unit,
+) {
+    AssistChip(
+        onClick = { onToggle(def.metric) },
+        leadingIcon = {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(
+                        color = if (on) def.color else MaterialTheme.colorScheme.outlineVariant,
+                        shape = androidx.compose.foundation.shape.CircleShape,
+                    ),
+            )
+        },
+        label = {
+            Text(def.chipLabel(unitSystem), style = MaterialTheme.typography.labelMedium)
+        },
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = if (on) {
+                def.color.copy(alpha = 0.18f)
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+            labelColor = if (on) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        ),
+    )
 }
 
 /**
@@ -627,6 +824,19 @@ private fun CenteredError(message: String, modifier: Modifier) {
  * most-asked-about series and the only two on by default), then the
  * rest of the core drive trace, then fuel/exhaust, then emissions.
  */
+/**
+ * Category a metric is filed under in the series picker. With 17 series
+ * a flat list is a wall of chips; the groups are what make it skimmable
+ * — and they match the section comments in the backend allowlist
+ * (`_TRIP_SAMPLE_METRICS`) so the two lists stay legible side by side.
+ */
+internal enum class MetricGroup(val title: String) {
+    Core("Core drive"),
+    FuelExhaust("Fuel & exhaust"),
+    Emissions("Emissions"),
+    Distance("Distance"),
+}
+
 internal data class TripMetricDef(
     val metric: String,
     /** Bare name; the unit is appended per unit-system at render time. */
@@ -635,6 +845,12 @@ internal data class TripMetricDef(
     val quantity: UnitFormat.Quantity,
     /** Decimals for the single-series Y-axis ticks. */
     val digits: Int = 1,
+    /**
+     * Section in the series picker. Declared after [digits] on purpose:
+     * the table below passes digits positionally, so inserting a param
+     * ahead of it would silently re-bind every one of those literals.
+     */
+    val group: MetricGroup = MetricGroup.Core,
     /**
      * Whether the series starts visible. Only speed + RPM do: with 17
      * chartable metrics, "show everything that has data" would draw an
@@ -684,37 +900,50 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
     // the Live tile and the web's fmtFuelRateLh().
     TripMetricDef(
         "engine_fuel_rate", "Fuel rate", Color(0xFFF97316),
-        UnitFormat.Quantity.FuelRateGramsPerSec, 2,
+        UnitFormat.Quantity.FuelRateGramsPerSec, 2, group = MetricGroup.FuelExhaust,
     ),
     // kg/h in both unit systems on purpose — see the Quantity docs.
     TripMetricDef(
         "engine_exhaust_flow", "Exhaust", Color(0xFFA3E635),
-        UnitFormat.Quantity.MassFlowKgPerHour, 1,
+        UnitFormat.Quantity.MassFlowKgPerHour, 1, group = MetricGroup.FuelExhaust,
     ),
     // ── Emissions ─────────────────────────────────────────────────
     // Both cat banks: they normally track within a degree or two, so
     // the divergence is the diagnostic. Same hue family for that reason.
     TripMetricDef(
         "catalyst_temp_b1", "Cat B1", Color(0xFFFB7185),
-        UnitFormat.Quantity.TempC, 0,
+        UnitFormat.Quantity.TempC, 0, group = MetricGroup.Emissions,
     ),
     TripMetricDef(
         "catalyst_temp_b2", "Cat B2", Color(0xFFE879F9),
-        UnitFormat.Quantity.TempC, 0,
+        UnitFormat.Quantity.TempC, 0, group = MetricGroup.Emissions,
     ),
     // Commanded vs measured equivalence ratio — the PAIR is the signal
     // (fuel-control error); either alone is a flat line near 1.000,
     // hence 3 decimals on the ticks.
     TripMetricDef(
         "commanded_afr_ratio", "Cmd AFR", Color(0xFF38BDF8),
-        UnitFormat.Quantity.Lambda, 3,
+        UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Emissions,
     ),
     TripMetricDef(
         "o2_s1_lambda", "O2 S1", Color(0xFF818CF8),
-        UnitFormat.Quantity.Lambda, 3,
+        UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Emissions,
     ),
     TripMetricDef(
         "fuel_rail_pressure", "Fuel rail", Color(0xFF34D399),
-        UnitFormat.Quantity.PressureKpa, 0,
+        UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Emissions,
+    ),
+    // ── Distance ──────────────────────────────────────────────────
+    // Absolute odometer. The API already subtracted the vehicle's
+    // odometer_offset_km, so this line reads the same as the dash and
+    // as the fillup form — do NOT re-apply the offset here.
+    //
+    // LineChart auto-fits each series to its own Y range, which is what
+    // makes a ~200 000 km value chartable next to a 0–120 km/h one at
+    // all: on a shared axis it would flatten every other series.
+    // WiCAN-only metric, so it is simply absent on a cellular trip.
+    TripMetricDef(
+        "odometer", "Odometer", Color(0xFF8B949E),
+        UnitFormat.Quantity.DistanceKm, 0, group = MetricGroup.Distance,
     ),
 )

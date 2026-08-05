@@ -74,6 +74,9 @@ class SettingsRepository @Inject constructor(
         // Set once the user finishes (or skips) the first-run setup wizard, so
         // the wizard never gates the pager again.
         val heatmapMode: Preferences.Key<String> = stringPreferencesKey("heatmap_mode")
+        // Comma-joined metric names selected on the trip-detail timeline.
+        val tripSeriesMetrics: Preferences.Key<String> =
+            stringPreferencesKey("trip_series_metrics")
         val onboardingComplete: Preferences.Key<Boolean> =
             booleanPreferencesKey("onboarding_complete")
 
@@ -396,6 +399,28 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setHeatmapMode(mode: String) {
         context.dataStore.edit { it[Keys.heatmapMode] = mode }
+    }
+
+    /**
+     * Series selected on the trip-detail timeline, or null if the user has
+     * never picked — which is NOT the same as "picked nothing". Null means
+     * fall back to the per-metric `defaultVisible` flags; an empty set is a
+     * deliberate "show me none" and must survive a round trip.
+     *
+     * Persisted because the picker moved behind a tap: re-selecting Fuel
+     * rate on every trip you open would be a worse screen than the chip
+     * wall it replaced. Matches the web, which stores the same choice in
+     * localStorage under `pitstop_trip_series_visible`.
+     */
+    val tripSeriesMetrics: Flow<Set<String>?> =
+        context.dataStore.data.map { prefs ->
+            prefs[Keys.tripSeriesMetrics]?.let { raw ->
+                raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            }
+        }
+
+    suspend fun setTripSeriesMetrics(metrics: Set<String>) {
+        context.dataStore.edit { it[Keys.tripSeriesMetrics] = metrics.joinToString(",") }
     }
 
     companion object {
