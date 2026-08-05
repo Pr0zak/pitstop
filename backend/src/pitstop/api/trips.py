@@ -31,6 +31,110 @@ _TRIP_COLS = (
 )
 
 
+# Metrics the trip-detail chart may draw. Hoisted to one module constant
+# because the sample query has TWO arms — the Timescale `time_bucket` path
+# and the vanilla-Postgres fallback — and a list inlined in each drifts
+# (the fallback previously carried no filter at all and returned whatever
+# 500 rows sorted first, odometer and capability bitmaps included).
+#
+# Inclusion rule: a metric earns a slot only if it (a) actually varies over
+# a drive on this fleet and (b) tells a story no other series already tells.
+# Every entry costs up to _TRIP_SAMPLE_TARGET_POINTS rows of response body
+# per trip, so near-duplicates and constants are refused — see
+# _TRIP_SAMPLE_EXCLUDED below.
+_TRIP_SAMPLE_METRICS: tuple[str, ...] = (
+    # --- Core drive trace -------------------------------------------------
+    "vehicle_speed",
+    "engine_rpm",
+    "coolant_temp",
+    "throttle_position",
+    "maf_air_flow",
+    "manifold_pressure",
+    "engine_load",
+    "control_module_voltage",
+    "fuel_level",
+    "intake_air_temp",
+    # --- Fuel + exhaust ---------------------------------------------------
+    # engine_fuel_rate (g/s) is the ECU's own burn calculation, published
+    # by a WiCAN *custom* PID 0x9D — trip_stats.FUEL_SOURCES already trusts
+    # it first for the trip fuel integral, so charting it lets the MPG
+    # number be read back off the timeline. g/s -> L/h = v * 3600 / 749.9.
+    "engine_fuel_rate",
+    # kg/h; custom PID 0x9E. Pairs with MAF/load to show engine breathing
+    # (and is the one series that separates a loaded climb from a coast).
+    "engine_exhaust_flow",
+    # °C. Both banks, deliberately: they normally track within ~1 °C, so
+    # the *divergence* is the diagnostic (a lazy or failing cat on one
+    # bank). One bank alone would hide exactly the signal worth having.
+    "catalyst_temp_b1",
+    "catalyst_temp_b2",
+    # Commanded equivalence ratio (~1.00 closed loop, dips rich under WOT
+    # enrichment / DFCO). Needs 3 decimals to be readable at all.
+    "commanded_afr_ratio",
+    # Measured wide-range lambda. Kept alongside commanded_afr_ratio
+    # because commanded-vs-actual is the fuel-control error — the pair is
+    # the signal, either one alone is just a flat line near 1.0.
+    "o2_s1_lambda",
+    # kPa (~3500 on this fleet). Fuel-delivery diagnostic; kPa*0.145038=psi.
+    "fuel_rail_pressure",
+)
+
+# Metrics that are live in pid_readings but deliberately NOT charted, kept
+# here as a documented denylist so they don't get re-added by inspection of
+# "what's flowing". Asserted disjoint from _TRIP_SAMPLE_METRICS in
+# tests/test_trip_samples.py.
+_TRIP_SAMPLE_EXCLUDED: tuple[str, ...] = (
+    # Never lands under this canonical name: WiCAN's decoder for Mode 01
+    # PID 0x24's voltage field is invariant (a flat 2.000 V across cold
+    # start, idle, WOT and DFCO), so wican_aliases.py refuses to alias it.
+    # o2_s1_lambda above is that sensor's real output.
+    "o2_s1_voltage",
+    # Constant 0.00 over every row this PCM has ever answered — the Pilot
+    # exposes no EGR command. A flat zero line reads as "EGR failed".
+    "commanded_egr",
+    # Real variation, but it's an emissions-actuator duty cycle with no
+    # bearing on the drive story; belongs on a diagnostics view, not on a
+    # speed/RPM timeline.
+    "commanded_evap_purge",
+    # Post-cat O2 pair. Cat-efficiency diagnostics rather than drive
+    # telemetry, four series for one narrow story, and o2_s2_stft carries
+    # the 99.0 % "sensor not used" sentinel rather than a trim value.
+    "o2_s2_voltage",
+    "o2_s2_stft",
+    "o2_s6_voltage",
+    "o2_s6_stft",
+    # Tracks coolant temp and RPM almost exactly (it is largely a function
+    # of both) — no independent signal, just a fourth warm-up curve.
+    "friction_torque_pct",
+    # Near-duplicates of throttle_position: the same pedal/plate seen
+    # through three raw sensor channels, each offset by a fixed bias.
+    # Three extra series to redraw a line already on the chart.
+    "throttle_pos_b",
+    "throttle_pos_d",
+    "throttle_pos_e",
+)
+
+# Nominal per-metric sample budget for the trip chart. Total response rows
+# are bounded by len(_TRIP_SAMPLE_METRICS) * this.
+_TRIP_SAMPLE_TARGET_POINTS = 500
+
+
+def _bucket_seconds(
+    duration_s: int, target_points: int = _TRIP_SAMPLE_TARGET_POINTS
+) -> int:
+    """Bucket width (whole seconds) keeping a trip at or under
+    ``target_points`` samples *per metric*.
+
+    Ceiling division, not floor. ``duration_s // 500`` under-rounds: a 999 s
+    trip lands on 1 s buckets and yields 999 points per metric — twice the
+    nominal budget, on every series at once. Harmless at 10 series, less so
+    now that the list is longer, so the budget is made to actually hold.
+    """
+    if duration_s <= 0 or target_points <= 0:
+        return 1
+    return max(-(-duration_s // target_points), 1)
+
+
 def _row_to_trip(row: asyncpg.Record) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -116,12 +220,15 @@ async def get_trip(
         if row is None:
             raise HTTPException(status_code=404, detail="trip not found")
 
-        # Sample readings: bucket the trip into ~500 points of speed + rpm.
+        # Sample readings: bucket the trip into <= _TRIP_SAMPLE_TARGET_POINTS
+        # points per metric for every metric in _TRIP_SAMPLE_METRICS.
         started = row["started_at"]
         ended = row["ended_at"] or started
         duration_s = max(int((ended - started).total_seconds()), 1)
-        bucket_s = max(duration_s // 500, 1)
-        # Use time_bucket on the chunk; fall back to LIMIT if Timescale absent.
+        bucket_s = _bucket_seconds(duration_s)
+        metrics = list(_TRIP_SAMPLE_METRICS)
+        # Use time_bucket on the chunk; fall back to plain-SQL epoch
+        # bucketing if Timescale is absent (dev/test on stock Postgres).
         try:
             sample_rows = await conn.fetch(
                 """
@@ -131,29 +238,37 @@ async def get_trip(
                   FROM pid_readings
                  WHERE vehicle_id = $1
                    AND time >= $2 AND time <= $3
-                   AND metric IN ('vehicle_speed', 'engine_rpm', 'coolant_temp',
-                                  'throttle_position', 'maf_air_flow',
-                                  'manifold_pressure', 'engine_load',
-                                  'control_module_voltage', 'fuel_level',
-                                  'intake_air_temp')
+                   AND metric = ANY($5::text[])
                    AND value_num IS NOT NULL
                  GROUP BY 1, 2
                  ORDER BY 1 ASC
                 """,
-                row["vehicle_id"], started, ended, bucket_s,
+                row["vehicle_id"], started, ended, bucket_s, metrics,
             )
         except asyncpg.UndefinedFunctionError:
+            # Same shape, same allowlist, same bucket width — floor the epoch
+            # to a bucket boundary by hand. The old fallback filtered no
+            # metrics and took `LIMIT 500` off the front of the trip, which
+            # both leaked untargeted metrics (odometer, capability bitmaps)
+            # and truncated the chart to its first few seconds. GROUP BY
+            # bounds the row count here exactly as it does above.
             sample_rows = await conn.fetch(
                 """
-                SELECT time, metric, value_num
+                SELECT to_timestamp(
+                           floor(extract(epoch FROM time) / $4::int)::bigint
+                           * $4::int
+                       ) AS time,
+                       metric,
+                       avg(value_num) AS value_num
                   FROM pid_readings
                  WHERE vehicle_id = $1
                    AND time >= $2 AND time <= $3
+                   AND metric = ANY($5::text[])
                    AND value_num IS NOT NULL
-                 ORDER BY time ASC
-                 LIMIT 500
+                 GROUP BY 1, 2
+                 ORDER BY 1 ASC
                 """,
-                row["vehicle_id"], started, ended,
+                row["vehicle_id"], started, ended, bucket_s, metrics,
             )
 
     out = _row_to_trip(row)

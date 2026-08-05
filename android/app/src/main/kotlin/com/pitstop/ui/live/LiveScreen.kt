@@ -33,18 +33,24 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.service.MetricSample
 import com.pitstop.ui.components.PillState
 import com.pitstop.ui.components.StatusPill
+import com.pitstop.util.UnitFormat
 import kotlin.math.max
 
 /**
- * Tile spec — what label, which metric key, what unit, optional formatter.
- * The screen renders one tile per spec; a missing metric shows "—".
+ * Tile spec — what label, which metric key, which physical quantity,
+ * how many decimals. The screen renders one tile per spec; a missing
+ * metric shows "—".
+ *
+ * The tile carries a [UnitFormat.Quantity], NOT a unit string: the unit
+ * label and the value conversion both fall out of the user's
+ * imperial/metric preference at render time. A literal unit string here
+ * is how the Fuel-rate tile ended up showing L/h to an imperial user.
  */
 private data class TileSpec(
     val label: String,
     val key: String,
-    val unit: String = "",
+    val quantity: UnitFormat.Quantity = UnitFormat.Quantity.None,
     val digits: Int = 1,
-    val formatter: ((Double) -> String)? = null,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -135,7 +141,6 @@ fun LiveScreen(
             // ── Hero gauges: Speed + RPM ──────────────────────────────
             val rpmRaw = metrics["engine_rpm"]?.value
             val speedKphRaw = metrics["vehicle_speed"]?.value
-            val isImperial = unitSystem == "imperial"
             // animateFloatAsState gives smooth needle movement without the
             // per-frame map allocation the old 30 fps loop did. Animate the
             // raw value and only render "—" when the source metric is null.
@@ -153,10 +158,9 @@ fun LiveScreen(
                 BigGauge(
                     label = "Speed",
                     value = speedKphRaw?.let {
-                        val v = speedAnim.toDouble()
-                        if (isImperial) v * 0.621371 else v
+                        UnitFormat.Quantity.SpeedKph.convert(speedAnim.toDouble(), unitSystem)
                     },
-                    unit = if (isImperial) "mph" else "km/h",
+                    unit = UnitFormat.Quantity.SpeedKph.unit(unitSystem),
                     digits = 0,
                     modifier = Modifier.weight(1f),
                 )
@@ -170,86 +174,71 @@ fun LiveScreen(
             }
 
             // ── Engine ────────────────────────────────────────────────
-            // Temperature + pressure tiles use unit-aware formatters
-            // (com.pitstop.util.UnitFormat). Engine load + throttle
-            // are unitless % so they pass through.
+            // Every tile names a UnitFormat.Quantity; the °C/°F, kPa/psi
+            // and g/s ÷ lb/min splits are decided there, not here.
+            // Engine load + throttle are unitless % so they pass through.
             LiveSection(
                 title = "Engine",
                 tiles = listOf(
+                    TileSpec("Coolant", "coolant_temp", UnitFormat.Quantity.TempC, 0),
+                    TileSpec("Intake", "intake_air_temp", UnitFormat.Quantity.TempC, 0),
+                    TileSpec("Engine load", "engine_load", UnitFormat.Quantity.Percent, 0),
+                    TileSpec("Throttle", "throttle_position", UnitFormat.Quantity.Percent, 0),
+                    TileSpec("MAF", "maf_air_flow", UnitFormat.Quantity.MassFlowGramsPerSec, 1),
+                    TileSpec("MAP", "manifold_pressure", UnitFormat.Quantity.PressureKpa, 0),
+                    // PID 0x9E. kg/h in both systems on purpose — see
+                    // Quantity.MassFlowKgPerHour for why.
                     TileSpec(
-                        "Coolant", "coolant_temp",
-                        unit = if (isImperial) "°F" else "°C", digits = 0,
-                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
-                            .substringBefore(" ") },
+                        "Exhaust flow", "engine_exhaust_flow",
+                        UnitFormat.Quantity.MassFlowKgPerHour, 1,
                     ),
-                    TileSpec(
-                        "Intake", "intake_air_temp",
-                        unit = if (isImperial) "°F" else "°C", digits = 0,
-                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
-                            .substringBefore(" ") },
-                    ),
-                    TileSpec("Engine load", "engine_load", "%", 0),
-                    TileSpec("Throttle", "throttle_position", "%", 0),
-                    TileSpec(
-                        "MAF", "maf_air_flow",
-                        unit = if (isImperial) "lb/min" else "g/s", digits = 1,
-                        formatter = { v -> com.pitstop.util.UnitFormat.mafGramsPerSec(v, unitSystem, 1)
-                            .substringBefore(" ") },
-                    ),
-                    TileSpec(
-                        "MAP", "manifold_pressure",
-                        unit = if (isImperial) "psi" else "kPa", digits = 0,
-                        formatter = { v -> com.pitstop.util.UnitFormat.pressureKpa(v, unitSystem, 0)
-                            .substringBefore(" ") },
-                    ),
-                    // PID 0x9E. Published in kg/h and rendered as-is — there
-                    // is no imperial convention for exhaust mass flow worth
-                    // inventing, so both unit systems see kg/h.
-                    TileSpec("Exhaust flow", "engine_exhaust_flow", "kg/h", 1),
                 ),
                 metrics = metrics,
+                system = unitSystem,
             )
 
             // ── Fuel system ───────────────────────────────────────────
             LiveSection(
                 title = "Fuel system",
                 tiles = listOf(
-                    TileSpec("Fuel level", "fuel_level", "%", 0),
+                    TileSpec("Fuel level", "fuel_level", UnitFormat.Quantity.Percent, 0),
                     // PID 0x9D. The metric is GRAMS PER SECOND; a mass rate
-                    // means nothing at a glance, so convert to a volume rate
-                    // at gasoline's 749.9 g/L: g/s × 3600 / 749.9 = L/h.
-                    // Derived the same way the GPS-speed tile is (m/s → mph):
-                    // TileSpec.formatter gets the raw canonical value and
-                    // returns just the number, the unit label is appended by
-                    // SmallTile.
+                    // means nothing at a glance, so it renders as a volume
+                    // rate — L/h for metric, US gal/h for imperial, exactly
+                    // what the web's fmtFuelRateLh() does. The conversion
+                    // lives in Quantity.FuelRateGramsPerSec; this tile used
+                    // to hardcode "L/h", which was wrong for every imperial
+                    // user (i.e. all of them by default).
                     //
                     // Keyed on `engine_fuel_rate`, NOT the legacy `fuel_rate`
                     // — the latter is the WiCAN's broken built-in 0x9D
                     // decoder whose 11,586 historical rows are all 0.000.
+                    //
+                    // 2 decimals: idle is ~0.43 gph, so 1 decimal quantises
+                    // the whole idle/creep range into two steps.
                     TileSpec(
-                        "Fuel rate", "engine_fuel_rate", "L/h", 1,
-                        formatter = { v -> "%.1f".format(v * 3600.0 / 749.9) },
+                        "Fuel rate", "engine_fuel_rate",
+                        UnitFormat.Quantity.FuelRateGramsPerSec, 2,
                     ),
-                    TileSpec("STFT B1", "stft_b1", "%", 1),
-                    TileSpec("LTFT B1", "ltft_b1", "%", 1),
-                    TileSpec("STFT B2", "stft_b2", "%", 1),
-                    TileSpec("LTFT B2", "ltft_b2", "%", 1),
+                    TileSpec("STFT B1", "stft_b1", UnitFormat.Quantity.Percent, 1),
+                    TileSpec("LTFT B1", "ltft_b1", UnitFormat.Quantity.Percent, 1),
+                    TileSpec("STFT B2", "stft_b2", UnitFormat.Quantity.Percent, 1),
+                    TileSpec("LTFT B2", "ltft_b2", UnitFormat.Quantity.Percent, 1),
                     // PID 0x23 — gauge pressure, reads ~3500 kPa on the Pilot.
-                    // Converted with the same helper the MAP tile uses so the
-                    // imperial toggle gives psi.
+                    // Same Quantity as MAP, so the imperial toggle gives psi.
                     TileSpec(
                         "Fuel rail", "fuel_rail_pressure",
-                        unit = if (isImperial) "psi" else "kPa", digits = 0,
-                        formatter = { v -> com.pitstop.util.UnitFormat.pressureKpa(v, unitSystem, 0)
-                            .substringBefore(" ") },
+                        UnitFormat.Quantity.PressureKpa, 0,
                     ),
                     // PID 0x44 — commanded fuel/air EQUIVALENCE ratio (lambda),
                     // not the 14.7:1 mass ratio. 1.000 = stoich, and closed-loop
                     // cruise sits within a percent of it, so 3 decimals is the
-                    // minimum that shows any movement at all.
-                    TileSpec("Cmd AFR", "commanded_afr_ratio", "λ", 3),
+                    // minimum that shows any movement at all. A ratio has no
+                    // imperial variant.
+                    TileSpec("Cmd AFR", "commanded_afr_ratio", UnitFormat.Quantity.Lambda, 3),
                 ),
                 metrics = metrics,
+                system = unitSystem,
             )
 
             // ── Emissions ─────────────────────────────────────────────
@@ -259,56 +248,50 @@ fun LiveScreen(
             LiveSection(
                 title = "Emissions",
                 tiles = listOf(
-                    TileSpec(
-                        "Cat B1", "catalyst_temp_b1",
-                        unit = if (isImperial) "°F" else "°C", digits = 0,
-                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
-                            .substringBefore(" ") },
-                    ),
-                    TileSpec(
-                        "Cat B2", "catalyst_temp_b2",
-                        unit = if (isImperial) "°F" else "°C", digits = 0,
-                        formatter = { v -> com.pitstop.util.UnitFormat.temp(v, unitSystem, 0)
-                            .substringBefore(" ") },
-                    ),
+                    TileSpec("Cat B1", "catalyst_temp_b1", UnitFormat.Quantity.TempC, 0),
+                    TileSpec("Cat B2", "catalyst_temp_b2", UnitFormat.Quantity.TempC, 0),
                     // PID 0x24, wide-range sensor. Only the LAMBDA field is
                     // shown: the same PID's voltage field is invariant in the
                     // stored data (2 distinct values across 29,103 rows, flat
                     // 2.000 for the last six weeks), so it is left unaliased
                     // at ingest and never reaches a canonical metric name.
                     // 3 decimals — closed-loop lambda lives inside ±5% of 1.
-                    TileSpec("O2 S1 λ", "o2_s1_lambda", "λ", 3),
+                    TileSpec("O2 S1 λ", "o2_s1_lambda", UnitFormat.Quantity.Lambda, 3),
                     // Both sit near zero for most of a drive — 0 digits would
                     // render a permanent "0".
-                    TileSpec("Cmd EGR", "commanded_egr", "%", 1),
-                    TileSpec("Evap purge", "commanded_evap_purge", "%", 1),
+                    TileSpec("Cmd EGR", "commanded_egr", UnitFormat.Quantity.Percent, 1),
+                    TileSpec("Evap purge", "commanded_evap_purge", UnitFormat.Quantity.Percent, 1),
                 ),
                 metrics = metrics,
+                system = unitSystem,
             )
 
             // ── Electrical ────────────────────────────────────────────
             LiveSection(
                 title = "Electrical",
                 tiles = listOf(
-                    TileSpec("Battery", "control_module_voltage", "V", 1),
-                    TileSpec("Run time", "run_time_since_start", "s", 0),
+                    TileSpec("Battery", "control_module_voltage", UnitFormat.Quantity.Volt, 1),
+                    TileSpec("Run time", "run_time_since_start", UnitFormat.Quantity.Seconds, 0),
                 ),
                 metrics = metrics,
+                system = unitSystem,
             )
 
             // ── GPS (from the phone bridge) ───────────────────────────
+            // gps_speed is m/s on the wire — metric users want km/h, not
+            // the raw SI value, which is why SpeedMps converts on both
+            // branches. Altitude follows the same toggle (m ↔ ft), as the
+            // Settings blurb has always claimed it did.
             LiveSection(
                 title = "Position",
                 tiles = listOf(
-                    TileSpec(
-                        "GPS speed", "gps_speed", "mph", 0,
-                        formatter = { v -> "%.0f".format(v * 2.23694) }, // m/s → mph
-                    ),
-                    TileSpec("Altitude", "gps_alt", "m", 0),
-                    TileSpec("Lat", "gps_lat", "°", 5),
-                    TileSpec("Lon", "gps_lon", "°", 5),
+                    TileSpec("GPS speed", "gps_speed", UnitFormat.Quantity.SpeedMps, 0),
+                    TileSpec("Altitude", "gps_alt", UnitFormat.Quantity.AltitudeM, 0),
+                    TileSpec("Lat", "gps_lat", UnitFormat.Quantity.Degrees, 5),
+                    TileSpec("Lon", "gps_lon", UnitFormat.Quantity.Degrees, 5),
                 ),
                 metrics = metrics,
+                system = unitSystem,
             )
 
             if (metrics.isEmpty()) {
@@ -335,6 +318,7 @@ private fun LiveSection(
     title: String,
     tiles: List<TileSpec>,
     metrics: Map<String, MetricSample>,
+    system: String,
     customBody: (@Composable () -> Unit)? = null,
 ) {
     Text(
@@ -355,9 +339,9 @@ private fun LiveSection(
                     SmallTile(
                         label = spec.label,
                         value = sample?.value,
-                        unit = spec.unit,
+                        quantity = spec.quantity,
                         digits = spec.digits,
-                        formatter = spec.formatter,
+                        system = system,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -414,9 +398,9 @@ private fun BigGauge(
 private fun SmallTile(
     label: String,
     value: Double?,
-    unit: String = "",
+    quantity: UnitFormat.Quantity,
     digits: Int = 1,
-    formatter: ((Double) -> String)? = null,
+    system: String = "imperial",
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -429,11 +413,8 @@ private fun SmallTile(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            val display = when {
-                value == null || value.isNaN() -> "—"
-                formatter != null -> formatter(value)
-                else -> "%.${digits}f".format(value)
-            }
+            val display = quantity.number(value, system, digits)
+            val unit = quantity.unit(system)
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     display,

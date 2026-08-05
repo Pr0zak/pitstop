@@ -39,6 +39,10 @@ import kotlinx.coroutines.runBlocking
  *   │ 24 % ·   │ 14.1 V · │ 28 °C ·  │
  *   └──────────┴──────────┴──────────┘
  *
+ * Units follow the phone's imperial/metric toggle — the grid above is
+ * drawn in metric; an imperial user sees °F / mph / psi in the same
+ * slots. Each tile's unit comes from its CarTileSpec.quantity.
+ *
  * Trend arrows on each tile come from a rolling 30-second history
  * (TrendTracker) — slope-based classification: ▲ rising, ▼ falling,
  * "·" steady. Useful while driving: the user sees "fuel ▼" without
@@ -97,11 +101,11 @@ class LiveCarScreen(
         // runBlocking is acceptable here: we're already on the main
         // thread inside the framework's render call, and DataStore's
         // first() resolves quickly from the in-memory cache.
-        val storedHome = runBlocking { settingsRepository.settings.first().aaTilesHome }
-        val resolved = CarTileCatalog.resolveHome(storedHome)
+        val settings = runBlocking { settingsRepository.settings.first() }
+        val resolved = CarTileCatalog.resolveHome(settings.aaTilesHome)
 
         val tiles = resolved.map { spec ->
-            buildTile(spec.label, spec.key, spec.unit, metrics, spec.digits, spec.accent)
+            buildTile(spec, metrics, settings.unitSystem)
         }
 
         val actions = ActionStrip.Builder()
@@ -138,36 +142,19 @@ class LiveCarScreen(
     }
 
     private fun buildTile(
-        label: String,
-        key: String,
-        unit: String,
+        spec: CarTileSpec,
         metrics: Map<String, MetricSample>,
-        digits: Int = 0,
-        accent: Boolean = false,
+        system: String,
     ): GridItem {
-        val sample = metrics[key]
-        val value = sample?.value
-        val trend = trends.classify(key)
-        val displayValue = formatValue(value, unit, digits, trend)
+        val trend = trends.classify(spec.key)
+        val displayValue = carTileText(metrics[spec.key]?.value, spec, system, trend)
         val builder = GridItem.Builder()
             .setTitle(displayValue)
-            .setText(label)
-        if (accent) {
+            .setText(spec.label)
+        if (spec.accent) {
             builder.setImage(brandIcon(), GridItem.IMAGE_TYPE_ICON)
         }
         return builder.build()
-    }
-
-    private fun formatValue(v: Double?, unit: String, digits: Int, trend: TrendDir): String {
-        if (v == null) return "—"
-        val num = "%.${digits}f".format(v)
-        val unitTxt = if (unit.isBlank()) "" else " $unit"
-        val arrow = when (trend) {
-            TrendDir.Up -> " ▲"
-            TrendDir.Down -> " ▼"
-            TrendDir.Steady -> ""
-        }
-        return "$num$unitTxt$arrow"
     }
 
     private fun brandIcon(): CarIcon =
@@ -220,10 +207,10 @@ class DiagnosticsCarScreen(
 
     override fun onGetTemplate(): Template {
         val metrics = stateBus.latestByMetric.value
-        val storedDiag = runBlocking { settingsRepository.settings.first().aaTilesDiag }
-        val resolved = CarTileCatalog.resolveDiag(storedDiag)
+        val settings = runBlocking { settingsRepository.settings.first() }
+        val resolved = CarTileCatalog.resolveDiag(settings.aaTilesDiag)
         val tiles = resolved.map { spec ->
-            tile(spec.label, metrics[spec.key]?.value, spec.unit, spec.digits, trends.classify(spec.key))
+            tile(spec, metrics[spec.key]?.value, settings.unitSystem, trends.classify(spec.key))
         }
 
         return GridTemplate.Builder()
@@ -233,16 +220,33 @@ class DiagnosticsCarScreen(
             .build()
     }
 
-    private fun tile(label: String, v: Double?, unit: String, digits: Int, trend: TrendDir): GridItem {
-        val txt = if (v == null) "—" else {
-            val num = "%.${digits}f".format(v)
-            val arrow = when (trend) {
-                TrendDir.Up -> " ▲"; TrendDir.Down -> " ▼"; TrendDir.Steady -> ""
-            }
-            "$num ${unit}$arrow".trim()
-        }
-        return GridItem.Builder().setTitle(txt).setText(label).build()
+    private fun tile(spec: CarTileSpec, v: Double?, system: String, trend: TrendDir): GridItem =
+        GridItem.Builder()
+            .setTitle(carTileText(v, spec, system, trend))
+            .setText(spec.label)
+            .build()
+}
+
+/**
+ * Tile text shared by both car grids: the value converted into the
+ * user's unit system, its unit label, then the trend arrow. Centralised
+ * so the home grid and the diagnostics grid can't drift on units again.
+ */
+internal fun carTileText(
+    v: Double?,
+    spec: CarTileSpec,
+    system: String,
+    trend: TrendDir,
+): String {
+    val num = spec.quantity.number(v, system, spec.digits)
+    if (num == "—") return "—"
+    val unit = spec.unit(system)
+    val arrow = when (trend) {
+        TrendDir.Up -> " ▲"
+        TrendDir.Down -> " ▼"
+        TrendDir.Steady -> ""
     }
+    return (if (unit.isBlank()) num else "$num $unit") + arrow
 }
 
 // ── Trend tracking ────────────────────────────────────────────────────

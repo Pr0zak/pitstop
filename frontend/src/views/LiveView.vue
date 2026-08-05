@@ -10,6 +10,7 @@ import {
   fmtTempC,
   fmtSpeedKph,
   fmtFuelRateLh,
+  fmtPressureKpa,
 } from "@/composables/useFormat";
 import { useUnitsStore } from "@/stores/units";
 
@@ -150,8 +151,11 @@ const fuelRate = computed(() => {
   return num("fuel_rate"); // legacy, already l/h
 });
 // Exhaust mass flow, OBD PID 0x9E, published in KILOGRAMS PER HOUR under
-// `engine_exhaust_flow`. Left in kg/h like the other mass-flow tiles (MAF is
-// g/s, MAP/baro are kPa) rather than converted per unit system.
+// `engine_exhaust_flow`. Deliberately NOT converted per unit system — there is
+// no imperial convention for exhaust mass flow a driver would recognise, and
+// the Android tile makes the same call (UnitFormat.Quantity.MassFlowKgPerHour).
+// MAP / baro / fuel rail are NOT in this category: they go through
+// fmtPressureKpa and read psi for an imperial user, matching the phone.
 const exhaustFlow = computed(() => num("engine_exhaust_flow"));
 const stftB1 = computed(() => num("stft_b1"));
 const ltftB1 = computed(() => num("ltft_b1"));
@@ -449,7 +453,7 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Fuel rail</h3>
             <div class="big">
-              {{ fuelRail != null ? fuelRail.toFixed(0) + " kPa" : "—" }}
+              {{ fmtPressureKpa(fuelRail) }}
             </div>
           </div>
         </div>
@@ -489,13 +493,13 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>MAP</h3>
             <div class="big">
-              {{ map != null ? map.toFixed(0) + " kPa" : "—" }}
+              {{ fmtPressureKpa(map) }}
             </div>
           </div>
           <div class="card tile">
             <h3>Baro</h3>
             <div class="big">
-              {{ baro != null ? baro.toFixed(0) + " kPa" : "—" }}
+              {{ fmtPressureKpa(baro) }}
             </div>
           </div>
           <div class="card tile">

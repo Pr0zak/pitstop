@@ -13,6 +13,7 @@ const C_TO_F = (c: number) => (c * 9) / 5 + 32;
 const KPH_TO_MPH = (k: number) => k * 0.621371;
 const KM_TO_MI = (k: number) => k * 0.621371;
 const L_TO_USGAL = (l: number) => l * 0.264172;
+const KPA_TO_PSI = (kpa: number) => kpa * 0.145038;
 const LP100_TO_MPG = (lp100: number) => (lp100 > 0 ? 235.214583 / lp100 : 0);
 
 /** Resolve unit system. Pinia may not be active in some bootstrap paths; fall back to imperial. */
@@ -102,6 +103,32 @@ export function fmtFuelRateLh(lh: number | null | undefined, system?: ResolvedUn
   return resolved(system) === "imperial"
     ? `${L_TO_USGAL(lh).toFixed(2)} gph`
     : `${lh.toFixed(2)} L/h`;
+}
+
+/**
+ * OBD pressures (MAP, barometric, fuel rail) are stored in kPa and render as
+ * psi for an imperial user — the same rule the Android app has always applied
+ * via `UnitFormat.Quantity.PressureKpa`, and the same ×0.145038 factor.
+ *
+ * This exists because the web had no pressure formatter at all: LiveView
+ * hardcoded `" kPa"` at three call sites, so an imperial user read the fuel
+ * rail as "3500 kPa" on Live while the trip-detail chart drew the identical
+ * metric as "508 psi". That is the unit-as-a-literal-string bug class the
+ * phone side was just root-caused for; the fix is the same one — one place
+ * that knows which unit belongs to which system.
+ *
+ * `digits` is caller-chosen because the sensible precision differs by metric
+ * (MAP/baro read 0–105 kPa, the fuel rail ~3500 kPa).
+ */
+export function fmtPressureKpa(
+  kpa: number | null | undefined,
+  system?: ResolvedUnitSystem,
+  digits = 0,
+): string {
+  if (kpa == null || Number.isNaN(kpa)) return "—";
+  return resolved(system) === "imperial"
+    ? `${KPA_TO_PSI(kpa).toFixed(digits)} psi`
+    : `${kpa.toFixed(digits)} kPa`;
 }
 
 export function fmtConsumptionLp100(

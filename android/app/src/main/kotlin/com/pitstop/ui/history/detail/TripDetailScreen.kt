@@ -38,6 +38,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.http.TripDetailDto
 import com.pitstop.http.TripDtcDto
+import com.pitstop.util.UnitFormat
 import kotlin.math.roundToInt
 
 /**
@@ -60,6 +61,7 @@ fun TripDetailScreen(
     viewModel: TripDetailViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val unitSystem by viewModel.unitSystem.collectAsStateWithLifecycle()
     when {
         ui.loading && ui.trip == null -> CenteredSpinner(modifier)
         ui.error != null && ui.trip == null -> CenteredError(ui.error ?: "Unknown error", modifier)
@@ -67,6 +69,7 @@ fun TripDetailScreen(
         else -> Loaded(
             trip = ui.trip!!,
             route = ui.route,
+            unitSystem = unitSystem,
             onOpenDtc = onOpenDtc,
             modifier = modifier,
         )
@@ -77,6 +80,7 @@ fun TripDetailScreen(
 private fun Loaded(
     trip: TripDetailDto,
     route: List<com.pitstop.http.RoutePointDto>,
+    unitSystem: String,
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
     modifier: Modifier,
 ) {
@@ -101,15 +105,17 @@ private fun Loaded(
         TRIP_METRICS.filter { seriesMap[it.metric]?.points?.isNotEmpty() == true }
     }
     var visibleMetrics by remember(availableMetrics) {
-        // Default to speed + RPM if both available; otherwise show
-        // every available metric to avoid an empty chart on a
-        // partially-instrumented profile.
+        // Speed + RPM are the only default-on series. Fall back to the
+        // first available metric (rather than "all of them") when
+        // neither is present — with 17 chartable metrics, showing
+        // everything on a partially-instrumented trip would render an
+        // unreadable phone-width chart.
+        val defaults = availableMetrics.filter { it.defaultVisible }.map { it.metric }
         mutableStateOf(
-            if (availableMetrics.any { it.metric == "vehicle_speed" } &&
-                availableMetrics.any { it.metric == "engine_rpm" }) {
-                setOf("vehicle_speed", "engine_rpm")
-            } else {
-                availableMetrics.map { it.metric }.toSet()
+            when {
+                defaults.isNotEmpty() -> defaults.toSet()
+                availableMetrics.isNotEmpty() -> setOf(availableMetrics.first().metric)
+                else -> emptySet()
             },
         )
     }
@@ -162,6 +168,7 @@ private fun Loaded(
                     SeriesChipRow(
                         available = availableMetrics,
                         visible = visibleMetrics,
+                        unitSystem = unitSystem,
                         onToggle = { m ->
                             visibleMetrics = if (m in visibleMetrics) {
                                 visibleMetrics - m
@@ -172,15 +179,27 @@ private fun Loaded(
                         smoothLevel = smoothLevel,
                         onCycleSmooth = { smoothLevel = smoothLevel.next() },
                     )
-                    val display = remember(visibleMetrics, seriesMap) {
+                    // Convert every plotted point into the active unit
+                    // system here, once, so the chart body stays unit-
+                    // agnostic and the axis ticks always agree with the
+                    // chip label.
+                    val display = remember(visibleMetrics, seriesMap, unitSystem) {
                         availableMetrics
                             .filter { it.metric in visibleMetrics }
                             .mapNotNull { def ->
                                 seriesMap[def.metric]?.let { s ->
                                     DisplaySeries(
-                                        series = s,
+                                        series = s.copy(
+                                            points = s.points.map { p ->
+                                                p.copy(
+                                                    value = def.quantity
+                                                        .convert(p.value, unitSystem),
+                                                )
+                                            },
+                                        ),
                                         color = def.color,
-                                        unitLabel = def.unit,
+                                        unitLabel = def.quantity.unit(unitSystem),
+                                        digits = def.digits,
                                     )
                                 }
                             }
@@ -453,6 +472,7 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
 private fun SeriesChipRow(
     available: List<TripMetricDef>,
     visible: Set<String>,
+    unitSystem: String,
     onToggle: (String) -> Unit,
     smoothLevel: SmoothLevel,
     onCycleSmooth: () -> Unit,
@@ -469,7 +489,10 @@ private fun SeriesChipRow(
                 AssistChip(
                     onClick = { onToggle(def.metric) },
                     label = {
-                        Text(def.label, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            def.chipLabel(unitSystem),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
                     },
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = if (on) def.color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -586,23 +609,112 @@ private fun CenteredError(message: String, modifier: Modifier) {
 
 /**
  * Definitions of the trip-detail timeline series we know how to
- * render. Adding a new metric is a one-line append; the chart picks
- * up the color + unit label automatically. Order here is also the
- * chip order — speed first, then RPM (those are the two most-asked-
- * about series), engine load, coolant, fuel level.
+ * render. Adding a new metric is a one-line append; the chart picks up
+ * the color, the unit label and the value conversion automatically.
+ *
+ * The list mirrors the backend's `_TRIP_SAMPLE_METRICS` whitelist in
+ * `api/trips.py` — that endpoint decides what a trip response may
+ * contain, so anything not listed there can never have points, and
+ * anything listed here but missing from a given trip is filtered out
+ * by `availableMetrics` before the chips are drawn.
+ *
+ * Units: a def carries a [UnitFormat.Quantity], never a unit string.
+ * The chip label gets the unit appended for the ACTIVE unit system, and
+ * the series values are converted with the same Quantity, so the axis
+ * ticks and the label can't disagree.
+ *
+ * Order here is the chip order — speed first, then RPM (the two
+ * most-asked-about series and the only two on by default), then the
+ * rest of the core drive trace, then fuel/exhaust, then emissions.
  */
 internal data class TripMetricDef(
     val metric: String,
+    /** Bare name; the unit is appended per unit-system at render time. */
     val label: String,
     val color: Color,
-    val unit: String,
-)
+    val quantity: UnitFormat.Quantity,
+    /** Decimals for the single-series Y-axis ticks. */
+    val digits: Int = 1,
+    /**
+     * Whether the series starts visible. Only speed + RPM do: with 17
+     * chartable metrics, "show everything that has data" would draw an
+     * unreadable 17-line chart on a phone.
+     */
+    val defaultVisible: Boolean = false,
+) {
+    /** "Speed (mph)" / "Speed (km/h)" — unit resolved at render time. */
+    fun chipLabel(system: String): String {
+        val unit = quantity.unit(system)
+        return if (unit.isBlank()) label else "$label ($unit)"
+    }
+}
 
 internal val TRIP_METRICS: List<TripMetricDef> = listOf(
-    TripMetricDef("vehicle_speed", "Speed (kph)", Color(0xFF2F81F7), "kph"),
-    TripMetricDef("engine_rpm", "RPM", Color(0xFFF59E0B), "rpm"),
-    TripMetricDef("engine_load", "Load %", Color(0xFFEAB308), "%"),
-    TripMetricDef("coolant_temp", "Coolant (°C)", Color(0xFFEF4444), "°C"),
-    TripMetricDef("fuel_level", "Fuel %", Color(0xFF22C55E), "%"),
-    TripMetricDef("throttle_position", "Throttle %", Color(0xFF14B8A6), "%"),
+    // ── Core drive trace ──────────────────────────────────────────
+    TripMetricDef(
+        "vehicle_speed", "Speed", Color(0xFF2F81F7),
+        UnitFormat.Quantity.SpeedKph, digits = 0, defaultVisible = true,
+    ),
+    TripMetricDef(
+        "engine_rpm", "RPM", Color(0xFFF59E0B),
+        UnitFormat.Quantity.None, digits = 0, defaultVisible = true,
+    ),
+    TripMetricDef("engine_load", "Load", Color(0xFFEAB308), UnitFormat.Quantity.Percent, 0),
+    TripMetricDef("coolant_temp", "Coolant", Color(0xFFEF4444), UnitFormat.Quantity.TempC, 0),
+    TripMetricDef("fuel_level", "Fuel", Color(0xFF22C55E), UnitFormat.Quantity.Percent, 0),
+    TripMetricDef(
+        "throttle_position", "Throttle", Color(0xFF14B8A6),
+        UnitFormat.Quantity.Percent, 0,
+    ),
+    TripMetricDef("intake_air_temp", "Intake", Color(0xFF94A3B8), UnitFormat.Quantity.TempC, 0),
+    TripMetricDef(
+        "maf_air_flow", "MAF", Color(0xFF06B6D4),
+        UnitFormat.Quantity.MassFlowGramsPerSec, 1,
+    ),
+    TripMetricDef(
+        "manifold_pressure", "MAP", Color(0xFFA78BFA),
+        UnitFormat.Quantity.PressureKpa, 0,
+    ),
+    TripMetricDef(
+        "control_module_voltage", "Battery", Color(0xFFF472B6),
+        UnitFormat.Quantity.Volt, 1,
+    ),
+    // ── Fuel + exhaust ────────────────────────────────────────────
+    // g/s on the wire → L/h or gph depending on the toggle, matching
+    // the Live tile and the web's fmtFuelRateLh().
+    TripMetricDef(
+        "engine_fuel_rate", "Fuel rate", Color(0xFFF97316),
+        UnitFormat.Quantity.FuelRateGramsPerSec, 2,
+    ),
+    // kg/h in both unit systems on purpose — see the Quantity docs.
+    TripMetricDef(
+        "engine_exhaust_flow", "Exhaust", Color(0xFFA3E635),
+        UnitFormat.Quantity.MassFlowKgPerHour, 1,
+    ),
+    // ── Emissions ─────────────────────────────────────────────────
+    // Both cat banks: they normally track within a degree or two, so
+    // the divergence is the diagnostic. Same hue family for that reason.
+    TripMetricDef(
+        "catalyst_temp_b1", "Cat B1", Color(0xFFFB7185),
+        UnitFormat.Quantity.TempC, 0,
+    ),
+    TripMetricDef(
+        "catalyst_temp_b2", "Cat B2", Color(0xFFE879F9),
+        UnitFormat.Quantity.TempC, 0,
+    ),
+    // Commanded vs measured equivalence ratio — the PAIR is the signal
+    // (fuel-control error); either alone is a flat line near 1.000,
+    // hence 3 decimals on the ticks.
+    TripMetricDef(
+        "commanded_afr_ratio", "Cmd AFR", Color(0xFF38BDF8),
+        UnitFormat.Quantity.Lambda, 3,
+    ),
+    TripMetricDef(
+        "o2_s1_lambda", "O2 S1", Color(0xFF818CF8),
+        UnitFormat.Quantity.Lambda, 3,
+    ),
+    TripMetricDef(
+        "fuel_rail_pressure", "Fuel rail", Color(0xFF34D399),
+        UnitFormat.Quantity.PressureKpa, 0,
+    ),
 )

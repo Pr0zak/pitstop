@@ -17,6 +17,7 @@ import {
   fmtTempC,
 } from "@/composables/useFormat";
 import { WMO_CODE } from "@/api/types";
+import { useUnitsStore } from "@/stores/units";
 
 function weatherEmoji(code: number | null | undefined): string {
   if (code == null) return "—";
@@ -130,6 +131,17 @@ function deltaTone(label: string, pct: number): string {
 // data and options are split so a Smooth-chip toggle (data-only) hits
 // UPlotChart's setData() path instead of a full rebuild.
 
+// Display-unit resolution for the chart. Everything else on this page already
+// renders through useFormat (which reads the units store), but the series table
+// below used to hard-code the imperial branch — a metric user got °F values
+// under a "°F" axis and mph under "mph". That's the same class of bug
+// AnalyticsView already fixed for its coolant chart, and it's fixed here the
+// same way: derive the table from `imperial` rather than assuming it. For an
+// imperial vehicle every existing row evaluates to exactly what it did before,
+// so this is a no-op for the current fleet.
+const units = useUnitsStore();
+const imperial = computed(() => units.resolved === "imperial");
+
 // Series definitions keyed on metric name. Each defines its display
 // label, stroke color, axis scale, and a transform from canonical SI
 // units to the display unit (kph→mph, °C→°F, etc).
@@ -141,23 +153,85 @@ interface TripSeries {
   axisLabel: string;
   transform: (v: number) => number;
   defaultVisible: boolean;
+  /** Fixed decimal places for axis ticks and the legend readout. Omit to let
+   *  uPlot pick its own precision. Needed by the near-1.0 ratio series
+   *  (commanded_afr_ratio / o2_s1_lambda live in 0.98–1.02), which otherwise
+   *  render as a column of identical "1"s on both the axis and the legend. */
+  decimals?: number;
 }
-const TRIP_SERIES: TripSeries[] = [
-  { metric: "vehicle_speed",          label: "Speed (mph)",      stroke: "#2f81f7", scale: "speed",  axisLabel: "mph",   transform: (v) => v * 0.621371, defaultVisible: true },
-  { metric: "engine_rpm",             label: "RPM",              stroke: "#3fb950", scale: "rpm",    axisLabel: "rpm",   transform: (v) => v,            defaultVisible: true },
-  { metric: "coolant_temp",           label: "Coolant (°F)",     stroke: "#d29922", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: true },
-  { metric: "throttle_position",      label: "Throttle (%)",     stroke: "#a78bfa", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
-  { metric: "engine_load",            label: "Load (%)",         stroke: "#ec4899", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
-  { metric: "manifold_pressure",      label: "MAP (kPa)",        stroke: "#06b6d4", scale: "kpa",    axisLabel: "kPa",   transform: (v) => v,            defaultVisible: false },
-  { metric: "maf_air_flow",           label: "MAF (g/s)",        stroke: "#14b8a6", scale: "maf",    axisLabel: "g/s",   transform: (v) => v,            defaultVisible: false },
-  { metric: "fuel_level",             label: "Fuel (%)",         stroke: "#f97316", scale: "pct",    axisLabel: "%",     transform: (v) => v,            defaultVisible: false },
-  { metric: "control_module_voltage", label: "Battery (V)",      stroke: "#facc15", scale: "volt",   axisLabel: "V",     transform: (v) => v,            defaultVisible: false },
-  { metric: "intake_air_temp",        label: "Intake (°F)",      stroke: "#94a3b8", scale: "temp",   axisLabel: "°F",    transform: (v) => (v * 9) / 5 + 32, defaultVisible: false },
-  // Derived series — computed below from successive vehicle_speed
-  // samples (dv/dt → m/s², converted to g). Won't be found in
-  // pid_readings; the chart loop synthesises the column.
-  { metric: "acceleration",           label: "Accel (g)",        stroke: "#fb923c", scale: "accel",  axisLabel: "g",     transform: (v) => v,            defaultVisible: false },
-];
+
+// Rebuilt when the resolved unit system flips. `visibleSeries` → `chartOpts`
+// depend on this, so a units change triggers a chart rebuild — correct, and
+// rare enough not to matter.
+const TRIP_SERIES = computed<TripSeries[]>(() => {
+  const imp = imperial.value;
+  const cToDisp = (v: number) => (imp ? (v * 9) / 5 + 32 : v);
+  const degUnit = imp ? "°F" : "°C";
+  // Pressures are stored in kPa and read psi for an imperial user — ONE policy
+  // for every pressure series. MAP used to be pinned to kPa while the fuel rail
+  // converted, so a single chart showed two pressures under two unit systems
+  // and disagreed with the Live view (which hardcoded kPa) about the very same
+  // fuel-rail metric. Matches Android's UnitFormat.Quantity.PressureKpa and the
+  // web's fmtPressureKpa.
+  const kpaToDisp = (v: number) => (imp ? v * 0.145038 : v);
+  const presUnit = imp ? "psi" : "kPa";
+  // engine_fuel_rate arrives in g/s (the ECU's own burn figure, PID 0x9D).
+  // g/s → L/h is ×3600 ÷ 749.9 g/L (gasoline density); L → US gal ×0.264172.
+  const GASOLINE_G_PER_L = 749.9;
+  const L_PER_US_GAL = 0.264172;
+  const fuelRate = (gPerS: number) => {
+    const litresPerHour = (gPerS * 3600) / GASOLINE_G_PER_L;
+    return imp ? litresPerHour * L_PER_US_GAL : litresPerHour;
+  };
+  return [
+    { metric: "vehicle_speed",          label: imp ? "Speed (mph)" : "Speed (km/h)", stroke: "#2f81f7", scale: "speed",   axisLabel: imp ? "mph" : "km/h",   transform: (v) => (imp ? v * 0.621371 : v), defaultVisible: true },
+    { metric: "engine_rpm",             label: "RPM",                                stroke: "#3fb950", scale: "rpm",     axisLabel: "rpm",                  transform: (v) => v,                       defaultVisible: true },
+    { metric: "coolant_temp",           label: `Coolant (${degUnit})`,               stroke: "#d29922", scale: "temp",    axisLabel: degUnit,                transform: cToDisp,                        defaultVisible: true },
+    { metric: "throttle_position",      label: "Throttle (%)",                       stroke: "#a78bfa", scale: "pct",     axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false },
+    { metric: "engine_load",            label: "Load (%)",                           stroke: "#ec4899", scale: "pct",     axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false },
+    { metric: "manifold_pressure",      label: `MAP (${presUnit})`,                  stroke: "#06b6d4", scale: "kpa",     axisLabel: presUnit,               transform: kpaToDisp,                      defaultVisible: false },
+    { metric: "maf_air_flow",           label: "MAF (g/s)",                          stroke: "#14b8a6", scale: "maf",     axisLabel: "g/s",                  transform: (v) => v,                       defaultVisible: false },
+    { metric: "fuel_level",             label: "Fuel (%)",                           stroke: "#f97316", scale: "pct",     axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false },
+    { metric: "control_module_voltage", label: "Battery (V)",                        stroke: "#facc15", scale: "volt",    axisLabel: "V",                    transform: (v) => v,                       defaultVisible: false },
+    { metric: "intake_air_temp",        label: `Intake (${degUnit})`,                stroke: "#94a3b8", scale: "temp",    axisLabel: degUnit,                transform: cToDisp,                        defaultVisible: false },
+
+    // --- Fuel + exhaust -------------------------------------------------
+    // All default-hidden: the chart is already busy with the three
+    // always-on series, and these are diagnostic add-ons the user opts
+    // into. Anyone opening a trip today sees exactly what they saw before.
+    //
+    // Fuel rate gets its own scale rather than sharing "maf" — both are
+    // mass/volume flows but they're an order of magnitude apart, so
+    // sharing would flatten one of them.
+    { metric: "engine_fuel_rate",       label: imp ? "Fuel rate (gal/h)" : "Fuel rate (L/h)", stroke: "#e11d48", scale: "fuelrate", axisLabel: imp ? "gal/h" : "L/h", transform: fuelRate,                       defaultVisible: false },
+    // Deliberately NOT converted to lb/h — MAF above is likewise left in
+    // its native g/s, and kg/h is how the PID is quoted. Flip both together
+    // if imperial mass flow is ever wanted.
+    { metric: "engine_exhaust_flow",    label: "Exhaust (kg/h)",                     stroke: "#a3e635", scale: "exflow",  axisLabel: "kg/h",                 transform: (v) => v,                       defaultVisible: false },
+    // Catalyst temps get a scale of their own instead of joining "temp":
+    // they run ~1040 °F against a ~195 °F coolant line, so sharing an axis
+    // would squash coolant and intake into a flat band at the bottom.
+    // B1/B2 share one scale with each other because their *divergence* is
+    // the diagnostic — on separate axes a split would be invisible.
+    { metric: "catalyst_temp_b1",       label: `Cat B1 (${degUnit})`,                stroke: "#f0abfc", scale: "cattemp", axisLabel: `${degUnit} cat`,       transform: cToDisp,                        defaultVisible: false },
+    { metric: "catalyst_temp_b2",       label: `Cat B2 (${degUnit})`,                stroke: "#d946ef", scale: "cattemp", axisLabel: `${degUnit} cat`,       transform: cToDisp,                        defaultVisible: false },
+    // Commanded vs measured: one shared "lambda" scale is mandatory here —
+    // the whole point of the pair is reading the gap between them, which
+    // only means anything when both sit on the same axis. Unitless, so no
+    // imperial branch; 3 decimals because the interesting range is
+    // 0.98–1.02 and 2 decimals quantises the signal away.
+    { metric: "commanded_afr_ratio",    label: "AFR cmd (λ)",                        stroke: "#0d9488", scale: "lambda",  axisLabel: "λ",                    transform: (v) => v,                       defaultVisible: false, decimals: 3 },
+    { metric: "o2_s1_lambda",           label: "O2 lambda (λ)",                      stroke: "#5eead4", scale: "lambda",  axisLabel: "λ",                    transform: (v) => v,                       defaultVisible: false, decimals: 3 },
+    // ~3500 kPa on this fleet. Same pressure policy as MAP above — both
+    // convert, so the chart never mixes unit systems within one dimension.
+    { metric: "fuel_rail_pressure",     label: `Rail press (${presUnit})`,           stroke: "#fb7185", scale: "railp",   axisLabel: presUnit,               transform: kpaToDisp,                      defaultVisible: false },
+
+    // Derived series — computed below from successive vehicle_speed
+    // samples (dv/dt → m/s², converted to g). Won't be found in
+    // pid_readings; the chart loop synthesises the column.
+    { metric: "acceleration",           label: "Accel (g)",                          stroke: "#fb923c", scale: "accel",   axisLabel: "g",                    transform: (v) => v,                       defaultVisible: false },
+  ];
+});
 
 // Metrics in TRIP_SERIES that are computed in the frontend rather
 // than fetched from pid_readings.
@@ -180,12 +254,39 @@ const metricsWithData = computed<Set<string>>(() => {
 
 // Persisted visibility selection — survives reload + revisit.
 const SERIES_VIS_KEY = "pitstop_trip_series_visible";
+/** Resolve the persisted visibility map, merged OVER the current defaults.
+ *
+ *  The stored blob is a snapshot of whatever series existed the last time the
+ *  user touched a chip, so an entry written before a new metric shipped has no
+ *  key for it. This used to `return JSON.parse(raw)` verbatim, which left the
+ *  new metrics `undefined`: survivable for the ones added here (undefined is
+ *  falsy, so the series stays hidden and the first chip click flips it true —
+ *  which happens to match defaultVisible:false), but it silently ignored
+ *  `defaultVisible` altogether, so any series ever added with defaultVisible
+ *  true would stay invisible forever for every existing user. Seeding from the
+ *  defaults and overlaying only the keys actually stored fixes that.
+ *
+ *  It also (a) drops stale keys for metrics that no longer exist, so the blob
+ *  can't accrete forever, and (b) survives a corrupt payload — a stored `null`
+ *  or `[]` previously became `seriesVisible.value` itself and made every
+ *  `seriesVisible[s.metric]` read in the template throw. */
 function loadSeriesVis(): Record<string, boolean> {
+  const vis: Record<string, boolean> = Object.fromEntries(
+    TRIP_SERIES.value.map((s) => [s.metric, s.defaultVisible]),
+  );
   try {
     const raw = localStorage.getItem(SERIES_VIS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const stored = parsed as Record<string, unknown>;
+        for (const s of TRIP_SERIES.value) {
+          if (typeof stored[s.metric] === "boolean") vis[s.metric] = stored[s.metric] as boolean;
+        }
+      }
+    }
   } catch { /* ignore */ }
-  return Object.fromEntries(TRIP_SERIES.map((s) => [s.metric, s.defaultVisible]));
+  return vis;
 }
 const seriesVisible = ref<Record<string, boolean>>(loadSeriesVis());
 watch(seriesVisible, (v) => {
@@ -320,7 +421,7 @@ function medianFilter(arr: (number | null)[], windowSize: number): (number | nul
 // toggle. Neither depends on smoothLevel, so a Smooth-chip toggle only
 // re-derives chartData — chartOpts identity stays stable and UPlotChart takes
 // the cheap setData() path instead of a full destroy()+rebuild.
-const visibleSeries = computed(() => TRIP_SERIES.filter((s) => seriesVisible.value[s.metric]));
+const visibleSeries = computed(() => TRIP_SERIES.value.filter((s) => seriesVisible.value[s.metric]));
 
 // Aligned data: pivots + smooths + forward-fills the trip samples into the
 // column layout implied by visibleSeries. Recomputes on trip load, series
@@ -516,12 +617,19 @@ const chartOpts = computed<uPlot.Options | null>(() => {
   for (const s of visible) {
     if (axisScalesSeen.has(s.scale)) continue;
     axisScalesSeen.add(s.scale);
+    // Capture into a local so the closure below doesn't have to re-narrow
+    // `s.decimals` (TS drops property narrowing across a function boundary).
+    const dp = s.decimals;
     axes.push({
       scale: s.scale,
       stroke: "#9aa0aa",
       label: s.axisLabel,
       side: side === 0 ? 3 : 1,
       grid: { show: side === 0 },
+      // Fixed precision for the ratio scales. uPlot's automatic tick
+      // formatting derives decimals from the tick increment, which on a
+      // 0.98–1.02 range rounds every split to "1".
+      ...(dp != null ? { values: (_u: uPlot, splits: number[]) => splits.map((v) => v.toFixed(dp)) } : {}),
     });
     side = 1 - side;
   }
@@ -564,12 +672,20 @@ const chartOpts = computed<uPlot.Options | null>(() => {
     scales,
     series: [
       {},
-      ...visible.map((s) => ({
-        label: s.label,
-        stroke: s.stroke,
-        scale: s.scale,
-        width: 1.4,
-      })),
+      ...visible.map((s) => {
+        const dp = s.decimals;
+        return {
+          label: s.label,
+          stroke: s.stroke,
+          scale: s.scale,
+          width: 1.4,
+          // Same reason as the axis `values` above — without this the
+          // legend readout for a λ series shows a flat "1" under the cursor.
+          ...(dp != null
+            ? { value: (_u: uPlot, v: number | null) => (v == null ? "--" : v.toFixed(dp)) }
+            : {}),
+        };
+      }),
     ],
     axes,
     ...(markerPlugin || cursorMapSyncPlugin ? {

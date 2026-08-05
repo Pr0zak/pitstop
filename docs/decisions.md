@@ -406,6 +406,43 @@ Separately, the web Live view rendered the raw `odometer` metric with no convers
 
 ## ADR-022 — Extended (Mode 22) PIDs are polled by the phone, not the dongle
 
+> **FAILED ON-VEHICLE 2026-08-05. The premise below is wrong; the feature is disabled and
+> should stay disabled.** Enabling the toggle on the real car broke capture within four
+> seconds, for TWO independent reasons.
+>
+> **1. There is no separate transport to isolate into.** Point 1 assumed the phone's BLE
+> session is independent of the dongle's `auto_pid` polling. It is not — they share one
+> ELM/CAN session through the dongle, so `ATSH18DA1EF1` sent by the PHONE corrupted the
+> DONGLE's own publishing. Its MQTT payload collapsed from **62 keys to 16**, losing
+> `engine_fuel_rate`, `engine_exhaust_flow`, `maf_air_flow`, `intake_air_temp`,
+> `fuel_level`, `odometer`, catalyst temps, O2 sensors and every fuel trim. Recovery
+> required re-applying the config via `/store_config` + `/store_auto_data`.
+>
+> **2. The BLE bridge does not reassemble multi-frame ISO-TP.** This was point 5's
+> explicitly-unverified assumption, and it is false. Observed:
+> ```
+> obd response for unpolled pid           {echo: "2230", data_bytes: 4}
+> obd extended value parser returned null {pid: gear_position, payload_bytes: 6}
+> ```
+> `gear_position` needs payload byte **23**; six bytes arrived. `2230` is a truncated
+> Mode 22 echo. The HTTP `/autopid/test_pid` path reassembles continuation frames; the
+> BLE publish path does not. So even with the header problem solved, nothing would decode.
+>
+> **The data itself is real** — ATF 61 °C and a gear decode validated 4/4 against a blind
+> D→R→N→D shift (see `docs/research/honda-pilot-pids.md`). It is the *transports* that
+> can't carry it: `auto_pid` breaks on sticky headers, BLE truncates multi-frame. Making
+> this work needs dongle firmware supporting a per-PID header WITH ISO-TP reassembly on
+> the publish path. That is not in our control.
+>
+> **Status:** setting defaults off and is labelled non-functional in the UI. The code
+> (`obd/IsoTp.kt`, `obd/ZfTcmPids.kt`, the header-restore machinery) is left dormant
+> rather than deleted — it is correct as written and cheap to re-test if firmware changes.
+> **Do not re-enable without first re-verifying multi-frame reassembly over BLE.**
+>
+> The one thing that worked as designed: the silent-drop logging added the same day
+> caught the whole failure in three log lines. Without it this would have presented as
+> metrics quietly vanishing — exactly the MAF mystery that took a day to find.
+
 **Context.** ATF temperature (`22 3083`) and gear position (`22 3086`) are reachable on the ZF 9HP TCM at module `0x1E` — both verified live, gear against a blind 4/4 shift sequence. Reaching them requires setting a non-default ELM transmit header (`ATSH18DA1EF1`).
 
 Adding such a PID to the dongle's `auto_pid` table **collapsed its published payload from 62 keys to 19** and was rolled back. ELM headers are sticky and `Init` runs *before* a request, never after, so a header set for ATF persists into whatever standard PID polls next — those are then answered by the wrong module. `auto_pid` offers no "after" hook, and `_hdr_reset` is merely another entry competing in the same round-robin. Lengthening the period reduces the collapse frequency without eliminating it.

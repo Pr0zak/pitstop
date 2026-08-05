@@ -137,7 +137,7 @@ internal fun LineChart(
                     }
                     for ((i, v) in ticks.withIndex()) {
                         val y = bottom - (i * plotH / 2f)
-                        val label = formatTick(v, s.unitLabel)
+                        val label = formatTick(v, s.unitLabel, s.digits)
                         nativeCanvas.drawText(label, 4f, y + 4f, paint)
                     }
                 }
@@ -154,6 +154,12 @@ internal data class DisplaySeries(
     val series: MetricSeries,
     val color: Color,
     val unitLabel: String = "",
+    /**
+     * Decimals for the Y-axis tick labels. Null keeps the old
+     * magnitude-based guess, which rounds a 0.98–1.02 lambda series to
+     * a constant "1.0" — hence the explicit override.
+     */
+    val digits: Int? = null,
 )
 
 private fun Color.toArgb(): Int {
@@ -164,9 +170,11 @@ private fun Color.toArgb(): Int {
     return (a shl 24) or (r shl 16) or (g shl 8) or b
 }
 
-private fun formatTick(value: Double, unitLabel: String): String {
+private fun formatTick(value: Double, unitLabel: String, digits: Int? = null): String {
     val mag = kotlin.math.abs(value)
     val v = when {
+        digits != null -> if (mag >= 1000) "%,.${digits}f".format(value)
+            else "%.${digits}f".format(value)
         mag >= 1000 -> "%,.0f".format(value)
         mag >= 100 -> "%.0f".format(value)
         mag >= 10 -> "%.0f".format(value)

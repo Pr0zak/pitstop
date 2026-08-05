@@ -13,6 +13,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -28,6 +30,7 @@ class TripDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val api: PitstopApi,
     private val logBuffer: LogBuffer,
+    settingsRepository: com.pitstop.data.SettingsRepository,
 ) : ViewModel() {
 
     private val tripId: String = savedStateHandle.get<String>("id")
@@ -35,6 +38,18 @@ class TripDetailViewModel @Inject constructor(
 
     private val _ui = MutableStateFlow(TripDetailUi(loading = true))
     val ui: StateFlow<TripDetailUi> = _ui.asStateFlow()
+
+    /**
+     * Imperial / metric preference — the timeline chart converts its
+     * series and labels it with this (same mechanism as LiveScreen).
+     */
+    val unitSystem: StateFlow<String> = settingsRepository.settings
+        .map { it.unitSystem }
+        .stateIn(
+            viewModelScope,
+            kotlinx.coroutines.flow.SharingStarted.Eagerly,
+            "imperial",
+        )
 
     init {
         load()

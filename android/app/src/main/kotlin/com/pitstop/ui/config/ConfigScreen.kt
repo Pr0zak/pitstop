@@ -616,9 +616,10 @@ private fun CaptureCollectorsSection(
                 )
                 Text(
                     if (extendedPidsEnabled)
-                        "Polling ATF temperature + gear from the transmission module"
-                    else "Adds ATF temperature and current gear. Unverified on this " +
-                        "hardware — turn off if OBD readings look wrong.",
+                        "⚠ Known to BREAK capture on this hardware — turn this off"
+                    else "ATF temperature + gear. Tested 2026-08-05 and it does NOT " +
+                        "work: the dongle shares one OBD session, so this silently " +
+                        "stops most normal readings. Leave off (see ADR-022).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1336,7 +1337,9 @@ private fun DisplaySection(
 ) {
     SettingsSection(
         title = "Display",
-        description = "Imperial converts °C → °F, kPa → psi, g/s → lb/min, m → ft. Metric leaves canonical OBD units as-is.",
+        description = "Applies to the Live tiles, the trip timeline chart and the " +
+            "Android Auto grid. Imperial: °F, mph, psi, lb/min, ft, gal/h. " +
+            "Metric: °C, km/h, kPa, g/s, m, L/h.",
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             UnitChip(label = "Imperial", selected = unitSystem == "imperial", onClick = { onChange("imperial") })

@@ -1,42 +1,54 @@
 package com.pitstop.car
 
+import com.pitstop.util.UnitFormat
+
 /**
  * Catalog of metrics the Android Auto screens can display, with their
- * presentation hints (label, unit, decimal places). Single source of
+ * presentation hints (label, quantity, decimal places). Single source of
  * truth shared between the CarApp screens and the phone Settings UI
  * that lets the user reorder them.
+ *
+ * A tile names a [UnitFormat.Quantity], never a literal unit string —
+ * the head-unit grid honours the same imperial/metric toggle the phone
+ * screens do. This catalog used to hardcode canonical units ("kph",
+ * "°C", "m/s"), so an imperial user's dash showed metric numbers with
+ * metric labels while the Live screen next to it showed mph and °F.
  */
 data class CarTileSpec(
     val key: String,
     val label: String,
-    val unit: String,
+    val quantity: UnitFormat.Quantity,
     val digits: Int,
     val accent: Boolean = false,
-)
+) {
+    fun unit(system: String): String = quantity.unit(system)
+}
 
 object CarTileCatalog {
     val ALL: List<CarTileSpec> = listOf(
         // ── Engine ────────────────────────────────────────────────
-        CarTileSpec("engine_rpm", "RPM", "", 0, accent = true),
-        CarTileSpec("vehicle_speed", "Speed", "kph", 0),
-        CarTileSpec("coolant_temp", "Coolant", "°C", 0),
-        CarTileSpec("intake_air_temp", "Intake", "°C", 0),
-        CarTileSpec("engine_load", "Eng load", "%", 0),
-        CarTileSpec("throttle_position", "Throttle", "%", 0),
-        CarTileSpec("maf_air_flow", "MAF", "g/s", 1),
-        CarTileSpec("manifold_pressure", "MAP", "kPa", 0),
-        CarTileSpec("run_time_since_start", "Run time", "s", 0),
+        CarTileSpec("engine_rpm", "RPM", UnitFormat.Quantity.None, 0, accent = true),
+        CarTileSpec("vehicle_speed", "Speed", UnitFormat.Quantity.SpeedKph, 0),
+        CarTileSpec("coolant_temp", "Coolant", UnitFormat.Quantity.TempC, 0),
+        CarTileSpec("intake_air_temp", "Intake", UnitFormat.Quantity.TempC, 0),
+        CarTileSpec("engine_load", "Eng load", UnitFormat.Quantity.Percent, 0),
+        CarTileSpec("throttle_position", "Throttle", UnitFormat.Quantity.Percent, 0),
+        CarTileSpec("maf_air_flow", "MAF", UnitFormat.Quantity.MassFlowGramsPerSec, 1),
+        CarTileSpec("manifold_pressure", "MAP", UnitFormat.Quantity.PressureKpa, 0),
+        CarTileSpec("run_time_since_start", "Run time", UnitFormat.Quantity.Seconds, 0),
         // ── Fuel system ───────────────────────────────────────────
-        CarTileSpec("fuel_level", "Fuel", "%", 0),
-        CarTileSpec("stft_b1", "STFT B1", "%", 1),
-        CarTileSpec("ltft_b1", "LTFT B1", "%", 1),
-        CarTileSpec("stft_b2", "STFT B2", "%", 1),
-        CarTileSpec("ltft_b2", "LTFT B2", "%", 1),
+        CarTileSpec("fuel_level", "Fuel", UnitFormat.Quantity.Percent, 0),
+        CarTileSpec("stft_b1", "STFT B1", UnitFormat.Quantity.Percent, 1),
+        CarTileSpec("ltft_b1", "LTFT B1", UnitFormat.Quantity.Percent, 1),
+        CarTileSpec("stft_b2", "STFT B2", UnitFormat.Quantity.Percent, 1),
+        CarTileSpec("ltft_b2", "LTFT B2", UnitFormat.Quantity.Percent, 1),
         // ── Electrical ────────────────────────────────────────────
-        CarTileSpec("control_module_voltage", "Battery", "V", 1),
+        CarTileSpec("control_module_voltage", "Battery", UnitFormat.Quantity.Volt, 1),
         // ── GPS / IMU (from phone bridge) ─────────────────────────
-        CarTileSpec("gps_speed", "GPS spd", "m/s", 1),
-        CarTileSpec("gps_alt", "Altitude", "m", 0),
+        // m/s on the wire; SpeedMps renders mph or km/h, never the raw
+        // SI value. 0 decimals now that it's a human-scale number.
+        CarTileSpec("gps_speed", "GPS spd", UnitFormat.Quantity.SpeedMps, 0),
+        CarTileSpec("gps_alt", "Altitude", UnitFormat.Quantity.AltitudeM, 0),
     )
 
     val DEFAULT_HOME: List<String> = listOf(
