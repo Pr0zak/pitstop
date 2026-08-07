@@ -42,6 +42,8 @@ class SettingsRepository @Inject constructor(
         val deviceId: Preferences.Key<String> = stringPreferencesKey("device_id")
         val aaTilesHome: Preferences.Key<String> = stringPreferencesKey("aa_tiles_home")
         val aaTilesDiag: Preferences.Key<String> = stringPreferencesKey("aa_tiles_diag")
+        val aaTilesEngine: Preferences.Key<String> = stringPreferencesKey("aa_tiles_engine")
+        val aaTilesFuel: Preferences.Key<String> = stringPreferencesKey("aa_tiles_fuel")
         val unitSystem: Preferences.Key<String> = stringPreferencesKey("unit_system")
         val pairedCarBtMac: Preferences.Key<String> = stringPreferencesKey("paired_car_bt_mac")
         val manualSyncOnly: Preferences.Key<Boolean> = booleanPreferencesKey("manual_sync_only")
@@ -122,6 +124,10 @@ class SettingsRepository @Inject constructor(
             bleDeviceName = prefs[Keys.bleName]?.takeIf { it.isNotBlank() },
             publishHz = prefs[Keys.publishHz] ?: 1f,
             verboseLogging = prefs[Keys.verboseLogging] ?: false,
+            aaTilesEngine = prefs[Keys.aaTilesEngine]?.split(",")
+                ?.filter { it.isNotBlank() } ?: emptyList(),
+            aaTilesFuel = prefs[Keys.aaTilesFuel]?.split(",")
+                ?.filter { it.isNotBlank() } ?: emptyList(),
             aaTilesHome = prefs[Keys.aaTilesHome]?.split(",")
                 ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
             aaTilesDiag = prefs[Keys.aaTilesDiag]?.split(",")
@@ -215,6 +221,8 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.publishHz] = settings.publishHz
             prefs[Keys.verboseLogging] = settings.verboseLogging
             prefs[Keys.aaTilesHome] = settings.aaTilesHome.joinToString(",")
+            prefs[Keys.aaTilesEngine] = settings.aaTilesEngine.joinToString(",")
+            prefs[Keys.aaTilesFuel] = settings.aaTilesFuel.joinToString(",")
             prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
             prefs[Keys.unitSystem] = settings.unitSystem
             settings.pairedCarBtMac?.let { prefs[Keys.pairedCarBtMac] = it }

@@ -394,6 +394,16 @@ fun ConfigScreen(
                     unitSystem = form.unitSystem,
                     onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
                 )
+                CarTilesSection(
+                    home = form.aaTilesHome,
+                    engine = form.aaTilesEngine,
+                    fuel = form.aaTilesFuel,
+                    diag = form.aaTilesDiag,
+                    onHomeChange = { v -> viewModel.update { it.copy(aaTilesHome = v) } },
+                    onEngineChange = { v -> viewModel.update { it.copy(aaTilesEngine = v) } },
+                    onFuelChange = { v -> viewModel.update { it.copy(aaTilesFuel = v) } },
+                    onDiagChange = { v -> viewModel.update { it.copy(aaTilesDiag = v) } },
+                )
                 LogsSection(
                     verbose = form.verboseLogging,
                     buffered = bufferedCount,
@@ -1336,6 +1346,116 @@ private fun DisplaySection(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             UnitChip(label = "Imperial", selected = unitSystem == "imperial", onClick = { onChange("imperial") })
             UnitChip(label = "Metric", selected = unitSystem == "metric", onClick = { onChange("metric") })
+        }
+    }
+}
+
+/**
+ * Which metrics appear on the two Android Auto grids.
+ *
+ * Exists because the tile lists were stored in DataStore and read by the car
+ * screens but never surfaced anywhere — so the only way to change them was to
+ * edit the source. The count matters more than it looks: the car host resets
+ * a grid's scroll position every time the template is replaced, and a changing
+ * value always counts as a replacement, so any grid tall enough to scroll
+ * throws the user back to the top every couple of seconds. Three fits one row
+ * on the head units we have measured; more is offered because a wider screen
+ * shows two rows and only the owner of that car knows which it is.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CarTilesSection(
+    home: List<String>,
+    engine: List<String>,
+    fuel: List<String>,
+    diag: List<String>,
+    onHomeChange: (List<String>) -> Unit,
+    onEngineChange: (List<String>) -> Unit,
+    onFuelChange: (List<String>) -> Unit,
+    onDiagChange: (List<String>) -> Unit,
+) {
+    SettingsSection(
+        title = "Android Auto tabs",
+        description = "Four tabs on the head unit, up to " +
+            "${com.pitstop.car.CarTileCatalog.MAX_TILES} tiles each. Three fits one " +
+            "row on most screens — the car scrolls a grid back to the top whenever " +
+            "a value updates, so a tab that scrolls is hard to read while moving.",
+    ) {
+        // One picker per head-unit tab, in the order they appear in the car.
+        CarTilePicker(
+            label = "Drive tab",
+            selected = home.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_HOME },
+            onChange = onHomeChange,
+        )
+        Spacer(Modifier.size(12.dp))
+        CarTilePicker(
+            label = "Engine tab",
+            selected = engine.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_ENGINE },
+            onChange = onEngineChange,
+        )
+        Spacer(Modifier.size(12.dp))
+        CarTilePicker(
+            label = "Fuel tab",
+            selected = fuel.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_FUEL },
+            onChange = onFuelChange,
+        )
+        Spacer(Modifier.size(12.dp))
+        CarTilePicker(
+            label = "Diag tab",
+            selected = diag.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_DIAG },
+            onChange = onDiagChange,
+        )
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CarTilePicker(
+    label: String,
+    selected: List<String>,
+    onChange: (List<String>) -> Unit,
+) {
+    val max = com.pitstop.car.CarTileCatalog.MAX_TILES
+    Column {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "${selected.size} / $max",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (selected.size > max) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        Spacer(Modifier.size(6.dp))
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            for (spec in com.pitstop.car.CarTileCatalog.ALL) {
+                val on = spec.key in selected
+                androidx.compose.material3.FilterChip(
+                    selected = on,
+                    // Selecting is capped; DEselecting is always allowed, so
+                    // the user can never get stuck at the limit.
+                    enabled = on || selected.size < max,
+                    onClick = {
+                        onChange(
+                            if (on) selected - spec.key else selected + spec.key,
+                        )
+                    },
+                    label = {
+                        Text(spec.label, style = MaterialTheme.typography.labelMedium)
+                    },
+                )
+            }
         }
     }
 }

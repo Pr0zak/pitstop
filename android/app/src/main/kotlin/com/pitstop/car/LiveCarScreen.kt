@@ -3,12 +3,15 @@ package com.pitstop.car
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
-import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarIcon
 import androidx.car.app.model.GridItem
 import androidx.car.app.model.GridTemplate
 import androidx.car.app.model.ItemList
+import androidx.car.app.model.Tab
+import androidx.car.app.model.TabContents
+import androidx.car.app.model.TabTemplate
+import com.pitstop.service.BridgeStatus
 import androidx.car.app.model.Template
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -118,8 +121,9 @@ class LiveCarScreen(
         val status = stateBus.status.value
         val settings = runBlocking { settingsRepository.settings.first() }
         return buildString {
+            append(activeTab.id)
             append(status.brokerConnected)
-            for (spec in CarTileCatalog.resolveHome(settings.aaTilesHome)) {
+            for (spec in tilesFor(activeTab, settings)) {
                 append('|')
                 append(
                     carTileText(
@@ -151,6 +155,10 @@ class LiveCarScreen(
         const val REFRESH_INTERVAL_MS = 2_000L
     }
 
+    /** Which tab the head unit is showing. Survives invalidate(); reset only
+     *  when the screen is recreated. */
+    private var activeTab: CarTileCatalog.CarTab = CarTileCatalog.CarTab.Drive
+
     override fun onGetTemplate(): Template {
         val metrics = stateBus.latestByMetric.value
         val status = stateBus.status.value
@@ -164,43 +172,77 @@ class LiveCarScreen(
         // thread inside the framework's render call, and DataStore's
         // first() resolves quickly from the in-memory cache.
         val settings = runBlocking { settingsRepository.settings.first() }
-        val resolved = CarTileCatalog.resolveHome(settings.aaTilesHome)
 
-        val tiles = resolved.map { spec ->
-            buildTile(spec, metrics, settings.unitSystem)
-        }
-
-        // EXACTLY ONE action here may carry a custom title. androidx.car.app
-        // enforces "Action list exceeded max number of 1 actions with custom
-        // titles" in ActionStrip.Builder.build(), and it throws hard enough
-        // to take the whole car app down.
-        //
-        // This used to add a second titled "Broker off" action whenever the
-        // broker was disconnected — so the screen rendered fine on a healthy
-        // system and crashed exactly when something was already wrong, which
-        // is the worst possible time and why it survived review. The broker
-        // state now rides in the template title, where it needs no action
-        // slot and is actually more legible on a head unit.
-        val actions = ActionStrip.Builder()
-            .addAction(
-                Action.Builder()
-                    .setTitle("Diagnostics")
-                    .setOnClickListener {
-                        screenManager.push(
-                            DiagnosticsCarScreen(carContext, stateBus, settingsRepository),
-                        )
+        val grid = GridTemplate.Builder()
+            .setSingleList(
+                ItemList.Builder().apply {
+                    tilesFor(activeTab, settings).forEach { spec ->
+                        addItem(buildTile(spec, metrics, settings.unitSystem))
                     }
-                    .build(),
+                }.build(),
             )
             .build()
 
-        return GridTemplate.Builder()
-            .setTitle(if (status.brokerConnected) "Pitstop" else "Pitstop · broker offline")
-            .setSingleList(ItemList.Builder().apply { tiles.forEach { addItem(it) } }.build())
+        val builder = TabTemplate.Builder(
+            object : TabTemplate.TabCallback {
+                override fun onTabSelected(tabContentId: String) {
+                    activeTab = CarTileCatalog.CarTab.entries
+                        .firstOrNull { it.id == tabContentId } ?: return
+                    // Repaint immediately rather than waiting for the next
+                    // refresh tick, and reset the signature so the tick does
+                    // not immediately consider this frame stale.
+                    lastRendered = null
+                    invalidate()
+                }
+            },
+        )
+            // APP_ICON is the only header action a TabTemplate accepts.
             .setHeaderAction(Action.APP_ICON)
-            .setActionStrip(actions)
-            .build()
+            .setTabContents(TabContents.Builder(grid).build())
+            .setActiveTabContentId(activeTab.id)
+
+        for (tab in CarTileCatalog.CarTab.entries) {
+            builder.addTab(
+                Tab.Builder()
+                    .setTitle(tabTitle(tab, status))
+                    .setContentId(tab.id)
+                    .setIcon(
+                        CarIcon.Builder(
+                            androidx.core.graphics.drawable.IconCompat
+                                .createWithResource(carContext, tab.icon),
+                        ).build(),
+                    )
+                    .build(),
+            )
+        }
+        return builder.build()
     }
+
+    /**
+     * Broker state rides on the Diag tab's title rather than in an
+     * ActionStrip. TabTemplate has no action strip at all, and the
+     * ActionStrip it replaced could hold only ONE titled action — adding a
+     * second "Broker off" action is what crashed the car app in v0.1.216.
+     */
+    private fun tabTitle(tab: CarTileCatalog.CarTab, status: BridgeStatus): String =
+        if (tab == CarTileCatalog.CarTab.Diagnostics && !status.brokerConnected) {
+            "Diag !"
+        } else {
+            tab.title
+        }
+
+    private fun tilesFor(
+        tab: CarTileCatalog.CarTab,
+        settings: com.pitstop.data.Settings,
+    ): List<CarTileSpec> = CarTileCatalog.resolveTab(
+        tab,
+        when (tab) {
+            CarTileCatalog.CarTab.Drive -> settings.aaTilesHome
+            CarTileCatalog.CarTab.Engine -> settings.aaTilesEngine
+            CarTileCatalog.CarTab.Fuel -> settings.aaTilesFuel
+            CarTileCatalog.CarTab.Diagnostics -> settings.aaTilesDiag
+        },
+    )
 
     private fun buildTile(
         spec: CarTileSpec,
@@ -240,92 +282,18 @@ class LiveCarScreen(
             .build()
 }
 
-/**
- * Drill-down screen pushed from the home grid's action strip. Same
- * GridTemplate shape but shows diagnostic / phone-bridge telemetry the
- * top tiles don't have room for.
+/*
+ * DiagnosticsCarScreen was removed in the TabTemplate migration. It existed
+ * only because a GridTemplate can host one screen at a time and the diagnostics
+ * metrics had to be pushed onto the ScreenManager behind a "Diagnostics" action.
+ * Tabs render it in place, which also frees the 5-template-per-task quota that a
+ * push consumed. Its tile list survives as CarTab.Diagnostics.
  */
-class DiagnosticsCarScreen(
-    carContext: CarContext,
-    private val stateBus: BridgeStateBus,
-    private val settingsRepository: SettingsRepository,
-) : Screen(carContext), DefaultLifecycleObserver {
-
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var observerJob: Job? = null
-    private val trends = TrendTracker(windowMs = 30_000L)
-
-    init {
-        lifecycle.addObserver(this)
-    }
-
-    // Same split as LiveCarScreen: ingest every sample, repaint rarely.
-    // The car host rate-limits template updates on this screen too.
-    override fun onStart(owner: LifecycleOwner) {
-        observerJob = scope.launch {
-            launch {
-                stateBus.latestByMetric.collect { snapshot -> trends.ingest(snapshot) }
-            }
-            launch {
-                while (isActive) {
-                    delay(DIAG_REFRESH_INTERVAL_MS)
-                    invalidate()
-                }
-            }
-        }
-    }
-
-    private companion object {
-        const val DIAG_REFRESH_INTERVAL_MS = 2_000L
-    }
-
-    override fun onStop(owner: LifecycleOwner) {
-        observerJob?.cancel()
-        observerJob = null
-    }
-
-    override fun onDestroy(owner: LifecycleOwner) {
-        scope.cancel()
-    }
-
-    override fun onGetTemplate(): Template {
-        val metrics = stateBus.latestByMetric.value
-        val settings = runBlocking { settingsRepository.settings.first() }
-        val resolved = CarTileCatalog.resolveDiag(settings.aaTilesDiag)
-        val tiles = resolved.map { spec ->
-            tile(spec, metrics[spec.key]?.value, settings.unitSystem, trends.classify(spec.key))
-        }
-
-        return GridTemplate.Builder()
-            .setTitle("Diagnostics")
-            .setSingleList(ItemList.Builder().apply { tiles.forEach { addItem(it) } }.build())
-            .setHeaderAction(Action.BACK)
-            .build()
-    }
-
-    // Same GridItem image requirement as the home grid — see buildTile.
-    // This screen set no image on any tile at all, so every diagnostics
-    // tile would have thrown.
-    private fun tile(spec: CarTileSpec, v: Double?, system: String, trend: TrendDir): GridItem =
-        GridItem.Builder()
-            .setTitle(carTileText(v, spec, system, trend))
-            .setText(spec.label)
-            .setImage(
-                CarIcon.Builder(
-                    androidx.core.graphics.drawable.IconCompat.createWithResource(
-                        carContext,
-                        spec.icon,
-                    ),
-                ).setTint(CarColor.DEFAULT).build(),
-                GridItem.IMAGE_TYPE_ICON,
-            )
-            .build()
-}
 
 /**
- * Tile text shared by both car grids: the value converted into the
+ * Tile text shared by every car tab: the value converted into the
  * user's unit system, its unit label, then the trend arrow. Centralised
- * so the home grid and the diagnostics grid can't drift on units again.
+ * so no two tabs can drift on units.
  */
 internal fun carTileText(
     v: Double?,

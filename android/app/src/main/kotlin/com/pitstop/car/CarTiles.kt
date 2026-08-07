@@ -65,16 +65,65 @@ object CarTileCatalog {
         CarTileSpec("gps_alt", "Altitude", UnitFormat.Quantity.AltitudeM, 0, icon = R.drawable.ic_metric_altitude),
     )
 
+    /**
+     * Three, not six — one head-unit row, so the grid never scrolls.
+     *
+     * The car host replaces (rather than refreshes) a template whenever any
+     * item's text changes, and it resets scroll position on replacement. A
+     * live dashboard changes text by definition, so with a scrollable grid
+     * the user was thrown back to the top every couple of seconds while
+     * reading the lower tiles. Throttling only made it rarer; the only way
+     * to make it impossible is to have nothing to scroll.
+     *
+     * MAX_TILES stays 6 for anyone whose head unit shows two full rows —
+     * the picker in Settings lets them add more, and the trade-off is theirs
+     * to make because it depends on the screen in their car.
+     */
     val DEFAULT_HOME: List<String> = listOf(
-        "coolant_temp", "fuel_level", "engine_rpm",
-        "engine_load", "control_module_voltage", "intake_air_temp",
+        "fuel_level", "coolant_temp", "engine_rpm",
     )
 
+    /**
+     * Hard cap. Matches the host's grid content limit — exceeding it throws
+     * rather than truncating, and takes the car app down with it.
+     */
+    const val MAX_TILES = 6
+
+    /** Same single-row reasoning as DEFAULT_HOME. */
     val DEFAULT_DIAG: List<String> = listOf(
-        "throttle_position", "maf_air_flow",
-        "run_time_since_start", "stft_b1", "ltft_b1",
-        "stft_b2",
+        "throttle_position", "control_module_voltage", "run_time_since_start",
     )
+
+    val DEFAULT_ENGINE: List<String> = listOf(
+        "coolant_temp", "engine_load", "intake_air_temp",
+    )
+
+    val DEFAULT_FUEL: List<String> = listOf(
+        "fuel_level", "engine_fuel_rate", "maf_air_flow",
+    )
+
+    /**
+     * The head-unit tabs. Four is the documented TabTemplate maximum and
+     * there is no constant in ConstraintManager to read it from, so this is
+     * validated on a real host rather than asserted.
+     *
+     * Tabs exist as much for behaviour as for structure: the car host resets
+     * a grid's scroll position every time the template is replaced, and a
+     * changing value always counts as a replacement. Three tiles per tab
+     * means no grid ever scrolls, so the reset has nothing to undo — while
+     * still putting 12 metrics one tap away instead of 6 behind a scroll.
+     */
+    enum class CarTab(
+        val id: String,
+        val title: String,
+        val defaults: List<String>,
+        @DrawableRes val icon: Int,
+    ) {
+        Drive("drive", "Drive", DEFAULT_HOME, R.drawable.ic_metric_speed),
+        Engine("engine", "Engine", DEFAULT_ENGINE, R.drawable.ic_metric_tach),
+        Fuel("fuel", "Fuel", DEFAULT_FUEL, R.drawable.ic_metric_fuel),
+        Diagnostics("diag", "Diag", DEFAULT_DIAG, R.drawable.ic_metric_trim),
+    }
 
     fun byKey(key: String): CarTileSpec? = ALL.firstOrNull { it.key == key }
 
@@ -83,13 +132,17 @@ object CarTileCatalog {
 
     fun resolveDiag(stored: List<String>): List<CarTileSpec> = resolve(stored, DEFAULT_DIAG)
 
+    /** Tiles for one tab, honouring the user's stored order for it. */
+    fun resolveTab(tab: CarTab, stored: List<String>): List<CarTileSpec> =
+        resolve(stored, tab.defaults)
+
     private fun resolve(stored: List<String>, default: List<String>): List<CarTileSpec> {
         val source = stored.ifEmpty { default }
         // Fall back again if the stored keys resolve to nothing — a config
         // written by an older build could name metrics that no longer exist,
         // and a GridTemplate with an empty list is a blank car screen with no
         // way back. take(6) matches the host's grid content limit.
-        val specs = source.mapNotNull { byKey(it) }.take(6)
-        return specs.ifEmpty { default.mapNotNull { byKey(it) }.take(6) }
+        val specs = source.mapNotNull { byKey(it) }.take(MAX_TILES)
+        return specs.ifEmpty { default.mapNotNull { byKey(it) }.take(MAX_TILES) }
     }
 }

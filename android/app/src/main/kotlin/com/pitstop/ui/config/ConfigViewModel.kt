@@ -64,6 +64,8 @@ data class ConfigFormState(
     val bleDeviceName: String? = null,
     val verboseLogging: Boolean = false,
     val aaTilesHome: List<String> = emptyList(),
+    val aaTilesEngine: List<String> = emptyList(),
+    val aaTilesFuel: List<String> = emptyList(),
     val aaTilesDiag: List<String> = emptyList(),
     val unitSystem: String = "imperial",
     val manualSyncOnly: Boolean = false,
@@ -323,7 +325,9 @@ class ConfigViewModel @Inject constructor(
                 apiBaseUrl = secrets.settings.apiBaseUrl,
                 ingestToken = secrets.ingestToken,
                 queryToken = secrets.queryToken,
-                aaTilesHome = secrets.settings.aaTilesHome
+                aaTilesHome = secrets.settings.aaTilesHome,
+                aaTilesEngine = secrets.settings.aaTilesEngine,
+                aaTilesFuel = secrets.settings.aaTilesFuel
                     .ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_HOME },
                 aaTilesDiag = secrets.settings.aaTilesDiag
                     .ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_DIAG },
@@ -687,6 +691,8 @@ class ConfigViewModel @Inject constructor(
                 bleDeviceName = f.bleDeviceName,
                 verboseLogging = f.verboseLogging,
                 aaTilesHome = f.aaTilesHome,
+                aaTilesEngine = f.aaTilesEngine,
+                aaTilesFuel = f.aaTilesFuel,
                 aaTilesDiag = f.aaTilesDiag,
                 unitSystem = f.unitSystem,
                 manualSyncOnly = f.manualSyncOnly,

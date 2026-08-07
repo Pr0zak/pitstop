@@ -24,6 +24,8 @@ data class Settings(
      * Empty list → use the hardcoded defaults in LiveCarScreen.
      */
     val aaTilesHome: List<String> = emptyList(),
+    val aaTilesEngine: List<String> = emptyList(),
+    val aaTilesFuel: List<String> = emptyList(),
     /**
      * Ordered metric keys shown on the Android Auto diagnostics screen.
      * Same fallback shape as aaTilesHome.
