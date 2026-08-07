@@ -236,7 +236,16 @@ object Pids {
      * and only when the bitmap claims it exists.
      */
     val MafSensorA = Pid(
-        name = "maf_sensor_a",
+        // Publishes as `maf_air_flow`, NOT `maf_sensor_a`. 0x66 and 0x10 are
+        // two wire encodings of the same physical quantity — mass air flow in
+        // g/s — and the server already canonicalises the WiCAN's
+        // `66-MAFSensorA` to `maf_air_flow`. Publishing a second name split
+        // the same sensor across two metrics depending on whether the data
+        // came over BLE or WiFi: every consumer (Live tile, car tile,
+        // _TRIP_SAMPLE_METRICS) reads `maf_air_flow`, so phone-bridged drives
+        // showed an empty MAF tile and no MAF on the trip chart, while the
+        // identical reading from the dongle displayed fine.
+        name = "maf_air_flow",
         mode = 0x01,
         pid = 0x66,
         periodMs = 1_000,
@@ -314,6 +323,142 @@ object Pids {
         },
     )
 
+    /**
+     * Exhaust mass flow, Mode 01 PID 0x9E. `(A*256+B)/5` -> kg/h.
+     *
+     * The WiCAN's own firmware decoder for this PID is broken (it publishes
+     * a constant 0), which is why the dongle needs a custom-PID expression
+     * for it. The phone is NOT subject to that: it talks ELM327 directly and
+     * parses the raw frame itself, exactly as it already does for 0x9D.
+     */
+    val ExhaustFlow = Pid(
+        name = "engine_exhaust_flow",
+        mode = 0x01,
+        pid = 0x9E,
+        periodMs = 2_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) / 5.0  // kg/h
+        },
+    )
+
+    /** Catalyst temperature bank 1 sensor 1, PID 0x3C. `(A*256+B)/10 - 40` degC. */
+    val CatalystTempB1 = Pid(
+        name = "catalyst_temp_b1",
+        mode = 0x01,
+        pid = 0x3C,
+        periodMs = 10_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) / 10.0 - 40.0
+        },
+    )
+
+    /** Catalyst temperature bank 2 sensor 1, PID 0x3D. Same scaling as B1. */
+    val CatalystTempB2 = Pid(
+        name = "catalyst_temp_b2",
+        mode = 0x01,
+        pid = 0x3D,
+        periodMs = 10_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) / 10.0 - 40.0
+        },
+    )
+
+    /**
+     * O2 sensor 1 wide-range equivalence ratio (lambda), PID 0x24.
+     * `(A*256+B) * 2 / 65536`. C,D carry the sensor voltage, which is the
+     * field the WiCAN reports as an invariant 2.000 V and which
+     * wican_aliases.py therefore refuses to alias — we only take lambda.
+     */
+    val O2S1Lambda = Pid(
+        name = "o2_s1_lambda",
+        mode = 0x01,
+        pid = 0x24,
+        periodMs = 2_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) * 2.0 / 65536.0
+        },
+    )
+
+    /** Commanded air-fuel equivalence ratio, PID 0x44. Same scaling as 0x24. */
+    val CommandedAfrRatio = Pid(
+        name = "commanded_afr_ratio",
+        mode = 0x01,
+        pid = 0x44,
+        periodMs = 2_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) * 2.0 / 65536.0
+        },
+    )
+
+    /** Fuel rail gauge pressure, PID 0x23. `(A*256+B) * 10` -> kPa (~3500 here). */
+    val FuelRailPressure = Pid(
+        name = "fuel_rail_pressure",
+        mode = 0x01,
+        pid = 0x23,
+        periodMs = 5_000,
+        parser = { bytes ->
+            val a = byte(bytes, 0) ?: return@Pid null
+            val b = byte(bytes, 1) ?: return@Pid null
+            ((a * 256) + b) * 10.0  // kPa
+        },
+    )
+
+    /** Commanded EGR, PID 0x2C. `A*100/255` %. Reads a constant 0 on this
+     *  Pilot (no EGR command exposed) — polled slowly so it costs nothing,
+     *  and kept because other vehicles do answer it. */
+    val CommandedEgr = Pid(
+        name = "commanded_egr",
+        mode = 0x01,
+        pid = 0x2C,
+        periodMs = 10_000,
+        parser = { bytes -> byte(bytes, 0)?.let { it * 100.0 / 255.0 } },
+    )
+
+    /** Commanded evaporative purge, PID 0x2E. `A*100/255` %. */
+    val CommandedEvapPurge = Pid(
+        name = "commanded_evap_purge",
+        mode = 0x01,
+        pid = 0x2E,
+        periodMs = 10_000,
+        parser = { bytes -> byte(bytes, 0)?.let { it * 100.0 / 255.0 } },
+    )
+
+    /**
+     * Intake air temperature via PID 0x68, NOT the standard 0x0F.
+     *
+     * 0x0F answers NO DATA on this PCM — [IntakeAirTemp] above is kept for
+     * vehicles that do support it, but on the Pilot it never returns. 0x68
+     * is the multi-sensor intake-temperature PID: A is a sensor-support
+     * bitmap and the temperatures follow.
+     *
+     * The offset was established empirically against the real vehicle (see
+     * docs/research/honda-pilot-pids.md): the working expression is `B5-40`
+     * in the WiCAN's MQTT byte indexing, where B3 = A. So B5 = C, i.e. the
+     * THIRD data byte here. Do not "correct" this to B without re-probing
+     * the car — the obvious-looking offset is the one that reads -39 degC.
+     */
+    val IntakeAirTempHonda = Pid(
+        name = "intake_air_temp",
+        mode = 0x01,
+        pid = 0x68,
+        periodMs = 10_000,
+        parser = { bytes ->
+            val support = byte(bytes, 0) ?: return@Pid null
+            if (support == 0) return@Pid null
+            byte(bytes, 2)?.let { it - 40.0 }
+        },
+    )
+
     val Odometer = Pid(
         name = "odometer",
         mode = 0x01,
@@ -378,6 +523,19 @@ object Pids {
         EngineFuelRate,
         Odometer,
         StftB1, LtftB1, StftB2, LtftB2,
+        // Everything below was absent, which is why the Live screen showed
+        // "—" for a third of its tiles on any BLE drive: the WiCAN polls ~50
+        // PIDs, the phone polled 15, and the UI renders tiles for the union.
+        // Periods are deliberately uneven — the scheduler is next-due based
+        // (PitstopBridgeService round-robin), so a 10 s PID costs a slot once
+        // per 10 s and does not slow RPM or speed.
+        RunTimeSinceStart,
+        IntakeAirTempHonda,
+        ExhaustFlow,
+        O2S1Lambda, CommandedAfrRatio,
+        FuelRailPressure,
+        CatalystTempB1, CatalystTempB2,
+        CommandedEgr, CommandedEvapPurge,
         // MafAirFlow (0x10) is deliberately NOT here. It was added at ~1 Hz
         // to fix the backend's FUEL-DECREMENT-NULL — fuel-consumed
         // integration needs an airflow stream during phone-BLE drives,

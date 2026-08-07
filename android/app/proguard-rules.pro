@@ -39,6 +39,24 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 
+# ---- Crash-report triage signal ----
+# PitstopApp's uncaught-exception handler writes throwable::class.java.simpleName
+# into the crash JSON shipped to /api/logs, and ~66 further sites use it as the
+# `t.message ?: t::class.java.simpleName` fallback. R8 renamed the third-party
+# exception classes, so the shipped "type" field was a single letter:
+#     retrofit2.HttpException                        -> w6.o
+#     kotlinx.serialization.SerializationException   -> T5.e
+#     kotlinx.serialization.MissingFieldException    -> T5.a
+#     kotlinx.serialization.json.internal.JsonDecodingException -> Z5.h
+# getSimpleName() reads the dex type descriptor, and those descriptors were
+# absent from the shipped dex entirely — so remote crash triage saw type="o".
+# java.*/android.* exceptions were unaffected (R8 never renames them), which is
+# exactly why this stayed invisible: the common crashes still read correctly.
+#
+# -keepnames = keep the NAME, still allow shrinking. No member retention, so
+# the size cost is negligible.
+-keepnames class * extends java.lang.Throwable
+
 # ---- JCTools (lock-free queues, pulled in UNSHADED by hivemq-mqtt-client) ----
 # Netty's PlatformDependent resolves these queue fields BY NAME through
 # reflection to compute sun.misc.Unsafe field offsets. R8 renamed them, so

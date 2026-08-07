@@ -26,6 +26,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import kotlin.math.roundToInt
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -240,94 +242,31 @@ private fun FuelGaugeCard(
             }
             Spacer(Modifier.size(4.dp))
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(76.dp),
-            ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val strokeW = 8.dp.toPx()
-                    val pad = strokeW / 2f + 4.dp.toPx()
-                    val maxDiamByWidth = size.width - pad * 2
-                    val maxDiamByHeight = (size.height - pad) * 2f
-                    val diameter = minOf(maxDiamByWidth, maxDiamByHeight)
-                    val cx = size.width / 2f
-                    val cy = size.height - pad
-                    val topLeft = Offset(cx - diameter / 2f, cy - diameter / 2f)
-                    val arcSize = Size(diameter, diameter)
-
-                    val sweep = 180f
-                    val start = 180f
-
-                    drawArc(
-                        color = trackColor,
-                        startAngle = start,
-                        sweepAngle = sweep,
-                        useCenter = false,
-                        topLeft = topLeft,
-                        size = arcSize,
-                        style = Stroke(width = strokeW, cap = StrokeCap.Round),
-                    )
-                    drawArc(
-                        color = fillColor,
-                        startAngle = start,
-                        sweepAngle = sweep * pctF / 100f,
-                        useCenter = false,
-                        topLeft = topLeft,
-                        size = arcSize,
-                        style = Stroke(width = strokeW, cap = StrokeCap.Round),
-                    )
-
-                    val rOuter = diameter / 2f - strokeW - 1.dp.toPx()
-                    val rInner = rOuter - 4.dp.toPx()
-                    for (i in 0..4) {
-                        val ang = (start + sweep * i / 4f) * (PI.toFloat() / 180f)
-                        val s = sin(ang.toDouble()).toFloat()
-                        val c = cos(ang.toDouble()).toFloat()
-                        drawLine(
-                            color = tickColor,
-                            start = Offset(cx + rOuter * c, cy + rOuter * s),
-                            end = Offset(cx + rInner * c, cy + rInner * s),
-                            strokeWidth = 1.5.dp.toPx(),
-                            cap = StrokeCap.Round,
-                        )
-                    }
-                }
-
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 2.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        pct?.let { "${it.toInt()}%" } ?: "—",
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            letterSpacing = (-1.0).sp,
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = onSurfaceColor,
-                    )
-                }
-
-                Text(
-                    "E",
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 2.dp),
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = onSurfaceVariantColor,
-                )
-                Text(
-                    "F",
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 2.dp),
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = onSurfaceVariantColor,
-                )
-            }
+            // Linear bar, not an arc. The semicircle version had four
+            // separate geometry faults and every one of them came from
+            // positions being derived independently instead of from one
+            // source: StrokeCap.Round extended the stroke strokeW/2 PAST
+            // each endpoint (at E and F the tangent is vertical, so both
+            // caps hung below the baseline — the visible misalignment);
+            // ticks were placed at R - strokeW - 1dp while the arc's inner
+            // edge is R - strokeW/2, leaving them floating in the gap; the
+            // E/F labels were Box-aligned to the card rather than to the
+            // arc's ends, so they drifted with card width; and the value
+            // sat at BottomCenter on top of the ticks.
+            //
+            // A bar has one axis. Track, fill, ticks and both labels are
+            // all placed off the same left/right edges, so they cannot
+            // disagree — and the readout gets to be the biggest thing on
+            // the card, which is what a glance actually wants.
+            Text(
+                pct?.let { "${it.roundToInt()}%" } ?: "—",
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.displaySmall.copy(
+                    letterSpacing = (-1.5).sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = onSurfaceColor,
+            )
 
             Text(
                 run {
@@ -340,11 +279,87 @@ private fun FuelGaugeCard(
                         else -> "—"
                     }
                 },
-                modifier = Modifier.padding(top = 4.dp),
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.bodySmall,
                 color = onSurfaceVariantColor,
             )
+
+            Spacer(Modifier.size(10.dp))
+
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(26.dp),
+            ) {
+                val barH = 14.dp.toPx()
+                val r = barH / 2f
+                val left = 0f
+                val right = size.width
+                val w = right - left
+
+                drawRoundRect(
+                    color = trackColor,
+                    topLeft = Offset(left, 0f),
+                    size = Size(w, barH),
+                    cornerRadius = CornerRadius(r, r),
+                )
+                // Only draw the fill when it is at least as wide as the
+                // rounded end, otherwise the corner radius renders a lozenge
+                // that reads as more fuel than there is at 1-2 %.
+                val fillW = w * pctF / 100f
+                if (fillW >= barH) {
+                    drawRoundRect(
+                        color = fillColor,
+                        topLeft = Offset(left, 0f),
+                        size = Size(fillW, barH),
+                        cornerRadius = CornerRadius(r, r),
+                    )
+                } else if (fillW > 0f) {
+                    drawRoundRect(
+                        color = fillColor,
+                        topLeft = Offset(left, 0f),
+                        size = Size(barH, barH),
+                        cornerRadius = CornerRadius(r, r),
+                    )
+                }
+
+                // Quarter ticks, hung off the SAME left/right the bar uses.
+                for (i in 0..4) {
+                    val x = left + w * i / 4f
+                    // Inset the outermost ticks by the corner radius so they
+                    // sit under the bar's flat edge rather than its curve.
+                    val tx = when (i) {
+                        0 -> x + r
+                        4 -> x - r
+                        else -> x
+                    }
+                    drawLine(
+                        color = tickColor.copy(alpha = 0.7f),
+                        start = Offset(tx, barH + 3.dp.toPx()),
+                        end = Offset(tx, barH + 8.dp.toPx()),
+                        strokeWidth = 1.5.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "E",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = onSurfaceVariantColor,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "F",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = onSurfaceVariantColor,
+                )
+            }
         }
     }
 }

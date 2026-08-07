@@ -49,16 +49,38 @@ class MafSensorATest {
     }
 
     @Test
-    fun `is polled under its own metric name so it cannot double-count`() {
-        // Sharing `maf_air_flow` with PID 0x10 would put two independent
-        // sample streams in one metric and double the integrated burn.
-        assertEquals("maf_sensor_a", Pids.MafSensorA.name)
+    fun `exactly one airflow PID is polled, under the canonical name`() {
+        // The invariant this guards is the COUNT: two airflow PIDs in the
+        // poll list would put two independent sample streams into one metric
+        // and double the integrated burn.
+        //
+        // It used to guard that by giving 0x66 its own name, `maf_sensor_a`.
+        // That "fix" was worse than the problem: every consumer — the Live
+        // tile, the car tile, the backend's _TRIP_SAMPLE_METRICS — reads
+        // `maf_air_flow`, so the same physical sensor was invisible whenever
+        // it arrived over BLE and visible when it arrived from the WiCAN over
+        // WiFi. The server already canonicalises the dongle's 66-MAFSensorA
+        // to `maf_air_flow`; the phone is the one that was out of step.
+        //
+        // Distinct names were never what prevented double-counting. Polling
+        // only one of them is.
+        assertEquals("maf_air_flow", Pids.MafSensorA.name)
         assertEquals(0x66, Pids.MafSensorA.pid)
         assert(Pids.DEFAULT.contains(Pids.MafSensorA))
         assertEquals(
             1,
-            Pids.DEFAULT.count { it.name == "maf_air_flow" || it.name == "maf_sensor_a" },
+            Pids.DEFAULT.count { it.name == "maf_air_flow" },
         )
+    }
+
+    @Test
+    fun `no two polled PIDs share a metric name`() {
+        // Generalises the rule above to the whole list, now that it carries
+        // 24 PIDs rather than 15: any duplicate name silently merges two
+        // streams into one metric, which is a data-integrity bug rather than
+        // a display one and would not show up as an empty tile.
+        val dupes = Pids.DEFAULT.groupBy { it.name }.filterValues { it.size > 1 }
+        assertEquals(emptyMap<String, List<Pid>>(), dupes)
     }
 
     @Test

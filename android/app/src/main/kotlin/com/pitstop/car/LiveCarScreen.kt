@@ -67,6 +67,7 @@ class LiveCarScreen(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var observerJob: Job? = null
     private val trends = TrendTracker(windowMs = 30_000L)
+    private var lastRendered: String? = null
 
     init {
         lifecycle.addObserver(this)
@@ -89,8 +90,45 @@ class LiveCarScreen(
             launch {
                 while (isActive) {
                     delay(REFRESH_INTERVAL_MS)
-                    invalidate()
+                    // Only repaint when the RENDERED TEXT would actually
+                    // differ. The car host resets the grid's scroll position
+                    // whenever the template is replaced, so an unconditional
+                    // timer yanked the user back to the top every 2 s while
+                    // they were reading the lower tiles — even with the car
+                    // parked and every value identical.
+                    val sig = renderSignature()
+                    if (sig != lastRendered) {
+                        lastRendered = sig
+                        invalidate()
+                    }
                 }
+            }
+        }
+    }
+
+    /**
+     * Everything that affects what the grid draws, flattened to a string.
+     * Compared against the last painted frame so an unchanged screen is
+     * never re-sent. Deliberately built from the SAME helper the template
+     * uses (`carTileText`), so a value that rounds to the same display text
+     * counts as unchanged — e.g. RPM drifting 722 -> 723 with 0 decimals.
+     */
+    private fun renderSignature(): String {
+        val metrics = stateBus.latestByMetric.value
+        val status = stateBus.status.value
+        val settings = runBlocking { settingsRepository.settings.first() }
+        return buildString {
+            append(status.brokerConnected)
+            for (spec in CarTileCatalog.resolveHome(settings.aaTilesHome)) {
+                append('|')
+                append(
+                    carTileText(
+                        metrics[spec.key]?.value,
+                        spec,
+                        settings.unitSystem,
+                        trends.classify(spec.key),
+                    ),
+                )
             }
         }
     }
