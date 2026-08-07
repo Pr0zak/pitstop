@@ -113,21 +113,22 @@ object CarTileCatalog {
     )
 
     /**
-     * Three, not six — one head-unit row, so the grid never scrolls.
+     * Six per screen, read down to the host's real grid limit at render time.
      *
-     * The car host replaces (rather than refreshes) a template whenever any
-     * item's text changes, and it resets scroll position on replacement. A
-     * live dashboard changes text by definition, so with a scrollable grid
-     * the user was thrown back to the top every couple of seconds while
-     * reading the lower tiles. Throttling only made it rarer; the only way
-     * to make it impossible is to have nothing to scroll.
+     * This was three for a while, to stop the head unit resetting scroll
+     * position mid-read. That reset was self-inflicted: the live value sat in
+     * GridItem.setTitle(), and the host's refresh predicate compares item
+     * titles — so every tick was a template REPLACEMENT rather than a
+     * refresh, which both reset scroll and burned the five-per-task quota
+     * that closes the app when exhausted.
      *
-     * MAX_TILES stays 6 for anyone whose head unit shows two full rows —
-     * the picker in Settings lets them add more, and the trade-off is theirs
-     * to make because it depends on the screen in their car.
+     * With the value moved to setText(), updates are genuine in-place
+     * refreshes: scroll survives, the quota is untouched, and the tile count
+     * is a free UX choice again. The picker in Settings caps at MAX_TILES.
      */
     val DEFAULT_HOME: List<String> = listOf(
-        "fuel_level", "coolant_temp", "engine_rpm",
+        "vehicle_speed", "engine_rpm", "fuel_level",
+        "coolant_temp", "engine_load", "control_module_voltage",
     )
 
     /**
@@ -138,15 +139,18 @@ object CarTileCatalog {
 
     /** Same single-row reasoning as DEFAULT_HOME. */
     val DEFAULT_DIAG: List<String> = listOf(
-        "throttle_position", "control_module_voltage", "run_time_since_start",
+        "throttle_position", "run_time_since_start", "stft_b1",
+        "ltft_b1", "stft_b2", "ltft_b2",
     )
 
     val DEFAULT_ENGINE: List<String> = listOf(
-        "coolant_temp", "engine_load", "intake_air_temp",
+        "coolant_temp", "intake_air_temp", "engine_load",
+        "throttle_position", "maf_air_flow", "manifold_pressure",
     )
 
     val DEFAULT_FUEL: List<String> = listOf(
-        "fuel_level", "engine_fuel_rate", "maf_air_flow",
+        "fuel_level", "engine_fuel_rate", "engine_exhaust_flow",
+        "commanded_afr_ratio", "o2_s1_lambda", "fuel_rail_pressure",
     )
 
     /**
@@ -177,7 +181,6 @@ object CarTileCatalog {
         val title: String,
         val defaults: List<String>?,
         @DrawableRes val icon: Int,
-        val needsNetwork: Boolean = false,
     ) {
         Drive("drive", "Drive", DEFAULT_HOME, R.drawable.ic_metric_speed),
         Engine("engine", "Engine", DEFAULT_ENGINE, R.drawable.ic_metric_tach),
@@ -186,12 +189,21 @@ object CarTileCatalog {
 
         /** Live bridge/session state from the in-process bus. No network. */
         Session("session", "Status", null, R.drawable.ic_metric_clock),
-
-        /** Server-backed. Each is one analytics endpoint. */
-        Economy("economy", "MPG", null, R.drawable.ic_metric_load, needsNetwork = true),
-        Fillups("fillups", "Fill-ups", null, R.drawable.ic_metric_fuel, needsNetwork = true),
-        Costs("costs", "Costs", null, R.drawable.ic_metric_pressure, needsNetwork = true),
         ;
+
+        // Economy / Fill-ups / Costs were here and were removed deliberately.
+        //
+        // The app declares androidx.car.app.category.IOT — the only viable
+        // category, since there is no telemetry one. IOT's rule permits
+        // viewing CURRENT STATE and simple one-touch actions while driving.
+        // Monthly spend, cost-per-mile and fill-up history are retrospective
+        // analytics: they are what the phone and the web dashboard are for,
+        // and on the car surface they read as out-of-category.
+        //
+        // It is also the ADR-013 split holding: the car is a glance, the
+        // phone is where you read. resolveTabs() drops unknown stored ids, so
+        // anyone who had selected these falls back to the defaults with no
+        // migration.
 
         val isMetricGrid: Boolean get() = defaults != null
 

@@ -28,7 +28,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * Top-level Pitstop screen for the head unit. The user's car cluster
@@ -91,6 +90,9 @@ class LiveCarScreen(
                 stateBus.latestByMetric.collect { snapshot -> trends.ingest(snapshot) }
             }
             launch {
+                settingsRepository.settings.collect { cachedSettings = it }
+            }
+            launch {
                 while (isActive) {
                     delay(REFRESH_INTERVAL_MS)
                     // Only repaint when the RENDERED TEXT would actually
@@ -119,7 +121,7 @@ class LiveCarScreen(
     private fun renderSignature(): String {
         val metrics = stateBus.latestByMetric.value
         val status = stateBus.status.value
-        val settings = runBlocking { settingsRepository.settings.first() }
+        val settings = cachedSettings ?: return ""
         return buildString {
             append(activeTab?.id)
             append(status.brokerConnected)
@@ -159,19 +161,33 @@ class LiveCarScreen(
      *  when the screen is recreated. */
     private var activeTab: CarTileCatalog.CarScreenKind? = null
 
+    /**
+     * Settings, kept current by a collector rather than read synchronously.
+     *
+     * onGetTemplate() used to runBlocking { settings.first() } twice per tick.
+     * The justification was that DataStore resolves from an in-memory cache —
+     * true only AFTER the first collection. The first read after process
+     * start is disk I/O on the main thread, and it lands exactly at car
+     * connect, which is the moment the head unit is cold and the moment the
+     * app-quality launch-time requirements measure.
+     */
+    @Volatile
+    private var cachedSettings: com.pitstop.data.Settings? = null
+
     override fun onGetTemplate(): Template {
         val metrics = stateBus.latestByMetric.value
         val status = stateBus.status.value
 
-        // Read user-customised tile order from DataStore. The CarApp
-        // framework calls onGetTemplate() on every invalidate, so a
-        // change in Settings shows up on the next sample without
-        // re-pairing or restarting the service.
+        // Tile order comes from DataStore via the collector above, so a
+        // change in Settings shows up on the next tick without re-pairing
+        // or restarting the service.
         //
-        // runBlocking is acceptable here: we're already on the main
-        // thread inside the framework's render call, and DataStore's
-        // first() resolves quickly from the in-memory cache.
-        val settings = runBlocking { settingsRepository.settings.first() }
+        // Loading is not a fallback, it is the sanctioned first frame: every
+        // refresh predicate begins "the previous template is in a loading
+        // state", so the loading -> real transition is a free refresh
+        // whatever shape it takes.
+        val settings = cachedSettings
+            ?: return GridTemplate.Builder().setLoading(true).setTitle("Pitstop").build()
 
         val tabs = CarTileCatalog.CarScreenKind.resolveTabs(settings.aaTabs)
         // A stored tab could have been removed from the catalogue, or the
@@ -202,7 +218,7 @@ class LiveCarScreen(
         for (tab in tabs) {
             builder.addTab(
                 Tab.Builder()
-                    .setTitle(tabTitle(tab, status))
+                    .setTitle(tabTitle(tab))
                     .setContentId(tab.id)
                     .setIcon(
                         CarIcon.Builder(
@@ -217,28 +233,32 @@ class LiveCarScreen(
     }
 
     /**
-     * Broker state rides on the Diag tab's title rather than in an
-     * ActionStrip. TabTemplate has no action strip at all, and the
-     * ActionStrip it replaced could hold only ONE titled action — adding a
-     * second "Broker off" action is what crashed the car app in v0.1.216.
+     * Tab titles are STRUCTURAL and must never change.
+     *
+     * TabTemplate's refresh predicate requires the same number of tabs with
+     * the same title and icon, so flipping "Diag" to "Diag !" on a broker
+     * flap was an unconditional template replacement. MQTT reconnects are
+     * routine on this stack and the render signature includes the broker
+     * flag, so every flap fired one — five in a task and the host closes the
+     * app.
+     *
+     * Broker state now shows as a dot Badge on the affected tile plus a text
+     * row in the Status pane. Both, not either: a red dot alone fails
+     * WCAG 1.4.1 and is invisible to roughly one man in twelve. The dot is
+     * the fast cue, the row carries the meaning.
      */
-    private fun tabTitle(tab: CarTileCatalog.CarScreenKind, status: BridgeStatus): String =
-        if (tab == CarTileCatalog.CarScreenKind.Diagnostics && !status.brokerConnected) {
-            "Diag !"
-        } else {
-            tab.title
-        }
+    private fun tabTitle(tab: CarTileCatalog.CarScreenKind): String = tab.title
 
     /**
-     * One template per screen kind. Metric screens are a GridTemplate of
-     * tiles; everything else is a PaneTemplate, which is the only general
-     * template that pairs a large rendered image with a few rows of text.
+     * One template per screen kind. Metric screens are a GridTemplate;
+     * Status is a PaneTemplate.
      *
-     * Pane row count is READ from the host rather than assumed —
-     * getContentLimit(CONTENT_LIMIT_TYPE_PANE) — because exceeding a
-     * content limit throws instead of truncating, and that takes the whole
-     * car app down. Every limit assumed rather than measured has cost a
-     * crash on this surface already.
+     * Grid size is READ from the host, not assumed. MAX_TILES = 6 in the
+     * catalogue is the library's FALLBACK, not any particular car's limit —
+     * real head units often allow more. (An over-limit list does not throw,
+     * contrary to an earlier comment here; the host silently drops the
+     * overflow. Truncating is still right, but for honesty about what the
+     * user configured, not to avoid a crash.)
      */
     private fun contentFor(
         kind: CarTileCatalog.CarScreenKind,
@@ -246,45 +266,41 @@ class LiveCarScreen(
         status: BridgeStatus,
         settings: com.pitstop.data.Settings,
     ): Template = when {
-        kind.isMetricGrid -> GridTemplate.Builder()
-            .setSingleList(
-                ItemList.Builder().apply {
-                    tilesFor(kind, settings).forEach { spec ->
-                        addItem(buildTile(spec, metrics, settings.unitSystem))
-                    }
-                }.build(),
+        kind.isMetricGrid -> {
+            val limit = contentLimit(
+                androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_GRID,
+                CarTileCatalog.MAX_TILES,
             )
-            .build()
-
-        kind == CarTileCatalog.CarScreenKind.Session ->
-            paneOf(sessionRows(status, metrics, settings.unitSystem))
-
-        // Server-backed screens. Nothing is fetched yet, so they render an
-        // honest placeholder rather than an empty pane that looks broken —
-        // a car screen that silently shows nothing is worse than one that
-        // says why.
-        else -> paneOf(
-            listOf(
-                "Not yet available" to kind.title,
-                "Needs" to "a connection to your server",
-            ),
-        )
+            GridTemplate.Builder()
+                .setSingleList(
+                    ItemList.Builder().apply {
+                        tilesFor(kind, settings).take(limit).forEach { spec ->
+                            addItem(buildTile(spec, metrics, settings.unitSystem, status))
+                        }
+                    }.build(),
+                )
+                .build()
+        }
+        else -> paneOf(sessionRows(status, metrics))
     }
 
-    private fun paneRowLimit(): Int = runCatching {
-        carContext.getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
-            .getContentLimit(
-                androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_PANE,
-            )
-    }.getOrDefault(4).coerceAtLeast(1)
+    private fun contentLimit(type: Int, fallback: Int): Int = runCatching {
+        carContext
+            .getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
+            .getContentLimit(type)
+    }.getOrDefault(fallback).coerceAtLeast(1)
 
     private fun paneOf(rows: List<Pair<String, String>>): Template {
+        val limit = contentLimit(
+            androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_PANE,
+            4,
+        )
         val pane = androidx.car.app.model.Pane.Builder()
-        // Row.setTitle is the LABEL and addText the value, not the other way
-        // round: the host treats a template as a refresh only when titles are
-        // unchanged, so putting the changing value in the title makes every
-        // update a replacement — which is what resets scroll position.
-        for ((label, value) in rows.take(paneRowLimit())) {
+        // Row.setTitle is the LABEL and addText the value, for exactly the
+        // reason buildTile now does the same: the host treats an update as a
+        // refresh only when titles are unchanged, and a non-refresh spends
+        // one of five templates per task before the app is closed.
+        for ((label, value) in rows.take(limit)) {
             pane.addRow(
                 androidx.car.app.model.Row.Builder()
                     .setTitle(label)
@@ -295,10 +311,14 @@ class LiveCarScreen(
         return androidx.car.app.model.PaneTemplate.Builder(pane.build()).build()
     }
 
+    /**
+     * Fixed row COUNT and fixed row TITLES — only the values move. Adding or
+     * removing a row on a state change would be a structural change and cost
+     * a template.
+     */
     private fun sessionRows(
         status: BridgeStatus,
         metrics: Map<String, MetricSample>,
-        unitSystem: String,
     ): List<Pair<String, String>> = listOf(
         "Bridge" to status.phase.name,
         "Engine" to status.engineState.name,
@@ -326,6 +346,7 @@ class LiveCarScreen(
         spec: CarTileSpec,
         metrics: Map<String, MetricSample>,
         system: String,
+        status: BridgeStatus,
     ): GridItem {
         val trend = trends.classify(spec.key)
         val displayValue = carTileText(metrics[spec.key]?.value, spec, system, trend)
@@ -339,12 +360,36 @@ class LiveCarScreen(
         // This previously set an image only for accent tiles, so the very
         // first render on a head unit crashed. Accent is now expressed by
         // the icon TINT rather than by the icon's presence.
+        // Label in the TITLE, value in the TEXT — never the reverse.
+        //
+        // GridTemplate's refresh predicate is "the number of grid items and
+        // the TITLE of each grid item have not changed". Item text and image
+        // are excluded from that diff; the title is not. With the value in
+        // the title, every tick was a template REPLACEMENT rather than a
+        // refresh, and the host allows five templates per task before it
+        // shows an error and CLOSES THE APP. At a 2 s repaint that is roughly
+        // ten seconds of driving.
+        //
+        // paneOf() below has always done this correctly and says why in its
+        // own comment. This was a one-place inconsistency, not a design
+        // position — and the scroll-reset that drove the move to three tiles
+        // per tab was the same bug seen from the other side.
         return GridItem.Builder()
-            .setTitle(displayValue)
-            .setText(spec.label)
+            .setTitle(spec.label)
+            .setText(displayValue)
             .setImage(
                 metricIcon(spec, if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT),
                 GridItem.IMAGE_TYPE_ICON,
+                // A dot on the accent tile when the broker is down. Badges sit
+                // OUTSIDE the refresh diff (only item count and title are
+                // compared), so this conveys state without costing a template
+                // — which is exactly what the old "Diag !" tab title did not.
+                // Paired with the Status pane's "Broker" row, because colour
+                // alone is not an accessible signal.
+                androidx.car.app.model.Badge.Builder()
+                    .setHasDot(spec.accent && !status.brokerConnected)
+                    .setBackgroundColor(CarColor.RED)
+                    .build(),
             )
             .build()
     }
@@ -412,8 +457,18 @@ class TrendTracker(private val windowMs: Long) {
             val v = sample.value
             if (v.isNaN()) continue
             val existing = byMetric[key]
-            if (existing == null || (now - existing.firstTs) > windowMs) {
+            if (existing == null) {
                 byMetric[key] = Window(now, v, now, v)
+            } else if ((now - existing.firstTs) > windowMs) {
+                // Roll the window forward, seeding the new baseline with the
+                // PREVIOUS reading rather than the current one.
+                //
+                // Resetting to (now, v, now, v) made firstVal == lastVal and
+                // lastTs - firstTs == 0, so classify() returned Steady until
+                // 2 s of fresh samples accumulated: every tile's arrow
+                // vanished and re-appeared once per window. That is a wasted
+                // repaint and, worse, unrequested motion on a car display.
+                byMetric[key] = Window(now - 2_001, existing.lastVal, now, v)
             } else {
                 byMetric[key] = existing.copy(lastTs = now, lastVal = v)
             }

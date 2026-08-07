@@ -1496,15 +1496,6 @@ private fun CarTabPicker(
                 )
             }
         }
-        if (effective.any { com.pitstop.car.CarTileCatalog.CarScreenKind.byId(it)?.needsNetwork == true }) {
-            Spacer(Modifier.size(6.dp))
-            Text(
-                "Screens marked as server-backed need your Pitstop server reachable " +
-                    "from the phone — on cellular that is via your home network.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
 
