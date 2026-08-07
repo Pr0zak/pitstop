@@ -14,11 +14,22 @@ plugins {
 }
 
 android {
+    // The Kotlin/R namespace. Intentionally NOT the same as applicationId:
+    // `com.pitstop` was already taken on Play, but renaming ~200 source
+    // files to match the new app id would be churn for no benefit. Android
+    // has never required the two to agree.
     namespace = "com.pitstop"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.pitstop"
+        // Play identity. PERMANENT — Google never allows an application id
+        // to be changed or reused, even for an app that was only ever an
+        // unpublished draft. `com.pitstop` was rejected as already in use.
+        //
+        // Chosen under github.com/Pr0zak, a namespace that is actually
+        // controlled, rather than a com.* name implying a domain that is
+        // not owned.
+        applicationId = "io.github.pr0zak.pitstop"
         minSdk = 26
         targetSdk = 35
         // CI passes BUILD_VERSION_NAME (from the v* tag) and BUILD_VERSION_CODE.
