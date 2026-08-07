@@ -1,3 +1,9 @@
+// Inside an `android { }` block the Kotlin DSL resolves bare `java` to
+// Gradle's java extension, not the JDK package — so these must be
+// top-level imports rather than fully-qualified references below.
+import java.io.File
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -15,13 +21,43 @@ android {
         applicationId = "com.pitstop"
         minSdk = 26
         targetSdk = 35
-        // CI passes BUILD_VERSION_NAME (from the v* tag) and BUILD_VERSION_CODE
-        // (the GH Actions run number). Local builds keep safe defaults.
+        // CI passes BUILD_VERSION_NAME (from the v* tag) and BUILD_VERSION_CODE.
+        // Local builds keep safe defaults.
+        //
+        // versionCode ranges, kept disjoint on purpose:
+        //   1..999    GitHub Actions run number — the sideloaded debug APKs
+        //   1000+     Play uploads (1000 + run number once CI builds them)
+        // Play requires versionCode to be unique and strictly increasing per
+        // upload FOREVER; reusing one is a hard rejection. Keeping Play in its
+        // own range means the debug stream can never burn a number Play needs.
         versionCode = System.getenv("BUILD_VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = System.getenv("BUILD_VERSION_NAME") ?: "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    // Release/upload signing. Resolved from, in order:
+    //   1. android/keystore.properties or ~/.pitstop-keys/keystore.properties
+    //   2. ANDROID_KEYSTORE_* environment variables (for CI)
+    // Absent both, `release` stays unsigned and bundleRelease still builds —
+    // so a fork or a fresh clone is never blocked on a secret it cannot have.
+    //
+    // NOTHING here may be committed: *.jks, *.keystore and keystore.properties
+    // are all gitignored. This is the UPLOAD key, not the app signing key —
+    // Play App Signing holds the latter, so losing this one is recoverable
+    // via a Play Console upload-key reset, but it should still be backed up.
+    val keystoreProps = Properties().apply {
+        val candidates = listOf(
+            rootProject.file("keystore.properties"),
+            File(System.getProperty("user.home"), ".pitstop-keys/keystore.properties"),
+        )
+        candidates.firstOrNull { it.exists() }?.let { load(it.inputStream()) }
+    }
+    fun signingValue(propKey: String, envKey: String): String? =
+        keystoreProps.getProperty(propKey) ?: System.getenv(envKey)
+
+    val releaseStorePath = signingValue("storeFile", "ANDROID_KEYSTORE_PATH")
+    val hasReleaseSigning = releaseStorePath != null && File(releaseStorePath).exists()
 
     signingConfigs {
         // Stable, repo-committed debug keystore so APKs from successive
@@ -35,6 +71,14 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = File(releaseStorePath!!)
+                storePassword = signingValue("storePassword", "ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "ANDROID_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "ANDROID_KEY_PASSWORD")
+            }
         }
     }
 
@@ -56,6 +100,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

@@ -22,7 +22,6 @@
          DownloadManager and open the system package installer. The OS
          still prompts the user to grant "Install unknown apps" the first
          time it's used. -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Bluetooth (Android 12+ runtime perms) -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
@@ -276,16 +275,6 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/fuel_widget_info" />
         </receiver>
-
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
 
         <!-- PitstopApp implements WorkManager Configuration.Provider for
              on-demand initialization, so the default startup

@@ -130,7 +130,6 @@ fun ConfigScreen(
     val lastFlushAt by viewModel.lastFlushAtMs.collectAsStateWithLifecycle()
     val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
     val latestUpdate by viewModel.latestUpdate.collectAsStateWithLifecycle()
-    val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
     val connTest by viewModel.connTest.collectAsStateWithLifecycle()
     val brokerTest by viewModel.brokerTest.collectAsStateWithLifecycle()
     val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
@@ -197,10 +196,6 @@ fun ConfigScreen(
                 is ConfigToast.UpdateAvailable ->
                     "v${t.latest} available — tap Download to install"
                 is ConfigToast.UpdateCheckError -> "Update check failed: ${t.message}"
-                is ConfigToast.UpdateDownloadStarted ->
-                    "Downloading v${t.version}… installer will open when ready"
-                ConfigToast.UpdateDownloadFailed ->
-                    "Download failed — check Logs and try again"
                 ConfigToast.CompanionPaired -> "WiCAN paired for reliable auto-start"
                 ConfigToast.BridgePausedForPairing ->
                     "Stopping bridge so the WiCAN can be discovered…"
@@ -413,10 +408,7 @@ fun ConfigScreen(
                     checking = checkingUpdate,
                     latestVersionFound = latestUpdate?.latestVersion,
                     latestIsNewer = latestUpdate?.isNewer == true,
-                    hasApkAsset = latestUpdate?.apkUrl != null,
-                    downloadState = downloadState,
                     onCheck = { viewModel.checkForUpdates() },
-                    onDownload = { viewModel.downloadAndInstall() },
                 )
             }
 
@@ -1364,10 +1356,7 @@ private fun AppSection(
     checking: Boolean,
     latestVersionFound: String?,
     latestIsNewer: Boolean,
-    hasApkAsset: Boolean,
-    downloadState: com.pitstop.update.DownloadState,
     onCheck: () -> Unit,
-    onDownload: () -> Unit,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     SettingsSection(title = "Version") {
@@ -1420,60 +1409,41 @@ private fun AppSection(
         }
         if (latestIsNewer && latestVersionFound != null) {
             Spacer(Modifier.size(8.dp))
-            val inProgress = downloadState is com.pitstop.update.DownloadState.InProgress
+            // Updates arrive through Google Play. The app used to download
+            // the APK from the GitHub release and open the system
+            // installer, which needed REQUEST_INSTALL_PACKAGES — a
+            // permission Play does not allow an app to ship for the
+            // purpose of updating itself. Both the permission and the
+            // installer are gone; this hands off to the store listing.
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    when {
-                        downloadState is com.pitstop.update.DownloadState.Complete ->
-                            "v$latestVersionFound downloaded — installer opening."
-                        downloadState is com.pitstop.update.DownloadState.Failed ->
-                            "Download failed: ${downloadState.reason}. Tap to retry."
-                        hasApkAsset -> "v$latestVersionFound is ready to install."
-                        else -> "v$latestVersionFound has no APK asset on the release page."
-                    },
+                    "v$latestVersionFound is available. Updates install through Google Play.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 Button(
-                    onClick = onDownload,
-                    enabled = hasApkAsset && !inProgress,
+                    onClick = {
+                        // market:// opens the Play app directly; fall back
+                        // to the web listing on a device without Play (or
+                        // a sideloaded build during development).
+                        val pkg = ctx.packageName
+                        val market = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("market://details?id=$pkg"),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val web = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse(
+                                "https://play.google.com/store/apps/details?id=$pkg",
+                            ),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        runCatching { ctx.startActivity(market) }
+                            .onFailure { runCatching { ctx.startActivity(web) } }
+                    },
                 ) {
-                    Text(if (inProgress) "Downloading…" else "Download & install")
+                    Text("Open Play Store")
                 }
-            }
-            // In-app progress bar (UPDATE-1). System notification still
-            // shows globally; this gives the user a clear "yes, bytes
-            // are moving" indicator without leaving Settings.
-            if (inProgress) {
-                val s = downloadState as com.pitstop.update.DownloadState.InProgress
-                Spacer(Modifier.size(8.dp))
-                val fraction = if (s.totalBytes > 0) {
-                    (s.bytesSoFar.toFloat() / s.totalBytes.toFloat()).coerceIn(0f, 1f)
-                } else null
-                if (fraction != null) {
-                    androidx.compose.material3.LinearProgressIndicator(
-                        progress = { fraction },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 4.dp),
-                    )
-                } else {
-                    androidx.compose.material3.LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 4.dp),
-                    )
-                }
-                Spacer(Modifier.size(4.dp))
-                Text(
-                    text = if (s.totalBytes > 0)
-                        "${humanBytes(s.bytesSoFar)} / ${humanBytes(s.totalBytes)}" +
-                            (fraction?.let { " · ${(it * 100).toInt()}%" } ?: "")
-                    else humanBytes(s.bytesSoFar),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }

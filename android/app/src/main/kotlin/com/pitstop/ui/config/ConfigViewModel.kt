@@ -27,7 +27,6 @@ import com.pitstop.service.BridgeStateBus
 import com.pitstop.service.BridgeStatus
 import com.pitstop.update.UpdateChecker
 import com.pitstop.update.UpdateInfo
-import com.pitstop.update.UpdateInstaller
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -88,8 +87,6 @@ sealed interface ConfigToast {
     data class UpdateAvailable(val current: String, val latest: String, val url: String) : ConfigToast
     data class UpdateUpToDate(val current: String) : ConfigToast
     data class UpdateCheckError(val message: String) : ConfigToast
-    data class UpdateDownloadStarted(val version: String) : ConfigToast
-    object UpdateDownloadFailed : ConfigToast
     object CompanionPaired : ConfigToast
     object BridgePausedForPairing : ConfigToast
     object CompanionUnpaired : ConfigToast
@@ -181,7 +178,6 @@ class ConfigViewModel @Inject constructor(
     stateBus: BridgeStateBus,
     private val mqttPublisher: MqttPublisher,
     private val updateChecker: UpdateChecker,
-    private val updateInstaller: UpdateInstaller,
     private val companionManager: WicanCompanionManager,
     private val api: PitstopApi,
     private val inCarDetector: InCarDetector,
@@ -217,12 +213,6 @@ class ConfigViewModel @Inject constructor(
 
     private val _latestUpdate = MutableStateFlow<UpdateInfo?>(null)
     val latestUpdate: StateFlow<UpdateInfo?> = _latestUpdate.asStateFlow()
-
-    /** Live download-progress mirror from [UpdateInstaller]. Pass-through
-     *  so the App section can render an in-app progress bar instead of
-     *  relying on the system notification alone. */
-    val downloadState: StateFlow<com.pitstop.update.DownloadState> =
-        updateInstaller.downloadState
 
     /** Live "buffered: N" count for the toggle's helper line. */
     val bufferedCount: StateFlow<Int> = logBuffer.bufferedCount
@@ -971,22 +961,6 @@ class ConfigViewModel @Inject constructor(
                     mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
                 )
             }
-        }
-    }
-
-    /**
-     * Kick off an APK download via [UpdateInstaller]. When the download
-     * finishes, the system installer dialog opens automatically.
-     * Snackbar only fires on FAILURE — the success path is represented
-     * by the Download button changing to "Downloading…" plus the system
-     * download notification. A success snackbar overlapped the button.
-     */
-    fun downloadAndInstall() {
-        val info = _latestUpdate.value ?: return
-        if (!info.isNewer) return
-        viewModelScope.launch {
-            val id = updateInstaller.startDownload(info)
-            if (id == null) _toast.emit(ConfigToast.UpdateDownloadFailed)
         }
     }
 
