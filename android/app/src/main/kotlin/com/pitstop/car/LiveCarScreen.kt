@@ -185,17 +185,17 @@ class LiveCarScreen(
             .setTitle(displayValue)
             .setText(spec.label)
             .setImage(
-                brandIcon(if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT),
+                metricIcon(spec, if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT),
                 GridItem.IMAGE_TYPE_ICON,
             )
             .build()
     }
 
-    private fun brandIcon(tint: CarColor = CarColor.PRIMARY): CarIcon =
+    private fun metricIcon(spec: CarTileSpec, tint: CarColor): CarIcon =
         CarIcon.Builder(
             androidx.core.graphics.drawable.IconCompat.createWithResource(
                 carContext,
-                R.drawable.ic_launcher_foreground,
+                spec.icon,
             ),
         )
             .setTint(tint)
@@ -276,7 +276,7 @@ class DiagnosticsCarScreen(
                 CarIcon.Builder(
                     androidx.core.graphics.drawable.IconCompat.createWithResource(
                         carContext,
-                        R.drawable.ic_launcher_foreground,
+                        spec.icon,
                     ),
                 ).setTint(CarColor.DEFAULT).build(),
                 GridItem.IMAGE_TYPE_ICON,
