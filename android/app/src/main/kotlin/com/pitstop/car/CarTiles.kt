@@ -71,6 +71,11 @@ object CarTileCatalog {
 
     private fun resolve(stored: List<String>, default: List<String>): List<CarTileSpec> {
         val source = stored.ifEmpty { default }
-        return source.mapNotNull { byKey(it) }.take(6)
+        // Fall back again if the stored keys resolve to nothing — a config
+        // written by an older build could name metrics that no longer exist,
+        // and a GridTemplate with an empty list is a blank car screen with no
+        // way back. take(6) matches the host's grid content limit.
+        val specs = source.mapNotNull { byKey(it) }.take(6)
+        return specs.ifEmpty { default.mapNotNull { byKey(it) }.take(6) }
     }
 }

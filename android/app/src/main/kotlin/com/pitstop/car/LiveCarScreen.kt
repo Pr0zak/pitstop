@@ -21,7 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -72,10 +73,24 @@ class LiveCarScreen(
     }
 
     override fun onStart(owner: LifecycleOwner) {
+        // Two jobs on purpose. Trend accuracy wants EVERY sample; the car
+        // host wants very few repaints.
+        //
+        // This used to call invalidate() once per metric snapshot. Mid-drive
+        // that is many repaints per second across the polled PID set, and
+        // Android Auto rate-limits template updates — over the limit the host
+        // starts dropping frames and can tear the app down. It never showed
+        // up in review because it only misbehaves with live telemetry
+        // flowing, which had never happened on a head unit.
         observerJob = scope.launch {
-            stateBus.latestByMetric.collectLatest { snapshot ->
-                trends.ingest(snapshot)
-                invalidate()
+            launch {
+                stateBus.latestByMetric.collect { snapshot -> trends.ingest(snapshot) }
+            }
+            launch {
+                while (isActive) {
+                    delay(REFRESH_INTERVAL_MS)
+                    invalidate()
+                }
             }
         }
     }
@@ -87,6 +102,15 @@ class LiveCarScreen(
 
     override fun onDestroy(owner: LifecycleOwner) {
         scope.cancel()
+    }
+
+    private companion object {
+        /**
+         * Repaint cadence for the car grid. Slow enough to stay well inside
+         * the host's template rate limit, fast enough that a driver glancing
+         * at coolant or fuel sees a current number.
+         */
+        const val REFRESH_INTERVAL_MS = 2_000L
     }
 
     override fun onGetTemplate(): Template {
@@ -108,6 +132,17 @@ class LiveCarScreen(
             buildTile(spec, metrics, settings.unitSystem)
         }
 
+        // EXACTLY ONE action here may carry a custom title. androidx.car.app
+        // enforces "Action list exceeded max number of 1 actions with custom
+        // titles" in ActionStrip.Builder.build(), and it throws hard enough
+        // to take the whole car app down.
+        //
+        // This used to add a second titled "Broker off" action whenever the
+        // broker was disconnected — so the screen rendered fine on a healthy
+        // system and crashed exactly when something was already wrong, which
+        // is the worst possible time and why it survived review. The broker
+        // state now rides in the template title, where it needs no action
+        // slot and is actually more legible on a head unit.
         val actions = ActionStrip.Builder()
             .addAction(
                 Action.Builder()
@@ -119,22 +154,10 @@ class LiveCarScreen(
                     }
                     .build(),
             )
-            .apply {
-                if (!status.brokerConnected) {
-                    // Coral-tinted "broker offline" hint — appears only when
-                    // the chain is broken; otherwise the strip carries the
-                    // Diagnostics action only and stays visually quiet.
-                    addAction(
-                        Action.Builder()
-                            .setTitle("Broker off")
-                            .build(),
-                    )
-                }
-            }
             .build()
 
         return GridTemplate.Builder()
-            .setTitle("Pitstop")
+            .setTitle(if (status.brokerConnected) "Pitstop" else "Pitstop · broker offline")
             .setSingleList(ItemList.Builder().apply { tiles.forEach { addItem(it) } }.build())
             .setHeaderAction(Action.APP_ICON)
             .setActionStrip(actions)
@@ -198,13 +221,24 @@ class DiagnosticsCarScreen(
         lifecycle.addObserver(this)
     }
 
+    // Same split as LiveCarScreen: ingest every sample, repaint rarely.
+    // The car host rate-limits template updates on this screen too.
     override fun onStart(owner: LifecycleOwner) {
         observerJob = scope.launch {
-            stateBus.latestByMetric.collectLatest { snapshot ->
-                trends.ingest(snapshot)
-                invalidate()
+            launch {
+                stateBus.latestByMetric.collect { snapshot -> trends.ingest(snapshot) }
+            }
+            launch {
+                while (isActive) {
+                    delay(DIAG_REFRESH_INTERVAL_MS)
+                    invalidate()
+                }
             }
         }
+    }
+
+    private companion object {
+        const val DIAG_REFRESH_INTERVAL_MS = 2_000L
     }
 
     override fun onStop(owner: LifecycleOwner) {
