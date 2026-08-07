@@ -252,6 +252,26 @@ fun ConfigScreen(
         if (latestUpdate?.isNewer == true) PillState.Degraded to "Update ready"
         else PillState.Neutral to "Up to date"
 
+    // Android Auto only ever lists apps that Play installed. A sideloaded
+    // build declares an identical CarAppService and is filtered out silently
+    // — no error, no entry, nothing to debug — which cost this project weeks
+    // before it was identified. Surfacing the installer here turns that into
+    // a one-glance answer instead of a mystery.
+    val ctxForInstaller = androidx.compose.ui.platform.LocalContext.current
+    val installedByPlay = remember {
+        runCatching {
+            ctxForInstaller.packageManager.getInstallSourceInfo(ctxForInstaller.packageName)
+                .installingPackageName == "com.android.vending"
+        }.getOrDefault(false)
+    }
+    val tileCount = form.aaTilesHome.size + form.aaTilesEngine.size +
+        form.aaTilesFuel.size + form.aaTilesDiag.size
+    val (aaState, aaLabel) = when {
+        !installedByPlay -> PillState.Degraded to "Not installed from Play"
+        tileCount == 0 -> PillState.Neutral to "Defaults"
+        else -> PillState.Neutral to "$tileCount tiles"
+    }
+
     // No brand bar — the bottom nav already labels this screen, and
     // Settings is a long scroll that wants the vertical room.
     Scaffold(
@@ -382,6 +402,26 @@ fun ConfigScreen(
                 )
             }
 
+            // ── Android Auto ────────────────────────────────────────
+            CollapsibleGroup(
+                title = "Android Auto",
+                expanded = expandedGroup == GROUP_ANDROID_AUTO,
+                onToggle = { toggle(GROUP_ANDROID_AUTO) },
+                subtitle = aaLabel,
+                subtitleState = aaState,
+            ) {
+                CarTilesSection(
+                    home = form.aaTilesHome,
+                    engine = form.aaTilesEngine,
+                    fuel = form.aaTilesFuel,
+                    diag = form.aaTilesDiag,
+                    onHomeChange = { v -> viewModel.update { it.copy(aaTilesHome = v) } },
+                    onEngineChange = { v -> viewModel.update { it.copy(aaTilesEngine = v) } },
+                    onFuelChange = { v -> viewModel.update { it.copy(aaTilesFuel = v) } },
+                    onDiagChange = { v -> viewModel.update { it.copy(aaTilesDiag = v) } },
+                )
+            }
+
             // ── App ─────────────────────────────────────────────────
             CollapsibleGroup(
                 title = "App",
@@ -393,16 +433,6 @@ fun ConfigScreen(
                 DisplaySection(
                     unitSystem = form.unitSystem,
                     onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
-                )
-                CarTilesSection(
-                    home = form.aaTilesHome,
-                    engine = form.aaTilesEngine,
-                    fuel = form.aaTilesFuel,
-                    diag = form.aaTilesDiag,
-                    onHomeChange = { v -> viewModel.update { it.copy(aaTilesHome = v) } },
-                    onEngineChange = { v -> viewModel.update { it.copy(aaTilesEngine = v) } },
-                    onFuelChange = { v -> viewModel.update { it.copy(aaTilesFuel = v) } },
-                    onDiagChange = { v -> viewModel.update { it.copy(aaTilesDiag = v) } },
                 )
                 LogsSection(
                     verbose = form.verboseLogging,
@@ -431,6 +461,7 @@ fun ConfigScreen(
 private const val GROUP_CONNECTION = "connection"
 private const val GROUP_AUTOSTART = "autostart"
 private const val GROUP_DEVICES = "devices"
+private const val GROUP_ANDROID_AUTO = "android_auto"
 private const val GROUP_APP = "app"
 
 // ── Accordion group ─────────────────────────────────────────────────
