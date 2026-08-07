@@ -377,20 +377,37 @@ class LiveCarScreen(
         return GridItem.Builder()
             .setTitle(spec.label)
             .setText(displayValue)
-            .setImage(
-                metricIcon(spec, if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT),
-                GridItem.IMAGE_TYPE_ICON,
+            .apply {
+                val icon = metricIcon(
+                    spec,
+                    if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT,
+                )
                 // A dot on the accent tile when the broker is down. Badges sit
                 // OUTSIDE the refresh diff (only item count and title are
                 // compared), so this conveys state without costing a template
-                // — which is exactly what the old "Diag !" tab title did not.
-                // Paired with the Status pane's "Broker" row, because colour
-                // alone is not an accessible signal.
-                androidx.car.app.model.Badge.Builder()
-                    .setHasDot(spec.accent && !status.brokerConnected)
-                    .setBackgroundColor(CarColor.RED)
-                    .build(),
-            )
+                // — which the old "Diag !" tab title did not. Paired with the
+                // Status pane's "Broker" row, because colour alone is not an
+                // accessible signal.
+                //
+                // The badge is attached ONLY when it has a dot to show.
+                // Badge.Builder().build() throws "A badge must have a dot or
+                // an icon set" for an empty badge, and because CarAppService
+                // shares the app's process that exception crash-looped the
+                // phone UI as well as the car screen.
+                val badged = spec.accent && !status.brokerConnected
+                if (badged) {
+                    setImage(
+                        icon,
+                        GridItem.IMAGE_TYPE_ICON,
+                        androidx.car.app.model.Badge.Builder()
+                            .setHasDot(true)
+                            .setBackgroundColor(CarColor.RED)
+                            .build(),
+                    )
+                } else {
+                    setImage(icon, GridItem.IMAGE_TYPE_ICON)
+                }
+            }
             .build()
     }
 
