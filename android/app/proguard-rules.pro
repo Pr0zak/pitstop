@@ -39,6 +39,23 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 
+# ---- JCTools (lock-free queues, pulled in UNSHADED by hivemq-mqtt-client) ----
+# Netty's PlatformDependent resolves these queue fields BY NAME through
+# reflection to compute sun.misc.Unsafe field offsets. R8 renamed them, so
+# MqttOutgoingQosHandler's static initializer threw
+#   NoSuchFieldException: No field consumerIndex in class Ls6/b;
+# wrapped as ExceptionInInitializerError, on EVERY MQTT connect attempt —
+# an unrecoverable crash loop in the bridge service. Release builds only:
+# the field names survive unminified, so debug never saw it.
+#
+# The existing `-keep class io.netty.**` does NOT cover this. Netty ships a
+# shaded copy at io.netty.util.internal.shaded.org.jctools, but HiveMQ also
+# depends on the real org.jctools artifact, and that is the one that was
+# obfuscated. Keep member NAMES, not just the classes.
+-keep class org.jctools.** { *; }
+-keepclassmembernames class org.jctools.** { *; }
+-dontwarn org.jctools.**
+
 # ---- HiveMQ MQTT client + Netty transport ----
 -keep class com.hivemq.client.** { *; }
 -dontwarn org.slf4j.**
