@@ -193,12 +193,9 @@ fun StatusScreen(
                 ui.update?.takeIf { it.isNewer }?.let { info ->
                     UpdateAvailableCard(
                         info = info,
-                        onOpen = {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, info.releaseUrl.toUri())
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        },
+                        // Play, never the GitHub release page — see
+                        // PlayStore's KDoc for why this is a policy matter.
+                        onOpen = { com.pitstop.update.PlayStore.open(context) },
                     )
                 }
 

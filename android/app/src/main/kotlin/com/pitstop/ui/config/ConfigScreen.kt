@@ -1423,24 +1423,7 @@ private fun AppSection(
                     modifier = Modifier.weight(1f),
                 )
                 Button(
-                    onClick = {
-                        // market:// opens the Play app directly; fall back
-                        // to the web listing on a device without Play (or
-                        // a sideloaded build during development).
-                        val pkg = ctx.packageName
-                        val market = android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse("market://details?id=$pkg"),
-                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        val web = android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse(
-                                "https://play.google.com/store/apps/details?id=$pkg",
-                            ),
-                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        runCatching { ctx.startActivity(market) }
-                            .onFailure { runCatching { ctx.startActivity(web) } }
-                    },
+                    onClick = { com.pitstop.update.PlayStore.open(ctx) },
                 ) {
                     Text("Open Play Store")
                 }

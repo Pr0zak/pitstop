@@ -114,6 +114,17 @@ android {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
+            // Ship native debug symbols in the bundle so Play can symbolicate
+            // crashes and ANRs. The .so files come from prebuilt dependencies
+            // (MapLibre's renderer above all), and without this a native crash
+            // arrives in the console as bare hex addresses.
+            //
+            // SYMBOL_TABLE, not FULL: it is enough for a readable stack trace,
+            // where FULL adds DWARF debug info and a lot of upload size for
+            // detail that is not useful for third-party prebuilt libraries.
+            ndk {
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
         }
     }
 

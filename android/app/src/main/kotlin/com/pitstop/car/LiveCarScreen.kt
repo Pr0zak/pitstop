@@ -148,23 +148,34 @@ class LiveCarScreen(
     ): GridItem {
         val trend = trends.classify(spec.key)
         val displayValue = carTileText(metrics[spec.key]?.value, spec, system, trend)
-        val builder = GridItem.Builder()
+        // EVERY GridItem must carry an image. androidx.car.app enforces
+        // "when a grid item is loading, the image must not be set and vice
+        // versa" in GridItem.Builder.build() — a tile with neither an image
+        // nor setLoading(true) throws IllegalStateException, which takes the
+        // whole car app down with "Pitstop has encountered an unexpected
+        // error". There is no text-only grid item in the template model.
+        //
+        // This previously set an image only for accent tiles, so the very
+        // first render on a head unit crashed. Accent is now expressed by
+        // the icon TINT rather than by the icon's presence.
+        return GridItem.Builder()
             .setTitle(displayValue)
             .setText(spec.label)
-        if (spec.accent) {
-            builder.setImage(brandIcon(), GridItem.IMAGE_TYPE_ICON)
-        }
-        return builder.build()
+            .setImage(
+                brandIcon(if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT),
+                GridItem.IMAGE_TYPE_ICON,
+            )
+            .build()
     }
 
-    private fun brandIcon(): CarIcon =
+    private fun brandIcon(tint: CarColor = CarColor.PRIMARY): CarIcon =
         CarIcon.Builder(
             androidx.core.graphics.drawable.IconCompat.createWithResource(
                 carContext,
                 R.drawable.ic_launcher_foreground,
             ),
         )
-            .setTint(CarColor.PRIMARY)
+            .setTint(tint)
             .build()
 }
 
@@ -220,10 +231,22 @@ class DiagnosticsCarScreen(
             .build()
     }
 
+    // Same GridItem image requirement as the home grid — see buildTile.
+    // This screen set no image on any tile at all, so every diagnostics
+    // tile would have thrown.
     private fun tile(spec: CarTileSpec, v: Double?, system: String, trend: TrendDir): GridItem =
         GridItem.Builder()
             .setTitle(carTileText(v, spec, system, trend))
             .setText(spec.label)
+            .setImage(
+                CarIcon.Builder(
+                    androidx.core.graphics.drawable.IconCompat.createWithResource(
+                        carContext,
+                        R.drawable.ic_launcher_foreground,
+                    ),
+                ).setTint(CarColor.DEFAULT).build(),
+                GridItem.IMAGE_TYPE_ICON,
+            )
             .build()
 }
 

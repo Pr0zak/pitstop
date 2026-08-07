@@ -46,8 +46,8 @@ class UpdateCheckWorker @AssistedInject constructor(
         // Don't re-notify for the same version on every fire — the
         // OS dedupes by id but we keep the same id so a fresh release
         // updates the existing notification text rather than stacking.
-        val tapIntent = Intent(Intent.ACTION_VIEW, info.releaseUrl.toUri())
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Play, never the GitHub release page — see PlayStore's KDoc.
+        val tapIntent = PlayStore.intent(ctx)
         val pi = PendingIntent.getActivity(
             ctx,
             UPDATE_NOTIFICATION_ID,
@@ -58,10 +58,10 @@ class UpdateCheckWorker @AssistedInject constructor(
         val n = NotificationCompat.Builder(ctx, PitstopApp.UPDATES_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Pitstop ${info.latestVersion} available")
-            .setContentText("Tap to download. You're on ${info.currentVersion}.")
+            .setContentText("Update in Google Play. You're on ${info.currentVersion}.")
             .setStyle(
                 NotificationCompat.BigTextStyle().bigText(
-                    "Tap to open the GitHub release page and download the APK. " +
+                    "Tap to open Google Play and update. " +
                         "You're on v${info.currentVersion}; " +
                         "v${info.latestVersion} is now available.",
                 ),
