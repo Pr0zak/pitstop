@@ -453,9 +453,33 @@ object Pids {
         pid = 0x68,
         periodMs = 10_000,
         parser = { bytes ->
+            // PID 0x68 layout: A = sensor-support bitmap, then one
+            // temperature byte per supported sensor, each `raw - 40` degC.
+            //
+            // Which byte holds THIS car's usable sensor is not settled. The
+            // WiCAN expression that works reads B5 in its MQTT indexing,
+            // which maps to the second temperature byte here — but reading
+            // that directly shipped a constant -40.0 (raw 0x00) for an hour,
+            // because a byte that is absent or unpopulated reads as zero and
+            // 0 - 40 is a plausible-looking number rather than an obvious
+            // failure.
+            //
+            // So: scan the temperature bytes and take the first that decodes
+            // into a physically possible intake temperature. A running
+            // engine cannot draw air at -40 degC, and this ECU zero-fills
+            // unpopulated sensor slots, so "first sane value" identifies the
+            // real sensor regardless of which slot it occupies. Costs one
+            // loop over at most 7 bytes, once per 10 s.
+            //
+            // TODO: settle the offset from a raw frame (POST /autopid/test_pid
+            // with the car awake and on home WiFi) and read it directly.
             val support = byte(bytes, 0) ?: return@Pid null
             if (support == 0) return@Pid null
-            byte(bytes, 2)?.let { it - 40.0 }
+            for (i in 1 until minOf(bytes.size, 8)) {
+                val c = (byte(bytes, i) ?: continue) - 40.0
+                if (c > -30.0 && c < 130.0) return@Pid c
+            }
+            null
         },
     )
 

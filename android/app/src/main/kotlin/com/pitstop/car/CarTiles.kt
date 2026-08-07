@@ -56,6 +56,53 @@ object CarTileCatalog {
         CarTileSpec("ltft_b1", "LTFT B1", UnitFormat.Quantity.Percent, 1, icon = R.drawable.ic_metric_trim),
         CarTileSpec("stft_b2", "STFT B2", UnitFormat.Quantity.Percent, 1, icon = R.drawable.ic_metric_trim),
         CarTileSpec("ltft_b2", "LTFT B2", UnitFormat.Quantity.Percent, 1, icon = R.drawable.ic_metric_trim),
+        // g/s on the wire -> L/h or gph via the Quantity, matching the Live
+        // tile and the trip chart. It was already named in DEFAULT_FUEL but
+        // missing here, so resolve() silently dropped it and the Fuel tab
+        // would have rendered two tiles instead of three.
+        CarTileSpec(
+            "engine_fuel_rate", "Fuel rate", UnitFormat.Quantity.FuelRateGramsPerSec, 2,
+            icon = R.drawable.ic_metric_fuel,
+        ),
+        // ── Emissions / fuel control ──────────────────────────────
+        // Added when the phone learned to poll these directly (0.1.221).
+        // They were pollable and visible on the Live screen but absent from
+        // this catalogue, so they could not be chosen for a head-unit tab —
+        // the tab picker only offers what ALL contains.
+        CarTileSpec(
+            "engine_exhaust_flow", "Exhaust", UnitFormat.Quantity.MassFlowKgPerHour, 1,
+            icon = R.drawable.ic_metric_air,
+        ),
+        CarTileSpec(
+            "catalyst_temp_b1", "Cat B1", UnitFormat.Quantity.TempC, 0,
+            icon = R.drawable.ic_metric_temp,
+        ),
+        CarTileSpec(
+            "catalyst_temp_b2", "Cat B2", UnitFormat.Quantity.TempC, 0,
+            icon = R.drawable.ic_metric_temp,
+        ),
+        // 3 decimals: the interesting range is 0.98-1.02 and 2 quantises the
+        // signal away, same reason the trip chart uses 3.
+        CarTileSpec(
+            "commanded_afr_ratio", "Cmd AFR", UnitFormat.Quantity.Lambda, 3,
+            icon = R.drawable.ic_metric_trim,
+        ),
+        CarTileSpec(
+            "o2_s1_lambda", "O2 S1", UnitFormat.Quantity.Lambda, 3,
+            icon = R.drawable.ic_metric_trim,
+        ),
+        CarTileSpec(
+            "fuel_rail_pressure", "Fuel rail", UnitFormat.Quantity.PressureKpa, 0,
+            icon = R.drawable.ic_metric_pressure,
+        ),
+        CarTileSpec(
+            "commanded_egr", "Cmd EGR", UnitFormat.Quantity.Percent, 0,
+            icon = R.drawable.ic_metric_load,
+        ),
+        CarTileSpec(
+            "commanded_evap_purge", "Evap", UnitFormat.Quantity.Percent, 0,
+            icon = R.drawable.ic_metric_load,
+        ),
         // ── Electrical ────────────────────────────────────────────
         CarTileSpec("control_module_voltage", "Battery", UnitFormat.Quantity.Volt, 1, icon = R.drawable.ic_metric_battery),
         // ── GPS / IMU (from phone bridge) ─────────────────────────
