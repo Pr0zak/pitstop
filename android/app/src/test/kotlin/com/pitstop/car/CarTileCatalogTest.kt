@@ -30,21 +30,47 @@ class CarTileCatalogTest {
     }
 
     @Test
-    fun `every tab default resolves to real tiles`() {
-        for (tab in CarTileCatalog.CarTab.entries) {
-            val resolved = CarTileCatalog.resolveTab(tab, emptyList())
-            assertTrue("${tab.title} resolved to nothing", resolved.isNotEmpty())
+    fun `every metric screen default resolves to real tiles`() {
+        for (kind in CarTileCatalog.CarScreenKind.entries.filter { it.isMetricGrid }) {
+            val resolved = CarTileCatalog.resolveTab(kind, emptyList())
+            assertTrue("${kind.title} resolved to nothing", resolved.isNotEmpty())
             assertTrue(
-                "${tab.title} exceeds MAX_TILES",
+                "${kind.title} exceeds MAX_TILES",
                 resolved.size <= CarTileCatalog.MAX_TILES,
             )
         }
     }
 
     @Test
-    fun `tab ids are unique - they key the active tab and the callback`() {
-        val ids = CarTileCatalog.CarTab.entries.map { it.id }
+    fun `screen ids are unique - they key the active tab and the callback`() {
+        val ids = CarTileCatalog.CarScreenKind.entries.map { it.id }
         assertEquals(ids.size, ids.toSet().size)
+    }
+
+    @Test
+    fun `tab resolution never exceeds what the host accepts`() {
+        // The host REJECTS a TabTemplate with too many tabs, and a rejected
+        // template takes the car app down rather than degrading — so this
+        // truncates rather than trusting the stored list.
+        val everything = CarTileCatalog.CarScreenKind.entries.map { it.id }
+        val resolved = CarTileCatalog.CarScreenKind.resolveTabs(everything)
+        assertEquals(CarTileCatalog.CarScreenKind.MAX_TABS, resolved.size)
+    }
+
+    @Test
+    fun `unknown or empty stored tabs fall back to the defaults`() {
+        assertTrue(CarTileCatalog.CarScreenKind.resolveTabs(emptyList()).isNotEmpty())
+        assertTrue(
+            CarTileCatalog.CarScreenKind.resolveTabs(listOf("nope", "gone")).isNotEmpty(),
+        )
+    }
+
+    @Test
+    fun `default tabs all exist in the catalogue`() {
+        for (id in CarTileCatalog.CarScreenKind.DEFAULT_TABS) {
+            assertTrue("default tab '$id' is not a real screen",
+                CarTileCatalog.CarScreenKind.byId(id) != null)
+        }
     }
 
     @Test

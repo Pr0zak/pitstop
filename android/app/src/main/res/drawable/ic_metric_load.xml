@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Car tile glyph: part-open gauge — engine load / throttle. 24dp, single flat colour so the head unit's
-     CarIcon tint (PRIMARY for accent tiles, DEFAULT otherwise) applies
-     cleanly in both day and night palettes. -->
+<!-- Car tile glyph: engine load / throttle — a rising bar stack.
+     Deliberately NOT a gauge. It used to be a second arc-and-needle that
+     differed from the tachometer only by needle angle, which is not a
+     distinction a driver can make in a glance; at that point the glyph adds
+     visual weight and no information. Bars read as "a proportion of full"
+     without any shared vocabulary with the round dials next to it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
-    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
-          android:strokeLineCap="round" android:fillColor="#00000000"
-          android:pathData="M3.5,17 A8.5,8.5 0 1,1 20.5,17"/>
-    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
-          android:strokeLineCap="round" android:fillColor="#00000000"
-          android:pathData="M12,17 L7.5,12"/>
     <path android:fillColor="#FFFFFFFF"
-          android:pathData="M12,17 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0 z"/>
+          android:pathData="M3,15 h3.4 a1,1 0 0,1 1,1 v4 a1,1 0 0,1 -1,1 H3 a1,1 0 0,1 -1,-1 v-4 a1,1 0 0,1 1,-1 z"/>
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M9.9,10 h3.4 a1,1 0 0,1 1,1 v9 a1,1 0 0,1 -1,1 H9.9 a1,1 0 0,1 -1,-1 v-9 a1,1 0 0,1 1,-1 z"/>
+    <path android:fillColor="#FFFFFFFF"
+          android:pathData="M16.8,4 h3.4 a1,1 0 0,1 1,1 v15 a1,1 0 0,1 -1,1 h-3.4 a1,1 0 0,1 -1,-1 V5 a1,1 0 0,1 1,-1 z"/>
 </vector>

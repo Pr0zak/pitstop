@@ -411,6 +411,8 @@ fun ConfigScreen(
                 subtitleState = aaState,
             ) {
                 CarTilesSection(
+                    tabs = form.aaTabs,
+                    onTabsChange = { v -> viewModel.update { it.copy(aaTabs = v) } },
                     home = form.aaTilesHome,
                     engine = form.aaTilesEngine,
                     fuel = form.aaTilesFuel,
@@ -1396,6 +1398,8 @@ private fun DisplaySection(
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CarTilesSection(
+    tabs: List<String>,
+    onTabsChange: (List<String>) -> Unit,
     home: List<String>,
     engine: List<String>,
     fuel: List<String>,
@@ -1412,7 +1416,17 @@ private fun CarTilesSection(
             "row on most screens — the car scrolls a grid back to the top whenever " +
             "a value updates, so a tab that scrolls is hard to read while moving.",
     ) {
-        // One picker per head-unit tab, in the order they appear in the car.
+        // Which screens occupy the four tabs. There are more screens than
+        // tabs on purpose — the head unit takes at most four, so the SET is
+        // the user's choice rather than a fixed layout.
+        CarTabPicker(selected = tabs, onChange = onTabsChange)
+        Spacer(Modifier.size(16.dp))
+        androidx.compose.material3.HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        Spacer(Modifier.size(16.dp))
+
+        // One picker per metric screen, in the order they appear in the car.
         CarTilePicker(
             label = "Drive tab",
             selected = home.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_HOME },
@@ -1436,6 +1450,61 @@ private fun CarTilesSection(
             selected = diag.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_DIAG },
             onChange = onDiagChange,
         )
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CarTabPicker(
+    selected: List<String>,
+    onChange: (List<String>) -> Unit,
+) {
+    val max = com.pitstop.car.CarTileCatalog.CarScreenKind.MAX_TABS
+    val effective = selected.ifEmpty {
+        com.pitstop.car.CarTileCatalog.CarScreenKind.DEFAULT_TABS
+    }
+    Column {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Tabs on the head unit",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "${effective.size} / $max",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.size(6.dp))
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            for (kind in com.pitstop.car.CarTileCatalog.CarScreenKind.entries) {
+                val on = kind.id in effective
+                androidx.compose.material3.FilterChip(
+                    selected = on,
+                    enabled = on || effective.size < max,
+                    onClick = {
+                        onChange(if (on) effective - kind.id else effective + kind.id)
+                    },
+                    label = {
+                        Text(kind.title, style = MaterialTheme.typography.labelMedium)
+                    },
+                )
+            }
+        }
+        if (effective.any { com.pitstop.car.CarTileCatalog.CarScreenKind.byId(it)?.needsNetwork == true }) {
+            Spacer(Modifier.size(6.dp))
+            Text(
+                "Screens marked as server-backed need your Pitstop server reachable " +
+                    "from the phone — on cellular that is via your home network.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

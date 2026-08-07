@@ -121,9 +121,9 @@ class LiveCarScreen(
         val status = stateBus.status.value
         val settings = runBlocking { settingsRepository.settings.first() }
         return buildString {
-            append(activeTab.id)
+            append(activeTab?.id)
             append(status.brokerConnected)
-            for (spec in tilesFor(activeTab, settings)) {
+            for (spec in tilesFor(activeTab ?: return@buildString, settings)) {
                 append('|')
                 append(
                     carTileText(
@@ -157,7 +157,7 @@ class LiveCarScreen(
 
     /** Which tab the head unit is showing. Survives invalidate(); reset only
      *  when the screen is recreated. */
-    private var activeTab: CarTileCatalog.CarTab = CarTileCatalog.CarTab.Drive
+    private var activeTab: CarTileCatalog.CarScreenKind? = null
 
     override fun onGetTemplate(): Template {
         val metrics = stateBus.latestByMetric.value
@@ -173,20 +173,18 @@ class LiveCarScreen(
         // first() resolves quickly from the in-memory cache.
         val settings = runBlocking { settingsRepository.settings.first() }
 
-        val grid = GridTemplate.Builder()
-            .setSingleList(
-                ItemList.Builder().apply {
-                    tilesFor(activeTab, settings).forEach { spec ->
-                        addItem(buildTile(spec, metrics, settings.unitSystem))
-                    }
-                }.build(),
-            )
-            .build()
+        val tabs = CarTileCatalog.CarScreenKind.resolveTabs(settings.aaTabs)
+        // A stored tab could have been removed from the catalogue, or the
+        // list re-ordered in Settings while the car screen was live.
+        val active = activeTab?.takeIf { it in tabs } ?: tabs.first()
+        activeTab = active
+
+        val content = contentFor(active, metrics, status, settings)
 
         val builder = TabTemplate.Builder(
             object : TabTemplate.TabCallback {
                 override fun onTabSelected(tabContentId: String) {
-                    activeTab = CarTileCatalog.CarTab.entries
+                    activeTab = CarTileCatalog.CarScreenKind.entries
                         .firstOrNull { it.id == tabContentId } ?: return
                     // Repaint immediately rather than waiting for the next
                     // refresh tick, and reset the signature so the tick does
@@ -198,10 +196,10 @@ class LiveCarScreen(
         )
             // APP_ICON is the only header action a TabTemplate accepts.
             .setHeaderAction(Action.APP_ICON)
-            .setTabContents(TabContents.Builder(grid).build())
-            .setActiveTabContentId(activeTab.id)
+            .setTabContents(TabContents.Builder(content).build())
+            .setActiveTabContentId(active.id)
 
-        for (tab in CarTileCatalog.CarTab.entries) {
+        for (tab in tabs) {
             builder.addTab(
                 Tab.Builder()
                     .setTitle(tabTitle(tab, status))
@@ -224,23 +222,103 @@ class LiveCarScreen(
      * ActionStrip it replaced could hold only ONE titled action — adding a
      * second "Broker off" action is what crashed the car app in v0.1.216.
      */
-    private fun tabTitle(tab: CarTileCatalog.CarTab, status: BridgeStatus): String =
-        if (tab == CarTileCatalog.CarTab.Diagnostics && !status.brokerConnected) {
+    private fun tabTitle(tab: CarTileCatalog.CarScreenKind, status: BridgeStatus): String =
+        if (tab == CarTileCatalog.CarScreenKind.Diagnostics && !status.brokerConnected) {
             "Diag !"
         } else {
             tab.title
         }
 
+    /**
+     * One template per screen kind. Metric screens are a GridTemplate of
+     * tiles; everything else is a PaneTemplate, which is the only general
+     * template that pairs a large rendered image with a few rows of text.
+     *
+     * Pane row count is READ from the host rather than assumed —
+     * getContentLimit(CONTENT_LIMIT_TYPE_PANE) — because exceeding a
+     * content limit throws instead of truncating, and that takes the whole
+     * car app down. Every limit assumed rather than measured has cost a
+     * crash on this surface already.
+     */
+    private fun contentFor(
+        kind: CarTileCatalog.CarScreenKind,
+        metrics: Map<String, MetricSample>,
+        status: BridgeStatus,
+        settings: com.pitstop.data.Settings,
+    ): Template = when {
+        kind.isMetricGrid -> GridTemplate.Builder()
+            .setSingleList(
+                ItemList.Builder().apply {
+                    tilesFor(kind, settings).forEach { spec ->
+                        addItem(buildTile(spec, metrics, settings.unitSystem))
+                    }
+                }.build(),
+            )
+            .build()
+
+        kind == CarTileCatalog.CarScreenKind.Session ->
+            paneOf(sessionRows(status, metrics, settings.unitSystem))
+
+        // Server-backed screens. Nothing is fetched yet, so they render an
+        // honest placeholder rather than an empty pane that looks broken —
+        // a car screen that silently shows nothing is worse than one that
+        // says why.
+        else -> paneOf(
+            listOf(
+                "Not yet available" to kind.title,
+                "Needs" to "a connection to your server",
+            ),
+        )
+    }
+
+    private fun paneRowLimit(): Int = runCatching {
+        carContext.getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
+            .getContentLimit(
+                androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_PANE,
+            )
+    }.getOrDefault(4).coerceAtLeast(1)
+
+    private fun paneOf(rows: List<Pair<String, String>>): Template {
+        val pane = androidx.car.app.model.Pane.Builder()
+        // Row.setTitle is the LABEL and addText the value, not the other way
+        // round: the host treats a template as a refresh only when titles are
+        // unchanged, so putting the changing value in the title makes every
+        // update a replacement — which is what resets scroll position.
+        for ((label, value) in rows.take(paneRowLimit())) {
+            pane.addRow(
+                androidx.car.app.model.Row.Builder()
+                    .setTitle(label)
+                    .addText(value)
+                    .build(),
+            )
+        }
+        return androidx.car.app.model.PaneTemplate.Builder(pane.build()).build()
+    }
+
+    private fun sessionRows(
+        status: BridgeStatus,
+        metrics: Map<String, MetricSample>,
+        unitSystem: String,
+    ): List<Pair<String, String>> = listOf(
+        "Bridge" to status.phase.name,
+        "Engine" to status.engineState.name,
+        "Broker" to if (status.brokerConnected) "connected" else "offline",
+        "Live metrics" to metrics.size.toString(),
+    )
+
     private fun tilesFor(
-        tab: CarTileCatalog.CarTab,
+        tab: CarTileCatalog.CarScreenKind,
         settings: com.pitstop.data.Settings,
     ): List<CarTileSpec> = CarTileCatalog.resolveTab(
         tab,
         when (tab) {
-            CarTileCatalog.CarTab.Drive -> settings.aaTilesHome
-            CarTileCatalog.CarTab.Engine -> settings.aaTilesEngine
-            CarTileCatalog.CarTab.Fuel -> settings.aaTilesFuel
-            CarTileCatalog.CarTab.Diagnostics -> settings.aaTilesDiag
+            CarTileCatalog.CarScreenKind.Drive -> settings.aaTilesHome
+            CarTileCatalog.CarScreenKind.Engine -> settings.aaTilesEngine
+            CarTileCatalog.CarScreenKind.Fuel -> settings.aaTilesFuel
+            CarTileCatalog.CarScreenKind.Diagnostics -> settings.aaTilesDiag
+            // Analytics screens carry no tile list; contentFor never routes
+            // them here, and an empty list resolves to the kind's defaults.
+            else -> emptyList()
         },
     )
 

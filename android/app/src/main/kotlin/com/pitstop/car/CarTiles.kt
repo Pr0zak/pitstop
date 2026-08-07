@@ -160,16 +160,60 @@ object CarTileCatalog {
      * means no grid ever scrolls, so the reset has nothing to undo — while
      * still putting 12 metrics one tap away instead of 6 behind a scroll.
      */
-    enum class CarTab(
+    /**
+     * Everything that can occupy a head-unit tab.
+     *
+     * TabTemplate takes at most four tabs, but there are more screens worth
+     * having than that — so the SET is the user's choice rather than a fixed
+     * layout. Metric screens render a GridTemplate of tiles; analytics
+     * screens render a PaneTemplate fed from the server.
+     *
+     * `tiles` is null for analytics screens: they have no tile list to
+     * configure, which is also how the Settings picker knows not to offer
+     * one for them.
+     */
+    enum class CarScreenKind(
         val id: String,
         val title: String,
-        val defaults: List<String>,
+        val defaults: List<String>?,
         @DrawableRes val icon: Int,
+        val needsNetwork: Boolean = false,
     ) {
         Drive("drive", "Drive", DEFAULT_HOME, R.drawable.ic_metric_speed),
         Engine("engine", "Engine", DEFAULT_ENGINE, R.drawable.ic_metric_tach),
         Fuel("fuel", "Fuel", DEFAULT_FUEL, R.drawable.ic_metric_fuel),
         Diagnostics("diag", "Diag", DEFAULT_DIAG, R.drawable.ic_metric_trim),
+
+        /** Live bridge/session state from the in-process bus. No network. */
+        Session("session", "Status", null, R.drawable.ic_metric_clock),
+
+        /** Server-backed. Each is one analytics endpoint. */
+        Economy("economy", "MPG", null, R.drawable.ic_metric_load, needsNetwork = true),
+        Fillups("fillups", "Fill-ups", null, R.drawable.ic_metric_fuel, needsNetwork = true),
+        Costs("costs", "Costs", null, R.drawable.ic_metric_pressure, needsNetwork = true),
+        ;
+
+        val isMetricGrid: Boolean get() = defaults != null
+
+        companion object {
+            fun byId(id: String): CarScreenKind? = entries.firstOrNull { it.id == id }
+
+            /** TabTemplate's documented maximum. */
+            const val MAX_TABS = 4
+
+            val DEFAULT_TABS: List<String> = listOf("drive", "engine", "fuel", "diag")
+
+            /**
+             * The tabs to render. Falls back to the defaults when the stored
+             * list is empty or resolves to nothing, and truncates to
+             * MAX_TABS — the host rejects more, and a rejected template
+             * takes the car app down rather than degrading.
+             */
+            fun resolveTabs(stored: List<String>): List<CarScreenKind> {
+                val picked = stored.mapNotNull { byId(it) }.distinct().take(MAX_TABS)
+                return picked.ifEmpty { DEFAULT_TABS.mapNotNull { byId(it) } }
+            }
+        }
     }
 
     fun byKey(key: String): CarTileSpec? = ALL.firstOrNull { it.key == key }
@@ -180,8 +224,8 @@ object CarTileCatalog {
     fun resolveDiag(stored: List<String>): List<CarTileSpec> = resolve(stored, DEFAULT_DIAG)
 
     /** Tiles for one tab, honouring the user's stored order for it. */
-    fun resolveTab(tab: CarTab, stored: List<String>): List<CarTileSpec> =
-        resolve(stored, tab.defaults)
+    fun resolveTab(kind: CarScreenKind, stored: List<String>): List<CarTileSpec> =
+        resolve(stored, kind.defaults ?: emptyList())
 
     private fun resolve(stored: List<String>, default: List<String>): List<CarTileSpec> {
         val source = stored.ifEmpty { default }

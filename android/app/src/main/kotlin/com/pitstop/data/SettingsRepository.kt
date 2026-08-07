@@ -44,6 +44,7 @@ class SettingsRepository @Inject constructor(
         val aaTilesDiag: Preferences.Key<String> = stringPreferencesKey("aa_tiles_diag")
         val aaTilesEngine: Preferences.Key<String> = stringPreferencesKey("aa_tiles_engine")
         val aaTilesFuel: Preferences.Key<String> = stringPreferencesKey("aa_tiles_fuel")
+        val aaTabs: Preferences.Key<String> = stringPreferencesKey("aa_tabs")
         val unitSystem: Preferences.Key<String> = stringPreferencesKey("unit_system")
         val pairedCarBtMac: Preferences.Key<String> = stringPreferencesKey("paired_car_bt_mac")
         val manualSyncOnly: Preferences.Key<Boolean> = booleanPreferencesKey("manual_sync_only")
@@ -124,6 +125,8 @@ class SettingsRepository @Inject constructor(
             bleDeviceName = prefs[Keys.bleName]?.takeIf { it.isNotBlank() },
             publishHz = prefs[Keys.publishHz] ?: 1f,
             verboseLogging = prefs[Keys.verboseLogging] ?: false,
+            aaTabs = prefs[Keys.aaTabs]?.split(",")
+                ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
             aaTilesEngine = prefs[Keys.aaTilesEngine]?.split(",")
                 ?.filter { it.isNotBlank() } ?: emptyList(),
             aaTilesFuel = prefs[Keys.aaTilesFuel]?.split(",")
@@ -222,6 +225,7 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.verboseLogging] = settings.verboseLogging
             prefs[Keys.aaTilesHome] = settings.aaTilesHome.joinToString(",")
             prefs[Keys.aaTilesEngine] = settings.aaTilesEngine.joinToString(",")
+            prefs[Keys.aaTabs] = settings.aaTabs.joinToString(",")
             prefs[Keys.aaTilesFuel] = settings.aaTilesFuel.joinToString(",")
             prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
             prefs[Keys.unitSystem] = settings.unitSystem

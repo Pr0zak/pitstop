@@ -24,6 +24,7 @@ data class Settings(
      * Empty list → use the hardcoded defaults in LiveCarScreen.
      */
     val aaTilesHome: List<String> = emptyList(),
+    val aaTabs: List<String> = emptyList(),
     val aaTilesEngine: List<String> = emptyList(),
     val aaTilesFuel: List<String> = emptyList(),
     /**
