@@ -380,11 +380,7 @@ object Pids {
         mode = 0x01,
         pid = 0x24,
         periodMs = 2_000,
-        parser = { bytes ->
-            val a = byte(bytes, 0) ?: return@Pid null
-            val b = byte(bytes, 1) ?: return@Pid null
-            ((a * 256) + b) * 2.0 / 65536.0
-        },
+        parser = { bytes -> equivalenceRatio(bytes) },
     )
 
     /** Commanded air-fuel equivalence ratio, PID 0x44. Same scaling as 0x24. */
@@ -393,12 +389,30 @@ object Pids {
         mode = 0x01,
         pid = 0x44,
         periodMs = 2_000,
-        parser = { bytes ->
-            val a = byte(bytes, 0) ?: return@Pid null
-            val b = byte(bytes, 1) ?: return@Pid null
-            ((a * 256) + b) * 2.0 / 65536.0
-        },
+        parser = { bytes -> equivalenceRatio(bytes) },
     )
+
+    /**
+     * Shared decode for the two equivalence-ratio PIDs, 0x24 (measured
+     * lambda) and 0x44 (commanded). `(A*256+B) * 2 / 65536`.
+     *
+     * A=B=0xFF decodes to 1.99997 — that is the "not available" sentinel,
+     * not a reading. It arrived on ~8 % of samples across a real drive while
+     * the genuine values averaged 0.99, and a 2.0 spike is ruinous here
+     * specifically: both metrics are charted with 3 decimals because the
+     * interesting range is 0.98-1.02, so one sentinel rescales the axis and
+     * flattens the actual signal to a line.
+     *
+     * Rejecting >= 1.99 costs nothing real — a genuine lambda of 2.0 means
+     * twice stoichiometric air, which a running engine in closed loop does
+     * not produce.
+     */
+    private fun equivalenceRatio(bytes: ByteArray): Double? {
+        val a = byte(bytes, 0) ?: return null
+        val b = byte(bytes, 1) ?: return null
+        val ratio = ((a * 256) + b) * 2.0 / 65536.0
+        return if (ratio >= 1.99) null else ratio
+    }
 
     /** Fuel rail gauge pressure, PID 0x23. `(A*256+B) * 10` -> kPa (~3500 here). */
     val FuelRailPressure = Pid(
