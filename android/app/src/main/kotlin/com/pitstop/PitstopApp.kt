@@ -182,11 +182,27 @@ class PitstopApp : Application(), Configuration.Provider {
             setSound(null, null)
         }
         nm.createNotificationChannel(syncReminderChannel)
+
+        // Hardware faults that need the user to physically do something.
+        // DEFAULT importance, not LOW: the one case this fires for is the
+        // dongle hanging mid-drive, where every further mile is unlogged
+        // until it is power-cycled. A silent notification would be found
+        // hours later, which is the same as not sending it.
+        val deviceAlertChannel = NotificationChannel(
+            DEVICE_ALERT_CHANNEL_ID,
+            "Device alerts",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "OBD dongle faults that need attention, such as a " +
+                "hang that stops logging until it is unplugged."
+        }
+        nm.createNotificationChannel(deviceAlertChannel)
     }
 
     companion object {
         const val BRIDGE_CHANNEL_ID = "pitstop_bridge"
         const val UPDATES_CHANNEL_ID = "pitstop_updates"
         const val SYNC_REMINDER_CHANNEL_ID = "drive_sync_reminder"
+        const val DEVICE_ALERT_CHANNEL_ID = "device_alert"
     }
 }

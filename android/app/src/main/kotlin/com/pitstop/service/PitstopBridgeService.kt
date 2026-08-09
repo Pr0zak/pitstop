@@ -69,6 +69,7 @@ class PitstopBridgeService : Service() {
     @Inject lateinit var stateBus: BridgeStateBus
     @Inject lateinit var logBuffer: LogBuffer
     @Inject lateinit var logShipper: LogShipper
+    @Inject lateinit var dongleStallNotifier: com.pitstop.notif.DongleStallNotifier
     @Inject lateinit var presence: com.pitstop.presence.PresenceTracker
     @Inject lateinit var wicanSubscriber: com.pitstop.mqtt.WiCanSubscriber
     @Inject lateinit var driveRecorder: com.pitstop.drive.DriveRecorder
@@ -359,7 +360,8 @@ class PitstopBridgeService : Service() {
                 // metrics bump lastFrameAtMs and would defeat both
                 // watchdogs forever (ADR-017).
                 val lastFrame = s.lastObdFrameAtMs ?: continue
-                val ageMs = System.currentTimeMillis() - lastFrame
+                val now0 = System.currentTimeMillis()
+                val ageMs = now0 - lastFrame
                 // OBD-quiet path: BLE is alive but the ECU isn't
                 // answering. Restricted to phase=Connected — a frame-age
                 // over the 60s threshold during the reconnect loop just
@@ -383,6 +385,37 @@ class PitstopBridgeService : Service() {
                 val bleLost = bridgeBleEnabled &&
                     s.phase != BridgePhase.Connected &&
                     lastFrame > 0 && ageMs > bleLostThresholdMs
+                // Dongle-hang detection, BEFORE the engine-off decision.
+                //
+                // obdQuiet alone cannot distinguish "engine off" from "dongle
+                // hung" — both are BLE-connected with no OBD frames — so
+                // notifying on it would fire every time the user parks.
+                //
+                // GPS is the discriminator: at road speed the engine is not
+                // off, so a silent OBD link means the dongle stopped
+                // answering. Requires a FRESH fix, otherwise the last speed
+                // from before a tunnel would keep asserting movement.
+                run {
+                    val gps = stateBus.latestByMetric.value["gps_speed"]
+                    val fixAgeMs = gps?.let { now0 - it.tsMs } ?: Long.MAX_VALUE
+                    val movingMps = gps?.value ?: 0.0
+                    if (com.pitstop.notif.DongleStallDetector
+                            .isStalled(obdQuiet, gps?.value, fixAgeMs)
+                    ) {
+                        dongleStallNotifier.notifyStalled(
+                            obdAgeS = ageMs / 1000L,
+                            speedMph = (movingMps * 2.23694).toInt(),
+                        )
+                        logBuffer.warn(
+                            "dongle appears hung — OBD silent while moving",
+                            mapOf(
+                                "obd_age_s" to ageMs / 1000L,
+                                "gps_mps" to movingMps,
+                                "fix_age_s" to fixAgeMs / 1000L,
+                            ),
+                        )
+                    }
+                }
                 if (!obdQuiet && !bleLost) continue
                 val reason = if (bleLost) "ble_lost" else "quiet"
                 val message = if (bleLost) {
@@ -492,6 +525,9 @@ class PitstopBridgeService : Service() {
     // the debounce + grace window.
     @SuppressLint("MissingPermission")
     private fun startBridge() {
+        // Same lifecycle as unmatchedFrameLogged / parserNullLogged: a latch
+        // that must survive a whole drive but not the next one.
+        dongleStallNotifier.reset()
         pollJob = scope.launch {
             // Snapshot the collector toggles up front. The settings-flow
             // watcher in onCreate keeps the cached fields fresh after
