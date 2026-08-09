@@ -1085,6 +1085,36 @@ const editingNotes = ref(false);
 const notesDraft = ref("");
 const categoryDraft = ref("");
 const towingDraft = ref(false);
+const towingSaving = ref(false);
+
+/**
+ * Towing applies IMMEDIATELY, unlike notes and category which share this
+ * card's Save button.
+ *
+ * It sits in the same card, but a checkbox reads as a control that has
+ * already taken effect — a text field does not. Leaving it on the deferred
+ * Save made it look broken: you untick it, nothing changes, and the badge in
+ * the trip list stays until you happen to press Save. It also disagreed with
+ * the phone, where the same flag is an immediately-applied switch.
+ *
+ * Optimistic, reverting on failure — same contract as the phone.
+ */
+async function toggleTowing(next: boolean) {
+  if (!trip.value) return;
+  const previous = towingDraft.value;
+  towingDraft.value = next;
+  towingSaving.value = true;
+  metaError.value = null;
+  try {
+    await api.updateTrip(trip.value.id, { is_towing: next });
+    if (trip.value) trip.value.is_towing = next;
+  } catch (e: unknown) {
+    towingDraft.value = previous;
+    metaError.value = e instanceof Error ? e.message : "couldn't update towing";
+  } finally {
+    towingSaving.value = false;
+  }
+}
 const savingMeta = ref(false);
 const metaError = ref<string | null>(null);
 
@@ -1407,7 +1437,12 @@ async function saveMeta() {
           <div class="card">
             <h3>Notes &amp; tags</h3>
             <label class="towing-toggle">
-              <input type="checkbox" v-model="towingDraft" />
+              <input
+                type="checkbox"
+                :checked="towingDraft"
+                :disabled="towingSaving"
+                @change="toggleTowing(($event.target as HTMLInputElement).checked)"
+              />
               <span>
                 <strong>Towing</strong>
                 <small class="muted">
