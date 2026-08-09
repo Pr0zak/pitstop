@@ -1084,6 +1084,7 @@ function resetZoom() {
 const editingNotes = ref(false);
 const notesDraft = ref("");
 const categoryDraft = ref("");
+const towingDraft = ref(false);
 const savingMeta = ref(false);
 const metaError = ref<string | null>(null);
 
@@ -1091,6 +1092,7 @@ watch(trip, (t) => {
   if (t) {
     notesDraft.value = t.notes ?? "";
     categoryDraft.value = t.category ?? "";
+    towingDraft.value = t.is_towing ?? false;
   }
 });
 
@@ -1102,6 +1104,7 @@ async function saveMeta() {
     await api.updateTrip(trip.value.id, {
       notes: notesDraft.value.trim() || null,
       category: categoryDraft.value.trim() || null,
+      is_towing: towingDraft.value,
     });
     editingNotes.value = false;
     await reload();
@@ -1402,7 +1405,17 @@ async function saveMeta() {
           </div>
 
           <div class="card">
-            <h3>Notes &amp; category</h3>
+            <h3>Notes &amp; tags</h3>
+            <label class="towing-toggle">
+              <input type="checkbox" v-model="towingDraft" />
+              <span>
+                <strong>Towing</strong>
+                <small class="muted">
+                  Fuel economy under tow is not comparable to an ordinary
+                  trip. Flagging it keeps that obvious when you look back.
+                </small>
+              </span>
+            </label>
             <label>
               Category
               <input
@@ -1507,6 +1520,23 @@ async function saveMeta() {
   align-items: center;
   gap: 0.5rem;
 }
+.towing-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.towing-toggle input {
+  width: auto;
+  margin-top: 3px;
+  flex: none;
+}
+.towing-toggle small {
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .toggle-chip {
   padding: 0.2rem 0.6rem;
   font-size: 0.75rem;

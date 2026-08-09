@@ -95,6 +95,8 @@ type SortOrder = "recent" | "distance" | "speed" | "duration";
 type SrcFilter = "all" | "phone_batch" | "manual_merge" | "other";
 const sort = ref<SortOrder>("recent");
 const srcFilter = ref<SrcFilter>("all");
+// Towing is a load condition, so it filters independently of source.
+const towingOnly = ref(false);
 
 // Relative-date bucket for group headers.
 type GroupKey =
@@ -284,6 +286,7 @@ const DATE_PRESET_LABEL: Record<DatePreset, string> = {
 const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: import("@/api/types").Trip[] }>>(() => {
   const items = data.value?.items ?? [];
   const filtered = items.filter((t) => {
+    if (towingOnly.value && !t.is_towing) return false;
     if (srcFilter.value === "all") return true;
     if (srcFilter.value === "phone_batch") return t.source === "phone_batch";
     if (srcFilter.value === "manual_merge") return t.source === "manual_merge";
@@ -510,7 +513,14 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                   <span v-if="selectedIds.has(t.id)">✓</span>
                 </span>
               </td>
-              <td>{{ fmtDateTime(t.started_at) }}</td>
+              <td>
+                {{ fmtDateTime(t.started_at) }}
+                <span
+                  v-if="t.is_towing"
+                  class="tow-badge"
+                  title="Towing — fuel economy on this trip is not comparable"
+                >TOW</span>
+              </td>
               <td>{{ fmtDuration(t.duration_s) }}</td>
               <td>{{ fmtDistanceKm(t.distance_km ?? null) }}</td>
               <td>{{ fmtSpeedKph(t.max_speed_kph ?? null) }}</td>
@@ -624,6 +634,19 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   align-items: baseline;
   font-variant-numeric: tabular-nums;
 }
+.tow-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffb020;
+  border: 1px solid #ffb020;
+  vertical-align: 1px;
+}
+
 .tag {
   background: var(--c-surface-soft);
   border: 1px solid var(--c-border-soft);

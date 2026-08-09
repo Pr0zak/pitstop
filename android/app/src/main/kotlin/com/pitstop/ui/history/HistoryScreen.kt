@@ -1,6 +1,9 @@
 package com.pitstop.ui.history
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -646,8 +649,30 @@ private fun TripCard(
                 Text(
                     text = formatTripDate(trip.startedAt),
                     style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
                 )
+                // Next to the date, not the distance: the point is to scan
+                // the column and see which trips explain a bad-looking tank.
+                if (trip.isTowing) {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 6.dp)
+                            .border(
+                                width = 1.dp,
+                                color = Color(0xFFFFB020),
+                                shape = RoundedCornerShape(4.dp),
+                            )
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    ) {
+                        Text(
+                            "TOW",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = Color(0xFFFFB020),
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
                 val mi = trip.distanceKm?.let { it * 0.621371 }
                 Text(
                     text = mi?.let { "%.1f mi".format(it) } ?: "—",

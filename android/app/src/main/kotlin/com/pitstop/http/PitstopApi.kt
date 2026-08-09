@@ -301,6 +301,16 @@ interface PitstopApi {
      * picks the earliest leg as the survivor regardless of which id it
      * is.
      */
+    /**
+     * Partial trip update. The interceptor routes non-GET to the INGEST
+     * token, matching the backend's auth policy, so no extra wiring.
+     */
+    @retrofit2.http.PATCH("api/trips/{id}")
+    suspend fun updateTrip(
+        @retrofit2.http.Path("id") id: String,
+        @Body body: TripUpdateRequest,
+    ): TripDetailDto
+
     @POST("api/trips/{id}/merge")
     suspend fun mergeTrips(
         @Path("id") id: String,
@@ -365,11 +375,26 @@ data class TripDto(
     @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
     @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
     val category: String? = null,
+    /** Load condition, orthogonal to [category] — a towing trip is still a
+     *  commute. Defaulted so older servers that don't send it decode. */
+    @kotlinx.serialization.SerialName("is_towing") val isTowing: Boolean = false,
     /** Provenance — "phone_batch" (post-drive HTTP batch), "deriver"
      *  (server-derived from raw activity), or "manual_merge" (user
      *  combined two trips via MERGE-1). Surfaced in the History tab
      *  source-filter chips (TRIPS-1). */
     val source: String? = null,
+)
+
+/**
+ * PATCH body. Every field nullable and omitted when null: the backend builds
+ * its SET clause from the fields actually present, so sending a whole trip
+ * back would overwrite columns the user never touched.
+ */
+@kotlinx.serialization.Serializable
+data class TripUpdateRequest(
+    @kotlinx.serialization.SerialName("is_towing") val isTowing: Boolean? = null,
+    val notes: String? = null,
+    val category: String? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -409,6 +434,7 @@ data class TripDetailDto(
     @kotlinx.serialization.SerialName("avg_coolant_c") val avgCoolantC: Double? = null,
     @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
     @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
+    @kotlinx.serialization.SerialName("is_towing") val isTowing: Boolean = false,
     @kotlinx.serialization.SerialName("idle_s") val idleS: Int? = null,
     val category: String? = null,
     val notes: String? = null,

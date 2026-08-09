@@ -261,6 +261,10 @@ class TripOut(BaseModel):
     idle_s: int | None = None
     category: str | None
     notes: str | None
+    # Load condition, not a purpose — a towing trip is still a commute or a
+    # road trip, so this is its own flag rather than a `category` value.
+    # Defaulted rather than optional: a trip either was towing or it wasn't.
+    is_towing: bool = False
     # Per-trip weather observation captured at trip-open via the
     # Open-Meteo fetcher (Task #78). All nullable until the
     # backfiller catches up on historical rows.
@@ -283,6 +287,9 @@ class TripUpdate(BaseModel):
 
     notes: str | None = None
     category: str | None = None
+    # PATCHable so a trip can be tagged after the fact — you know you were
+    # towing when you get home, not while the trip is being derived.
+    is_towing: bool | None = None
 
 
 class TripSamplePoint(BaseModel):

@@ -75,6 +75,29 @@ class TripDetailViewModel @Inject constructor(
             StoredSeries(loaded = false, metrics = null),
         )
 
+    /**
+     * Flag or unflag this trip as towing.
+     *
+     * Optimistic: the switch moves immediately and reverts if the server
+     * rejects it. A toggle that waits on a round trip reads as broken on a
+     * phone that may be on cellular, and the cost of being wrong here is one
+     * boolean the user can flip again.
+     */
+    fun setTowing(value: Boolean) {
+        val current = _ui.value.trip ?: return
+        _ui.update { it.copy(trip = current.copy(isTowing = value)) }
+        viewModelScope.launch {
+            runCatching { api.updateTrip(current.id, com.pitstop.http.TripUpdateRequest(isTowing = value)) }
+                .onFailure { e ->
+                    _ui.update { it.copy(trip = current) }
+                    logBuffer.warn(
+                        "trip-detail: towing toggle failed",
+                        mapOf("trip_id" to current.id, "err" to (e.message ?: e::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
     /** Persist an explicit user toggle. Never called for a fallback. */
     fun setSeries(metrics: Set<String>) {
         viewModelScope.launch { settingsRepository.setTripSeriesMetrics(metrics) }

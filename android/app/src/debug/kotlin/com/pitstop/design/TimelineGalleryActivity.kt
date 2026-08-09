@@ -52,6 +52,7 @@ class TimelineGalleryActivity : ComponentActivity() {
                         // screen falls back to the defaultVisible metrics.
                         storedSeries = StoredSeries(loaded = true, metrics = null),
                         onPersistSeries = {},
+                        onTowingChange = {},
                         onOpenDtc = { _, _ -> },
                         modifier = Modifier.fillMaxSize(),
                     )

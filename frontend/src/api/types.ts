@@ -125,6 +125,10 @@ export interface Trip {
   idle_s?: number | null;
   category?: string | null;
   notes?: string | null;
+  /** Towing load. A load CONDITION, orthogonal to `category` — a towing
+   *  trip is still a commute. Fuel economy under tow is not comparable to
+   *  an ordinary trip, which is the whole point of flagging it. */
+  is_towing?: boolean;
   // Per-trip weather observation captured at trip-open via
   // services/weather.py (Task #78). Sampled at the first GPS point
   // in the trip window — accurate to a city block + 1 hour.

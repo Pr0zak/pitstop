@@ -76,6 +76,7 @@ fun TripDetailScreen(
             unitSystem = unitSystem,
             storedSeries = storedSeries,
             onPersistSeries = viewModel::setSeries,
+            onTowingChange = viewModel::setTowing,
             onOpenDtc = onOpenDtc,
             modifier = modifier,
         )
@@ -95,6 +96,7 @@ internal fun Loaded(
     unitSystem: String,
     storedSeries: StoredSeries,
     onPersistSeries: (Set<String>) -> Unit,
+    onTowingChange: (Boolean) -> Unit,
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
     modifier: Modifier,
 ) {
@@ -181,6 +183,8 @@ internal fun Loaded(
         }
 
         HeroStatsCard(trip, unitSystem)
+
+        TowingCard(trip.isTowing, onTowingChange)
 
         SecondaryStatsCard(trip, unitSystem)
 
@@ -353,6 +357,38 @@ private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * Towing flag. Sits directly under the hero stats because that is where the
+ * MPG number is — the flag exists to explain a figure that would otherwise
+ * look like a bad tank.
+ */
+@Composable
+private fun TowingCard(isTowing: Boolean, onChange: (Boolean) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Towing", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Fuel economy under tow isn't comparable to a normal trip.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            androidx.compose.material3.Switch(checked = isTowing, onCheckedChange = onChange)
+        }
     }
 }
 
