@@ -64,6 +64,7 @@ data class ConfigFormState(
     val bleDeviceName: String? = null,
     val verboseLogging: Boolean = false,
     val aaTilesHome: List<String> = emptyList(),
+    val dongleAlertEnabled: Boolean = true,
     val aaTabs: List<String> = emptyList(),
     val aaTilesEngine: List<String> = emptyList(),
     val aaTilesFuel: List<String> = emptyList(),
@@ -328,6 +329,7 @@ class ConfigViewModel @Inject constructor(
                 queryToken = secrets.queryToken,
                 aaTilesHome = secrets.settings.aaTilesHome,
                 aaTabs = secrets.settings.aaTabs,
+                dongleAlertEnabled = secrets.settings.dongleAlertEnabled,
                 aaTilesEngine = secrets.settings.aaTilesEngine,
                 aaTilesFuel = secrets.settings.aaTilesFuel
                     .ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_HOME },
@@ -694,6 +696,7 @@ class ConfigViewModel @Inject constructor(
                 verboseLogging = f.verboseLogging,
                 aaTilesHome = f.aaTilesHome,
                 aaTabs = f.aaTabs,
+                dongleAlertEnabled = f.dongleAlertEnabled,
                 aaTilesEngine = f.aaTilesEngine,
                 aaTilesFuel = f.aaTilesFuel,
                 aaTilesDiag = f.aaTilesDiag,

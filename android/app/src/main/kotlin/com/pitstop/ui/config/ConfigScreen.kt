@@ -384,11 +384,9 @@ fun ConfigScreen(
                     bleEnabled = form.bridgeBleEnabled,
                     gpsEnabled = form.bridgeGpsEnabled,
                     manualSyncOnly = form.manualSyncOnly,
-                    extendedPidsEnabled = form.extendedPidsEnabled,
                     onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
                     onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
                     onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
-                    onExtendedPidsChange = { v -> viewModel.setExtendedPidsEnabled(v) },
                 )
                 BleDeviceSection(
                     deviceName = form.bleDeviceName,
@@ -435,6 +433,12 @@ fun ConfigScreen(
                 DisplaySection(
                     unitSystem = form.unitSystem,
                     onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
+                )
+                NotificationsSection(
+                    dongleAlert = form.dongleAlertEnabled,
+                    onDongleAlertChange = { v ->
+                        viewModel.update { it.copy(dongleAlertEnabled = v) }
+                    },
                 )
                 LogsSection(
                     verbose = form.verboseLogging,
@@ -551,11 +555,9 @@ private fun CaptureCollectorsSection(
     bleEnabled: Boolean,
     gpsEnabled: Boolean,
     manualSyncOnly: Boolean,
-    extendedPidsEnabled: Boolean,
     onBleEnabledChange: (Boolean) -> Unit,
     onGpsEnabledChange: (Boolean) -> Unit,
     onManualSyncChange: (Boolean) -> Unit,
-    onExtendedPidsChange: (Boolean) -> Unit,
 ) {
     SettingsSection(
         title = "Collectors",
@@ -637,30 +639,6 @@ private fun CaptureCollectorsSection(
             Switch(checked = manualSyncOnly, onCheckedChange = onManualSyncChange)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        // Opt-in Mode 22 PIDs (ZF TCM: ATF temp + gear). Default OFF and
-        // explicitly labelled experimental — enabling it makes the bridge
-        // change the ELM session header mid-poll to address the transmission
-        // module. The restore is guarded several ways, but a header left set
-        // would make every following standard PID be answered by the wrong
-        // module, so the user should know what they are switching on.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "Transmission PIDs (experimental)",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Text(
-                    if (extendedPidsEnabled)
-                        "⚠ Known to BREAK capture on this hardware — turn this off"
-                    else "ATF temperature + gear. Tested 2026-08-05 and it does NOT " +
-                        "work: the dongle shares one OBD session, so this silently " +
-                        "stops most normal readings. Leave off (see ADR-022).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = extendedPidsEnabled, onCheckedChange = onExtendedPidsChange)
-        }
     }
 }
 
@@ -1321,6 +1299,43 @@ private fun PitstopServerSection(
 }
 
 // ── Logs ───────────────────────────────────────────────────────────
+
+@Composable
+private fun NotificationsSection(
+    dongleAlert: Boolean,
+    onDongleAlertChange: (Boolean) -> Unit,
+) {
+    SettingsSection(
+        title = "Notifications",
+        description = "Alerts about the capture hardware. The ongoing " +
+            "recording notification is required by Android and can't be " +
+            "turned off here.",
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Dongle stopped responding", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Alerts on the phone and the car screen when engine data " +
+                        "stops while you're still moving — the dongle has hung " +
+                        "and needs unplugging. Only fires when GPS confirms " +
+                        "you're driving, so parking never triggers it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = dongleAlert, onCheckedChange = onDongleAlertChange)
+        }
+        if (!dongleAlert) {
+            Spacer(Modifier.size(6.dp))
+            Text(
+                "Drives are still kept whole through a stall — that isn't a " +
+                    "notification setting.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 @Composable
 private fun LogsSection(

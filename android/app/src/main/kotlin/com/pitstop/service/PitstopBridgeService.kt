@@ -139,6 +139,9 @@ class PitstopBridgeService : Service() {
      */
     @Volatile private var extendedPidsEnabled: Boolean = false
 
+    /** Mirrors `Settings.dongleAlertEnabled`; see the gate in the watchdog. */
+    @Volatile private var dongleAlertEnabled: Boolean = true
+
     /**
      * The extended PID whose response we're currently waiting on, if any.
      * Multi-frame ISO-TP answers can't be attributed by the mode/PID echo the
@@ -305,6 +308,9 @@ class PitstopBridgeService : Service() {
         // it OFF also forces a header restore so we can't be left addressing
         // the transmission controller.
         scope.launch {
+            settingsRepository.settings.collect { dongleAlertEnabled = it.dongleAlertEnabled }
+        }
+        scope.launch {
             settingsRepository.extendedPidsEnabled.collect { enabled ->
                 val prior = extendedPidsEnabled
                 extendedPidsEnabled = enabled
@@ -402,7 +408,11 @@ class PitstopBridgeService : Service() {
                     if (com.pitstop.notif.DongleStallDetector
                             .isStalled(obdQuiet, gps?.value, fixAgeMs)
                     ) {
-                        dongleStallNotifier.notifyStalled(
+                        // The alert is user-switchable; keeping the drive
+                        // whole is NOT. Suppression below runs regardless,
+                        // because a split trip is corrupted data rather than
+                        // a notification preference.
+                        if (dongleAlertEnabled) dongleStallNotifier.notifyStalled(
                             obdAgeS = ageMs / 1000L,
                             speedMph = (movingMps * 2.23694).toInt(),
                         )

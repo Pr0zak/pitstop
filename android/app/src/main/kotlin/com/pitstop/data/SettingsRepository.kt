@@ -45,6 +45,8 @@ class SettingsRepository @Inject constructor(
         val aaTilesEngine: Preferences.Key<String> = stringPreferencesKey("aa_tiles_engine")
         val aaTilesFuel: Preferences.Key<String> = stringPreferencesKey("aa_tiles_fuel")
         val aaTabs: Preferences.Key<String> = stringPreferencesKey("aa_tabs")
+        val dongleAlertEnabled: Preferences.Key<Boolean> =
+            booleanPreferencesKey("dongle_alert_enabled")
         val unitSystem: Preferences.Key<String> = stringPreferencesKey("unit_system")
         val pairedCarBtMac: Preferences.Key<String> = stringPreferencesKey("paired_car_bt_mac")
         val manualSyncOnly: Preferences.Key<Boolean> = booleanPreferencesKey("manual_sync_only")
@@ -125,6 +127,9 @@ class SettingsRepository @Inject constructor(
             bleDeviceName = prefs[Keys.bleName]?.takeIf { it.isNotBlank() },
             publishHz = prefs[Keys.publishHz] ?: 1f,
             verboseLogging = prefs[Keys.verboseLogging] ?: false,
+            // Defaults ON: it fires only when the dongle has demonstrably
+            // stopped answering mid-drive, which is data actively being lost.
+            dongleAlertEnabled = prefs[Keys.dongleAlertEnabled] ?: true,
             aaTabs = prefs[Keys.aaTabs]?.split(",")
                 ?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
             aaTilesEngine = prefs[Keys.aaTilesEngine]?.split(",")
@@ -226,6 +231,7 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.aaTilesHome] = settings.aaTilesHome.joinToString(",")
             prefs[Keys.aaTilesEngine] = settings.aaTilesEngine.joinToString(",")
             prefs[Keys.aaTabs] = settings.aaTabs.joinToString(",")
+            prefs[Keys.dongleAlertEnabled] = settings.dongleAlertEnabled
             prefs[Keys.aaTilesFuel] = settings.aaTilesFuel.joinToString(",")
             prefs[Keys.aaTilesDiag] = settings.aaTilesDiag.joinToString(",")
             prefs[Keys.unitSystem] = settings.unitSystem
@@ -375,12 +381,26 @@ class SettingsRepository @Inject constructor(
      * it adds/removes the extended PIDs from the round-robin mid-drive without
      * restarting the bridge.
      */
+    /**
+     * ALWAYS FALSE. The Settings toggle was removed in v0.1.233 and this is
+     * hard-wired off rather than deleted, because the key may still hold
+     * `true` on a device where it was switched on — and with no UI left, a
+     * stored `true` would be permanently unreachable while continuing to
+     * break capture.
+     *
+     * Mode 22 transmission PIDs (ATF temp, gear) were proven unusable on this
+     * hardware on 2026-08-05: the dongle exposes ONE ELM session, headers are
+     * sticky, and pointing it at the TCM makes every following standard PID
+     * be answered by the wrong module — the published stream collapsed from
+     * 62 keys to 19. The decode work is real and correct and is kept in
+     * ZfTcmPids.kt; it is the transport that cannot carry it. See ADR-022.
+     */
     val extendedPidsEnabled: Flow<Boolean> =
-        context.dataStore.data.map { it[Keys.extendedPidsEnabled] ?: false }
+        kotlinx.coroutines.flow.flowOf(false)
 
     /** One-shot read for bridge start-up, before the flow collector lands. */
-    suspend fun extendedPidsEnabledNow(): Boolean =
-        context.dataStore.data.first()[Keys.extendedPidsEnabled] ?: false
+    /** See [extendedPidsEnabled] — hard-wired off. */
+    suspend fun extendedPidsEnabledNow(): Boolean = false
 
     /** Focused setter for the extended-PID opt-in. */
     suspend fun setExtendedPidsEnabled(value: Boolean) {
