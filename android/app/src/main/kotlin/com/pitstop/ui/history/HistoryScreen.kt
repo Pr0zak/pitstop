@@ -652,6 +652,26 @@ private fun TripCard(
                 )
                 // Next to the date, not the distance: the point is to scan
                 // the column and see which trips explain a bad-looking tank.
+                if (trip.gpsOnly) {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 6.dp)
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.outline,
+                                shape = RoundedCornerShape(4.dp),
+                            )
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    ) {
+                        Text(
+                            "GPS",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    }
+                }
                 if (trip.isTowing) {
                     Box(
                         modifier = Modifier

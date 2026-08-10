@@ -402,6 +402,29 @@ async def _derive_for_vehicle(
         # COALESCE keeps prior values intact if today's fetch failed
         # (so the backfill worker doesn't lose a previously-fetched
         # value just because the realtime path momentarily errored).
+        # PROVENANCE, not purpose. A trip with no engine-derived reading in
+        # its window was recorded by the phone alone — a boat, a bike, a
+        # passenger seat in someone else's car. It is a real journey and worth
+        # keeping, but its distance is not distance this vehicle drove, and
+        # nothing about its engine can be inferred.
+        #
+        # Measured 2026-08-09: GPS-only trips had exactly 0 such rows while
+        # the car trips either side had 677 and 11,416, so a plain existence
+        # check is enough — no threshold to tune, and a threshold would only
+        # invite a wrong answer on a trip where the dongle stalled early.
+        gps_only = not await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pid_readings
+                 WHERE vehicle_id = $1 AND time >= $2 AND time <= $3
+                   AND metric IN (
+                       'engine_rpm', 'coolant_temp', 'engine_load',
+                       'vehicle_speed', 'throttle_position'
+                   )
+            )
+            """,
+            vehicle_id, iv.started_at, iv.ended_at,
+        )
         wtemp = weather.temp_c if weather else None
         whum = weather.humidity_pct if weather else None
         wprecip = weather.precip_mm if weather else None
@@ -415,12 +438,14 @@ async def _derive_for_vehicle(
                 avg_coolant_c, fuel_used_l, dtc_count, idle_s,
                 weather_temp_c, weather_humidity_pct,
                 weather_precip_mm, weather_wind_kph, weather_code,
+                gps_only,
                 source
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9,
                 $10, $11, $12, $13,
                 $14, $15, $16, $17, $18,
+                $19,
                 'deriver'
             )
             ON CONFLICT (id) DO UPDATE SET
@@ -438,7 +463,8 @@ async def _derive_for_vehicle(
                 weather_humidity_pct = COALESCE(EXCLUDED.weather_humidity_pct, trips.weather_humidity_pct),
                 weather_precip_mm = COALESCE(EXCLUDED.weather_precip_mm, trips.weather_precip_mm),
                 weather_wind_kph = COALESCE(EXCLUDED.weather_wind_kph, trips.weather_wind_kph),
-                weather_code = COALESCE(EXCLUDED.weather_code, trips.weather_code)
+                weather_code = COALESCE(EXCLUDED.weather_code, trips.weather_code),
+                gps_only = EXCLUDED.gps_only
             """,
             trip_id, vehicle_id, iv.started_at, iv.ended_at,
             stats["duration_s"], stats["distance_km"],
@@ -446,6 +472,7 @@ async def _derive_for_vehicle(
             stats["avg_speed_kph"], stats["avg_coolant_c"],
             stats["fuel_used_l"], stats["dtc_count"], stats.get("idle_s"),
             wtemp, whum, wprecip, wwind, wcode,
+            gps_only,
         )
         touched += 1
     return touched

@@ -516,6 +516,11 @@ const purposeRollup = computed<PurposeRow[]>(() => {
               <td>
                 {{ fmtDateTime(t.started_at) }}
                 <span
+                  v-if="t.gps_only"
+                  class="gps-badge"
+                  title="No engine data — recorded by the phone alone, so this may not be this vehicle"
+                >GPS ONLY</span>
+                <span
                   v-if="t.is_towing"
                   class="tow-badge"
                   title="Towing — fuel economy on this trip is not comparable"
@@ -634,6 +639,19 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   align-items: baseline;
   font-variant-numeric: tabular-nums;
 }
+.gps-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #8b95a7;
+  border: 1px solid #8b95a7;
+  vertical-align: 1px;
+}
+
 .tow-badge {
   display: inline-block;
   margin-left: 6px;

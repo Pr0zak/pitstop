@@ -77,6 +77,7 @@ fun TripDetailScreen(
             storedSeries = storedSeries,
             onPersistSeries = viewModel::setSeries,
             onTowingChange = viewModel::setTowing,
+            onCategoryChange = viewModel::setCategory,
             onOpenDtc = onOpenDtc,
             modifier = modifier,
         )
@@ -97,6 +98,7 @@ internal fun Loaded(
     storedSeries: StoredSeries,
     onPersistSeries: (Set<String>) -> Unit,
     onTowingChange: (Boolean) -> Unit,
+    onCategoryChange: (String?) -> Unit,
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
     modifier: Modifier,
 ) {
@@ -185,6 +187,8 @@ internal fun Loaded(
         HeroStatsCard(trip, unitSystem)
 
         TowingCard(trip.isTowing, onTowingChange)
+
+        TagCard(trip.gpsOnly, trip.category, onCategoryChange)
 
         SecondaryStatsCard(trip, unitSystem)
 
@@ -365,6 +369,81 @@ private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
  * MPG number is — the flag exists to explain a figure that would otherwise
  * look like a bad tank.
  */
+/**
+ * Purpose tag, plus the provenance note when there was no engine data.
+ *
+ * The two are separate on purpose: `gps_only` is DERIVED and not editable —
+ * whether OBD samples existed is a fact, and letting a user assert otherwise
+ * would only produce a wrong answer. What the user knows and the system does
+ * not is what the journey WAS, which is what `category` carries.
+ */
+@OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    ExperimentalLayoutApi::class,
+)
+@Composable
+private fun TagCard(
+    gpsOnly: Boolean,
+    category: String?,
+    onCategoryChange: (String?) -> Unit,
+) {
+    var draft by remember(category) { mutableStateOf(category.orEmpty()) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Tag", style = MaterialTheme.typography.titleSmall)
+            if (gpsOnly) {
+                Text(
+                    "No engine data — the phone recorded this on its own, so " +
+                        "it may not have been this vehicle. Tag it so that's " +
+                        "obvious later.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            androidx.compose.material3.OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = true,
+                label = { Text("Category") },
+                placeholder = { Text("Boat, Commute, Road trip, …") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (suggestion in listOf("Boat", "Commute", "Road trip", "Errands", "Work")) {
+                    AssistChip(
+                        onClick = { draft = suggestion; onCategoryChange(suggestion) },
+                        label = {
+                            Text(suggestion, style = MaterialTheme.typography.labelMedium)
+                        },
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.TextButton(
+                    onClick = { onCategoryChange(draft.trim().ifBlank { null }) },
+                ) { Text("Save tag") }
+                if (!category.isNullOrBlank()) {
+                    androidx.compose.material3.TextButton(
+                        onClick = { draft = ""; onCategoryChange(null) },
+                    ) { Text("Clear") }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun TowingCard(isTowing: Boolean, onChange: (Boolean) -> Unit) {
     Card(

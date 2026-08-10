@@ -129,6 +129,10 @@ export interface Trip {
    *  trip is still a commute. Fuel economy under tow is not comparable to
    *  an ordinary trip, which is the whole point of flagging it. */
   is_towing?: boolean;
+  /** Derived: no engine data existed for this window, so the phone recorded
+   *  it alone — a boat, a bike, a passenger seat. Real journey, but its
+   *  distance is not distance this vehicle drove. */
+  gps_only?: boolean;
   // Per-trip weather observation captured at trip-open via
   // services/weather.py (Task #78). Sampled at the first GPS point
   // in the trip window — accurate to a city block + 1 hour.

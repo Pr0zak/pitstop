@@ -1436,6 +1436,11 @@ async function saveMeta() {
 
           <div class="card">
             <h3>Notes &amp; tags</h3>
+            <p v-if="trip?.gps_only" class="muted small gps-note">
+              No engine data was recorded for this trip — the phone logged it
+              alone. It may not have been this vehicle at all; tag it below so
+              it is obvious later.
+            </p>
             <label class="towing-toggle">
               <input
                 type="checkbox"

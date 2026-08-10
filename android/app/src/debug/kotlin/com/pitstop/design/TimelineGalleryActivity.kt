@@ -53,6 +53,7 @@ class TimelineGalleryActivity : ComponentActivity() {
                         storedSeries = StoredSeries(loaded = true, metrics = null),
                         onPersistSeries = {},
                         onTowingChange = {},
+                        onCategoryChange = {},
                         onOpenDtc = { _, _ -> },
                         modifier = Modifier.fillMaxSize(),
                     )

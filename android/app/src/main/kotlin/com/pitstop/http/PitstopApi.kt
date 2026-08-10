@@ -375,6 +375,7 @@ data class TripDto(
     @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
     @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
     val category: String? = null,
+    @kotlinx.serialization.SerialName("gps_only") val gpsOnly: Boolean = false,
     /** Load condition, orthogonal to [category] — a towing trip is still a
      *  commute. Defaulted so older servers that don't send it decode. */
     @kotlinx.serialization.SerialName("is_towing") val isTowing: Boolean = false,
@@ -435,6 +436,7 @@ data class TripDetailDto(
     @kotlinx.serialization.SerialName("fuel_used_l") val fuelUsedL: Double? = null,
     @kotlinx.serialization.SerialName("dtc_count") val dtcCount: Int = 0,
     @kotlinx.serialization.SerialName("is_towing") val isTowing: Boolean = false,
+    @kotlinx.serialization.SerialName("gps_only") val gpsOnly: Boolean = false,
     @kotlinx.serialization.SerialName("idle_s") val idleS: Int? = null,
     val category: String? = null,
     val notes: String? = null,

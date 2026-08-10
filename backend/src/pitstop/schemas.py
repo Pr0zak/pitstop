@@ -265,6 +265,10 @@ class TripOut(BaseModel):
     # road trip, so this is its own flag rather than a `category` value.
     # Defaulted rather than optional: a trip either was towing or it wasn't.
     is_towing: bool = False
+    # Derived, never user-set: no engine data existed for this window, so the
+    # phone recorded it alone. Users tag PURPOSE via `category`; the system
+    # tags PROVENANCE.
+    gps_only: bool = False
     # Per-trip weather observation captured at trip-open via the
     # Open-Meteo fetcher (Task #78). All nullable until the
     # backfiller catches up on historical rows.

@@ -98,6 +98,23 @@ class TripDetailViewModel @Inject constructor(
         }
     }
 
+    /** Set or clear the purpose tag. Same optimistic contract as towing. */
+    fun setCategory(value: String?) {
+        val current = _ui.value.trip ?: return
+        _ui.update { it.copy(trip = current.copy(category = value)) }
+        viewModelScope.launch {
+            runCatching {
+                api.updateTrip(current.id, com.pitstop.http.TripUpdateRequest(category = value))
+            }.onFailure { e ->
+                _ui.update { it.copy(trip = current) }
+                logBuffer.warn(
+                    "trip-detail: category save failed",
+                    mapOf("trip_id" to current.id, "err" to (e.message ?: e::class.java.simpleName)),
+                )
+            }
+        }
+    }
+
     /** Persist an explicit user toggle. Never called for a fallback. */
     fun setSeries(metrics: Set<String>) {
         viewModelScope.launch { settingsRepository.setTripSeriesMetrics(metrics) }
