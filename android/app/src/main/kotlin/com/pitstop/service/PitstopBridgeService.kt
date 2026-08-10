@@ -417,6 +417,47 @@ class PitstopBridgeService : Service() {
                     }
                 }
                 if (!obdQuiet && !bleLost) continue
+
+                // Do NOT declare the engine off while GPS says we are still
+                // driving.
+                //
+                // Measured on the 2026-08-09 Stockton -> Overland Park run:
+                // six "off" events, four of them followed by "on" 2-20 s
+                // later, while GPS held 74-78 mph continuously across every
+                // boundary. An engine does not stop and restart in two
+                // seconds at 74 mph. Each one was the dongle stalling; the
+                // watchdog read the silence as the engine stopping, sealed
+                // the drive, and a 125-mile trip became six.
+                //
+                // Same predicate as the stall alert, deliberately: if we are
+                // confident enough to tell the user the dongle has hung, we
+                // are confident enough not to end their drive over it.
+                //
+                // Falls through to the old behaviour whenever GPS cannot
+                // vouch for movement — no fix, a stale fix, or stationary —
+                // so the case this watchdog exists for (a drive that really
+                // ended and the BLE never came back) still seals. Worst case
+                // if GPS is wrong is a drive sealed late, which merges; the
+                // failure it replaces was a drive split six ways, which
+                // needs manual repair.
+                val gpsNow = stateBus.latestByMetric.value["gps_speed"]
+                val stillMoving = com.pitstop.notif.DongleStallDetector.isStalled(
+                    obdQuiet = true,
+                    gpsSpeedMps = gpsNow?.value,
+                    gpsFixAgeMs = gpsNow?.let { now0 - it.tsMs } ?: Long.MAX_VALUE,
+                )
+                if (stillMoving) {
+                    logBuffer.info(
+                        "watchdog suppressed — GPS still moving, drive kept open",
+                        mapOf(
+                            "frame_age_ms" to ageMs,
+                            "gps_mps" to (gpsNow?.value ?: -1.0),
+                            "phase" to s.phase.name,
+                        ),
+                    )
+                    continue
+                }
+
                 val reason = if (bleLost) "ble_lost" else "quiet"
                 val message = if (bleLost) {
                     "engine off (BLE-lost watchdog)"
