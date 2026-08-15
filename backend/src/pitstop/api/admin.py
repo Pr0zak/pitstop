@@ -680,12 +680,74 @@ def _docker_socket_available() -> bool:
     )
 
 
+async def _db_alembic_head(pool: asyncpg.Pool) -> str | None:
+    """The revision the database is currently stamped at, or None."""
+    try:
+        async with pool.acquire() as conn:
+            return await conn.fetchval("SELECT version_num FROM alembic_version")
+    except Exception as exc:  # table absent on a never-migrated DB
+        log.warning("could not read alembic_version: %s", exc)
+        return None
+
+
+async def _image_has_revision(image: str, revision: str) -> tuple[bool, str]:
+    """Whether `image` ships the alembic revision the DB is stamped at.
+
+    Returns (ok, detail). `ok` is True when the revision file is present
+    OR when we could not determine it — an inconclusive probe must not
+    block a legitimate upgrade, since the alternative is an unusable
+    Update button. Only a definite "the image does not contain it" stops
+    the flow.
+
+    Why this exists: the upgrader pulls a published image and restarts
+    the backend against the EXISTING database. If that image's migration
+    set predates the DB's current head, alembic aborts at boot with
+    "Can't locate revision identified by ..." and the container
+    crash-loops forever. There is no rollback, and the sidecar is
+    detached, so nothing survives to report it — the frontend keeps
+    serving from Caddy and the outage is invisible. Checking here, while
+    the current backend is still alive, is the only point where the
+    failure can still be handed back to the user as an error.
+
+    Real incident (2026-08-10): an unreleased 0022 migration had been
+    applied by hand, then an in-app update to the then-latest v0.1.233
+    pulled an image containing only 0018-0021. 33 hours of lost ingest.
+    """
+    cmd = [
+        "docker", "run", "--rm", "--entrypoint", "sh", image,
+        "-c", "ls /app/alembic/versions/",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
+        return True, f"revision probe skipped: {exc}"
+    out = (stdout or b"").decode(errors="replace")
+    if proc.returncode != 0:
+        return True, f"revision probe skipped (exit {proc.returncode})"
+    files = {line.strip() for line in out.splitlines() if line.strip()}
+    if not files:
+        return True, "revision probe skipped (no versions dir)"
+    if f"{revision}.py" in files:
+        return True, "ok"
+    return False, (
+        f"target image does not contain migration '{revision}', which this "
+        f"database is currently stamped at. Upgrading would leave the backend "
+        f"unable to boot. Pick a release that includes it."
+    )
+
+
 @router.post(
     "/upgrade",
     dependencies=[Depends(require_ingest_token)],
 )
 async def trigger_upgrade(
     target: str | None = Query(default=None, description="release tag, e.g. v0.1.152"),
+    pool: asyncpg.Pool = Depends(get_pool),
 ) -> dict[str, Any]:
     """Kick the upgrade flow.
 
@@ -739,6 +801,23 @@ async def trigger_upgrade(
 
     if not re.fullmatch(r"v?\d+\.\d+\.\d+", target):
         raise HTTPException(status_code=400, detail="bad target tag format")
+
+    # Schema-compatibility preflight. Must happen here — synchronously,
+    # before the sidecar is spawned — because the sidecar is detached and
+    # replaces this very process. Once a bad image is running there is
+    # nothing left alive to surface the error. See _image_has_revision.
+    head = await _db_alembic_head(pool)
+    if head:
+        owner = os.environ.get("GHCR_OWNER", "pr0zak")
+        image = f"ghcr.io/{owner}/pitstop-backend:{target.lstrip('v')}"
+        ok, detail = await _image_has_revision(image, head)
+        if not ok:
+            log.error("upgrade to %s blocked: %s", target, detail)
+            _upgrade_job["status"] = "failed"
+            _upgrade_job["target"] = target
+            _upgrade_job["error"] = detail
+            raise HTTPException(status_code=409, detail=detail)
+        log.info("upgrade preflight for %s at head %s: %s", target, head, detail)
 
     host_dir = os.environ.get("PITSTOP_HOST_DIR", "/opt/pitstop")
     # Spawn the upgrader sidecar. `--rm -d` = detached + auto-clean.
