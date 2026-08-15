@@ -27,6 +27,7 @@ import javax.inject.Singleton
 @Singleton
 class OfflineCacheInterceptor @Inject constructor(
     private val logBuffer: LogBuffer,
+    private val freshness: NetworkFreshness,
 ) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -65,6 +66,11 @@ class OfflineCacheInterceptor @Inject constructor(
             "http offline fallback (CACHE-1)",
             mapOf("url" to original.url.encodedPath, "err" to reason),
         )
+        // Let the UI know this answer came off disk, so a screen can say
+        // "offline, showing saved data" instead of stamping it "just
+        // updated". Counted even if the cache read itself then misses —
+        // either way the network did not answer.
+        freshness.recordOfflineFallback()
         val cached = original.newBuilder()
             .cacheControl(
                 CacheControl.Builder()

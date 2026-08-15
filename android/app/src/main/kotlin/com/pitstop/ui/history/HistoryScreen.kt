@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,8 +26,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
@@ -44,12 +43,14 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -64,9 +65,11 @@ import com.pitstop.http.FillupDto
 import com.pitstop.http.MonthlySpendPointDto
 import com.pitstop.http.TripDto
 import com.pitstop.ui.components.PitstopTopAppBar
+import com.pitstop.ui.components.UploadStatusCard
 import com.pitstop.ui.history.detail.DtcDetailScreen
 import com.pitstop.ui.history.detail.FillupDetailScreen
 import com.pitstop.ui.history.detail.TripDetailScreen
+import com.pitstop.util.requireActivity
 import java.net.URLEncoder
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -201,9 +204,9 @@ private const val ROUTE_LIST = "list"
 /**
  * The original three-subtab list view, now lifted into its own
  * composable so the History root can host both it and the detail
- * destinations under a single NavHost. The viewModel is hoisted via
- * Hilt — it's still tied to the History root entry, so switching to
- * a detail and back doesn't reload the list.
+ * destinations under a single NavHost. The viewModel is hoisted to the
+ * Activity (see the parameter), so neither drilling into a detail nor
+ * swiping to another bottom-nav tab reloads the list.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -211,13 +214,24 @@ private fun HistoryListScreen(
     onOpenTrip: (id: String) -> Unit,
     onOpenFillup: (id: String) -> Unit,
     onOpenDtcCode: (code: String, vehicleId: String) -> Unit,
-    viewModel: HistoryViewModel = hiltViewModel(),
+    // Scoped to the Activity, not to this NavBackStackEntry. MainActivity's
+    // pager keeps beyondViewportPageCount at 0, so swiping off History
+    // disposes this whole NavHost — with an entry-scoped ViewModel that
+    // meant a brand-new instance (and a fresh five-endpoint fan-out from
+    // its init block) every time the tab came back, or even part-way
+    // through a drag. Activity scope keeps one instance, one list, and
+    // one refresh policy for the life of the screen.
+    viewModel: HistoryViewModel = hiltViewModel(LocalContext.current.requireActivity()),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val pendingCount by viewModel.pendingCount.collectAsStateWithLifecycle()
-    val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
     val syncConfirm by viewModel.syncConfirm.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(0) }
+
+    // Returning to the tab re-fetches only when the page has gone stale.
+    // The unconditional refresh this replaces fired on every compose.
+    LaunchedEffect(Unit) { viewModel.refreshIfStale() }
 
     syncConfirm?.let { prompt ->
         val isOffline = prompt.reason == "offline"
@@ -263,52 +277,13 @@ private fun HistoryListScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (pendingCount > 0 || syncState !is SyncState.Idle) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val statusText = when (val s = syncState) {
-                    SyncState.Idle ->
-                        "$pendingCount drive${if (pendingCount == 1) "" else "s"} pending upload"
-                    SyncState.InProgress -> "Syncing…"
-                    is SyncState.Done ->
-                        if (s.uploaded == 0 && s.remaining == 0) "All up to date"
-                        else "Synced ${s.uploaded} drive${if (s.uploaded == 1) "" else "s"}" +
-                            if (s.remaining > 0) " · ${s.remaining} left" else ""
-                    is SyncState.Failed -> "Sync failed: ${s.message}"
-                }
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                val inProgress = syncState is SyncState.InProgress
-                AssistChip(
-                    onClick = { if (!inProgress) viewModel.syncNow() },
-                    enabled = !inProgress,
-                    label = {
-                        if (inProgress) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                                Spacer(modifier = Modifier.size(8.dp))
-                                Text("Syncing…")
-                            }
-                        } else {
-                            Text("Sync now")
-                        }
-                    },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    ),
-                )
-            }
-        }
+        UploadStatusCard(
+            progress = uploadProgress,
+            pendingCount = pendingCount,
+            onSync = viewModel::syncNow,
+            onCancel = viewModel::cancelSync,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
         SecondaryTabRow(selectedTabIndex = selectedTab) {
             listOf("Trips", "Fillups", "DTCs", "Map").forEachIndexed { i, label ->
                 Tab(
@@ -317,6 +292,39 @@ private fun HistoryListScreen(
                     text = { Text(label) },
                 )
             }
+        }
+        // Server-backed tabs get a one-line receipt for the last fetch.
+        // The Map tab runs its own ViewModel and reports separately.
+        if (selectedTab in 0..2) {
+            RefreshStatusLine(
+                info = ui.lastRefresh,
+                loading = when (selectedTab) {
+                    0 -> ui.trips.loading
+                    1 -> ui.fillups.loading
+                    else -> ui.dtcs.loading
+                },
+                error = when (selectedTab) {
+                    0 -> ui.trips.error
+                    1 -> ui.fillups.error
+                    else -> ui.dtcs.error
+                },
+                // Count the rows of the tab actually on screen — "187
+                // trips" while reading the Fillups list would be noise.
+                itemCount = when (selectedTab) {
+                    0 -> ui.trips.data.size
+                    1 -> ui.fillups.data.size
+                    else -> ui.dtcs.data.size
+                },
+                noun = when (selectedTab) {
+                    0 -> "trip"
+                    1 -> "fillup"
+                    else -> "DTC"
+                },
+                // The new-row delta is only tracked for trips, which is
+                // the list an upload actually changes.
+                newCount = if (selectedTab == 0) ui.lastRefresh?.newTrips ?: 0 else 0,
+                onRefresh = { viewModel.refresh(forceNetwork = true) },
+            )
         }
         when (selectedTab) {
             0 -> {
@@ -328,7 +336,7 @@ private fun HistoryListScreen(
                 val tripFilter by viewModel.tripSourceFilter.collectAsStateWithLifecycle()
                 TripsList(
                     state = ui.trips,
-                    onRefresh = viewModel::refresh,
+                    onRefresh = { viewModel.refresh(forceNetwork = true) },
                     onOpen = onOpenTrip,
                     selection = tripSelection,
                     mergeState = mergeState,
@@ -356,7 +364,7 @@ private fun HistoryListScreen(
                 val fillupFilter by viewModel.fillupFilter.collectAsStateWithLifecycle()
                 FillupsList(
                     state = ui.fillups,
-                    onRefresh = viewModel::refresh,
+                    onRefresh = { viewModel.refresh(forceNetwork = true) },
                     onOpen = onOpenFillup,
                     sort = fillupSort,
                     filter = fillupFilter,
@@ -366,8 +374,83 @@ private fun HistoryListScreen(
                     monthlySpend = ui.monthlySpend,
                 )
             }
-            2 -> DtcsList(state = ui.dtcs, onRefresh = viewModel::refresh, onOpen = onOpenDtcCode)
+            2 -> DtcsList(
+                state = ui.dtcs,
+                onRefresh = { viewModel.refresh(forceNetwork = true) },
+                onOpen = onOpenDtcCode,
+            )
             3 -> com.pitstop.ui.history.heatmap.HeatmapTab()
+        }
+    }
+}
+
+/**
+ * One line under the tab row saying when the list last came back from
+ * the server, how much it holds, and whether anything arrived.
+ *
+ * Without it a refresh was invisible: the OkHttp cache could serve the
+ * identical page, the spinner would come and go, and there was no way
+ * to tell a working refresh from one that silently did nothing. The
+ * explicit "up to date" wording is the point — it is the answer to
+ * "did that do anything?"
+ */
+@Composable
+private fun RefreshStatusLine(
+    info: RefreshInfo?,
+    loading: Boolean,
+    error: String?,
+    itemCount: Int,
+    noun: String,
+    newCount: Int,
+    onRefresh: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 2.dp,
+            )
+        }
+        val text = when {
+            loading -> "Refreshing…"
+            error != null -> "Couldn't refresh: $error"
+            info == null -> ""
+            else -> buildString {
+                // "Checked" not "Updated" when the server never answered
+                // and the disk cache filled in — the timestamp then
+                // describes the attempt, not the data.
+                append(if (info.fromCache) "Offline · saved data, checked " else "Updated ")
+                append(
+                    DateTimeFormatter.ofPattern("HH:mm:ss").format(
+                        java.time.Instant.ofEpochMilli(info.atMs).atZone(ZoneId.systemDefault()),
+                    ),
+                )
+                append(" · $itemCount $noun${if (itemCount == 1) "" else "s"}")
+                if (!info.fromCache) {
+                    append(if (newCount > 0) " · $newCount new" else " · up to date")
+                }
+            }
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (error != null) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.weight(1f),
+        )
+        if (!loading) {
+            TextButton(onClick = onRefresh, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text("Refresh", style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }

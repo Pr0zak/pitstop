@@ -7,6 +7,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.companion.WicanCompanionManager
 import com.pitstop.data.SettingsRepository
+import com.pitstop.drive.DriveUploader
+import com.pitstop.drive.PendingDriveDao
+import com.pitstop.drive.UploadProgress
+import com.pitstop.drive.UploadProgressBus
 import com.pitstop.http.CostPerMilePointDto
 import com.pitstop.http.DtcDto
 import com.pitstop.http.MonthlySpendPointDto
@@ -110,8 +114,32 @@ class StatusViewModel @Inject constructor(
     private val updateChecker: UpdateChecker,
     private val api: PitstopApi,
     private val companionManager: WicanCompanionManager,
+    private val driveUploader: DriveUploader,
+    uploadProgressBus: UploadProgressBus,
+    pendingDriveDao: PendingDriveDao,
     private val bridgeStateBus: BridgeStateBus = stateBus,
 ) : AndroidViewModel(application) {
+
+    /**
+     * Upload state + queue depth, mirrored from the same process-wide
+     * sources the History tab reads. Home is where the user lands after
+     * a drive, so it is the surface that most needs to say "the phone is
+     * uploading the drive you just finished" without being asked.
+     */
+    val uploadProgress: StateFlow<UploadProgress> = uploadProgressBus.state
+
+    val pendingDriveCount: StateFlow<Int> = pendingDriveDao.observeUnackedCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /** Home's "Sync now" — no cellular gate here; the History tab owns
+     *  that prompt, and the chip on Home only appears once a pass has
+     *  already been attempted or drives are queued. */
+    fun syncNow() {
+        logBuffer.info("home: sync-now requested")
+        driveUploader.requestDrain("home-sync-now")
+    }
+
+    fun cancelSync() = driveUploader.cancelDrain()
 
     private val updateInfo = MutableStateFlow<UpdateInfo?>(null)
     private val updateChecking = MutableStateFlow(false)

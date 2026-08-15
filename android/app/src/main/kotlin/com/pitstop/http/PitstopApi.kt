@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonElement
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -233,8 +234,21 @@ interface PitstopApi {
     ): com.pitstop.drive.DriveUploadResponseDto
 
     // ── Read path: shared with the web frontend, /api/ stripped by Caddy ─
+    //
+    // A note on `cacheControl` (present on the endpoints the History and
+    // Home pull-to-refresh gestures hit): CacheRewriteInterceptor stamps
+    // every 2xx GET with `max-age=60`, so a second fetch inside a minute
+    // is served straight from the OkHttp disk cache without a network
+    // round-trip. That is right for tab switches and wrong for an
+    // explicit refresh — pulling down right after a drive upload would
+    // replay the pre-upload list and look like the refresh did nothing.
+    // Passing "no-cache" forces the request onto the network. Null (the
+    // default) leaves normal caching in place.
+
     @GET("api/vehicles")
-    suspend fun getVehicles(): List<VehicleDto>
+    suspend fun getVehicles(
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): List<VehicleDto>
 
     /**
      * Returns a bare list (not wrapped). Backend returns
@@ -244,6 +258,7 @@ interface PitstopApi {
     suspend fun getFillups(
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 30,
+        @Header("Cache-Control") cacheControl: String? = null,
     ): List<FillupDto>
 
     @GET("api/analytics/mpg")
@@ -260,6 +275,7 @@ interface PitstopApi {
     @GET("api/analytics/cost-per-mi")
     suspend fun getCostPerMile(
         @Query("vehicle_id") vehicleId: String,
+        @Header("Cache-Control") cacheControl: String? = null,
     ): CostPerMileResponse
 
     /**
@@ -270,18 +286,21 @@ interface PitstopApi {
     @GET("api/analytics/monthly-spend")
     suspend fun getMonthlySpend(
         @Query("vehicle_id") vehicleId: String,
+        @Header("Cache-Control") cacheControl: String? = null,
     ): MonthlySpendResponse
 
     @GET("api/trips")
     suspend fun getTrips(
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 5,
+        @Header("Cache-Control") cacheControl: String? = null,
     ): List<TripDto>
 
     @GET("api/dtcs")
     suspend fun getDtcs(
         @Query("vehicle_id") vehicleId: String,
         @Query("active_only") activeOnly: Boolean = true,
+        @Header("Cache-Control") cacheControl: String? = null,
     ): List<DtcDto>
 
     // ── Detail endpoints (Task #122) — the History tab drills into ─────

@@ -53,6 +53,7 @@ import com.pitstop.ui.components.MonthlySpendCard
 import com.pitstop.ui.components.MpgLifetimeCard
 import com.pitstop.ui.components.MpgYearChart
 import com.pitstop.ui.components.PitstopTopAppBar
+import com.pitstop.ui.components.UploadStatusCard
 import kotlinx.coroutines.launch
 
 /**
@@ -81,6 +82,8 @@ fun StatusScreen(
     onOpenSettings: () -> Unit = {},
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
+    val pendingDrives by viewModel.pendingDriveCount.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val refreshing = remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -130,6 +133,16 @@ fun StatusScreen(
                     status = ui.status,
                     onStart = { viewModel.startService() },
                     onStop = { viewModel.stopService() },
+                )
+
+                // Drive-upload state. Renders nothing when the queue is
+                // empty and no pass has run recently, so it costs the
+                // dashboard no space in the normal case.
+                UploadStatusCard(
+                    progress = uploadProgress,
+                    pendingCount = pendingDrives,
+                    onSync = { viewModel.syncNow() },
+                    onCancel = { viewModel.cancelSync() },
                 )
 
                 // Active DTCs sit at the top — most urgent thing.

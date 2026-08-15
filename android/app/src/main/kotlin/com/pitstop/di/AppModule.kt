@@ -2,6 +2,7 @@ package com.pitstop.di
 
 import android.content.Context
 import com.pitstop.http.CacheRewriteInterceptor
+import com.pitstop.http.DriveUploadProgressInterceptor
 import com.pitstop.http.OfflineCacheInterceptor
 import com.pitstop.http.PitstopApi
 import com.pitstop.http.PitstopAuthInterceptor
@@ -40,6 +41,7 @@ object AppModule {
         authInterceptor: PitstopAuthInterceptor,
         offlineCacheInterceptor: OfflineCacheInterceptor,
         cacheRewriteInterceptor: CacheRewriteInterceptor,
+        driveUploadProgressInterceptor: DriveUploadProgressInterceptor,
     ): OkHttpClient = OkHttpClient.Builder()
         // 50 MB on-disk HTTP cache (CACHE-1). Every successful GET goes
         // through cacheRewriteInterceptor (network layer) which forces
@@ -55,6 +57,10 @@ object AppModule {
             },
         )
         .addNetworkInterceptor(cacheRewriteInterceptor)
+        // Byte-level progress for drive uploads. Network layer, so it
+        // wraps the body actually written to the socket and a retry
+        // restarts the count instead of resuming a stale one.
+        .addNetworkInterceptor(driveUploadProgressInterceptor)
         // Read-only GETs back the pull-to-refresh spinners (Home, History,
         // Heatmap). Cap their read timeout well under the 60 s upload
         // timeout below so a slow/stalled endpoint can't leave the refresh

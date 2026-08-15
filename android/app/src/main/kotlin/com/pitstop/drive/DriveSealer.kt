@@ -204,13 +204,11 @@ class DriveSealer @Inject constructor(
                     return@launch
                 }
             }
-            runCatching { uploader.drain(reason) }
-                .onFailure { t ->
-                    logs.warn(
-                        "DriveSealer.kickWorker: drain threw",
-                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
-                    )
-                }
+            // Hand off to the uploader's own scope rather than draining
+            // on ours: the pass then reports through UploadProgressBus
+            // like every other entry point, and the user can cancel it
+            // from the UI. This scope only does the manual-mode gate.
+            uploader.requestDrain(reason)
         }
     }
 }

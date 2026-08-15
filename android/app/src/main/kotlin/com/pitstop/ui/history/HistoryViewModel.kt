@@ -5,18 +5,22 @@ import androidx.lifecycle.viewModelScope
 import com.pitstop.data.SettingsRepository
 import com.pitstop.drive.DriveUploader
 import com.pitstop.drive.PendingDriveDao
+import com.pitstop.drive.UploadProgress
+import com.pitstop.drive.UploadProgressBus
 import com.pitstop.http.CostPerMilePointDto
 import com.pitstop.http.CostPerMileResponse
 import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
 import com.pitstop.http.MonthlySpendPointDto
 import com.pitstop.http.MonthlySpendResponse
+import com.pitstop.http.NetworkFreshness
 import com.pitstop.http.PitstopApi
 import com.pitstop.http.TripDto
 import com.pitstop.http.TripMergeRequest
 import com.pitstop.log.LogBuffer
 import com.pitstop.net.NetworkMonitor
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -40,6 +44,24 @@ data class HistoryListState<T>(
     val error: String? = null,
 )
 
+/**
+ * Outcome of the most recent [HistoryViewModel.refresh] pass. Backs
+ * the "Updated 14:03 · 187 trips · 2 new" line under the tab row —
+ * without it a refresh that returned exactly what was already on
+ * screen was indistinguishable from one that never ran.
+ */
+data class RefreshInfo(
+    val atMs: Long,
+    /** Trip ids present now that weren't in the previous page. The row
+     *  counts themselves come from the live list state, not from here —
+     *  this only carries what a snapshot can't reconstruct. */
+    val newTrips: Int,
+    /** At least one request in the pass was answered from the offline
+     *  disk cache instead of the server, so the timestamp describes the
+     *  attempt, not the data. */
+    val fromCache: Boolean = false,
+)
+
 data class HistoryUiState(
     val trips: HistoryListState<TripDto> = HistoryListState(),
     val fillups: HistoryListState<FillupDto> = HistoryListState(),
@@ -49,6 +71,8 @@ data class HistoryUiState(
      *  rather than failing the whole tab. */
     val costPerMile: List<CostPerMilePointDto> = emptyList(),
     val monthlySpend: List<MonthlySpendPointDto> = emptyList(),
+    /** Null until the first pass completes. */
+    val lastRefresh: RefreshInfo? = null,
 )
 
 /** Sort orders for the Trips list (TRIPS-1). Default is RecentFirst —
@@ -73,15 +97,6 @@ enum class TripGroupKey(val label: String) {
     Past30Days("Past 30 days"),
     ThisYear("This year"),
     Older("Older"),
-}
-
-/** Surfaced to the History header so the Sync-now chip can show progress
- *  instead of disappearing into a fire-and-forget kick. */
-sealed class SyncState {
-    data object Idle : SyncState()
-    data object InProgress : SyncState()
-    data class Done(val uploaded: Int, val remaining: Int) : SyncState()
-    data class Failed(val message: String) : SyncState()
 }
 
 /** Cellular-confirm prompt before draining the queue on a metered
@@ -127,6 +142,8 @@ class HistoryViewModel @Inject constructor(
     private val logBuffer: LogBuffer,
     private val pendingDao: PendingDriveDao,
     private val driveUploader: DriveUploader,
+    private val uploadProgressBus: UploadProgressBus,
+    private val networkFreshness: NetworkFreshness,
     private val networkMonitor: NetworkMonitor,
 ) : ViewModel() {
 
@@ -136,8 +153,14 @@ class HistoryViewModel @Inject constructor(
     private val _ui = MutableStateFlow(HistoryUiState())
     val ui: StateFlow<HistoryUiState> = _ui.asStateFlow()
 
-    private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
-    val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+    /**
+     * Live upload state, straight off the process-wide bus. Not owned
+     * by this ViewModel on purpose: a pass started here keeps reporting
+     * after the History page is disposed, and a pass started anywhere
+     * else (post-seal auto-kick, periodic worker, notification action)
+     * shows up here without a second state machine to keep in step.
+     */
+    val uploadProgress: StateFlow<UploadProgress> = uploadProgressBus.state
 
     private val _tripSelection = MutableStateFlow(TripSelection())
     val tripSelection: StateFlow<TripSelection> = _tripSelection.asStateFlow()
@@ -180,13 +203,34 @@ class HistoryViewModel @Inject constructor(
 
     init {
         refresh()
+        observeUploads()
     }
 
     /**
-     * User tapped "Sync now". Runs the drain on [viewModelScope] so the
-     * UI can show progress (chip → "Syncing…" → "Synced N drive(s)"),
-     * rather than the previous fire-and-forget kickWorker call which
-     * left the user with no visual feedback that anything had happened.
+     * Pull the trip list forward when an upload pass actually lands
+     * something. The uploaded drive becomes a trip row server-side on
+     * the spot (POST /ingest/drive returns its trip id), so leaving the
+     * list untouched meant the user watched "Synced 3 drives" scroll by
+     * above a list that still showed none of them.
+     */
+    private fun observeUploads() {
+        viewModelScope.launch {
+            uploadProgressBus.state.collect { p ->
+                if (p is UploadProgress.Finished && p.uploaded > 0) {
+                    refresh(forceNetwork = true)
+                }
+            }
+        }
+    }
+
+    /**
+     * User tapped "Sync now". Hands off to [DriveUploader.requestDrain],
+     * which runs the pass on the uploader's own process-lifetime scope
+     * and reports through [uploadProgress]. Running it on
+     * [viewModelScope] (the previous behaviour) meant swiping off the
+     * History tab cancelled the upload mid-flight — the pager disposes
+     * this page, taking the scope with it.
+     *
      * This path explicitly represents user intent, so it ignores
      * manual-sync mode.
      */
@@ -195,7 +239,7 @@ class HistoryViewModel @Inject constructor(
         // confirmation dialog; WiFi / Ethernet go straight through.
         // The user's explicit "Sync anyway" from the dialog calls
         // confirmSync() which bypasses this check.
-        if (_syncState.value is SyncState.InProgress) return
+        if (uploadProgress.value is UploadProgress.Running) return
         if (_syncConfirm.value != null) return
         val pending = pendingCount.value
         when (networkMonitor.classify()) {
@@ -237,30 +281,20 @@ class HistoryViewModel @Inject constructor(
         _syncConfirm.value = null
     }
 
+    /** Stop the pass in flight. The drive being sent stays queued —
+     *  nothing is acked until the server answers — so cancelling costs
+     *  only the bytes already on the wire. */
+    fun cancelSync() {
+        driveUploader.cancelDrain()
+    }
+
     private fun doDrain() {
-        if (_syncState.value is SyncState.InProgress) return
-        val startUnacked = pendingCount.value
-        _syncState.value = SyncState.InProgress
+        if (uploadProgress.value is UploadProgress.Running) return
         logBuffer.info(
             "history: sync-now requested",
-            mapOf("pending" to startUnacked),
+            mapOf("pending" to pendingCount.value),
         )
-        viewModelScope.launch {
-            runCatching { driveUploader.drain("history-sync-now") }
-                .onSuccess { uploaded ->
-                    val remaining = runCatching { pendingDao.unackedCount() }.getOrDefault(0)
-                    _syncState.value = SyncState.Done(uploaded = uploaded, remaining = remaining)
-                    delay(SYNC_DISMISS_MS)
-                    if (_syncState.value is SyncState.Done) _syncState.value = SyncState.Idle
-                }
-                .onFailure { t ->
-                    val msg = t.message ?: t::class.java.simpleName
-                    logBuffer.warn("history: sync-now drain failed", mapOf("err" to msg))
-                    _syncState.value = SyncState.Failed(msg)
-                    delay(SYNC_DISMISS_MS)
-                    if (_syncState.value is SyncState.Failed) _syncState.value = SyncState.Idle
-                }
-        }
+        driveUploader.requestDrain("history-sync-now")
     }
 
     /** Long-press on a trip card enters multi-select mode seeded with
@@ -314,7 +348,7 @@ class HistoryViewModel @Inject constructor(
                 DeleteState.Failed("$deleted of ${ids.size} deleted; ${failed.size} failed")
             }
             _tripSelection.value = TripSelection()
-            refresh()
+            refresh(forceNetwork = true)
             delay(DELETE_DISMISS_MS)
             if (_deleteState.value is DeleteState.Done || _deleteState.value is DeleteState.Failed) {
                 _deleteState.value = DeleteState.Idle
@@ -363,7 +397,7 @@ class HistoryViewModel @Inject constructor(
                     logBuffer.info("trip merge accepted", mapOf("kept" to merged.id))
                     _mergeState.value = MergeState.Done(merged.id)
                     _tripSelection.value = TripSelection()
-                    refresh()
+                    refresh(forceNetwork = true)
                     delay(MERGE_DISMISS_MS)
                     if (_mergeState.value is MergeState.Done) _mergeState.value = MergeState.Idle
                 }
@@ -378,16 +412,69 @@ class HistoryViewModel @Inject constructor(
     }
 
     private companion object {
-        const val SYNC_DISMISS_MS = 4_000L
         const val MERGE_DISMISS_MS = 3_000L
         const val DELETE_DISMISS_MS = 3_000L
+
+        /** How old the loaded page may be before returning to the tab
+         *  re-fetches it. Matches the OkHttp fresh window so a
+         *  cache-served refresh can't be the thing that keeps firing. */
+        const val STALE_AFTER_MS = 60_000L
     }
 
-    /** Reload all three lists in parallel. Each list manages its own
-     *  loading + error state so a single failure doesn't blank the
-     *  others. */
-    fun refresh() {
-        viewModelScope.launch {
+    /**
+     * The in-flight refresh, if any. Pull-to-refresh, the post-upload
+     * hook, merge/delete completion and the tab's on-appear staleness
+     * check can all land at once; without this guard each one fanned
+     * out five more requests and every completion flipped `loading`
+     * independently, which read on screen as a spinner that restarted
+     * itself indefinitely.
+     */
+    private var refreshJob: Job? = null
+
+    /** Re-fetch only if the page is older than [STALE_AFTER_MS]. Called
+     *  when the History tab becomes visible. */
+    fun refreshIfStale() {
+        val last = _ui.value.lastRefresh
+        if (last != null && System.currentTimeMillis() - last.atMs < STALE_AFTER_MS) return
+        refresh()
+    }
+
+    /**
+     * Reload all three lists in parallel. Each list manages its own
+     * loading + error state so a single failure doesn't blank the
+     * others.
+     *
+     * [forceNetwork] adds `Cache-Control: no-cache`, which the explicit
+     * user gestures and the post-upload hook need: OkHttp treats a GET
+     * as fresh for 60 s, so a plain refetch right after an upload
+     * replays the pre-upload list.
+     */
+    fun refresh(forceNetwork: Boolean = false) {
+        val inFlight = refreshJob
+        if (inFlight?.isActive == true) {
+            if (!forceNetwork) {
+                logBuffer.debug("history: refresh already in flight, ignoring")
+                return
+            }
+            // An explicit gesture (or a just-completed upload / merge /
+            // delete) supersedes a background pass rather than queuing
+            // behind it. Cancel-and-replace keeps exactly one fan-out in
+            // flight either way.
+            inFlight.cancel()
+        }
+        val cacheControl = if (forceNetwork) "no-cache" else null
+        refreshJob = viewModelScope.launch {
+            // Flip loading up front, before the vehicles round-trip. It
+            // used to be set only after that call returned, so a
+            // pull-to-refresh released its spinner immediately and then
+            // grew a second one seconds later.
+            _ui.update {
+                it.copy(
+                    trips = it.trips.copy(loading = true, error = null),
+                    fillups = it.fillups.copy(loading = true, error = null),
+                    dtcs = it.dtcs.copy(loading = true, error = null),
+                )
+            }
             val secrets = settings.current()
             val slug = secrets.settings.vehicleSlug.trim()
             val apiBaseUrl = secrets.settings.apiBaseUrl.trim()
@@ -397,12 +484,13 @@ class HistoryViewModel @Inject constructor(
                         trips = it.trips.copy(loading = false, error = "Set vehicle + server in Settings"),
                         fillups = it.fillups.copy(loading = false, error = "Set vehicle + server in Settings"),
                         dtcs = it.dtcs.copy(loading = false, error = null),
+                        lastRefresh = failedRefresh(),
                     )
                 }
                 return@launch
             }
             // Resolve slug → vehicle UUID once.
-            val vehicles = runCatching { api.getVehicles() }.getOrElse { exc ->
+            val vehicles = runCatching { api.getVehicles(cacheControl) }.getOrElse { exc ->
                 logBuffer.warn(
                     "history: vehicles fetch failed",
                     mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
@@ -412,6 +500,7 @@ class HistoryViewModel @Inject constructor(
                         trips = it.trips.copy(loading = false, error = "vehicles fetch failed"),
                         fillups = it.fillups.copy(loading = false, error = "vehicles fetch failed"),
                         dtcs = it.dtcs.copy(loading = false, error = null),
+                        lastRefresh = failedRefresh(),
                     )
                 }
                 return@launch
@@ -421,44 +510,40 @@ class HistoryViewModel @Inject constructor(
                 // Clear loading so the pull-to-refresh spinner can't strand.
                 _ui.update {
                     it.copy(
-                        trips = it.trips.copy(loading = false),
+                        trips = it.trips.copy(loading = false, error = "vehicle \"$slug\" not on server"),
                         fillups = it.fillups.copy(loading = false),
                         dtcs = it.dtcs.copy(loading = false),
+                        lastRefresh = failedRefresh(),
                     )
                 }
                 return@launch
             }
 
-            _ui.update {
-                it.copy(
-                    trips = it.trips.copy(loading = true, error = null),
-                    fillups = it.fillups.copy(loading = true, error = null),
-                    dtcs = it.dtcs.copy(loading = true, error = null),
-                )
-            }
-
             // Fan out — three independent fetches.
+            val freshnessBefore = networkFreshness.snapshot()
             val tripsDeferred = async {
                 // 200, not 30: the stat header aggregates a 14-day
                 // window, and at ~9 trips/day 30 rows is barely three
                 // days — the totals would silently under-report. Also
                 // gives the list itself more history to scroll.
-                runCatching { api.getTrips(vehicleId, limit = 200) }
+                runCatching { api.getTrips(vehicleId, limit = 200, cacheControl = cacheControl) }
             }
             val fillupsDeferred = async {
-                runCatching { api.getFillups(vehicleId, limit = 30) }
+                runCatching { api.getFillups(vehicleId, limit = 30, cacheControl = cacheControl) }
             }
             val dtcsDeferred = async {
-                runCatching { api.getDtcs(vehicleId, activeOnly = false) }
+                runCatching {
+                    api.getDtcs(vehicleId, activeOnly = false, cacheControl = cacheControl)
+                }
             }
             // Stat-strip inputs for the Fillups tab. Deliberately
             // best-effort: these feed a decorative header, so a failure
             // must not surface as a list error.
             val cpmDeferred = async {
-                runCatching { api.getCostPerMile(vehicleId) }
+                runCatching { api.getCostPerMile(vehicleId, cacheControl) }
             }
             val spendDeferred = async {
-                runCatching { api.getMonthlySpend(vehicleId) }
+                runCatching { api.getMonthlySpend(vehicleId, cacheControl) }
             }
             val (tripsResult, fillupsResult, dtcsResult, cpmResult, spendResult) = awaitAll(
                 tripsDeferred, fillupsDeferred, dtcsDeferred, cpmDeferred, spendDeferred,
@@ -475,28 +560,52 @@ class HistoryViewModel @Inject constructor(
                 val cpm = (cpmResult as Result<CostPerMileResponse>)
                 @Suppress("UNCHECKED_CAST")
                 val spend = (spendResult as Result<MonthlySpendResponse>)
+                val tripRows = trips.getOrNull()
+                // A failed fetch keeps the rows already on screen. The
+                // old code substituted an empty list, so one flaky
+                // request blanked a list the user was reading and left
+                // only "Couldn't load" behind.
+                val known = current.trips.data.mapTo(HashSet()) { it.id }
                 current.copy(
-                    costPerMile = cpm.getOrNull()?.points ?: emptyList(),
-                    monthlySpend = spend.getOrNull()?.months ?: emptyList(),
+                    costPerMile = cpm.getOrNull()?.points ?: current.costPerMile,
+                    monthlySpend = spend.getOrNull()?.months ?: current.monthlySpend,
                     trips = HistoryListState(
-                        data = trips.getOrNull() ?: emptyList(),
+                        data = tripRows ?: current.trips.data,
                         loading = false,
                         error = trips.exceptionOrNull()?.let { it.message ?: it::class.java.simpleName },
                     ),
                     fillups = HistoryListState(
-                        data = fillups.getOrNull() ?: emptyList(),
+                        data = fillups.getOrNull() ?: current.fillups.data,
                         loading = false,
                         error = fillups.exceptionOrNull()?.let { it.message ?: it::class.java.simpleName },
                     ),
                     dtcs = HistoryListState(
-                        data = dtcs.getOrNull() ?: emptyList(),
+                        data = dtcs.getOrNull() ?: current.dtcs.data,
                         loading = false,
                         error = dtcs.exceptionOrNull()?.let { it.message ?: it::class.java.simpleName },
+                    ),
+                    lastRefresh = RefreshInfo(
+                        atMs = System.currentTimeMillis(),
+                        // Only meaningful once there's a previous page to
+                        // diff against — otherwise a cold start would
+                        // announce every trip in history as "new".
+                        newTrips = if (current.lastRefresh == null || tripRows == null) 0
+                        else tripRows.count { it.id !in known },
+                        fromCache = networkFreshness.snapshot() != freshnessBefore,
                     ),
                 )
             }
         }
     }
+
+    /** Stamp for a pass that bailed before fetching anything. The
+     *  per-list `error` is what tells the status line the attempt
+     *  failed; this just moves the clock so the staleness gate doesn't
+     *  retry on every recompose. */
+    private fun failedRefresh() = RefreshInfo(
+        atMs = System.currentTimeMillis(),
+        newTrips = 0,
+    )
 }
 
 // ── Trip-grouping helpers (TRIPS-1) ─────────────────────────────────

@@ -4,8 +4,14 @@ import android.content.Context
 import com.pitstop.http.PitstopApi
 import com.pitstop.log.LogBuffer
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
@@ -29,6 +35,14 @@ import javax.inject.Singleton
  * payload inline and aren't readable above ~2 MB; those rows are
  * dropped here (the server has the same trip via the live MQTT
  * stream + post-processed deriver, so no data is actually lost).
+ *
+ * Progress reporting: every pass publishes to [UploadProgressBus] —
+ * which drive is in flight, its position in the queue, how many bytes
+ * have gone out, and how the pass ended. The bus is a process-lifetime
+ * singleton so a pass started from any entry point (post-seal kick,
+ * periodic worker, notification action, History "Sync now") is visible
+ * on every surface, and stays visible when the user leaves the screen
+ * they started it from.
  */
 @Singleton
 class DriveUploader @Inject constructor(
@@ -36,6 +50,7 @@ class DriveUploader @Inject constructor(
     private val api: PitstopApi,
     private val json: Json,
     private val logs: LogBuffer,
+    private val progress: UploadProgressBus,
     @ApplicationContext private val context: Context,
 ) {
     /**
@@ -49,12 +64,72 @@ class DriveUploader @Inject constructor(
     private val drainMutex = Mutex()
 
     /**
+     * Process-lifetime scope for [requestDrain]. Deliberately NOT a
+     * caller's scope: a drain launched on a ViewModel's scope dies
+     * when its screen goes away, and the History tab is disposed the
+     * moment the pager scrolls off it. That made "tap Sync now, swipe
+     * to another tab" silently abort the upload with no feedback.
+     */
+    private val ownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * The coroutine running the pass that currently holds [drainMutex],
+     * whoever started it — [requestDrain], the WorkManager backstop or
+     * the notification receiver. Captured inside [drain] rather than at
+     * launch so [cancelDrain] works for every entry point instead of
+     * only the one the UI happens to use.
+     */
+    @Volatile
+    private var currentPassJob: Job? = null
+
+    /**
+     * Fire-and-forget drain on the uploader's own scope. Returns
+     * immediately; callers watch [UploadProgressBus.state] for the
+     * result. Safe to call repeatedly — a pass already running keeps
+     * running and the extra call is dropped.
+     */
+    fun requestDrain(reason: String) {
+        if (currentPassJob?.isActive == true) {
+            logs.info(
+                "DriveUploader: drain already running, letting it finish",
+                mapOf("reason" to reason),
+            )
+            return
+        }
+        ownScope.launch {
+            runCatching { drain(reason) }.onFailure { t ->
+                if (t is CancellationException) throw t
+                logs.warn(
+                    "DriveUploader: requested drain threw",
+                    mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                )
+            }
+        }
+    }
+
+    /**
+     * Abort the in-flight pass. The drive currently being sent is left
+     * queued (nothing is acked until the server responds), so a cancel
+     * costs at most the bytes already on the wire.
+     */
+    fun cancelDrain() {
+        val job = currentPassJob
+        if (job == null || !job.isActive) return
+        logs.info("DriveUploader: drain cancelled by user")
+        job.cancel()
+    }
+
+    /**
      * Drain unacked drives oldest-first until the queue empties or
      * the network fails. Returns the number of drives successfully
      * uploaded in this pass.
      */
     suspend fun drain(reason: String): Int {
         if (!drainMutex.tryLock()) {
+            // Deliberately does NOT touch the progress bus: the pass
+            // that holds the lock is the one reporting, and overwriting
+            // its state with a synthetic "finished, 0 uploaded" is
+            // exactly the false "nothing happened" the UI used to show.
             logs.info(
                 "DriveUploader: drain already in progress, skipping",
                 mapOf("reason" to reason),
@@ -62,14 +137,44 @@ class DriveUploader @Inject constructor(
             return 0
         }
         try {
+            currentPassJob = currentCoroutineContext()[Job]
             return drainLocked(reason)
+        } catch (c: CancellationException) {
+            progress.set(
+                UploadProgress.Finished(
+                    reason = reason,
+                    finishedAtMs = System.currentTimeMillis(),
+                    uploaded = uploadedThisPass,
+                    // Derived, not queried: the coroutine is already
+                    // cancelled here, so any suspend DAO call would just
+                    // throw again and leave the summary saying "0 left".
+                    rejected = 0,
+                    remaining = (passQueueDepth - uploadedThisPass).coerceAtLeast(0),
+                    outcome = UploadOutcome.Cancelled,
+                ),
+            )
+            throw c
         } finally {
+            currentPassJob = null
             drainMutex.unlock()
         }
     }
 
+    /** Uploads acked so far in the pass, and the queue depth it began
+     *  with. Both are read by the cancel path, which cannot query the
+     *  DAO, so the cancelled summary can still be honest about how far
+     *  the pass got. */
+    @Volatile
+    private var uploadedThisPass = 0
+
+    @Volatile
+    private var passQueueDepth = 0
+
     private suspend fun drainLocked(reason: String): Int {
+        val passStartedAt = System.currentTimeMillis()
         val unackedAtStart = dao.unackedCount()
+        uploadedThisPass = 0
+        passQueueDepth = unackedAtStart
         logs.info(
             "DriveUploader: starting",
             mapOf("unacked" to unackedAtStart, "reason" to reason),
@@ -94,11 +199,30 @@ class DriveUploader @Inject constructor(
             )
         }
 
+        if (unackedAtStart == 0) {
+            progress.set(
+                UploadProgress.Finished(
+                    reason = reason,
+                    finishedAtMs = System.currentTimeMillis(),
+                    uploaded = 0,
+                    rejected = 0,
+                    remaining = 0,
+                    outcome = UploadOutcome.NothingQueued,
+                ),
+            )
+            logs.info("DriveUploader: nothing queued", mapOf("reason" to reason))
+            return 0
+        }
+
         // Track rows we've already attempted in this pass — Outcome.Failure
         // doesn't mark the row in any way visible to dao.oldestUnackedMeta(),
         // so without this gate we'd hot-loop forever on the same drive.
         val seenThisPass = mutableSetOf<String>()
         var drained = 0
+        var rejected = 0
+        var index = 0
+        var outcome = UploadOutcome.Completed
+        var detail: String? = null
         while (true) {
             val meta = dao.oldestUnackedMeta() ?: break
             if (meta.clientDriveUuid in seenThisPass) {
@@ -109,6 +233,8 @@ class DriveUploader @Inject constructor(
                         "drained_this_pass" to drained,
                     ),
                 )
+                outcome = UploadOutcome.Stalled
+                detail = meta.lastError
                 break
             }
             seenThisPass.add(meta.clientDriveUuid)
@@ -117,7 +243,8 @@ class DriveUploader @Inject constructor(
             // and is now unreadable for drives over ~2 MB. The live MQTT
             // stream + server-side deriver has the trip; drop the queue
             // row so it stops blocking the head.
-            if (meta.payloadFilePath == null) {
+            val payloadPath = meta.payloadFilePath
+            if (payloadPath == null) {
                 logs.warn(
                     "DriveUploader: dropping legacy oversize row (pre-v0.1.111)",
                     mapOf(
@@ -129,9 +256,40 @@ class DriveUploader @Inject constructor(
                 continue
             }
 
+            index += 1
+            val now = System.currentTimeMillis()
+            progress.set(
+                UploadProgress.Running(
+                    reason = reason,
+                    passStartedAtMs = passStartedAt,
+                    driveIndex = index,
+                    // A pass can outlive its own starting count when a
+                    // drive seals mid-drain; never show "4 of 3".
+                    driveTotal = maxOf(unackedAtStart, index),
+                    uploadedThisPass = drained,
+                    driveStartedAtMs = meta.startedAt,
+                    driveEndedAtMs = meta.endedAt,
+                    frameCount = meta.frameCount,
+                    payloadBytes = runCatching { File(payloadPath).length() }.getOrDefault(0L),
+                    bytesSent = 0L,
+                    phase = UploadPhase.Reading,
+                    phaseSinceMs = now,
+                    priorAttempts = meta.attemptCount,
+                ),
+            )
+
             when (tryUpload(meta)) {
-                Outcome.Success -> drained += 1
+                Outcome.Success -> {
+                    drained += 1
+                    uploadedThisPass = drained
+                }
                 Outcome.Retry -> {
+                    val fresh = dao.oldestUnackedMeta()
+                    detail = if (fresh?.clientDriveUuid == meta.clientDriveUuid) {
+                        fresh.lastError
+                    } else {
+                        null
+                    }
                     logs.info(
                         "DriveUploader: network/server error, stopping pass",
                         mapOf(
@@ -140,7 +298,8 @@ class DriveUploader @Inject constructor(
                             "drained_this_pass" to drained,
                         ),
                     )
-                    return drained
+                    outcome = UploadOutcome.NetworkStopped
+                    break
                 }
                 Outcome.Failure -> {
                     // 4xx is the server saying "this payload is broken,
@@ -159,15 +318,34 @@ class DriveUploader @Inject constructor(
                             "last_error" to freshErr,
                         ),
                     )
-                    meta.payloadFilePath?.let { runCatching { File(it).delete() } }
+                    runCatching { File(payloadPath).delete() }
                     dao.deleteByUuid(meta.clientDriveUuid)
+                    rejected += 1
+                    detail = freshErr
                 }
             }
         }
 
+        val remaining = dao.unackedCount()
+        progress.set(
+            UploadProgress.Finished(
+                reason = reason,
+                finishedAtMs = System.currentTimeMillis(),
+                uploaded = drained,
+                rejected = rejected,
+                remaining = remaining,
+                outcome = outcome,
+                detail = detail,
+            ),
+        )
         logs.info(
             "DriveUploader: queue drained this pass",
-            mapOf("count" to drained, "still_unacked" to dao.unackedCount()),
+            mapOf(
+                "count" to drained,
+                "rejected" to rejected,
+                "still_unacked" to remaining,
+                "outcome" to outcome.name,
+            ),
         )
         return drained
     }
@@ -187,6 +365,16 @@ class DriveUploader @Inject constructor(
             dao.bumpAttempt(meta.clientDriveUuid, now, "deserialise: ${t.message}")
             return Outcome.Failure
         }
+        // The interceptor takes over the phase from here (Sending →
+        // AwaitingServer as the body finishes). Seed it so the UI never
+        // sits on "Reading" while the request is already open.
+        progress.updateRunning {
+            it.copy(
+                phase = UploadPhase.Sending,
+                phaseSinceMs = System.currentTimeMillis(),
+                payloadBytes = if (it.payloadBytes > 0L) it.payloadBytes else payloadJson.length.toLong(),
+            )
+        }
         return try {
             val resp = api.postDrive(dto)
             dao.markAcked(meta.clientDriveUuid, now, resp.tripId)
@@ -204,6 +392,8 @@ class DriveUploader @Inject constructor(
                 ),
             )
             Outcome.Success
+        } catch (c: CancellationException) {
+            throw c
         } catch (t: retrofit2.HttpException) {
             val msg = "http ${t.code()}: ${t.message()}"
             dao.bumpAttempt(meta.clientDriveUuid, now, msg)
