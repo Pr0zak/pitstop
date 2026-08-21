@@ -65,9 +65,14 @@ fun UploadStatusCard(
         untilMs = if (running != null) null else finished?.let { it.finishedAtMs + FINISHED_VISIBLE_MS },
     )
 
-    val showFinished = finished != null &&
-        (nowMs - finished.finishedAtMs) < FINISHED_VISIBLE_MS
-    if (running == null && !showFinished && pendingCount == 0) return
+    // Narrow to non-null here rather than re-testing at the call site:
+    // a separate boolean forced a redundant `finished != null` alongside
+    // it just to recover the smart cast, which the compiler then flagged
+    // as an always-true condition.
+    val recentFinish = finished?.takeIf {
+        (nowMs - it.finishedAtMs) < FINISHED_VISIBLE_MS
+    }
+    if (running == null && recentFinish == null && pendingCount == 0) return
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -81,7 +86,7 @@ fun UploadStatusCard(
         ) {
             when {
                 running != null -> RunningBody(running, nowMs, onCancel)
-                showFinished && finished != null -> FinishedBody(finished, pendingCount, onSync)
+                recentFinish != null -> FinishedBody(recentFinish, pendingCount, onSync)
                 else -> QueuedBody(pendingCount, onSync)
             }
         }
