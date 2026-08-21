@@ -30,6 +30,14 @@ from uuid import UUID
 
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 
+# Snap dead-band, as a fraction of tank_capacity_l. 2 % is ~1.5 L on the
+# Pilot's 73.8 L tank — tight enough that real drift gets corrected on the
+# next park, wide enough not to chase the float sensor's quantisation.
+SNAP_THRESHOLD_TANK_FRACTION = 0.02
+# ...but never trigger on less than this, so a small tank doesn't end up
+# with a hair-trigger.
+SNAP_THRESHOLD_MIN_L = 1.0
+
 
 @dataclass(frozen=True)
 class EstimateUpdate:
@@ -203,6 +211,56 @@ def decrement_on_trip(
     )
 
 
+def snap_threshold_for_tank(
+    tank_capacity_l: float,
+    *,
+    override_l: float | None = None,
+) -> float:
+    """Dead-band, in liters, below which a snap is not worth making.
+
+    Proportional to the tank, not a flat number. The flat 5.0 L this
+    replaces was 6.8 % of the Pilot's 73.8 L tank — 1.3 gallons of error
+    the estimator was designed to ignore, so any drift smaller than that
+    could never self-correct no matter how long the car sat parked.
+    Observed 2026-08-20: the estimate sat 4.89 L below a clean, settled
+    sensor reading for hours, missing the snap by 0.11 L.
+
+    The floor keeps a small tank from getting a hair-trigger that chases
+    sensor quantisation, and ``override_l`` preserves the explicit knob
+    for callers that want to pin an exact value.
+    """
+    if override_l is not None:
+        return override_l
+    return max(tank_capacity_l * SNAP_THRESHOLD_TANK_FRACTION, SNAP_THRESHOLD_MIN_L)
+
+
+def snap_absorbs_trip(
+    *,
+    trip_ended_at: datetime,
+    sensor_sample_at: datetime,
+) -> bool:
+    """True when a snap to ``sensor_sample_at`` already reflects this trip.
+
+    The tank sensor moves the moment fuel is burned, but a trip's
+    ``fuel_used_l`` decrement can arrive an hour later — the phone has to
+    upload the drive and ``trip_deriver`` has to build the row. If a snap
+    lands in that gap, the same fuel is charged twice: once because the
+    sensor had already fallen, and again when the decrement finally runs.
+
+    That is exactly what happened on 2026-08-20. Trip 94eb726b ended at
+    20:55:34; ``snap_pass`` read the post-trip sensor at 21:05:12 and set
+    15.38 L; the trip's own 3.13 L decrement then ran at 22:02:13, taking
+    the estimate to 12.25 L when 15.38 L was already correct.
+
+    ``snap_pass`` uses this rule to stamp ``fuel_applied_at`` on the trips
+    a snap has absorbed, so their decrements can never run afterwards.
+    The boundary is inclusive: a sample taken at the same instant a trip
+    ended reflects that trip. The worker's SQL predicate
+    (``ended_at <= sensor_time``) must mirror this.
+    """
+    return trip_ended_at <= sensor_sample_at
+
+
 def snap_to_sensor(
     *,
     sensor_pct: float,
@@ -210,7 +268,7 @@ def snap_to_sensor(
     calibration_pct: float,
     current_estimate_l: float | None,
     when: datetime,
-    snap_threshold_l: float = 5.0,
+    snap_threshold_l: float | None = None,
     empty_pct: float | None = None,
 ) -> EstimateUpdate | None:
     """Snap the estimate to the sensor reading when the sensor should be stable.
@@ -219,8 +277,8 @@ def snap_to_sensor(
       - Engine has been off for ≥10 min
       - Sensor readings stable (stddev < 0.5%) over a recent window
 
-    Returns None when no update is needed (estimate is already within
-    snap_threshold of the sensor reading).
+    Returns None when no update is needed (estimate is already within the
+    dead-band of the sensor reading — see ``snap_threshold_for_tank``).
     """
     sensor_l = sensor_pct_to_liters(
         sensor_pct, tank_capacity_l, calibration_pct, empty_pct
@@ -232,8 +290,11 @@ def snap_to_sensor(
             reason="snap_initial_from_sensor",
             when=when,
         )
+    threshold_l = snap_threshold_for_tank(
+        tank_capacity_l, override_l=snap_threshold_l
+    )
     delta = abs(current_estimate_l - sensor_l)
-    if delta < snap_threshold_l:
+    if delta < threshold_l:
         return None
     return EstimateUpdate(
         liters=sensor_l,

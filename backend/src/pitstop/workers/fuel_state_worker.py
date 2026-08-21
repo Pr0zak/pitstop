@@ -11,7 +11,11 @@ Runs alongside trip_deriver / ingest. Two passes per cycle:
    enough (default 10 min) and the raw fuel_level sensor reading has
    been stable (default stddev < 0.5 %) over a recent window, snap the
    running estimate to the sensor reading (HIGH confidence reset). This
-   absorbs accumulated MAF-integration drift between fillups.
+   absorbs accumulated MAF-integration drift between fillups. It also
+   stamps ``fuel_applied_at`` on every trip that had already ended when
+   the sensor sample was taken, because the reading it just snapped to
+   already includes their fuel; without that, a decrement arriving later
+   charges the same drive twice.
 
 The state-machine math lives in services/fuel_state.py as pure functions;
 this worker is the DB driver around it.
@@ -319,11 +323,46 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                         v["id"], sensor_pct, update.liters, current_l, max_drop,
                     )
                     continue
-            await persist_estimate(conn, v["id"], update)
+            # Persist the snap and retire the trips it absorbed together.
+            # The sensor reading already reflects every trip that had
+            # ENDED by the time the sample was taken, but those trips'
+            # own fuel_used_l decrements may still be pending — the phone
+            # uploads a drive minutes to hours after it ends, and
+            # trip_deriver only then builds the row. Left unstamped, each
+            # one gets charged a second time on a later cycle.
+            #
+            # Observed 2026-08-20: trip 94eb726b ended 20:55:34; the snap
+            # at 21:05:12 read the post-trip sensor and set 15.38 L; the
+            # trip's 3.13 L decrement then ran at 22:02:13 and took the
+            # estimate to 12.25 L against a true 15.38 L. The error then
+            # sat under the snap dead-band and never self-corrected.
+            #
+            # One transaction so a crash can't do half of it. See
+            # fuel_state.snap_absorbs_trip for the rule this mirrors —
+            # the boundary is inclusive.
+            async with conn.transaction():
+                await persist_estimate(conn, v["id"], update)
+                absorbed = await conn.fetchval(
+                    """
+                    WITH stamped AS (
+                        UPDATE trips
+                           SET fuel_applied_at = now()
+                         WHERE vehicle_id = $1
+                           AND fuel_applied_at IS NULL
+                           AND ended_at IS NOT NULL
+                           AND ended_at <= $2
+                        RETURNING 1
+                    )
+                    SELECT count(*) FROM stamped
+                    """,
+                    v["id"], update.when,
+                )
             snapped += 1
             log.info(
-                "fuel-estimate snap vehicle=%s sensor=%.1f%% liters=%.2fL %s",
+                "fuel-estimate snap vehicle=%s sensor=%.1f%% liters=%.2fL %s "
+                "absorbed_pending_trips=%d",
                 v["id"], sensor_pct, update.liters, update.reason,
+                absorbed or 0,
             )
     return snapped
 

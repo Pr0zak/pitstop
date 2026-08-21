@@ -139,12 +139,13 @@ def test_snap_to_sensor_corrects_drift():
 
 
 def test_snap_to_sensor_no_op_when_close():
-    # Estimate is within snap threshold — don't churn the state
+    # Estimate is within the dead-band — don't churn the state.
+    # 80 L tank -> 1.6 L band, so 1.0 L of drift is left alone.
     u = snap_to_sensor(
         sensor_pct=50.0,
         tank_capacity_l=80.0,
         calibration_pct=100.0,
-        current_estimate_l=42.0,  # 2L delta, under threshold
+        current_estimate_l=41.0,
         when=NOW,
     )
     assert u is None
