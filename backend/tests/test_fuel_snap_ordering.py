@@ -245,3 +245,77 @@ async def test_snap_pass_retires_the_trips_it_absorbed():
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM vehicles WHERE slug = $1", slug)
         await pool.close()
+
+
+@pytestmark_pg
+async def test_a_snap_must_not_wipe_a_decrement_it_did_not_cover():
+    """The mirror of the double-charge, and the reason the cycle order was
+    swapped to snap-then-decrement.
+
+    A trip that ended AFTER the sensor sample is not reflected in that
+    reading, so its fuel must still come off the estimate. Under the old
+    decrement-then-snap order the decrement landed first and the snap
+    overwrote it in the same second — on 2026-08-22, 3.6 L of real
+    post-fillup driving was discarded exactly this way.
+    """
+    import asyncpg
+
+    from pitstop.workers.fuel_state_worker import run_cycle
+
+    pool = await asyncpg.create_pool(dsn=_dsn(), min_size=1, max_size=2)
+    slug = f"apitest-snapwipe-{uuid4().hex[:8]}"
+    try:
+        sample_at = datetime.now(UTC) - timedelta(minutes=30)
+        async with pool.acquire() as conn:
+            vehicle_id = await conn.fetchval(
+                """
+                INSERT INTO vehicles (slug, name, tank_capacity_l,
+                                      fuel_level_calibration_pct,
+                                      fuel_level_empty_pct,
+                                      fuel_level_estimate_l)
+                VALUES ($1, 'snap-wipe fixture', $2, $3, $4, $5)
+                RETURNING id
+                """,
+                slug, TANK_L, CAL_PCT, EMPTY_PCT, 22.13,
+            )
+            for i in range(5):
+                await conn.execute(
+                    """
+                    INSERT INTO pid_readings (time, vehicle_id, metric,
+                                              value_num, source)
+                    VALUES ($1, $2, 'fuel_level', $3, 'bridge')
+                    """,
+                    sample_at - timedelta(seconds=i), vehicle_id, SENSOR_PCT,
+                )
+            # Drive finished a minute AFTER that reading — the sensor
+            # cannot know about it.
+            await conn.execute(
+                """
+                INSERT INTO trips (vehicle_id, started_at, ended_at,
+                                   distance_km, fuel_used_l, source)
+                VALUES ($1, $2, $3, 12.0, $4, 'phone_batch')
+                """,
+                vehicle_id,
+                sample_at + timedelta(seconds=30),
+                sample_at + timedelta(minutes=1),
+                LATER_TRIP_FUEL_L,
+            )
+
+        # Drive a real worker cycle, so the ORDER is what is under test.
+        # Reversed, the decrement lands first and the snap erases it.
+        decremented, snapped = await run_cycle(pool)
+        assert snapped >= 1
+        assert decremented >= 1
+
+        async with pool.acquire() as conn:
+            final = float(await conn.fetchval(
+                "SELECT fuel_level_estimate_l FROM vehicles WHERE id = $1",
+                vehicle_id,
+            ))
+        assert final == pytest.approx(SNAPPED_TO_L - LATER_TRIP_FUEL_L, abs=0.05), (
+            "the post-sample trip's fuel was lost"
+        )
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM vehicles WHERE slug = $1", slug)
+        await pool.close()

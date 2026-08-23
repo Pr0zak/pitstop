@@ -232,6 +232,30 @@ async def resolve_fuel_used_l(
                 100.0 * covered_s / coverage_window_s, liters,
             )
             continue
+        # Extrapolate across the seconds this source missed.
+        #
+        # The integral drops every gap of 60 s or more, so any stretch the
+        # source did not sample contributes exactly zero fuel — while the
+        # engine was demonstrably running, because some OTHER source was
+        # reporting through it (that is what coverage_window_s measures).
+        # Assuming zero there is the one answer we know to be wrong;
+        # assuming the trip's own average rate is the same assumption the
+        # coverage gate above already makes when it decides a partial
+        # sample is worth believing at all.
+        #
+        # Measured over the 2026-08-03 -> 2026-08-21 tank: engine_fuel_rate
+        # covered 92.2 % of OBD-active seconds, so this recovers ~8 %.
+        # It does NOT close that tank's full ~20 % shortfall against the
+        # pump, and is not meant to — the rest is wall-clock time inside
+        # trips when NOTHING was recording (16.0 OBD-active hours out of
+        # 24.3 trip hours). That is a capture gap, not an arithmetic one,
+        # and inventing fuel for it here would be guesswork.
+        #
+        # MIN_COVERAGE_FRACTION bounds the scale factor at 2.0. Never
+        # scales down: a source sampling denser than the union is not
+        # evidence of less fuel.
+        if coverage_window_s > 0 and covered_s > 0:
+            liters *= max(1.0, coverage_window_s / covered_s)
         return liters
     return None
 

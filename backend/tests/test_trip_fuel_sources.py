@@ -221,10 +221,13 @@ async def test_no_well_covered_source_defers_to_the_fuel_level_fallback() -> Non
 
 async def test_coverage_gate_is_where_it_says_it_is() -> None:
     grams = {"engine_fuel_rate": 749.9}
-    just_over, _ = _recorder(
-        grams, {"engine_fuel_rate": MIN_COVERAGE_FRACTION * TRIP_S * 1.01}
+    covered = MIN_COVERAGE_FRACTION * TRIP_S * 1.01
+    just_over, _ = _recorder(grams, {"engine_fuel_rate": covered})
+    # Accepted — and extrapolated across the seconds it missed, so the
+    # figure is the raw 1.0 L scaled by the window it actually covered.
+    assert await resolve_fuel_used_l(just_over, TRIP_S) == pytest.approx(
+        1.0 * TRIP_S / covered
     )
-    assert await resolve_fuel_used_l(just_over, TRIP_S) == pytest.approx(1.0)
     just_under, _ = _recorder(
         grams, {"engine_fuel_rate": MIN_COVERAGE_FRACTION * TRIP_S * 0.99}
     )
@@ -277,3 +280,55 @@ def test_wican_std_decoder_name_is_not_aliased_onto_the_preferred_source() -> No
     # The working path is a WiCAN *custom* PID published under the canonical
     # name directly, which needs no alias and must survive normalise().
     assert normalise("engine_fuel_rate") == FUEL_SOURCES[0].metric
+
+
+# --- coverage extrapolation ----------------------------------------------
+#
+# The integral drops every gap of 60 s or more, so seconds a source did not
+# sample contribute exactly zero fuel — even though the engine was running,
+# which is precisely what coverage_window_s (OBD-active seconds, unioned
+# across metrics) establishes. Scaling by the shortfall replaces a value
+# known to be wrong with the trip's own average rate.
+
+
+async def test_partial_coverage_is_extrapolated_to_the_active_window() -> None:
+    # Sampled 800 of 1000 OBD-active seconds: the 1.0 L measured stands for
+    # 80 % of the burn, so the trip used ~1.25 L.
+    integrate, _ = _recorder(
+        {"engine_fuel_rate": 749.9}, {"engine_fuel_rate": 800.0}
+    )
+    assert await resolve_fuel_used_l(integrate, TRIP_S) == pytest.approx(1.25)
+
+
+async def test_full_coverage_is_left_alone() -> None:
+    integrate, _ = _recorder(
+        {"engine_fuel_rate": 749.9}, {"engine_fuel_rate": TRIP_S}
+    )
+    assert await resolve_fuel_used_l(integrate, TRIP_S) == pytest.approx(1.0)
+
+
+async def test_extrapolation_never_scales_down() -> None:
+    """A source sampling denser than the unioned window is not evidence of
+    less fuel, so the factor floors at 1.0 rather than shrinking the
+    integral."""
+    integrate, _ = _recorder(
+        {"engine_fuel_rate": 749.9}, {"engine_fuel_rate": TRIP_S * 1.5}
+    )
+    assert await resolve_fuel_used_l(integrate, TRIP_S) == pytest.approx(1.0)
+
+
+async def test_extrapolation_is_bounded_by_the_coverage_gate() -> None:
+    """MIN_COVERAGE_FRACTION is what stops this running away: anything below
+    it is rejected outright, so the scale factor can never exceed 1/that."""
+    barely_covered = MIN_COVERAGE_FRACTION * TRIP_S * 1.001
+    integrate, _ = _recorder({"engine_fuel_rate": 749.9}, {"engine_fuel_rate": barely_covered})
+    worst_case = await resolve_fuel_used_l(integrate, TRIP_S)
+    assert worst_case is not None
+    assert worst_case <= 1.0 / MIN_COVERAGE_FRACTION
+
+
+async def test_unknown_window_leaves_the_integral_untouched() -> None:
+    """A zero-length window can't be judged on coverage — the magnitude gate
+    stands alone there, and nothing is extrapolated."""
+    integrate, _ = _recorder({"engine_fuel_rate": 749.9}, {"engine_fuel_rate": 10.0})
+    assert await resolve_fuel_used_l(integrate, 0.0) == pytest.approx(1.0)

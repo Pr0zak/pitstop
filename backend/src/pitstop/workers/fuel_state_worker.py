@@ -367,15 +367,44 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
     return snapped
 
 
+
+async def run_cycle(pool: asyncpg.Pool) -> tuple[int, int]:
+    """One pass of the worker: ``(decremented, snapped)``.
+
+    **Snap FIRST, decrement second.** The sensor reading is the authority
+    for everything that had already happened when it was taken, so letting
+    it land first means the trips it covers get stamped applied by
+    ``snap_pass`` and never decrement at all. Trips that ended AFTER the
+    sample are untouched by the snap and still decrement, in this same
+    pass.
+
+    The old order was decrement-then-snap and it lost real consumption:
+    on 2026-08-22 seven decrements totalling 3.6 L were applied at
+    23:47:54 and a snap in that same second overwrote the estimate,
+    discarding every one of them. It also made the stamping in
+    ``snap_pass`` dead code — by the time the snap looked, the decrement
+    pass had already claimed the trips, which is why
+    ``absorbed_pending_trips`` was always 0.
+
+    Extracted from ``run`` so the ordering is reachable from a test; the
+    order here IS the fix, and a caller that reverses it reintroduces the
+    bug silently.
+    """
+    snapped = await snap_pass(pool)
+    decremented = await decrement_pass(pool)
+    return decremented, snapped
+
+
 async def run(pool: asyncpg.Pool, cfg: "Settings") -> None:
     """Forever loop. Mirrors the trip_deriver/retention pattern."""
     log.info("fuel-state worker started (cycle every %s s)", CYCLE_INTERVAL_S)
     while True:
         try:
-            d = await decrement_pass(pool)
-            s = await snap_pass(pool)
-            if d or s:
-                log.info("fuel-state cycle: decremented=%d snapped=%d", d, s)
+            d, snapped_n = await run_cycle(pool)
+            if d or snapped_n:
+                log.info(
+                    "fuel-state cycle: decremented=%d snapped=%d", d, snapped_n
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
