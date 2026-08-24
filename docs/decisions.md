@@ -460,3 +460,62 @@ Adding such a PID to the dongle's `auto_pid` table **collapsed its published pay
 - ATF and gear become reachable without risking the 57-PID standard stream.
 - The blast radius of the unproven part is a feature that does nothing until enabled.
 - VCM cylinder-deactivation state (`22 2615`, byte 53) remains unreachable regardless — the dongle truncates ISO-TP reassembly at ~34 payload bytes.
+
+## ADR-023 — Auto-upload on WiFi overrides manual-sync, on two independent paths
+
+**Context.** Manual-sync mode (ADR-015) suppresses every phone-side MQTT publish and the
+post-seal upload kick, so a drive is captured locally and stays queued until the user taps
+"Sync now". Its stated purpose is to avoid streaming telemetry over cellular; the step it
+leaves to the user is "upload it once you're back on WiFi". That step is easy to forget —
+the sync-reminder notification exists precisely because queues were growing to five drives
+unnoticed.
+
+The obvious automation, "upload when I'm on my home WiFi", has an awkward shape on Android.
+A `ConnectivityManager.NetworkCallback` sees the network arrive instantly but only while
+the process is alive, and the walk from the parked car to the house is exactly when Android
+reclaims the app. WorkManager survives process death and reboot but its network constraints
+express only `CONNECTED` / `UNMETERED` / `METERED` — there is no "this SSID" constraint.
+
+**Decision.**
+
+1. **The gate is one class, evaluated by every caller.** `WifiUploadGate` answers "may an
+   automatic drain proceed right now" and is consulted by the live trigger, the WorkManager
+   worker, and `DriveSealer`. Three call sites with three copies of the rule would drift,
+   and the drift would be invisible: the failure mode is a drive that silently never
+   uploads.
+2. **It deliberately overrides `manualSyncOnly` for the upload queue, and only for that.**
+   Manual-sync exists to keep drive payloads off cellular; a network the user nominated is
+   not cellular. Live MQTT publishing stays suppressed in manual mode regardless — the
+   override covers the HTTP drive queue alone.
+3. **Two paths, because neither is sufficient alone.** `WifiUploadTrigger` (a WiFi
+   `NetworkCallback`) handles the app-alive case and fires within seconds.
+   `enqueueWifiDriveUpload` — a unique one-shot with an `UNMETERED` constraint, armed by
+   `DriveSealer` whenever it parks a drive it could not upload — handles process death; the
+   worker re-runs the full gate on wake and exits quietly if the network isn't a nominated
+   one. `DriveUploader`'s drain mutex makes a double-fire cost one skipped pass, not a
+   double upload.
+4. **An empty SSID allowlist means "any unmetered WiFi"; a named network is honoured even
+   when metered.** The unmetered requirement is what makes the empty default safe, since a
+   metered hotspot is the user's cellular plan under another name. Naming a network is an
+   explicit choice and is taken at face value.
+5. **`VALIDATED`, not merely `INTERNET`.** A captive portal or a router with no upstream
+   would otherwise start a drain that can only fail, burning the per-drive retry budget on
+   every queued drive.
+6. **SSID matching is case-insensitive, and "can't read the name" is distinct from "no
+   match".** Users type an SSID from memory; a case slip that silently never uploads is a
+   worse failure than matching a network differing only in case. Reading an SSID needs
+   `ACCESS_FINE_LOCATION` (already held for GPS capture) — without it the gate returns
+   `NoLocationPermission` and Settings says so in red, rather than reporting a mismatch the
+   user cannot act on.
+
+**Consequence.**
+
+- The headline case — manual-sync on, arrive home, drives upload themselves — is covered
+  whether or not the app survived the trip.
+- With manual-sync off, the one-shot is armed too, which upgrades "sealed with no coverage"
+  from "waits up to 4 h for the periodic backstop" to "goes on the next unmetered network".
+- Settings' capture summary now reports the WiFi policy ahead of the manual-sync wording,
+  because with both on, "uploads on demand" would be untrue.
+- One extra `NetworkCallback` when the feature is on, alongside the `InCarDetector`'s. Both
+  read SSIDs through the shared `WifiSsidReader`, so the network that auto-starts the
+  bridge and the network that auto-uploads can't disagree about what it's called.

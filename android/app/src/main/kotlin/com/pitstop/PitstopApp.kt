@@ -8,6 +8,7 @@ import androidx.work.Configuration
 import com.pitstop.companion.WicanCompanionManager
 import com.pitstop.drive.scheduleDriveUploads
 import com.pitstop.log.LogBuffer
+import com.pitstop.net.WifiUploadTrigger
 import com.pitstop.notif.SyncReminderManager
 import com.pitstop.presence.InCarDetector
 import com.pitstop.update.scheduleUpdateChecks
@@ -23,6 +24,7 @@ class PitstopApp : Application(), Configuration.Provider {
     @Inject lateinit var syncReminderManager: SyncReminderManager
     @Inject lateinit var inCarDetector: InCarDetector
     @Inject lateinit var companionManager: WicanCompanionManager
+    @Inject lateinit var wifiUploadTrigger: WifiUploadTrigger
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -67,6 +69,13 @@ class PitstopApp : Application(), Configuration.Provider {
         // HFP observers from PresenceTracker); the bridge service no
         // longer runs unless one of the signals fires.
         inCarDetector.start()
+        // Auto-upload queued drives when the phone joins a WiFi network
+        // the user nominated. Inert until the setting is on; when it is,
+        // one more NetworkCallback rides alongside the detector's. This
+        // covers the app-alive case — a drive sealed while the process is
+        // gone is picked up by the unmetered WorkManager one-shot the
+        // sealer armed, and by the 4 h periodic above.
+        wifiUploadTrigger.start()
         // Re-assert CompanionDeviceManager presence observation for an
         // already-associated WiCAN. This is the reliable background
         // auto-start path: it keeps the OS binding WicanCompanionService

@@ -19,6 +19,7 @@ import com.pitstop.log.LogBuffer
 import com.pitstop.log.LogShipper
 import com.hivemq.client.mqtt.mqtt3.exceptions.Mqtt3ConnAckException
 import com.pitstop.mqtt.MqttPublisher
+import com.pitstop.net.WifiSsidReader
 import com.pitstop.presence.ActivityRecognitionBus
 import com.pitstop.presence.InCarDetector
 import com.pitstop.presence.PresenceTracker
@@ -80,6 +81,8 @@ data class ConfigFormState(
     val bridgeAutoTrigger: Boolean = true,
     val bridgeAutoTriggerSsids: List<String> = emptyList(),
     val bridgeAutoTriggerActivityEnabled: Boolean = false,
+    val uploadOnWifi: Boolean = false,
+    val uploadOnWifiSsids: List<String> = emptyList(),
     val saved: Boolean = false,
 )
 
@@ -187,6 +190,7 @@ class ConfigViewModel @Inject constructor(
     private val inCarDetector: InCarDetector,
     private val presenceTracker: PresenceTracker,
     private val activityBus: ActivityRecognitionBus,
+    private val wifiSsidReader: WifiSsidReader,
 ) : AndroidViewModel(application) {
 
     // ── CompanionDeviceManager (reliable background auto-start) ──────────
@@ -345,6 +349,8 @@ class ConfigViewModel @Inject constructor(
                 bridgeGpsEnabled = secrets.settings.bridgeGpsEnabled,
                 bridgeAutoTrigger = secrets.settings.bridgeAutoTrigger,
                 bridgeAutoTriggerSsids = secrets.settings.bridgeAutoTriggerSsids,
+                uploadOnWifi = secrets.settings.uploadOnWifi,
+                uploadOnWifiSsids = secrets.settings.uploadOnWifiSsids,
                 bridgeAutoTriggerActivityEnabled =
                     secrets.settings.bridgeAutoTriggerActivityEnabled,
                 // The just-loaded form already matches disk, so mark it saved.
@@ -651,6 +657,51 @@ class ConfigViewModel @Inject constructor(
         }
     }
 
+    /** Auto-persist the "Auto-upload on WiFi" toggle. Same reasoning as
+     *  [setManualSyncOnly]: a sync-policy switch the user flips and walks
+     *  away from must not depend on them also tapping Save. */
+    fun setUploadOnWifi(value: Boolean) {
+        _form.value = _form.value.copy(uploadOnWifi = value)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setUploadOnWifi(value) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: uploadOnWifi auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    /** Auto-persist the upload-on-WiFi SSID allowlist. Receives the raw
+     *  comma-separated text; splits + cleans here so DataStore holds a
+     *  normalised value. */
+    fun setUploadOnWifiSsids(commaSeparated: String) {
+        val parsed = commaSeparated
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        _form.value = _form.value.copy(uploadOnWifiSsids = parsed)
+        viewModelScope.launch {
+            runCatching { settingsRepository.setUploadOnWifiSsids(parsed) }
+                .onFailure { t ->
+                    logBuffer.warn(
+                        "config: uploadOnWifiSsids auto-save failed",
+                        mapOf("err" to (t.message ?: t::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    /** SSID of the network the phone is on right now, for the "use this
+     *  network" affordance. Null when WiFi is off, nothing is associated,
+     *  or the location grant is missing — the UI says which. */
+    fun currentWifiSsid(): String? = wifiSsidReader.current()
+
+    /** False when we can't read an SSID at all, so the Settings screen can
+     *  explain why a configured network never matches. */
+    fun canReadWifiSsid(): Boolean = wifiSsidReader.hasPermission()
+
     fun pickDevice(device: ScannedDevice) {
         _form.value = _form.value.copy(
             bleDeviceMac = device.mac,
@@ -706,6 +757,8 @@ class ConfigViewModel @Inject constructor(
                 bridgeGpsEnabled = f.bridgeGpsEnabled,
                 bridgeAutoTrigger = f.bridgeAutoTrigger,
                 bridgeAutoTriggerSsids = f.bridgeAutoTriggerSsids,
+                uploadOnWifi = f.uploadOnWifi,
+                uploadOnWifiSsids = f.uploadOnWifiSsids,
                 bridgeAutoTriggerActivityEnabled = f.bridgeAutoTriggerActivityEnabled,
             ),
             mqttPassword = f.mqttPassword,
@@ -903,6 +956,7 @@ class ConfigViewModel @Inject constructor(
             appendLine("server: $apiHost · query token ${if (f.queryToken.isBlank()) "MISSING" else "set"}")
             appendLine("vehicle: ${f.vehicleSlug.ifBlank { "(not set)" }}")
             appendLine("collectors: ble=${f.bridgeBleEnabled} gps=${f.bridgeGpsEnabled} manualSync=${f.manualSyncOnly}")
+            appendLine("upload-on-wifi: on=${f.uploadOnWifi} ssids=${f.uploadOnWifiSsids.size}")
             appendLine("auto-start: on=${f.bridgeAutoTrigger} wican-paired=${companionAssociated.value} ssids=${f.bridgeAutoTriggerSsids.size} motion=${f.bridgeAutoTriggerActivityEnabled}")
             appendLine("broker: connected=${mqttPublisher.isConnected()}")
             appendLine("bridge: phase=${bs.phase} engine=${bs.engineState} metrics=${bs.metricsActive}")

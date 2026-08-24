@@ -56,6 +56,9 @@ class SettingsRepository @Inject constructor(
         val bridgeAutoTriggerSsids: Preferences.Key<String> = stringPreferencesKey("bridge_auto_trigger_ssids")
         val bridgeAutoTriggerActivityEnabled: Preferences.Key<Boolean> =
             booleanPreferencesKey("bridge_auto_trigger_activity_enabled")
+        val uploadOnWifi: Preferences.Key<Boolean> = booleanPreferencesKey("upload_on_wifi")
+        val uploadOnWifiSsids: Preferences.Key<String> =
+            stringPreferencesKey("upload_on_wifi_ssids")
         val companionAssociationId: Preferences.Key<Int> =
             intPreferencesKey("companion_association_id")
 
@@ -155,6 +158,12 @@ class SettingsRepository @Inject constructor(
                 ?: emptyList(),
             bridgeAutoTriggerActivityEnabled =
                 prefs[Keys.bridgeAutoTriggerActivityEnabled] ?: false,
+            uploadOnWifi = prefs[Keys.uploadOnWifi] ?: false,
+            uploadOnWifiSsids = prefs[Keys.uploadOnWifiSsids]
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList(),
             companionAssociationId = prefs[Keys.companionAssociationId],
         )
     }
@@ -243,6 +252,8 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.bridgeAutoTrigger] = settings.bridgeAutoTrigger
             prefs[Keys.bridgeAutoTriggerSsids] = settings.bridgeAutoTriggerSsids.joinToString(",")
             prefs[Keys.bridgeAutoTriggerActivityEnabled] = settings.bridgeAutoTriggerActivityEnabled
+            prefs[Keys.uploadOnWifi] = settings.uploadOnWifi
+            prefs[Keys.uploadOnWifiSsids] = settings.uploadOnWifiSsids.joinToString(",")
         }
         // Treat blank as "leave alone" rather than "clear" — otherwise a
         // save fired before the form's init coroutine has populated the
@@ -315,6 +326,24 @@ class SettingsRepository @Inject constructor(
      *  the runtime permission is granted BEFORE flipping this to true. */
     suspend fun setBridgeAutoTriggerActivityEnabled(value: Boolean) {
         context.dataStore.edit { it[Keys.bridgeAutoTriggerActivityEnabled] = value }
+    }
+
+    /** Focused setter for the "Auto-upload on WiFi" toggle. Observed by
+     *  [com.pitstop.net.WifiUploadTrigger] off the settings flow, which
+     *  registers / drops its network callback and re-evaluates the gate
+     *  on the spot — so flipping it on while already parked on the target
+     *  network uploads immediately. */
+    suspend fun setUploadOnWifi(value: Boolean) {
+        context.dataStore.edit { it[Keys.uploadOnWifi] = value }
+    }
+
+    /** Focused setter for the upload-on-WiFi SSID allowlist. Empty list
+     *  = any unmetered WiFi. */
+    suspend fun setUploadOnWifiSsids(values: List<String>) {
+        val cleaned = values.map { it.trim() }.filter { it.isNotEmpty() }
+        context.dataStore.edit {
+            it[Keys.uploadOnWifiSsids] = cleaned.joinToString(",")
+        }
     }
 
     /** Persist the CompanionDeviceManager association id after a

@@ -6,6 +6,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
+import com.pitstop.net.WifiUploadGate
+import com.pitstop.net.reason
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
@@ -20,9 +22,15 @@ import kotlinx.coroutines.flow.first
  *
  * When manual-sync mode is on the worker still wakes (cheaper than
  * cancelling + rescheduling the periodic chain every time the user
- * toggles the setting) but exits immediately. The only way drives
- * upload in manual-sync mode is via an explicit user action —
- * History "Sync now" or the persistent-reminder notification action.
+ * toggles the setting) but exits immediately — unless the user has
+ * turned on auto-upload-on-WiFi and the phone is currently on a network
+ * that qualifies, which is a standing instruction to upload here.
+ * Otherwise the only way drives upload in manual-sync mode is an
+ * explicit user action: History "Sync now" or the persistent-reminder
+ * notification action.
+ *
+ * This worker also serves the unmetered-network one-shot armed by
+ * [enqueueWifiDriveUpload] — same gate, same drain.
  */
 @HiltWorker
 class DriveUploadWorker @AssistedInject constructor(
@@ -30,6 +38,7 @@ class DriveUploadWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val uploader: DriveUploader,
     private val settings: SettingsRepository,
+    private val wifiGate: WifiUploadGate,
     private val logs: LogBuffer,
 ) : CoroutineWorker(appContext, params) {
 
@@ -37,8 +46,18 @@ class DriveUploadWorker @AssistedInject constructor(
         val manualOnly = runCatching { settings.settings.first().manualSyncOnly }
             .getOrDefault(false)
         if (manualOnly) {
-            logs.info("DriveUploadWorker: manual-sync mode on — skipping periodic drain")
-            return Result.success()
+            val verdict = wifiGate.evaluate()
+            if (verdict !is WifiUploadGate.Verdict.Allowed) {
+                logs.info(
+                    "DriveUploadWorker: manual-sync mode on — skipping drain",
+                    mapOf("wifi_verdict" to verdict.reason()),
+                )
+                return Result.success()
+            }
+            logs.info(
+                "DriveUploadWorker: manual-sync mode on but on an upload network",
+                mapOf("ssid" to (verdict.ssid ?: "unnamed")),
+            )
         }
         logs.info("DriveUploadWorker: starting (periodic backstop)")
         return try {

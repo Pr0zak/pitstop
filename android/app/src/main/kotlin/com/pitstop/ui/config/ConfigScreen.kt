@@ -384,9 +384,15 @@ fun ConfigScreen(
                     bleEnabled = form.bridgeBleEnabled,
                     gpsEnabled = form.bridgeGpsEnabled,
                     manualSyncOnly = form.manualSyncOnly,
+                    uploadOnWifi = form.uploadOnWifi,
+                    uploadOnWifiSsids = form.uploadOnWifiSsids,
+                    canReadSsid = remember(form.uploadOnWifi) { viewModel.canReadWifiSsid() },
+                    currentSsid = { viewModel.currentWifiSsid() },
                     onBleEnabledChange = { v -> viewModel.setBridgeBleEnabled(v) },
                     onGpsEnabledChange = { v -> viewModel.setBridgeGpsEnabled(v) },
                     onManualSyncChange = { v -> viewModel.setManualSyncOnly(v) },
+                    onUploadOnWifiChange = { v -> viewModel.setUploadOnWifi(v) },
+                    onUploadOnWifiSsidsChange = { v -> viewModel.setUploadOnWifiSsids(v) },
                 )
                 BleDeviceSection(
                     deviceName = form.bleDeviceName,
@@ -555,9 +561,15 @@ private fun CaptureCollectorsSection(
     bleEnabled: Boolean,
     gpsEnabled: Boolean,
     manualSyncOnly: Boolean,
+    uploadOnWifi: Boolean,
+    uploadOnWifiSsids: List<String>,
+    canReadSsid: Boolean,
+    currentSsid: () -> String?,
     onBleEnabledChange: (Boolean) -> Unit,
     onGpsEnabledChange: (Boolean) -> Unit,
     onManualSyncChange: (Boolean) -> Unit,
+    onUploadOnWifiChange: (Boolean) -> Unit,
+    onUploadOnWifiSsidsChange: (String) -> Unit,
 ) {
     SettingsSection(
         title = "Collectors",
@@ -582,8 +594,7 @@ private fun CaptureCollectorsSection(
                 else MaterialTheme.colorScheme.primary,
             )
             Text(
-                if (manualSyncOnly) "Uploads on demand — sync from History"
-                else "Uploads live over cellular",
+                uploadSummary(manualSyncOnly, uploadOnWifi, uploadOnWifiSsids),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -638,8 +649,91 @@ private fun CaptureCollectorsSection(
             }
             Switch(checked = manualSyncOnly, onCheckedChange = onManualSyncChange)
         }
+        // Auto-upload on WiFi. Sits under manual-sync because it is the
+        // automation of manual-sync's one manual step — and because it
+        // deliberately overrides it: with this on, a queued drive uploads
+        // itself the moment the phone is back on a network the user named.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Auto-upload on WiFi", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (uploadOnWifi) {
+                        if (uploadOnWifiSsids.isEmpty()) {
+                            "Uploads queued drives on any unmetered WiFi"
+                        } else {
+                            "Uploads queued drives on ${uploadOnWifiSsids.joinToString(", ")}"
+                        }
+                    } else "Off — queued drives wait for a manual sync",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = uploadOnWifi, onCheckedChange = onUploadOnWifiChange)
+        }
+        if (uploadOnWifi) {
+            // Persists on every keystroke via the setter, like the
+            // auto-start SSID field — no Save button required.
+            val ssidText = remember(uploadOnWifiSsids) {
+                mutableStateOf(uploadOnWifiSsids.joinToString(", "))
+            }
+            OutlinedTextField(
+                value = ssidText.value,
+                onValueChange = { v ->
+                    ssidText.value = v
+                    onUploadOnWifiSsidsChange(v)
+                },
+                label = { Text("Upload WiFi SSIDs") },
+                placeholder = { Text("e.g. HomeNetwork") },
+                supportingText = {
+                    Text(
+                        if (!canReadSsid && uploadOnWifiSsids.isNotEmpty()) {
+                            "Comma-separated. ⚠ Location permission is off, so the " +
+                                "network name can't be read and none of these will match."
+                        } else {
+                            "Comma-separated. Leave blank to upload on any unmetered WiFi."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (!canReadSsid && uploadOnWifiSsids.isNotEmpty()) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // Typing an SSID from memory is where this feature quietly
+            // fails — one character off and it never uploads. Offer the
+            // name the phone is actually associated with.
+            val here = remember(uploadOnWifi) { currentSsid() }
+            if (here != null && !uploadOnWifiSsids.any { it.equals(here, ignoreCase = true) }) {
+                TextButton(
+                    onClick = {
+                        val merged = (uploadOnWifiSsids + here).joinToString(", ")
+                        ssidText.value = merged
+                        onUploadOnWifiSsidsChange(merged)
+                    },
+                ) {
+                    Text("Add current network ($here)")
+                }
+            }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
+}
+
+/** One line describing where a finished drive actually goes, given the two
+ *  sync switches. Kept out of the composable so the wording is testable. */
+internal fun uploadSummary(
+    manualSyncOnly: Boolean,
+    uploadOnWifi: Boolean,
+    uploadOnWifiSsids: List<String>,
+): String = when {
+    uploadOnWifi && uploadOnWifiSsids.isEmpty() -> "Uploads on any unmetered WiFi"
+    uploadOnWifi -> "Uploads on ${uploadOnWifiSsids.joinToString(", ")}"
+    manualSyncOnly -> "Uploads on demand — sync from History"
+    else -> "Uploads live over cellular"
 }
 
 // ── Capture: auto-start ─────────────────────────────────────────────

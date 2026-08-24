@@ -3,7 +3,9 @@ package com.pitstop.drive
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
@@ -42,6 +44,44 @@ fun scheduleDriveUploads(context: Context) {
     WorkManager.getInstance(context).enqueueUniquePeriodicWork(
         DRIVE_UPLOAD_WORK_NAME,
         ExistingPeriodicWorkPolicy.KEEP,
+        req,
+    )
+}
+
+/** Unique name for the unmetered-network one-shot armed after a seal. */
+const val DRIVE_UPLOAD_WIFI_WORK_NAME = "pitstop-drive-upload-on-wifi"
+
+/**
+ * Arm a one-shot upload that the OS runs the next time the phone is on an
+ * unmetered network — the durable half of "auto-upload on WiFi".
+ *
+ * [com.pitstop.net.WifiUploadTrigger] covers the case where the app is
+ * still alive when the network arrives, but a `NetworkCallback` cannot
+ * wake a killed process, and the gap between parking the car and getting
+ * home is exactly when Android reclaims the app. WorkManager's constraint
+ * survives process death and reboot, so this is what makes the feature
+ * work on the drive that matters.
+ *
+ * The constraint can only express "unmetered", not "this SSID" — so the
+ * worker re-runs the full [com.pitstop.net.WifiUploadGate] when it wakes
+ * and exits quietly if the network isn't one the user nominated.
+ *
+ * KEEP: a request already waiting on the constraint covers every drive
+ * queued behind it, since the drain empties the whole queue.
+ */
+fun enqueueWifiDriveUpload(context: Context) {
+    val constraints = Constraints.Builder()
+        .setRequiredNetworkType(NetworkType.UNMETERED)
+        .build()
+
+    val req = OneTimeWorkRequestBuilder<DriveUploadWorker>()
+        .setConstraints(constraints)
+        .addTag(DriveUploadWorker.TAG)
+        .build()
+
+    WorkManager.getInstance(context).enqueueUniqueWork(
+        DRIVE_UPLOAD_WIFI_WORK_NAME,
+        ExistingWorkPolicy.KEEP,
         req,
     )
 }

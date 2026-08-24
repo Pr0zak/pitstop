@@ -6,6 +6,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.pitstop.data.SettingsRepository
 import com.pitstop.log.LogBuffer
+import com.pitstop.net.WifiUploadGate
+import com.pitstop.net.reason
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +44,7 @@ class DriveSealer @Inject constructor(
     private val json: Json,
     private val logs: LogBuffer,
     private val settings: SettingsRepository,
+    private val wifiGate: WifiUploadGate,
     @ApplicationContext private val context: Context,
 ) {
     private val _lastSealedAt = MutableStateFlow<Long?>(null)
@@ -190,18 +193,45 @@ class DriveSealer @Inject constructor(
      * no-ops; drives stay in the local queue until an explicit user
      * action calls back in with force=true (History "Sync now" button,
      * notification "Sync now" action).
+     *
+     * The one exception is auto-upload-on-WiFi. If the phone is already
+     * parked on a network the user nominated — the driveway-at-home case,
+     * where no network change ever fires and
+     * [com.pitstop.net.WifiUploadTrigger] would never hear about the new
+     * drive — the drain proceeds. When it isn't, a WorkManager one-shot
+     * is armed so the OS starts the upload on the next unmetered network
+     * even if this process is long dead by then.
      */
     fun kickWorker(force: Boolean = false, reason: String = "kicked after seal") {
         ownScope.launch {
             if (!force) {
-                val manualOnly = runCatching { settings.settings.first().manualSyncOnly }
-                    .getOrDefault(false)
-                if (manualOnly) {
+                val snapshot = runCatching { settings.settings.first() }.getOrNull()
+                if (snapshot?.manualSyncOnly == true) {
+                    val verdict = wifiGate.evaluate(snapshot)
+                    if (verdict !is WifiUploadGate.Verdict.Allowed) {
+                        if (verdict !is WifiUploadGate.Verdict.Disabled) {
+                            armWifiUpload(verdict.reason())
+                        }
+                        logs.info(
+                            "DriveSealer.kickWorker: manual-sync mode — drive sealed, " +
+                                "awaiting manual upload",
+                            mapOf("wifi_verdict" to verdict.reason()),
+                        )
+                        return@launch
+                    }
                     logs.info(
-                        "DriveSealer.kickWorker: manual-sync mode — drive sealed, " +
-                            "awaiting manual upload",
+                        "DriveSealer.kickWorker: on an upload network — draining despite " +
+                            "manual-sync mode",
+                        mapOf("ssid" to (verdict.ssid ?: "unnamed")),
                     )
-                    return@launch
+                } else if (snapshot?.uploadOnWifi == true) {
+                    // Auto-sync mode with upload-on-WiFi on. The drain below
+                    // is the fast path, but it fails outright when the drive
+                    // was sealed out of coverage. Arm the one-shot too, so
+                    // that case waits for the next unmetered network instead
+                    // of for the 4 h periodic — and survives the process
+                    // death that follows walking away from the car.
+                    armWifiUpload("auto-sync backstop")
                 }
             }
             // Hand off to the uploader's own scope rather than draining
@@ -210,5 +240,27 @@ class DriveSealer @Inject constructor(
             // from the UI. This scope only does the manual-mode gate.
             uploader.requestDrain(reason)
         }
+    }
+
+    /**
+     * Hand the upload to WorkManager, constrained to an unmetered
+     * network. Survives process death, which the in-process WiFi trigger
+     * cannot — and the walk from the car to the house is exactly when
+     * Android reclaims the app.
+     */
+    private fun armWifiUpload(verdictReason: String) {
+        runCatching { enqueueWifiDriveUpload(context) }
+            .onSuccess {
+                logs.info(
+                    "DriveSealer: armed upload-on-WiFi one-shot",
+                    mapOf("verdict" to verdictReason),
+                )
+            }
+            .onFailure {
+                logs.warn(
+                    "DriveSealer: could not arm upload-on-WiFi one-shot",
+                    mapOf("err" to (it.message ?: it::class.java.simpleName)),
+                )
+            }
     }
 }

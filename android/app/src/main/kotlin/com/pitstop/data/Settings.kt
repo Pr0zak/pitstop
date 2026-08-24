@@ -133,6 +133,32 @@ data class Settings(
      */
     val bridgeAutoTriggerActivityEnabled: Boolean = false,
     /**
+     * When true, the phone drains its queued-drive backlog automatically
+     * as soon as it joins a WiFi network listed in [uploadOnWifiSsids]
+     * (or any unmetered WiFi, when that list is empty).
+     *
+     * This deliberately overrides [manualSyncOnly] for the upload queue.
+     * Manual-sync exists so a drive isn't streamed over cellular; the
+     * step it leaves to the user is "upload once you're back on WiFi",
+     * and this automates exactly that step. Live MQTT publishing stays
+     * suppressed in manual mode either way.
+     *
+     * Default false so an upgrade never starts moving multi-megabyte
+     * payloads the user didn't ask it to move.
+     */
+    val uploadOnWifi: Boolean = false,
+    /**
+     * WiFi SSIDs that [uploadOnWifi] treats as "upload here". Empty means
+     * "any unmetered WiFi" — the unmetered requirement is what keeps that
+     * default safe, since a metered hotspot is the user's cellular plan
+     * under another name.
+     *
+     * A named network is honoured even when metered: naming it is an
+     * explicit choice. Reading the associated SSID needs
+     * `ACCESS_FINE_LOCATION`, the same grant GPS capture already asks for.
+     */
+    val uploadOnWifiSsids: List<String> = emptyList(),
+    /**
      * CompanionDeviceManager association id for the WiCAN, persisted after
      * a successful `associate()`. Drives two things: (1) the Settings UI
      * shows "Associated" vs "Not paired"; (2) on API 34+ it's the id passed
