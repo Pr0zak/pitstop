@@ -28,6 +28,7 @@ import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.Style
+import com.pitstop.ui.history.MapStyles
 
 private const val TAG = "PitstopMap"
 
@@ -37,7 +38,8 @@ private const val TAG = "PitstopMap"
  * features, each colored by the speed at the segment's start —
  * mirrors `routeSegments` in the web TripDetailView.
  *
- * Style URL: Carto Voyager (matches the web's default basemap).
+ * Style URL: OpenFreeMap dark, via [MapStyles] (matches the web's
+ * default basemap).
  *
  * Two non-obvious things matter here:
  *
@@ -147,11 +149,10 @@ private fun MapUnavailableFallback(modifier: Modifier) {
 
 private const val SOURCE_ROUTE = "pitstop-route"
 private const val LAYER_ROUTE = "pitstop-route-layer"
-// Carto's Dark Matter style — both phone and web default to dark for the
-// trip-detail map (2026-05-12). Web has a runtime toggle (☀/☾ button) that
-// persists per-browser via localStorage; phone is fixed dark for now.
-private const val STYLE_URL =
-    "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+// Both phone and web default to dark for the trip-detail map
+// (2026-05-12). Web has a runtime toggle (☼/☾ button) that persists
+// per-browser via localStorage; phone is fixed dark for now.
+private const val STYLE_URL = MapStyles.DARK
 
 private fun setupMap(
     map: MapLibreMap,

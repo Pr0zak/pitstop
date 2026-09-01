@@ -4,6 +4,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { getRouteTrace, type RouteTraceResponse } from "@/api/endpoints";
+import { DARK_STYLE, LIGHT_STYLE } from "@/lib/mapStyles";
 
 type Mode = "density" | "speed" | "single";
 
@@ -20,39 +21,6 @@ const mode = ref<Mode>(loadMode());
 const data = ref<RouteTraceResponse | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
-
-const DARK_STYLE = {
-  version: 8,
-  sources: {
-    dark: {
-      type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-      ],
-      tileSize: 256,
-      attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: "dark", type: "raster", source: "dark" }],
-} as unknown as maplibregl.StyleSpecification;
-
-const LIGHT_STYLE = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "&copy; OpenStreetMap contributors",
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
-} as unknown as maplibregl.StyleSpecification;
 
 const MAP_DARK_KEY = "pitstop_heatmap_dark";
 const darkMode = ref<boolean>(localStorage.getItem(MAP_DARK_KEY) !== "false");

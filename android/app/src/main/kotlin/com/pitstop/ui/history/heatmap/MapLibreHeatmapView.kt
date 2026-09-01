@@ -40,6 +40,7 @@ import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
+import com.pitstop.ui.history.MapStyles
 
 private const val TAG = "PitstopHeatmap"
 
@@ -51,8 +52,8 @@ private const val TAG = "PitstopHeatmap"
  * counts on a 4-decimal lat/lon grid). The active mode is selected
  * by the `data-driven get(<attr>)` line-color expression.
  *
- * Mirrors the web `HeatmapView.vue`. Reuses the same dark-matter
- * basemap and discrete density tiers via [densityColor] in
+ * Mirrors the web `HeatmapView.vue`. Reuses the same OpenFreeMap
+ * dark basemap and discrete density tiers via [densityColor] in
  * TripDetailHelpers.
  */
 enum class HeatmapMode { Density, Speed, Single }
@@ -179,8 +180,7 @@ private const val LAYER = "pitstop-heatmap-layer"
 private const val STATIONS_SOURCE = "pitstop-stations"
 private const val STATIONS_LAYER = "pitstop-stations-layer"
 private const val STATIONS_HALO_LAYER = "pitstop-stations-halo"
-private const val STYLE_URL =
-    "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+private const val STYLE_URL = MapStyles.DARK
 private const val MAX_GAP_S = 30L
 
 /** Single-colour mode paints every trip the same, so the map reads as

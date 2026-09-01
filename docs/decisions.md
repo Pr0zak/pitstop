@@ -519,3 +519,63 @@ express only `CONNECTED` / `UNMETERED` / `METERED` — there is no "this SSID" c
 - One extra `NetworkCallback` when the feature is on, alongside the `InCarDetector`'s. Both
   read SSIDs through the shared `WifiSsidReader`, so the network that auto-starts the
   bridge and the network that auto-uploads can't disagree about what it's called.
+
+---
+
+## ADR-024 — Basemap tiles come from OpenFreeMap, not CARTO
+
+**Context.** Every map in pitstop — the web trip-detail route, the web fuel-station map
+(both driven by `MapLibreMap.vue`), the web heatmap, the home location picker, and the
+phone's route and heatmap views — drew its basemap from CARTO.
+The web used CARTO's raster endpoints (`basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png`)
+for the dark style and OpenStreetMap's own raster tiles for the light one; the phone used
+CARTO's Dark Matter vector GL style.
+
+On 2026-09-01 CARTO began stamping an "API KEY REQUIRED" watermark diagonally across every
+unauthenticated raster tile it serves, and announced that the raster basemaps are being
+retired in favour of keyed vector ones. Both web dark basemaps broke at once. The phone's
+vector style was still serving clean tiles, but it is fed by the same free tier CARTO is
+withdrawing, so it is a break waiting to happen rather than a safe place to stay.
+
+**Decision.** Every map moves to OpenFreeMap: `tiles.openfreemap.org/styles/dark` and
+`.../styles/positron`. The URLs live in exactly two places — `frontend/src/lib/mapStyles.ts`
+and `android/.../ui/history/MapStyles.kt` — which also collapses three duplicated inline
+style objects in the frontend into one import.
+
+**Why not the alternatives.**
+
+1. **A free CARTO API key** (5M tiles/month) was rejected because `Pr0zak/pitstop` is a
+   public repository. The key could not be committed, so it would need an `.env` entry, a
+   backend config endpoint to serve it to the SPA, and a matching path on the phone —
+   real plumbing, and a credential to rotate, in exchange for staying on a provider that
+   has just demonstrated it will change the terms.
+2. **Staying on OpenStreetMap's raster tiles for both styles** was rejected because
+   `tile.openstreetmap.org` has no dark variant, and its tile usage policy is written for
+   low-volume use rather than as an application backend.
+3. **Self-hosted Protomaps** — a regional `.pmtiles` extract served from the stack's own
+   Caddy container — is the strongest option on paper: no external dependency at all, which
+   suits a self-hosted project. It was deferred, not rejected. It costs a few hundred MB to
+   a couple of GB of the CT's 30 GB rootfs plus a periodic refresh to stay current, and
+   that is a poor trade against a same-day fix for a broken basemap. It remains the
+   documented migration path if OpenFreeMap becomes unavailable.
+
+**Consequence.**
+
+- The web gains vector basemaps, which render sharper on high-DPI displays than the raster
+  tiles they replace and can be restyled at runtime. The phone was already on a vector style
+  (CARTO's Dark Matter), so for it this is a provider swap and nothing more.
+- Attribution now travels in OpenFreeMap's TileJSON, so MapLibre renders the
+  OpenFreeMap / OpenMapTiles / OpenStreetMap credits without an explicit control. Do not
+  add an `AttributionControl` for it; doing so double-prints the credits.
+- Route and trace layers are added with no `beforeId`, so they now draw above the basemap's
+  vector labels. With raster tiles the labels were baked into the image and always sat
+  under the route, so this is unchanged in effect.
+- **A failed style fetch now blanks the whole web map, not just its backdrop.** The web's
+  styles were inline objects, so MapLibre's `load` event fired unconditionally and the route,
+  markers and trace drew over a grey square even with no tiles. A style URL is fetched, and
+  `load` never fires if that fetch fails — so an OpenFreeMap outage takes the overlays down
+  with the basemap. The phone always used a style URL and so is unchanged. Accepted for now:
+  the fix is a blank-style fallback on the error path, and it is not written.
+- The accepted risk is that OpenFreeMap is a free public instance with no SLA. Its
+  disappearance is a rendering outage, not a data-loss event: trips, GPS fixes and analytics
+  are unaffected, and the fix is the Protomaps path above.

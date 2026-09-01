@@ -2,6 +2,7 @@
 import { onMounted, onBeforeUnmount, ref, watch } from "vue";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { DARK_STYLE, LIGHT_STYLE } from "@/lib/mapStyles";
 
 interface Props {
   // Each feature is rendered as a circle marker. Use `route` for a polyline.
@@ -30,42 +31,6 @@ let map: maplibregl.Map | null = null;
 let markerInstances: maplibregl.Marker[] = [];
 let hoverMarkerInstance: maplibregl.Marker | null = null;
 
-const OSM_STYLE = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "&copy; OpenStreetMap contributors",
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
-} as unknown as maplibregl.StyleSpecification;
-
-// Carto's Dark Matter raster basemap. Free for non-commercial use,
-// no API key required. Attribution combines OSM + Carto per the
-// provider's terms.
-const DARK_STYLE = {
-  version: 8,
-  sources: {
-    dark: {
-      type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-      ],
-      tileSize: 256,
-      attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: "dark", type: "raster", source: "dark" }],
-} as unknown as maplibregl.StyleSpecification;
-
 const MAP_DARK_KEY = "pitstop_map_dark";
 // Default to dark; respect explicit "false" if the user toggled to light.
 // (Earlier default was "false unless explicit true"; flipped 2026-05-12 to
@@ -77,7 +42,7 @@ function setDarkMode(v: boolean) {
   if (!map) return;
   // map.setStyle wipes our route source / layers — re-add once the
   // new style finishes loading.
-  map.setStyle(v ? DARK_STYLE : OSM_STYLE);
+  map.setStyle(v ? DARK_STYLE : LIGHT_STYLE);
   map.once("style.load", () => {
     applyRoute();
     applyMarkers();
@@ -198,7 +163,7 @@ onMounted(() => {
   if (!root.value) return;
   map = new maplibregl.Map({
     container: root.value,
-    style: darkMode.value ? DARK_STYLE : OSM_STYLE,
+    style: darkMode.value ? DARK_STYLE : LIGHT_STYLE,
     center: props.initialCenter ?? [-74.006, 40.7128],
     zoom: props.initialZoom ?? 10,
   });

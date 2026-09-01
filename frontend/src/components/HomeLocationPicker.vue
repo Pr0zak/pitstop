@@ -3,6 +3,7 @@ import { onMounted, onBeforeUnmount, ref } from "vue";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { roundCoords } from "@/utils/parseLatLon";
+import { LIGHT_STYLE } from "@/lib/mapStyles";
 
 interface Props {
   initialLat: number | null;
@@ -20,20 +21,6 @@ const lon = ref<number | null>(props.initialLon);
 
 let map: maplibregl.Map | null = null;
 let marker: maplibregl.Marker | null = null;
-
-const OSM_STYLE = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "&copy; OpenStreetMap contributors",
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
-} as unknown as maplibregl.StyleSpecification;
 
 function setMarker(lng: number, lat_: number) {
   if (!map) return;
@@ -62,7 +49,7 @@ onMounted(() => {
 
   map = new maplibregl.Map({
     container: root.value,
-    style: OSM_STYLE,
+    style: LIGHT_STYLE,
     center: [startLng, startLat],
     zoom: startZoom,
   });

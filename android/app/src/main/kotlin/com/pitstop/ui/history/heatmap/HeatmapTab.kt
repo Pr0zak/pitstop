@@ -139,7 +139,7 @@ fun HeatmapTab(viewModel: HeatmapViewModel = hiltViewModel()) {
 
             // Legend floats bottom-END on purpose: MapLibre parks its
             // attribution "i" bottom-start, and covering that would hide
-            // the required OSM / CARTO credit.
+            // the required OpenFreeMap / OpenMapTiles / OpenStreetMap credit.
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
