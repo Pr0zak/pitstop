@@ -62,9 +62,13 @@ def _login_ok(_req: httpx.Request) -> httpx.Response:
 
 
 def _vehicles(_req: httpx.Request) -> httpx.Response:
-    return _json_response(200, [
-        {"VIN": VIN, "ModelYear": 2019, "ModelGroupNameFriendly": "Pilot"},
-    ])
+    # Honda's real shape: the list is under "vehicleInfo".
+    return _json_response(200, {
+        "status": "success",
+        "vehicleInfo": [
+            {"VIN": VIN, "ModelYear": 2019, "ModelGroupNameFriendly": "Pilot"},
+        ],
+    })
 
 
 def _route(req: httpx.Request, *, login, dashboard) -> httpx.Response:

@@ -240,8 +240,11 @@ async def test_hondalink(req: HondaLinkTestRequest) -> dict[str, Any]:
                         "dashboard": None}
 
             status, data = await probe._api("GET", "/REST/NGT/MyVehicle/1.0")
+            # Honda wraps the list under "vehicleInfo"; accept the other
+            # shapes and a bare list too.
             raw = data if isinstance(data, list) else (
-                (data.get("vehicles") or data.get("data") or [])
+                (data.get("vehicleInfo") or data.get("vehicles")
+                 or data.get("data") or [])
                 if isinstance(data, dict) else []
             )
             if isinstance(raw, dict):
@@ -256,8 +259,12 @@ async def test_hondalink(req: HondaLinkTestRequest) -> dict[str, Any]:
                 for v in raw if isinstance(v, dict)
             ]
             if not vehicles:
+                shape = (
+                    f"keys: {list(data)[:8]}" if isinstance(data, dict)
+                    else type(data).__name__
+                )
                 probe._step("vehicles", False,
-                            f"no vehicles returned (HTTP {status})")
+                            f"no vehicles returned (HTTP {status}; {shape})")
                 return {"ok": False, "steps": probe.steps, "vehicles": [],
                         "dashboard": None}
             probe._step("vehicles", True, f"{len(vehicles)} vehicle(s) on the account")
