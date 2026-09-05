@@ -35,14 +35,20 @@ def _run(handler, email="owner@example.com", password=PASSWORD):
         kwargs.pop("transport", None)
         return real(transport=transport, **kwargs)
 
+    async def _no_sleep(_seconds):
+        return None
+
     orig = hondalink.httpx.AsyncClient
+    orig_sleep = hondalink.asyncio.sleep
     hondalink.httpx.AsyncClient = factory  # type: ignore[assignment]
+    hondalink.asyncio.sleep = _no_sleep  # type: ignore[assignment]
     try:
         return asyncio.run(
             run_probe(HondaLinkTestRequest(email=email, password=password))
         )
     finally:
         hondalink.httpx.AsyncClient = orig  # type: ignore[assignment]
+        hondalink.asyncio.sleep = orig_sleep  # type: ignore[assignment]
 
 
 def _json_response(status: int, body: dict) -> httpx.Response:
@@ -179,3 +185,83 @@ def test_network_error_is_reported_not_raised():
 ])
 def test_vin_redaction(vin, expected):
     assert hondalink._redact_vin(vin) == expected
+
+
+def _fields_dashboard():
+    return {
+        "fuelLevel": {"currentLevel": {"value": 62}, "driveRange": {"value": 410}},
+        "odometer": {"value": 79458},
+        "oilLife": {"value": 40},
+    }
+
+
+def test_async_poll_returns_the_cars_data():
+    """dbd/latest 400s, dbd/async is accepted with a request id, and the
+    results poll then returns the dashboard — the 2019-Pilot async path."""
+    def dashboard_400(_req):
+        return _json_response(400, {"errorCode": "0001-01-1151"})
+
+    def handler(req):
+        path = req.url.path
+        if path.endswith("/client/register"):
+            return _register(req)
+        if path.endswith("/token/generate"):
+            return _login_ok(req)
+        if path.endswith("/MyVehicle/1.0"):
+            return _vehicles(req)
+        if "/dbd/latest/" in path:
+            return dashboard_400(req)
+        if path.endswith("/dbd/async"):
+            return _json_response(200, {
+                "status": "success",
+                "responseBody": {"cigServiceRequestId": "REQ-1"},
+            })
+        if "/dbd/results/" in path:
+            return _json_response(200, {
+                "status": "success",
+                "responseBody": _fields_dashboard(),
+            })
+        return _json_response(404, {"path": path})
+
+    result = _run(handler)
+    assert result["ok"] is True
+    steps = {s["step"]: s["ok"] for s in result["steps"]}
+    assert steps["dashboard"] is False        # dbd/latest 400
+    assert steps["dashboard_async"] is True   # poll succeeded
+    assert set(result["dashboard"]) == {"fuelLevel", "odometer", "oilLife"}
+    assert result["dashboard"]["odometer"]["value"] == 79458
+    assert PASSWORD not in json.dumps(result)
+
+
+def test_async_poll_times_out_without_data():
+    """The async read is accepted but the car never answers — bounded, and
+    reported as a failure rather than hanging or crashing."""
+    def dashboard_400(_req):
+        return _json_response(400, {"errorCode": "0001-01-1151"})
+
+    def handler(req):
+        path = req.url.path
+        if path.endswith("/client/register"):
+            return _register(req)
+        if path.endswith("/token/generate"):
+            return _login_ok(req)
+        if path.endswith("/MyVehicle/1.0"):
+            return _vehicles(req)
+        if "/dbd/latest/" in path:
+            return dashboard_400(req)
+        if path.endswith("/dbd/async"):
+            return _json_response(200, {
+                "status": "success",
+                "responseBody": {"cigServiceRequestId": "REQ-2"},
+            })
+        if "/dbd/results/" in path:
+            return _json_response(200, {"status": "in_progress",
+                                        "responseBody": {}})
+        return _json_response(404, {"path": path})
+
+    result = _run(handler)
+    assert result["ok"] is False
+    assert result["dashboard"] is None
+    async_step = next(s for s in result["steps"] if s["step"] == "dashboard_async")
+    assert async_step["ok"] is False
+    assert "did not answer" in async_step["detail"]

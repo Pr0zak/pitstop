@@ -24,6 +24,8 @@ same trust model as the MQTT password already in Settings.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -195,7 +197,10 @@ class _Probe:
                    f"dbd/latest HTTP {status}"
                    + (f" errorCode {err}" if err else ""))
 
-        # Fall back to the async request-a-fresh-read path.
+        # Fall back to the async path: ask Honda for a fresh read from the
+        # car, then POLL the results endpoint until the TCU answers. This
+        # can take up to a minute while the modem wakes, and only works if
+        # the car has cell coverage and is not in deep sleep.
         for filters in FILTER_SETS:
             req_body: dict[str, Any] = {"device": vin}
             if filters:
@@ -205,16 +210,60 @@ class _Probe:
             rid = None
             if isinstance(data, dict):
                 rid = (data.get("responseBody") or {}).get("cigServiceRequestId")
-            if rid:
-                self._step("dashboard_async", True,
-                           f"async accepted (filters={filters or 'none'})")
-                return self._extract(data)
-            if status < 400:
+            if not rid:
+                # An over-broad request comes back "invalid scope" with no
+                # id; try a smaller filter set. Anything else is terminal.
+                blob = json.dumps(data).lower() if isinstance(data, dict) else ""
+                if status >= 400 or "scope" in blob or "invalid" in blob:
+                    continue
                 break
+            fields, note = await self._poll_results(vin, rid)
+            if fields:
+                self._step("dashboard_async", True,
+                           f"async read completed (filters={filters or 'none'})")
+                return fields
+            self._step("dashboard_async", False,
+                       f"async accepted but {note} "
+                       f"(filters={filters or 'none'})")
+            return None
         self._step("dashboard_async", False,
-                   "backend did not serve a dashboard for this vehicle "
+                   "backend did not accept an async read for this vehicle "
                    "(the pre-MY21 case)")
         return None
+
+    async def _poll_results(
+        self, vin: str, request_id: str, *,
+        timeout_s: float = 48.0, interval_s: float = 3.0,
+    ) -> tuple[dict[str, Any], str]:
+        """Poll ``dbd/results/{id}`` until the car answers. Returns the
+        extracted dashboard fields (empty if none) and a short note on how
+        the poll ended. Bounded so the whole request stays under the
+        browser's timeout."""
+        loops = max(1, int(timeout_s // interval_s))
+        for _ in range(loops):
+            await asyncio.sleep(interval_s)
+            status, data = await self._api(
+                "GET", f"/REST/NGT/CIG/dbd/results/{request_id}")
+            rb = data.get("responseBody") if isinstance(data, dict) else None
+            rb = rb if isinstance(rb, dict) else {}
+            state = _clip(
+                (data.get("status") if isinstance(data, dict) else "")
+                or rb.get("status") or rb.get("commandStatus") or "",
+                40,
+            ).lower()
+            fields = self._extract(rb or data)
+            if fields:
+                return fields, "returned data"
+            if state in ("failure", "failed", "error") or status >= 400:
+                code = ""
+                if isinstance(data, dict):
+                    code = str(data.get("errorCode")
+                               or rb.get("errorCode") or "")
+                return {}, f"the car read failed{f' ({code})' if code else ''}"
+            if state in ("success", "completed", "complete", "ok"):
+                # Completed, but with no fuel/odometer fields in the body.
+                return {}, "completed with no fuel/odometer fields"
+        return {}, "the car did not answer in time (asleep or no signal)"
 
     @staticmethod
     def _extract(body: Any) -> dict[str, Any]:

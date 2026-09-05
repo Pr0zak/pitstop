@@ -303,10 +303,14 @@ export async function testHondaLink(
   // ingest client: a 401 there wipes the stored ingest token (the global
   // response interceptor), and this test being the first write-scoped
   // action most users click made that easy to trip.
-  const r = await apiQuery.post<HondaLinkTestResult>("/hondalink/test", {
-    email,
-    password,
-  });
+  // The async dashboard path polls Honda for up to ~50s while the car's
+  // modem wakes, so this one call needs a longer timeout than the 30s
+  // default the shared client uses.
+  const r = await apiQuery.post<HondaLinkTestResult>(
+    "/hondalink/test",
+    { email, password },
+    { timeout: 90_000 },
+  );
   return r.data;
 }
 

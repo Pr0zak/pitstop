@@ -84,7 +84,7 @@ async function runTest() {
           <Plug :size="14" /> Test connection
         </button>
         <span v-if="status === 'running'" class="muted">
-          <RefreshCw :size="12" class="spin" /> contacting Honda…
+          <RefreshCw :size="12" class="spin" /> contacting Honda… (may take up to a minute)
         </span>
         <span v-else-if="status === 'ok'" class="badge success">{{ message }}</span>
         <span v-else-if="status === 'fail'" class="badge danger">{{ message }}</span>
