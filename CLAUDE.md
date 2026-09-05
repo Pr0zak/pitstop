@@ -62,6 +62,8 @@ Use [claude.ai/design](https://claude.ai/design) for UI mockups, layout planning
 
 The `.gitignore` blocks `data/`, `*.csv` (except the synthetic test fixture), `*.zip`, `.env*`, `*.jks`, `keystore.properties`, `**/private/`, `pid_profiles/private-*.json`. The `pitstop-release` skill runs a grep audit before tagging — pause if it finds anything.
 
+The web **HondaLink connection test** (`/hondalink-test`, backend `POST /hondalink/test`) takes the user's HondaLink email + password, runs one read-only login-and-dashboard probe against Honda's servers, and stores nothing: no DB row, no log of the password, VIN redacted to the last four. It is a diagnostic, not an integration, and uses the unofficial app API. If it ever grows into a real feed, Smartcar is the sanctioned route for a 2019 Pilot.
+
 When demonstrating with sample data, write it to `data/` (gitignored) or `/tmp/`. When pasting examples into docs, redact (lat/lon to 2 decimals, no real station names, no VIN).
 
 ## Build phase

@@ -98,6 +98,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "Settings" },
   },
   {
+    path: "/hondalink-test",
+    name: "hondalink-test",
+    component: () => import("./views/HondaLinkTestView.vue"),
+    meta: { title: "HondaLink Test" },
+  },
+  {
     path: "/logos",
     name: "logos",
     component: () => import("./views/LogosView.vue"),

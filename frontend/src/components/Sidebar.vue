@@ -16,6 +16,7 @@ import {
   HelpCircle,
   Map as MapIcon,
   Settings as SettingsIcon,
+  Plug,
   ChevronLeft,
   ChevronRight,
   Github,
@@ -129,6 +130,7 @@ const secondaryItems = [
   { to: "/profiles", label: "Profiles", icon: FileJson },
   { to: "/debug", label: "Debug", icon: Bug },
   { to: "/setup", label: "Setup", icon: HelpCircle },
+  { to: "/hondalink-test", label: "HondaLink", icon: Plug },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

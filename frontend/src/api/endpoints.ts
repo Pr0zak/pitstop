@@ -278,6 +278,34 @@ export async function testHa(): Promise<{ ok: boolean; status_code?: number }> {
   return r.data;
 }
 
+// ─── HondaLink connectivity test (diagnostic; nothing is stored) ───────
+export interface HondaLinkStep {
+  step: string;
+  ok: boolean;
+  detail: string;
+}
+export interface HondaLinkVehicle {
+  model_year?: number | string | null;
+  model?: string | null;
+  vin_last4?: string;
+}
+export interface HondaLinkTestResult {
+  ok: boolean;
+  steps: HondaLinkStep[];
+  vehicles: HondaLinkVehicle[];
+  dashboard: Record<string, unknown> | null;
+}
+export async function testHondaLink(
+  email: string,
+  password: string,
+): Promise<HondaLinkTestResult> {
+  const r = await apiIngest.post<HondaLinkTestResult>("/hondalink/test", {
+    email,
+    password,
+  });
+  return r.data;
+}
+
 // ─── fillups ──────────────────────────────────────────────────────────
 
 export interface FillupListParams {
