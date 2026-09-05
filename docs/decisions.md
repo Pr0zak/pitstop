@@ -579,3 +579,91 @@ style objects in the frontend into one import.
 - The accepted risk is that OpenFreeMap is a free public instance with no SLA. Its
   disappearance is a rendering outage, not a data-loss event: trips, GPS fixes and analytics
   are unaffected, and the fix is the Protomaps path above.
+
+## ADR-025 — The fuel snap reads a phone-captured drive window, never the dongle's replay, and never refuses a correction
+
+**Context.** The hybrid fuel estimator (ADR-019) keeps a running liters figure that trip
+decrements pull down and a periodic "snap" resets to the sensor once the vehicle is parked.
+Until this ADR the snap took the trailing five `fuel_level` rows of any source, ten minutes
+after the last one, and a 25 %-of-tank cap refused any downward move larger than that with
+no partial step.
+
+On 2026-09-02 the Pilot was parked at home after a 5 km drive. The phone's readings over the
+drive centred on raw 51 %; the estimate stood at 37.6 L. Thirty-five seconds after key-off the
+WiCAN joined home WiFi and published 148 frames at 1 Hz in which every metric was constant:
+fuel at raw 76.47 %, RPM 1037 with speed 0, coolant 44 °C against the 87 °C the phone had
+read a minute earlier, engine-running time 22 s. It was the frame AutoPID had captured 22
+seconds after engine start, 14 minutes earlier, and replayed once it had a broker to talk to.
+`wican-fw` never clears `autopid_values[]`; a timed-out PID keeps its last value and the group
+cycle timer republishes it regardless, and the phone's BLE ELM327 session and AutoPID share
+one `elm327_config` and CAN RX queue, so whichever poller wins starves the other. Ingest
+stamps dongle rows at receipt (the payload's own timestamp is dropped), so the replay looked
+fresh. The trailing five rows were all that frame. The snap wrote 60.97 L, +23.4 L.
+
+Two days of driving decremented it to 58.30 L. The phone's post-drive window then said
+26.5 L; the cap refused the 31.8 L drop and `continue`d, 143 times in a row, on top of 370
+refusals of an earlier window and 52 of another. The gauge showed 79 % against a true 52–56 %.
+Every one of the nine post-park dongle sessions in the preceding thirty days had the same
+single-valued shape; seven happened to land near the truth.
+
+**Decision.**
+
+1. **Only phone-captured rows feed the snap**: `source IN ('bridge', 'phone_batch')`, the
+   `SNAP_SOURCES` constant in `services/fuel_state.py`. Those rows carry the ECU's own answer
+   time (bridge v2 envelope `t`, phone_batch recorded `t`) and exist only when the ECU answered.
+   The dongle's rows still ingest and still feed live tiles, analytics and trip derivation;
+   ADR-019's hybrid capture is untouched. The quiet gate and the sample window share one
+   phone-only anchor, so the instant the snap stamps as `when` is always the instant the
+   samples came from.
+2. **The target is the 75th percentile of the last 15 minutes of driving**, never reaching back
+   past the latest fillup, de-duplicated by proximity because the two phone paths deliver the
+   same reading 1–2 ms apart. P75 is the
+   statistic `api/vehicles._smooth_fuel_levels` already uses for the same physical reason: the
+   float arm dips into slosh far more than it spikes. Measured per driving day against the
+   trip fuel accounting, P75 sat within 3 L every day; the median was up to 8.4 L low.
+3. **Two gates.** Fewer than 10 readings is a short errand and is left to the decrements. Fewer
+   than 3 distinct values is a replayed or stuck frame — PID 0x2F is quantised at 0.39 raw and
+   sloshes ±15 % while moving, so ten live readings always carry more — and is refused with a
+   WARNING, once per window, whatever its source. There is deliberately no "stable readings"
+   gate: a replay has a standard deviation of exactly zero.
+4. **The drop cap is gone.** A move larger than 25 % of the tank in either direction is logged
+   as `snap LARGE` and applied. A refusal can never converge when the sensor is right, and
+   the 2026-06-04 stuck-sensor-after-fillup case the cap was written for is already covered
+   by the trip-since-fillup quarantine and now by the frozen gate.
+5. **Later trips are subtracted, not guarded.** A trip that ended after the window's instant and
+   has already been charged (a phone-less drive debited by the EPA fallback, a sub-kilometre
+   hop) has its burn taken off the target. The reading predates it, so the arithmetic is exact,
+   and it makes the snap idempotent: the same window re-evaluated after such a trip lands inside
+   the dead-band instead of snapping back over the decrement. A timestamp guard was tried first
+   and would have refused the 2026-09-04 heal itself, had the 0.05 km stub that followed the
+   drive been 20 seconds shorter. The window's instant is the anchor or, if later, the end of
+   the trip that contains it, so a watchdog-sealed trip is absorbed by its own window and the
+   gauge's "as of" is the end of the drive. The vehicle row is re-read under the same lock the
+   decrement pass and the fillup reset take, and a fillup that landed mid-pass defers the snap.
+
+No migration, no API change, no client change: both clients already render
+`fuel_level_estimate_l / tank_capacity_l` and its age. Replaying the 2026-09-04 window through
+the new code (`test_stuck_estimate_self_heals_on_the_first_cycle`) takes the stuck 58.30 L to
+38.34 L on the first cycle with one LARGE warning; the observed result after deploy is recorded
+at the end of this ADR.
+
+**Consequences.**
+
+- A drive with no phone (ADR-019 Path B over the dongle's cellular tunnel, not yet deployed)
+  never snaps; the estimate moves on decrements alone until the next phone drive parks.
+  Nothing is lost today — thirty days of data held no dongle `fuel_level` rows during a
+  drive. Admitting dongle rows later means applying the frozen gate per source run; the
+  source allowlist is the cheap discriminator, the gate is the real one.
+- Errands under about five minutes do not snap. Prefer a gap to a plausible lie.
+- A diverse-but-wrong window (a genuine sender fault) is applied, loudly, and corrected at
+  the next park or fillup. That bounds the damage to one drive cycle instead of an
+  indefinite pin.
+- `_smooth_fuel_levels`, the raw-sensor fallback the clients show when no estimate exists,
+  is still source-blind. It only renders for a vehicle with no estimate; a separate change.
+- The false `wican_lwt on` engine event the replay also produces, and the activity rows it
+  gives `trip_deriver`, are already defanged (soft activity; phone trips take precedence).
+
+**Observed after deploy (2026-09-05 07:34 CDT).** First worker cycle: `snap LARGE ... -19.95L
+(58.30L -> 38.34L, target 50.2% from 28 readings / 14 distinct) — applying`, then `snap ...
+liters=38.34L ... window=28 readings / 14 distinct ending 2026-09-04T23:05:45+00:00`. The
+gauge went from 79 % to 52 % in one cycle; the trip fuel accounting put the tank at ~41 L.

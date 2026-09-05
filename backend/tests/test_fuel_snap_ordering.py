@@ -51,6 +51,37 @@ SNAPPED_TO_L = 15.38        # what snap_pass wrote
 TRIP_FUEL_L = 3.13          # the pending decrement for the trip above
 LATER_TRIP_FUEL_L = 1.42    # a trip that ended AFTER the sensor sample
 
+# A drive's last six minutes as the phone captures them: thirteen readings
+# 30 s apart with the slosh spread a live float sender produces, every
+# other one duplicated 2 ms later by the bridge path. Their P75 is
+# SENSOR_PCT, so the snap still lands on SNAPPED_TO_L. (Since ADR-025 the
+# snap reads a de-duplicated drive window, not the last five rows, and a
+# single repeated value is rejected as a replayed frame.)
+DRIVE_TAIL_RAW = (
+    22.0, 23.9, 19.6, 23.5, 17.3, 24.3, 21.2, 18.8, 23.1, 25.1, 20.4, 22.7, 18.0,
+)
+
+
+async def _seed_drive_tail(conn, vehicle_id, anchor) -> None:
+    n = len(DRIVE_TAIL_RAW)
+    for i, raw in enumerate(DRIVE_TAIL_RAW):
+        at = anchor - timedelta(seconds=30 * (n - 1 - i))
+        await conn.execute(
+            """
+            INSERT INTO pid_readings (time, vehicle_id, metric, value_num, source)
+            VALUES ($1, $2, 'fuel_level', $3, 'phone_batch')
+            """,
+            at, vehicle_id, raw,
+        )
+        if i % 2 == 0:
+            await conn.execute(
+                """
+                INSERT INTO pid_readings (time, vehicle_id, metric, value_num, source)
+                VALUES ($1, $2, 'fuel_level', $3, 'bridge')
+                """,
+                at + timedelta(milliseconds=2), vehicle_id, raw,
+            )
+
 
 # ── The ordering rule itself ────────────────────────────────────────
 
@@ -207,16 +238,7 @@ async def test_snap_pass_retires_the_trips_it_absorbed():
             # Sensor samples taken AFTER that trip ended, and long enough
             # ago to clear the parked-quiet gate.
             sample_at = datetime.now(UTC) - timedelta(minutes=30)
-            for i in range(5):
-                await conn.execute(
-                    """
-                    INSERT INTO pid_readings (time, vehicle_id, metric,
-                                              value_num, source)
-                    VALUES ($1, $2, 'fuel_level', $3, 'bridge')
-                    """,
-                    sample_at - timedelta(seconds=i),
-                    vehicle_id, SENSOR_PCT,
-                )
+            await _seed_drive_tail(conn, vehicle_id, sample_at)
 
         assert await snap_pass(pool) >= 1
 
@@ -278,15 +300,7 @@ async def test_a_snap_must_not_wipe_a_decrement_it_did_not_cover():
                 """,
                 slug, TANK_L, CAL_PCT, EMPTY_PCT, 22.13,
             )
-            for i in range(5):
-                await conn.execute(
-                    """
-                    INSERT INTO pid_readings (time, vehicle_id, metric,
-                                              value_num, source)
-                    VALUES ($1, $2, 'fuel_level', $3, 'bridge')
-                    """,
-                    sample_at - timedelta(seconds=i), vehicle_id, SENSOR_PCT,
-                )
+            await _seed_drive_tail(conn, vehicle_id, sample_at)
             # Drive finished a minute AFTER that reading — the sensor
             # cannot know about it.
             await conn.execute(
@@ -314,6 +328,19 @@ async def test_a_snap_must_not_wipe_a_decrement_it_did_not_cover():
             ))
         assert final == pytest.approx(SNAPPED_TO_L - LATER_TRIP_FUEL_L, abs=0.05), (
             "the post-sample trip's fuel was lost"
+        )
+
+        # And the window must not come back for a second bite: the trip's
+        # decrement wrote the estimate AFTER this window's instant, so the
+        # once-per-anchor guard (ADR-025) leaves it alone from here on.
+        assert await run_cycle(pool) == (0, 0)
+        async with pool.acquire() as conn:
+            again = float(await conn.fetchval(
+                "SELECT fuel_level_estimate_l FROM vehicles WHERE id = $1",
+                vehicle_id,
+            ))
+        assert again == pytest.approx(final, abs=1e-6), (
+            "a stale window re-snapped over a later trip's decrement"
         )
     finally:
         async with pool.acquire() as conn:
