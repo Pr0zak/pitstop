@@ -265,3 +265,70 @@ def test_async_poll_times_out_without_data():
     async_step = next(s for s in result["steps"] if s["step"] == "dashboard_async")
     assert async_step["ok"] is False
     assert "did not answer" in async_step["detail"]
+
+
+def test_async_failure_falls_back_to_a_smaller_filter_set():
+    """A read that fails for the full filter set (e.g. tire pressure not
+    entitled) can succeed for a smaller one — the 0001-01-1154 case."""
+    state = {"submits": 0}
+
+    def handler(req):
+        path = req.url.path
+        if path.endswith("/client/register"):
+            return _register(req)
+        if path.endswith("/token/generate"):
+            return _login_ok(req)
+        if path.endswith("/MyVehicle/1.0"):
+            return _vehicles(req)
+        if "/dbd/latest/" in path:
+            return _json_response(400, {"errorCode": "0001-01-1151"})
+        if path.endswith("/dbd/async"):
+            state["submits"] += 1
+            return _json_response(200, {
+                "status": "success",
+                "responseBody": {"cigServiceRequestId": f"REQ-{state['submits']}"},
+            })
+        if "/dbd/results/" in path:
+            rid = path.rsplit("/", 1)[-1]
+            if rid == "REQ-1":  # the full filter set fails
+                return _json_response(200, {"status": "failed",
+                                            "errorCode": "0001-01-1154"})
+            return _json_response(200, {"status": "success",
+                                        "responseBody": _fields_dashboard()})
+        return _json_response(404, {"path": path})
+
+    result = _run(handler)
+    assert result["ok"] is True
+    assert state["submits"] >= 2, "must retry with a smaller filter set"
+    assert set(result["dashboard"]) == {"fuelLevel", "odometer", "oilLife"}
+
+
+def test_all_filter_sets_fail_reports_the_code():
+    """Every filter set returns 0001-01-1154 — the read is simply not
+    served for this car. Reported, not crashed, and Smartcar is the route."""
+    def handler(req):
+        path = req.url.path
+        if path.endswith("/client/register"):
+            return _register(req)
+        if path.endswith("/token/generate"):
+            return _login_ok(req)
+        if path.endswith("/MyVehicle/1.0"):
+            return _vehicles(req)
+        if "/dbd/latest/" in path:
+            return _json_response(400, {"errorCode": "0001-01-1151"})
+        if path.endswith("/dbd/async"):
+            return _json_response(200, {
+                "status": "success",
+                "responseBody": {"cigServiceRequestId": "REQ-X"},
+            })
+        if "/dbd/results/" in path:
+            return _json_response(200, {"status": "failed",
+                                        "errorCode": "0001-01-1154"})
+        return _json_response(404, {"path": path})
+
+    result = _run(handler)
+    assert result["ok"] is False
+    assert result["dashboard"] is None
+    async_step = next(s for s in result["steps"] if s["step"] == "dashboard_async")
+    assert async_step["ok"] is False
+    assert "1154" in async_step["detail"]

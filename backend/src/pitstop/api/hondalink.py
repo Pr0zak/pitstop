@@ -201,6 +201,14 @@ class _Probe:
         # car, then POLL the results endpoint until the TCU answers. This
         # can take up to a minute while the modem wakes, and only works if
         # the car has cell coverage and is not in deep sleep.
+        # The filter sets shrink from "everything" to "just DigitalTwin" to
+        # "default". A read that fails or completes empty for one set can
+        # succeed for a smaller one — some fields (tire pressure, range)
+        # are not entitled on every car — so a failure advances to the next
+        # set rather than giving up. A TIMEOUT does not: if the car is
+        # asleep, no filter set will wake it, and each timeout is slow, so
+        # we stop after the first one to stay inside the browser's window.
+        last = "no async read was accepted"
         for filters in FILTER_SETS:
             req_body: dict[str, Any] = {"device": vin}
             if filters:
@@ -211,34 +219,33 @@ class _Probe:
             if isinstance(data, dict):
                 rid = (data.get("responseBody") or {}).get("cigServiceRequestId")
             if not rid:
-                # An over-broad request comes back "invalid scope" with no
-                # id; try a smaller filter set. Anything else is terminal.
                 blob = json.dumps(data).lower() if isinstance(data, dict) else ""
                 if status >= 400 or "scope" in blob or "invalid" in blob:
+                    last = "the read scope was rejected"
                     continue
+                last = "the async read was not accepted"
                 break
-            fields, note = await self._poll_results(vin, rid)
-            if fields:
+            fields, note, kind = await self._poll_results(vin, rid)
+            if kind == "data":
                 self._step("dashboard_async", True,
                            f"async read completed (filters={filters or 'none'})")
                 return fields
-            self._step("dashboard_async", False,
-                       f"async accepted but {note} "
-                       f"(filters={filters or 'none'})")
-            return None
-        self._step("dashboard_async", False,
-                   "backend did not accept an async read for this vehicle "
-                   "(the pre-MY21 case)")
+            last = note
+            if kind == "timeout":
+                break  # car asleep — a smaller filter set won't help
+            # "failed" or "empty": try the next, smaller filter set.
+        self._step("dashboard_async", False, f"async accepted but {last}")
         return None
 
     async def _poll_results(
         self, vin: str, request_id: str, *,
-        timeout_s: float = 48.0, interval_s: float = 3.0,
-    ) -> tuple[dict[str, Any], str]:
+        timeout_s: float = 40.0, interval_s: float = 3.0,
+    ) -> tuple[dict[str, Any], str, str]:
         """Poll ``dbd/results/{id}`` until the car answers. Returns the
-        extracted dashboard fields (empty if none) and a short note on how
-        the poll ended. Bounded so the whole request stays under the
-        browser's timeout."""
+        extracted dashboard fields, a short note on how the poll ended, and
+        a ``kind`` in {"data", "failed", "empty", "timeout"} so the caller
+        can decide whether a smaller filter set is worth trying. Bounded so
+        the whole request stays under the browser's timeout."""
         loops = max(1, int(timeout_s // interval_s))
         for _ in range(loops):
             await asyncio.sleep(interval_s)
@@ -253,17 +260,17 @@ class _Probe:
             ).lower()
             fields = self._extract(rb or data)
             if fields:
-                return fields, "returned data"
+                return fields, "returned data", "data"
             if state in ("failure", "failed", "error") or status >= 400:
                 code = ""
                 if isinstance(data, dict):
                     code = str(data.get("errorCode")
                                or rb.get("errorCode") or "")
-                return {}, f"the car read failed{f' ({code})' if code else ''}"
+                return ({}, f"the car read failed{f' ({code})' if code else ''}",
+                        "failed")
             if state in ("success", "completed", "complete", "ok"):
-                # Completed, but with no fuel/odometer fields in the body.
-                return {}, "completed with no fuel/odometer fields"
-        return {}, "the car did not answer in time (asleep or no signal)"
+                return {}, "completed with no fuel/odometer fields", "empty"
+        return {}, "the car did not answer in time (asleep or no signal)", "timeout"
 
     @staticmethod
     def _extract(body: Any) -> dict[str, Any]:
