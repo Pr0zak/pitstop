@@ -32,7 +32,7 @@ import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ..auth import require_ingest_token
+from ..auth import require_query_token
 
 router = APIRouter(prefix="/hondalink", tags=["hondalink"])
 
@@ -227,7 +227,7 @@ class _Probe:
         return out
 
 
-@router.post("/test", dependencies=[Depends(require_ingest_token)])
+@router.post("/test", dependencies=[Depends(require_query_token)])
 async def test_hondalink(req: HondaLinkTestRequest) -> dict[str, Any]:
     """Run one read-only HondaLink probe. Returns a step-by-step trace, the
     vehicles found (VIN redacted), and any dashboard fields Honda returned.

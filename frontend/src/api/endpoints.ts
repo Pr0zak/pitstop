@@ -299,7 +299,11 @@ export async function testHondaLink(
   email: string,
   password: string,
 ): Promise<HondaLinkTestResult> {
-  const r = await apiIngest.post<HondaLinkTestResult>("/hondalink/test", {
+  // Read-only diagnostic → query token. It deliberately does NOT use the
+  // ingest client: a 401 there wipes the stored ingest token (the global
+  // response interceptor), and this test being the first write-scoped
+  // action most users click made that easy to trip.
+  const r = await apiQuery.post<HondaLinkTestResult>("/hondalink/test", {
     email,
     password,
   });
