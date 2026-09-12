@@ -1,7 +1,10 @@
 package com.pitstop.update
 
+import android.content.Context
+import android.os.Build
 import com.pitstop.BuildConfig
 import com.pitstop.log.LogBuffer
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -24,11 +27,22 @@ import javax.inject.Singleton
  */
 @Singleton
 class UpdateChecker @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val httpClient: OkHttpClient,
     private val logBuffer: LogBuffer,
 ) {
 
     suspend fun check(): UpdateInfo? = withContext(Dispatchers.IO) {
+        // Installed from Google Play → Play owns updates. Polling GitHub
+        // here would nag about a release channel the user has left, and
+        // Play's Device and Network Abuse policy forbids an on-Play app
+        // steering users to an off-store update anyway (see PlayStore).
+        // A sideloaded build has no installer, or a browser/session
+        // installer, so it still checks.
+        if (isInstalledFromPlay()) {
+            logBuffer.info("update check skipped — installed from Play", emptyMap())
+            return@withContext null
+        }
         val req = Request.Builder()
             .url(LATEST_URL)
             .header("Accept", "application/vnd.github+json")
@@ -97,6 +111,24 @@ class UpdateChecker @Inject constructor(
 
     private fun parseVersion(v: String): List<Int> =
         v.split('.', '-', '+').mapNotNull { it.toIntOrNull() }
+
+    /**
+     * True when this build was installed by the Play Store. Uses the
+     * modern [android.content.pm.PackageManager.getInstallSourceInfo] on
+     * API 30+ and the deprecated [getInstallerPackageName] on 26–29
+     * (minSdk is 26). Any failure is treated as "not from Play" so a
+     * sideloaded build never silently stops checking.
+     */
+    private fun isInstalledFromPlay(): Boolean = runCatching {
+        val pm = appContext.packageManager
+        val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            pm.getInstallSourceInfo(appContext.packageName).installingPackageName
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstallerPackageName(appContext.packageName)
+        }
+        installer == "com.android.vending"
+    }.getOrDefault(false)
 
     companion object {
         private const val LATEST_URL =
