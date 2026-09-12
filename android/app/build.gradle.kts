@@ -19,7 +19,7 @@ android {
     // files to match the new app id would be churn for no benefit. Android
     // has never required the two to agree.
     namespace = "com.pitstop"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         // Play identity. PERMANENT — Google never allows an application id
@@ -31,7 +31,7 @@ android {
         // not owned.
         applicationId = "io.github.pr0zak.pitstop"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         // CI passes BUILD_VERSION_NAME (from the v* tag) and BUILD_VERSION_CODE.
         // Local builds keep safe defaults.
         //
