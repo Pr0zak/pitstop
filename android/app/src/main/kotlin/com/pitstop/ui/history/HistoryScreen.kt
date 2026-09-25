@@ -43,6 +43,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -58,17 +59,27 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -82,6 +93,7 @@ import com.pitstop.http.DtcDto
 import com.pitstop.http.FillupDto
 import com.pitstop.http.TripDto
 import com.pitstop.ui.components.EmptyState
+import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.LoadErrorState
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.rememberPitstopListState
@@ -93,12 +105,11 @@ import com.pitstop.ui.history.detail.TripDetailScreen
 import com.pitstop.ui.history.detail.TripMapScreen
 import com.pitstop.ui.theme.LocalUnitSystem
 import com.pitstop.ui.theme.ext
+import com.pitstop.util.DateLabel
 import com.pitstop.util.UnitFormat
 import com.pitstop.util.requireActivity
 import java.net.URLEncoder
-import java.time.OffsetDateTime
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 /**
  * History tab — root surface owns its own NavHost so drilling into a
@@ -565,6 +576,7 @@ private fun ListHeaderLine(
     syncing: Boolean,
     onSync: () -> Unit,
 ) {
+    val is24h = is24HourClock()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -585,8 +597,9 @@ private fun ListHeaderLine(
                 // describes the attempt, not the data.
                 append(if (info.fromCache) "Offline · saved data, checked " else "Updated ")
                 append(
-                    DateTimeFormatter.ofPattern("HH:mm").format(
+                    DateLabel.time(
                         java.time.Instant.ofEpochMilli(info.atMs).atZone(ZoneId.systemDefault()),
+                        is24h,
                     ),
                 )
                 append(" · ${UnitFormat.count(itemCount.toLong())} $noun${if (itemCount == 1) "" else "s"}")
@@ -630,6 +643,10 @@ private fun TripsTab(
     val groups = remember(state.data, sort, filter, towingOnly, hidden) {
         groupAndSortTrips(state.data, sort, filter, towingOnly, hidden)
     }
+    val system = LocalUnitSystem.current
+    val is24h = is24HourClock()
+    // Which short-hop runs are unfolded. A List, not a Set, so it saves.
+    var expandedHops by rememberSaveable { mutableStateOf(listOf<String>()) }
     PullToRefreshBox(
         isRefreshing = state.loading && state.data.isNotEmpty(),
         onRefresh = onRefresh,
@@ -685,10 +702,43 @@ private fun TripsTab(
             )
             for ((key, items) in groups) {
                 stickyHeader(key = "header-${key.name}") {
-                    GroupHeader(label = key.label, count = items.size)
+                    GroupHeader(
+                        label = key.label,
+                        summary = tripGroupSummary(tripGroupTotals(items), system),
+                    )
                 }
-                items(items, key = { it.id }) { trip ->
-                    TripCard(trip, selection, onOpen, onToggleSelect, onLongPress)
+                // Short hops fold only on the chronological list (on a
+                // "longest first" list they are not consecutive in time)
+                // and never while selecting, where every trip must be
+                // tappable on its own.
+                val rows = if (sort == TripSortOrder.RecentFirst && !selection.mode) {
+                    foldShortHops(items)
+                } else {
+                    items.map { TripRow.Single(it) }
+                }
+                for (row in rows) {
+                    when (row) {
+                        is TripRow.Single -> item(key = row.key) {
+                            TripCard(row.trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+                        }
+                        is TripRow.ShortHops -> {
+                            val open = row.key in expandedHops
+                            item(key = row.key) {
+                                ShortHopsRow(
+                                    hops = row,
+                                    expanded = open,
+                                    onToggle = {
+                                        expandedHops = if (open) expandedHops - row.key else expandedHops + row.key
+                                    },
+                                )
+                            }
+                            if (open) {
+                                items(row.trips, key = { it.id }) { trip ->
+                                    TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -736,7 +786,9 @@ private fun LazyListScope.listStates(
 /**
  * Filter chips (horizontally scrollable — the old fixed row clipped the
  * last chip on a 360 dp phone) plus the sort control as an icon button
- * whose menu ticks the active order.
+ * whose menu ticks the active order. Whichever edge has more chips past
+ * it fades out, so a chip cut at the edge reads as "scroll for more"
+ * rather than as a truncated label.
  */
 @Composable
 private fun ListControls(
@@ -746,9 +798,15 @@ private fun ListControls(
     onSort: (Int) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+        val rowState = rememberPitstopListState()
         LazyRow(
-            state = rememberPitstopListState(),
-            modifier = Modifier.weight(1f),
+            state = rowState,
+            modifier = Modifier
+                .weight(1f)
+                .edgeFade(
+                    start = rowState.canScrollBackward,
+                    end = rowState.canScrollForward,
+                ),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             content = chips,
         )
@@ -780,8 +838,36 @@ private fun ListControls(
     }
 }
 
+/** Fades the [start] / [end] edge of a horizontally scrolling row to transparent. */
+private fun Modifier.edgeFade(start: Boolean, end: Boolean, width: Dp = 32.dp): Modifier =
+    this
+        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val w = width.toPx().coerceAtMost(size.width / 2)
+            if (start) {
+                drawRect(
+                    brush = Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), startX = 0f, endX = w),
+                    size = Size(w, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+            if (end) {
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        listOf(Color.Black, Color.Transparent),
+                        startX = size.width - w,
+                        endX = size.width,
+                    ),
+                    topLeft = Offset(size.width - w, 0f),
+                    size = Size(w, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+        }
+
 @Composable
-private fun GroupHeader(label: String, count: Int) {
+private fun GroupHeader(label: String, summary: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -792,14 +878,14 @@ private fun GroupHeader(label: String, count: Int) {
         Text(
             text = label.uppercase(),
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = FontWeight.Medium,
             modifier = Modifier
                 .weight(1f)
                 .semantics { heading() },
         )
         Text(
-            text = "$count",
+            text = summary,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -810,6 +896,7 @@ private fun GroupHeader(label: String, count: Int) {
 @Composable
 private fun TripCard(
     trip: TripDto,
+    is24h: Boolean,
     selection: TripSelection,
     onOpen: (String) -> Unit,
     onToggleSelect: (String) -> Unit,
@@ -859,27 +946,28 @@ private fun TripCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                // Economy first: what the drive covered and what it cost
+                // in fuel. The date is context — the group header already
+                // says which day.
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = formatTripDate(trip.startedAt),
+                        text = "${UnitFormat.distanceKm(trip.distanceKm, system)} · " +
+                            "${UnitFormat.economyNumber(tripMpg(trip), system)} ${UnitFormat.economyUnit(system)}",
                         style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = UnitFormat.distanceKm(trip.distanceKm, system),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+                        text = DateLabel.list(trip.startedAt, withTime = true, grouped = true, is24h = is24h),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 val parts = buildList {
-                    trip.durationS?.let {
-                        add(if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s")
-                    }
+                    trip.durationS?.let { add(fmtTripDuration(it)) }
                     trip.maxSpeedKph?.let {
                         add("max ${UnitFormat.Quantity.SpeedKph.format(it, system, 0)}")
                     }
-                    trip.maxRpm?.let { add("%.0f rpm".format(it)) }
-                    if (trip.dtcCount > 0) add("${trip.dtcCount} DTC")
                 }
                 if (parts.isNotEmpty()) {
                     Text(
@@ -888,10 +976,11 @@ private fun TripCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                // Tags last, on their own line: they explain a number above
-                // (why this tank looks bad) rather than competing with it.
+                // Chips only when set, on their own line: they explain a
+                // number above (why this trip's economy looks bad) rather
+                // than competing with it.
                 val category = trip.category?.takeIf { it.isNotBlank() }
-                if (category != null || trip.gpsOnly || trip.isTowing) {
+                if (category != null || trip.gpsOnly || trip.isTowing || trip.dtcCount > 0) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         category?.let {
                             TagChip(it, MaterialTheme.colorScheme.onSecondaryContainer, MaterialTheme.colorScheme.secondaryContainer)
@@ -902,10 +991,52 @@ private fun TripCard(
                         if (trip.isTowing) {
                             TagChip("TOW", MaterialTheme.ext.tow, MaterialTheme.ext.warnContainer)
                         }
+                        if (trip.dtcCount > 0) {
+                            TagChip(
+                                "${trip.dtcCount} DTC",
+                                MaterialTheme.colorScheme.onErrorContainer,
+                                MaterialTheme.colorScheme.errorContainer,
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/** "31m" / "1h 30m" / "45s". */
+private fun fmtTripDuration(s: Int): String = when {
+    s >= 3600 -> "${s / 3600}h ${(s % 3600) / 60}m"
+    s >= 60 -> "${s / 60}m"
+    else -> "${s}s"
+}
+
+/**
+ * A run of consecutive short hops, folded: "▸ 3 short hops · 0.6 mi".
+ * Tapping unfolds the trips beneath it. Deliberately quieter than a trip
+ * card — these are the drives nobody wants to scroll past.
+ */
+@Composable
+private fun ShortHopsRow(hops: TripRow.ShortHops, expanded: Boolean, onToggle: () -> Unit) {
+    val system = LocalUnitSystem.current
+    Surface(
+        onClick = onToggle,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                stateDescription = if (expanded) "Expanded" else "Collapsed"
+            },
+    ) {
+        Text(
+            text = "${if (expanded) "▾" else "▸"} ${hops.trips.size} short hops · " +
+                UnitFormat.distanceKm(hops.distanceKm, system),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+        )
     }
 }
 
@@ -939,6 +1070,7 @@ private fun FillupsTab(
 ) {
     val state = ui.fillups
     val groups = remember(state.data, sort, filter) { groupAndSortFillups(state.data, sort, filter) }
+    val is24h = is24HourClock()
     PullToRefreshBox(
         isRefreshing = state.loading && state.data.isNotEmpty(),
         onRefresh = onRefresh,
@@ -989,16 +1121,19 @@ private fun FillupsTab(
             )
             for ((key, items) in groups) {
                 stickyHeader(key = "fillup-header-${key.name}") {
-                    GroupHeader(label = key.label, count = items.size)
+                    GroupHeader(
+                        label = key.label,
+                        summary = "${items.size} fillup${if (items.size == 1) "" else "s"}",
+                    )
                 }
-                items(items, key = { it.id }) { f -> FillupCard(f, onOpen) }
+                items(items, key = { it.id }) { f -> FillupCard(f, is24h, onOpen) }
             }
         }
     }
 }
 
 @Composable
-private fun FillupCard(f: FillupDto, onOpen: (String) -> Unit) {
+private fun FillupCard(f: FillupDto, is24h: Boolean, onOpen: (String) -> Unit) {
     val system = LocalUnitSystem.current
     Card(
         onClick = { onOpen(f.id) },
@@ -1015,7 +1150,7 @@ private fun FillupCard(f: FillupDto, onOpen: (String) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = formatFillupDate(f.fillupDate),
+                    text = DateLabel.list(f.fillupDate, withTime = false, grouped = true, is24h = is24h),
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )
@@ -1053,6 +1188,7 @@ private fun DtcsTab(
     onRefresh: () -> Unit,
     onOpen: (code: String, vehicleId: String) -> Unit,
 ) {
+    val is24h = is24HourClock()
     PullToRefreshBox(
         isRefreshing = state.loading && state.data.isNotEmpty(),
         onRefresh = onRefresh,
@@ -1106,7 +1242,7 @@ private fun DtcsTab(
                                 Spacer(Modifier.size(8.dp))
                             }
                             Text(
-                                text = formatTripDate(dtc.seenAt),
+                                text = DateLabel.list(dtc.seenAt, withTime = true, grouped = false, is24h = is24h),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1124,23 +1260,3 @@ private fun DtcsTab(
         }
     }
 }
-
-// Backend serves timestamps in UTC; convert to the device's local zone
-// before formatting so a trip at 20:32Z renders as "3:32PM" in CDT, not
-// "8:32PM". Without the withZoneSameInstant() step OffsetDateTime keeps
-// its parsed offset and formats the raw UTC fields.
-private val LOCAL_ZONE: ZoneId = ZoneId.systemDefault()
-
-internal fun formatTripDate(iso: String): String =
-    runCatching {
-        OffsetDateTime.parse(iso)
-            .atZoneSameInstant(LOCAL_ZONE)
-            .format(DateTimeFormatter.ofPattern("MMM d, h:mma"))
-    }.getOrDefault(iso.take(16))
-
-private fun formatFillupDate(iso: String): String =
-    runCatching {
-        OffsetDateTime.parse(iso)
-            .atZoneSameInstant(LOCAL_ZONE)
-            .format(DateTimeFormatter.ofPattern("MMM d"))
-    }.getOrElse { iso.take(10) }

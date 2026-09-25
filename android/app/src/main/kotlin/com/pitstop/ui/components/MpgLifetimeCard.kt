@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +52,8 @@ import kotlin.math.abs
 fun MpgLifetimeCard(
     yearlyPoints: List<MpgPointDto>,
     modifier: Modifier = Modifier,
+    /** False when rendered as a [TrendsCarousel] page: no card, no title. */
+    framed: Boolean = true,
 ) {
     if (yearlyPoints.size < 2) {
         return
@@ -62,7 +61,11 @@ fun MpgLifetimeCard(
     val valid = yearlyPoints.filter { (it.mpg ?: 0.0) > 0 }
     if (valid.size < 2) return
 
-    val totalFills = valid.sumOf { (it.fillupCount ?: 0).toLong() }
+    // Fill counts are known only if the server sent one on every point. An
+    // older backend omits the field; summing `?: 0` then printed "0 fillups"
+    // under a perfectly real MPG. Unknown → no count line, plain average.
+    val countsKnown = valid.all { it.fillupCount != null }
+    val totalFills = if (countsKnown) valid.sumOf { it.fillupCount!!.toLong() } else 0L
     val lifetime = if (totalFills > 0) {
         valid.sumOf { (it.mpg ?: 0.0) * (it.fillupCount ?: 0) } / totalFills
     } else {
@@ -73,10 +76,12 @@ fun MpgLifetimeCard(
     // of all earlier years. % delta drives the trend chip.
     val mostRecent = valid.last()
     val older = valid.dropLast(1)
-    val olderFills = older.sumOf { (it.fillupCount ?: 0).toLong() }
+    val olderFills = if (countsKnown) older.sumOf { it.fillupCount!!.toLong() } else 0L
     val baseline = if (olderFills > 0) {
         older.sumOf { (it.mpg ?: 0.0) * (it.fillupCount ?: 0) } / olderFills
-    } else null
+    } else {
+        older.mapNotNull { it.mpg }.takeIf { it.isNotEmpty() }?.average()
+    }
     val recentMpg = mostRecent.mpg
     val deltaPct = if (recentMpg != null && baseline != null && baseline > 0) {
         ((recentMpg - baseline) / baseline) * 100.0
@@ -96,20 +101,16 @@ fun MpgLifetimeCard(
     } else null
     val displayYearly = valid.map { it.copy(mpg = UnitFormat.economyValue(it.mpg, system)) }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
-        shape = RoundedCornerShape(12.dp),
-    ) {
+    TrendFrame(framed = framed, modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                if (system == "imperial") "Lifetime MPG" else "Lifetime L/100 km",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(6.dp))
+            if (framed) {
+                Text(
+                    if (system == "imperial") "Lifetime MPG" else "Lifetime L/100 km",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = lifetimeDisplay?.let { "%.1f".format(it) } ?: "—",
@@ -147,8 +148,8 @@ fun MpgLifetimeCard(
                     )
                 }
             }
-            Text(
-                "${UnitFormat.count(totalFills)} fillups",
+            if (totalFills > 0) Text(
+                "${UnitFormat.count(totalFills)} fillup${if (totalFills == 1L) "" else "s"}",
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -167,7 +168,7 @@ fun MpgLifetimeCard(
                             } + " ${UnitFormat.economyUnit(system)}"
                     },
                 accent = MaterialTheme.colorScheme.primary,
-                surfaceVariant = MaterialTheme.colorScheme.surfaceVariant,
+                neutral = MaterialTheme.colorScheme.onSurfaceVariant,
                 onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant,
                 onSurface = MaterialTheme.colorScheme.onSurface,
             )
@@ -194,7 +195,7 @@ private fun YearlyBarChart(
     yearly: List<MpgPointDto>,
     modifier: Modifier,
     accent: Color,
-    surfaceVariant: Color,
+    neutral: Color,
     onSurfaceVariant: Color,
     onSurface: Color,
 ) {
@@ -235,7 +236,10 @@ private fun YearlyBarChart(
                 val barH = ((v - minV) / rangeV).toFloat() * plotH
                 val x = i * slotW + (slotW - barW) / 2f
                 val y = padTop + plotH - barH
-                val tint = if (i == selected) accent else accent.copy(alpha = 0.65f)
+                // Accent marks one bar — the tapped one, else the latest —
+                // the rest stay neutral, like the monthly-spend chart.
+                val highlight = if (selected >= 0) selected else yearly.lastIndex
+                val tint = if (i == highlight) accent else neutral.copy(alpha = 0.35f)
                 drawRoundRect(
                     color = tint,
                     topLeft = Offset(x, y),

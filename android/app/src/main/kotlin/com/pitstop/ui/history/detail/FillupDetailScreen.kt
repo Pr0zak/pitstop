@@ -57,9 +57,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.http.FillupDto
 import com.pitstop.ui.components.DetailTopAppBar
+import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.LoadErrorState
 import com.pitstop.ui.components.OverflowAction
 import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.util.DateLabel
 import com.pitstop.util.UnitFormat
 import java.time.OffsetDateTime
 
@@ -86,7 +88,7 @@ fun FillupDetailScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             DetailTopAppBar(
-                title = fillup?.let { fmtDateTimeLocal(it.fillupDate) } ?: "Fillup",
+                title = fillup?.let { DateLabel.detailTitle(it.fillupDate, is24HourClock()) } ?: "Fillup",
                 onBack = onBack,
                 overflow = if (fillup == null) emptyList() else listOf(
                     OverflowAction("Edit fillup", Icons.Filled.Edit, onClick = onEdit),
@@ -285,7 +287,7 @@ internal fun FillupDetailContent(
                         Icon(
                             Icons.Outlined.Place,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.width(12.dp))
                         Text(

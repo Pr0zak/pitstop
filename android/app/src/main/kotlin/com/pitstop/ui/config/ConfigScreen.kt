@@ -629,7 +629,7 @@ private fun CaptureCollectorsSection(
                 captureLabel,
                 style = MaterialTheme.typography.titleSmall,
                 color = if (nothing) MaterialTheme.colorScheme.error
-                else MaterialTheme.colorScheme.primary,
+                else MaterialTheme.colorScheme.onSurface,
             )
             Text(
                 uploadSummary(manualSyncOnly, uploadOnWifi, uploadOnWifiSsids),
@@ -1668,7 +1668,7 @@ private fun CarTilePicker(
                 Text(
                     "${i + 1}",
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.width(24.dp),
                 )
                 Text(spec.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))

@@ -377,7 +377,7 @@ private fun LiveSection(
     Text(
         text = title.uppercase(),
         style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier
             .padding(start = 4.dp, top = 12.dp, bottom = 6.dp)
             .semantics { heading() },

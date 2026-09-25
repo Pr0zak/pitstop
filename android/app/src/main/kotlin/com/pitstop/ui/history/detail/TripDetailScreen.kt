@@ -71,11 +71,13 @@ import com.pitstop.http.TripBaselineDto
 import com.pitstop.http.TripDetailDto
 import com.pitstop.http.TripDtcDto
 import com.pitstop.ui.components.DetailTopAppBar
+import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.LoadErrorState
 import com.pitstop.ui.components.OverflowAction
 import com.pitstop.ui.theme.ChartPalette
 import com.pitstop.ui.theme.LocalUnitSystem
 import com.pitstop.ui.theme.ext
+import com.pitstop.util.DateLabel
 import com.pitstop.util.UnitFormat
 import kotlin.math.roundToInt
 
@@ -123,7 +125,7 @@ fun TripDetailScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             DetailTopAppBar(
-                title = trip?.let { fmtDateTimeLocal(it.startedAt) } ?: "Trip",
+                title = trip?.let { DateLabel.detailTitle(it.startedAt, is24HourClock()) } ?: "Trip",
                 onBack = onBack,
                 overflow = if (trip == null) {
                     emptyList()
@@ -289,7 +291,7 @@ internal fun TripDetailContent(
             )
         }
 
-        HeroStatsCard(trip, unitSystem)
+        HeroStatsCard(trip, unitSystem, usualMpg = baseline?.takeIf { it.sufficient }?.avgMpg)
 
         baseline?.let { BaselineCard(trip, it, unitSystem) }
 
@@ -448,6 +450,7 @@ private fun SectionCard(
 
 @Composable
 private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
+    val is24h = is24HourClock()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -471,7 +474,7 @@ private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
             }
         }
         Text(
-            fmtClockLocal(dtc.seenAt),
+            fmtClockLocal(dtc.seenAt, is24h),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -680,18 +683,37 @@ private fun TripEditSheet(
     }
 }
 
+/**
+ * The six headline figures on a plain surface. Only the economy value
+ * carries colour, and only with something to compare it to: better than
+ * [usualMpg] (the user's average for trips of this length) reads good ▲,
+ * worse reads bad ▼, within 2 % — or no comparison — stays neutral.
+ */
 @Composable
-private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
+private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String, usualMpg: Double?) {
     val dist = UnitFormat.Quantity.DistanceKm
     val speed = UnitFormat.Quantity.SpeedKph
     // Economy follows the unit toggle (mpg ↔ L/100 km). Below 0.4 L of
     // estimated fuel the ratio is sensor noise, so the cell reads "—".
     val mpg = UnitFormat.mpgFrom(trip.distanceKm, trip.fuelUsedL?.takeIf { it > 0.4 })
+    val verdict = economyVerdict(mpg, usualMpg)
+    val economyText = UnitFormat.economyNumber(mpg, unitSystem) + when (verdict) {
+        // The arrow follows the displayed number (L/100 km falls when
+        // economy improves); the colour follows better / worse.
+        true -> if (UnitFormat.economyHigherIsBetter(unitSystem)) " ▲" else " ▼"
+        false -> if (UnitFormat.economyHigherIsBetter(unitSystem)) " ▼" else " ▲"
+        null -> ""
+    }
+    val economyColor = when (verdict) {
+        true -> MaterialTheme.ext.good
+        false -> MaterialTheme.ext.bad
+        null -> MaterialTheme.colorScheme.onSurface
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
     ) {
         Column(
@@ -707,8 +729,9 @@ private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
                 StatCell("Distance", dist.format(trip.distanceKm, unitSystem, 1), Modifier.weight(1f))
                 StatCell(
                     if (unitSystem == "imperial") "MPG" else "L/100 km",
-                    UnitFormat.economyNumber(mpg, unitSystem),
+                    economyText,
                     Modifier.weight(1f),
+                    valueColor = economyColor,
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -720,9 +743,17 @@ private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
     }
 }
 
+/** true = better than usual, false = worse, null = no comparison or within 2 %. */
+internal fun economyVerdict(mpg: Double?, usualMpg: Double?): Boolean? {
+    if (mpg == null || usualMpg == null || usualMpg <= 0.0) return null
+    val pct = (mpg - usualMpg) / usualMpg * 100.0
+    return if (kotlin.math.abs(pct) < 2.0) null else pct > 0
+}
+
 @Composable
 private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
     val dist = UnitFormat.Quantity.DistanceKm
+    val is24h = is24HourClock()
     val rows = buildList<Pair<String, String>> {
         trip.idleS?.let {
             val m = it / 60
@@ -759,7 +790,7 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
             val wmo = wmoLabel(trip.weatherCode)
             add("Weather" to "$t${wmo?.let { ", $it" } ?: ""}")
         }
-        trip.endedAt?.let { add("Ended" to fmtClockLocal(it)) }
+        trip.endedAt?.let { add("Ended" to fmtClockLocal(it, is24h)) }
     }
     if (rows.isEmpty()) return
 
@@ -800,18 +831,23 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
 }
 
 @Composable
-private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
+private fun StatCell(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
     Column(modifier = modifier.semantics(mergeDescendants = true) {}) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(2.dp))
         Text(
             value,
             style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            color = valueColor,
             fontWeight = FontWeight.Bold,
         )
     }

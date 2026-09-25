@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,30 +49,28 @@ import java.time.format.DateTimeFormatter
 fun MonthlySpendCard(
     months: List<MonthlySpendPointDto>,
     modifier: Modifier = Modifier,
+    /** False when rendered as a [TrendsCarousel] page: no card, no title. */
+    framed: Boolean = true,
 ) {
     if (months.size < 2) return
     val recent = months.takeLast(12)
     val total = recent.sumOf { it.fuel }
     val nowYm = YearMonth.now().toString() // "2026-05"
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
-        shape = RoundedCornerShape(12.dp),
-    ) {
+    TrendFrame(framed = framed, modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Monthly fuel spend",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (framed) {
+                        Text(
+                            "Monthly fuel spend",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
                         text = "Last 12 mo  ·  ${UnitFormat.money(total, 0)}",
                         fontFamily = FontFamily.Monospace,
@@ -98,7 +93,7 @@ fun MonthlySpendCard(
                             }
                     },
                 accent = MaterialTheme.colorScheme.primary,
-                surfaceVariant = MaterialTheme.colorScheme.surfaceVariant,
+                neutral = MaterialTheme.colorScheme.onSurfaceVariant,
                 onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant,
                 onSurface = MaterialTheme.colorScheme.onSurface,
             )
@@ -126,7 +121,7 @@ private fun SpendBars(
     currentMonthPrefix: String,
     modifier: Modifier,
     accent: Color,
-    surfaceVariant: Color,
+    neutral: Color,
     onSurfaceVariant: Color,
     onSurface: Color,
 ) {
@@ -165,7 +160,7 @@ private fun SpendBars(
                 val tint = when {
                     i == selected -> accent
                     isCurrent -> accent.copy(alpha = 0.85f)
-                    else -> surfaceVariant
+                    else -> neutral.copy(alpha = 0.35f)
                 }
                 drawRoundRect(
                     color = tint,

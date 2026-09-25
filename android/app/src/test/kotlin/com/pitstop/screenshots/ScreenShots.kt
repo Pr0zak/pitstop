@@ -10,6 +10,14 @@ import app.cash.paparazzi.Paparazzi
 import com.android.resources.ScreenOrientation
 import com.pitstop.drive.UploadProgress
 import com.pitstop.service.BridgePhase
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
+import com.pitstop.ui.components.CostPerMileCard
+import com.pitstop.ui.components.MonthlySpendCard
+import com.pitstop.ui.components.MpgLifetimeCard
+import com.pitstop.ui.components.MpgYearChart
+import com.pitstop.ui.components.TrendPage
+import com.pitstop.ui.components.TrendsCarousel
 import com.pitstop.ui.config.ConfigRootContent
 import com.pitstop.ui.config.ConnTest
 import com.pitstop.ui.config.settingsRows
@@ -66,6 +74,21 @@ class ScreenShots {
 
     @Test fun homeSetup() = shot("home_setup") {
         home(StatusUiState(hasServer = true, hasVehicle = false))
+    }
+
+    /** Every Trends-carousel page, stacked: the pager itself can't run
+     *  under layoutlib, so the Home shot only shows page one. */
+    @Test fun homeTrendPages() = shot("home_trend_pages") {
+        val h = Fixtures.home
+        androidx.compose.foundation.layout.Column(
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+            modifier = androidx.compose.ui.Modifier.padding(16.dp),
+        ) {
+            TrendsCarousel(listOf(TrendPage("MPG, last 12 months") { MpgYearChart(h.mpgMonthly!!, framed = false) }))
+            TrendsCarousel(listOf(TrendPage("Lifetime MPG") { MpgLifetimeCard(h.mpgYearly!!, framed = false) }))
+            TrendsCarousel(listOf(TrendPage("Cost per mile") { CostPerMileCard(h.costPerMile!!, framed = false) }))
+            TrendsCarousel(listOf(TrendPage("Monthly fuel spend") { MonthlySpendCard(h.monthlySpend!!, framed = false) }))
+        }
     }
 
     @Composable

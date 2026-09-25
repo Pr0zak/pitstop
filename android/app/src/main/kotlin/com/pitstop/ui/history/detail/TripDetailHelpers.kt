@@ -127,29 +127,13 @@ internal fun haversineKm(
 }
 
 private val LOCAL_ZONE: ZoneId = ZoneId.systemDefault()
-private val CLOCK_FMT = DateTimeFormatter.ofPattern("h:mma")
-private val DATE_FMT = DateTimeFormatter.ofPattern("EEE MMM d, h:mma")
 private val SHORT_DATE_FMT = DateTimeFormatter.ofPattern("MMM d")
-private val SHORT_DATETIME_FMT = DateTimeFormatter.ofPattern("MMM d, h:mma")
 
-internal fun fmtClockLocal(iso: String?): String =
+/** "6:33 AM" / "18:33" in the device zone; "—" when absent. */
+internal fun fmtClockLocal(iso: String?, is24h: Boolean): String =
     iso?.let {
         runCatching {
-            OffsetDateTime.parse(it).atZoneSameInstant(LOCAL_ZONE).format(CLOCK_FMT)
-        }.getOrNull()
-    } ?: "—"
-
-internal fun fmtDateTimeLocal(iso: String?): String =
-    iso?.let {
-        runCatching {
-            OffsetDateTime.parse(it).atZoneSameInstant(LOCAL_ZONE).format(DATE_FMT)
-        }.getOrNull()
-    } ?: "—"
-
-internal fun fmtShortDateTimeLocal(iso: String?): String =
-    iso?.let {
-        runCatching {
-            OffsetDateTime.parse(it).atZoneSameInstant(LOCAL_ZONE).format(SHORT_DATETIME_FMT)
+            com.pitstop.util.DateLabel.time(OffsetDateTime.parse(it).atZoneSameInstant(LOCAL_ZONE), is24h)
         }.getOrNull()
     } ?: "—"
 

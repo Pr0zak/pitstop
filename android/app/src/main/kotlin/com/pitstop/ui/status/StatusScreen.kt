@@ -62,7 +62,11 @@ import com.pitstop.ui.components.MpgYearChart
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.PillTone
 import com.pitstop.ui.components.StatusPill
+import com.pitstop.ui.components.TrendPage
+import com.pitstop.ui.components.TrendsCarousel
 import com.pitstop.ui.components.UploadStatusCard
+import com.pitstop.ui.components.is24HourClock
+import com.pitstop.util.DateLabel
 import com.pitstop.ui.theme.LocalUnitSystem
 import com.pitstop.ui.theme.ext
 import com.pitstop.util.UnitFormat
@@ -78,13 +82,11 @@ import kotlinx.coroutines.launch
  *   1. TopAppBar: brand + bridge-state pill (replaces the old hero banner)
  *   2. Active DTCs panel (only when non-empty)
  *   3. Fuel hero cards 2×2
- *   4. MPG · last 12 months (line chart with min/max + tap-to-inspect)
- *   5. MPG lifetime (yearly bars + trend chip)
- *   6. Cost per mile
- *   7. Monthly fuel spend
- *   8. Recent trips
- *   9. Update-available card (conditional)
- *  10. Footer (version / build)
+ *   4. Trends carousel — one swipeable card: MPG · last 12 months,
+ *      lifetime MPG, cost per mile, monthly fuel spend
+ *   5. Recent trips
+ *   6. Update-available card (conditional)
+ *   7. Footer (version / build)
  *
  * The bridge-state pill replaces the old `HeroStatusBanner` card —
  * the user kept asking "why is this huge headline on the screen telling
@@ -228,27 +230,39 @@ internal fun StatusContent(
                     FuelHeroCards(data = hero)
                 }
 
-                // MPG last 12 months — clarified line chart with axes
-                // + tooltip. Skipped when there's not enough data.
-                ui.mpgMonthly?.takeIf { it.size >= 2 }?.let { monthly ->
-                    MpgYearChart(points = monthly)
+                // Long-range trends — MPG by month, lifetime MPG, cost per
+                // distance, monthly spend — as one swipeable card so Recent
+                // trips sits a screen higher. Pages only render state the
+                // ViewModel already loaded; a page with too little data is
+                // left out rather than shown empty.
+                val system = LocalUnitSystem.current
+                val trendPages = buildList {
+                    ui.mpgMonthly?.takeIf { it.size >= 2 }?.let { monthly ->
+                        add(
+                            TrendPage(if (system == "imperial") "MPG, last 12 months" else "L/100 km, last 12 months") {
+                                MpgYearChart(points = monthly, framed = false)
+                            },
+                        )
+                    }
+                    ui.mpgYearly?.takeIf { it.size >= 2 }?.let { yearly ->
+                        add(
+                            TrendPage(if (system == "imperial") "Lifetime MPG" else "Lifetime L/100 km") {
+                                MpgLifetimeCard(yearlyPoints = yearly, framed = false)
+                            },
+                        )
+                    }
+                    ui.costPerMile?.takeIf { it.isNotEmpty() }?.let { cost ->
+                        add(
+                            TrendPage(if (system == "imperial") "Cost per mile" else "Cost per km") {
+                                CostPerMileCard(points = cost, framed = false)
+                            },
+                        )
+                    }
+                    ui.monthlySpend?.takeIf { it.size >= 2 }?.let { spend ->
+                        add(TrendPage("Monthly fuel spend") { MonthlySpendCard(months = spend, framed = false) })
+                    }
                 }
-
-                // Lifetime MPG — yearly bars + trend chip vs prior years.
-                ui.mpgYearly?.takeIf { it.size >= 2 }?.let { yearly ->
-                    MpgLifetimeCard(yearlyPoints = yearly)
-                }
-
-                // Cost per mile (lifetime number + last-12-mo bar chart).
-                ui.costPerMile?.takeIf { it.isNotEmpty() }?.let { cost ->
-                    CostPerMileCard(points = cost)
-                }
-
-                // Monthly fuel spend (last 12 months, current month
-                // highlighted).
-                ui.monthlySpend?.takeIf { it.size >= 2 }?.let { spend ->
-                    MonthlySpendCard(months = spend)
-                }
+                TrendsCarousel(pages = trendPages)
 
                 // Recent trips card.
                 ui.recentTrips?.takeIf { it.isNotEmpty() }?.let { trips ->
@@ -625,6 +639,7 @@ private fun RecentTripsCard(
     onOpenTrip: (String) -> Unit,
 ) {
     val system = LocalUnitSystem.current
+    val is24h = is24HourClock()
     Card {
         Column(
             modifier = Modifier
@@ -641,7 +656,14 @@ private fun RecentTripsCard(
                         .weight(1f)
                         .semantics { heading() },
                 )
-                androidx.compose.material3.TextButton(onClick = onOpenAll) { Text("See all") }
+                // A plain navigation link, not a primary action: neutral,
+                // so the accent stays reserved for things that do something.
+                androidx.compose.material3.TextButton(
+                    onClick = onOpenAll,
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) { Text("See all") }
             }
             for (trip in trips) {
                 // Each row opens THAT trip's detail (History → trip/{id}).
@@ -655,7 +677,8 @@ private fun RecentTripsCard(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = formatTripDate(trip.startedAt),
+                            // Ungrouped list: "Today 6:33 AM", "Tue 6:32 PM", "Sep 18, 6:32 PM".
+                            text = DateLabel.list(trip.startedAt, withTime = true, grouped = false, is24h = is24h),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
@@ -680,25 +703,18 @@ private fun RecentTripsCard(
     }
 }
 
-// Backend serves UTC; convert to local zone before formatting (otherwise
-// a trip at 20:32Z renders as "8:32PM" instead of "3:32PM" in CDT).
-private fun formatTripDate(iso: String): String {
-    return try {
-        java.time.OffsetDateTime.parse(iso)
-            .atZoneSameInstant(java.time.ZoneId.systemDefault())
-            .format(java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mma"))
-    } catch (_: Throwable) {
-        iso.take(16)
-    }
-}
-
+/** Economy first, like the History list: "24.8 mpg · 22m · max 68 mph". */
 private fun formatTripSubtitle(trip: com.pitstop.http.TripDto, system: String): String {
     val parts = mutableListOf<String>()
+    com.pitstop.ui.history.tripMpg(trip)?.let { parts += UnitFormat.economy(it, system) }
     trip.durationS?.let {
-        parts += if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s"
+        parts += when {
+            it >= 3600 -> "${it / 3600}h ${(it % 3600) / 60}m"
+            it >= 60 -> "${it / 60}m"
+            else -> "${it}s"
+        }
     }
     trip.maxSpeedKph?.let { parts += "max ${UnitFormat.Quantity.SpeedKph.format(it, system, 0)}" }
-    trip.maxRpm?.let { parts += "%.0f rpm".format(it) }
     if (trip.dtcCount > 0) parts += "${trip.dtcCount} DTC"
     return parts.joinToString(" · ").ifEmpty { "—" }
 }

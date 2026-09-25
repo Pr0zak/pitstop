@@ -54,8 +54,10 @@ import com.pitstop.ui.components.DetailTopAppBar
 import com.pitstop.ui.components.EmptyState
 import com.pitstop.ui.components.LoadErrorState
 import com.pitstop.ui.components.OverflowAction
+import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.theme.LocalUnitSystem
 import com.pitstop.ui.theme.ext
+import com.pitstop.util.DateLabel
 import com.pitstop.util.UnitFormat
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -116,6 +118,7 @@ internal fun DtcDetailContent(
     modifier: Modifier = Modifier,
 ) {
     val system = LocalUnitSystem.current
+    val is24h = is24HourClock()
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -148,8 +151,8 @@ internal fun DtcDetailContent(
             ) {
                 val rows = listOf(
                     "Count" to UnitFormat.count(entry.count.toLong()),
-                    "First seen" to fmtShortDateTimeLocal(entry.firstSeen),
-                    "Last seen" to fmtShortDateTimeLocal(entry.lastSeen),
+                    "First seen" to (entry.firstSeen?.let { DateLabel.list(it, withTime = true, grouped = false, is24h = is24h) } ?: "—"),
+                    "Last seen" to (entry.lastSeen?.let { DateLabel.list(it, withTime = true, grouped = false, is24h = is24h) } ?: "—"),
                 )
                 for ((i, kv) in rows.withIndex()) {
                     if (i > 0) {
@@ -249,7 +252,7 @@ internal fun DtcDetailContent(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                fmtShortDateTimeLocal(ev.seenAt),
+                                DateLabel.list(ev.seenAt, withTime = true, grouped = false, is24h = is24h),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             Text(

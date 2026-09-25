@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +48,8 @@ import com.pitstop.util.UnitFormat
 fun CostPerMileCard(
     points: List<CostPerMilePointDto>,
     modifier: Modifier = Modifier,
+    /** False when rendered as a [TrendsCarousel] page: no card, no title. */
+    framed: Boolean = true,
 ) {
     if (points.isEmpty()) return
     val totalCost = points.sumOf { it.totalCost }
@@ -62,20 +61,16 @@ fun CostPerMileCard(
     val barable = last12.filter { (it.costPerMi ?: 0.0) > 0 }
         .map { it.copy(costPerMi = UnitFormat.costPerDistanceValue(it.costPerMi, system)) }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
-        shape = RoundedCornerShape(12.dp),
-    ) {
+    TrendFrame(framed = framed, modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                if (system == "imperial") "Cost per mile" else "Cost per km",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(6.dp))
+            if (framed) {
+                Text(
+                    if (system == "imperial") "Cost per mile" else "Cost per km",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.Bottom) {
@@ -120,7 +115,7 @@ fun CostPerMileCard(
                             points = barable,
                             modifier = Modifier.matchParentSize(),
                             accent = MaterialTheme.colorScheme.primary,
-                            surfaceVariant = MaterialTheme.colorScheme.surfaceVariant,
+                            neutral = MaterialTheme.colorScheme.onSurfaceVariant,
                             onSurface = MaterialTheme.colorScheme.onSurface,
                         )
                     }
@@ -135,7 +130,7 @@ private fun CostBars(
     points: List<CostPerMilePointDto>,
     modifier: Modifier,
     accent: Color,
-    surfaceVariant: Color,
+    neutral: Color,
     onSurface: Color,
 ) {
     val maxV = points.maxOf { it.costPerMi ?: 0.0 }
@@ -169,7 +164,10 @@ private fun CostBars(
                 val barH = (v / maxV).toFloat() * plotH
                 val x = i * slotW + (slotW - barW) / 2f
                 val y = padTop + plotH - barH
-                val tint = if (i == selected) accent else accent.copy(alpha = 0.55f)
+                // Accent marks one bar — the tapped one, else the latest —
+                // the rest stay neutral, like the monthly-spend chart.
+                val highlight = if (selected >= 0) selected else points.lastIndex
+                val tint = if (i == highlight) accent else neutral.copy(alpha = 0.35f)
                 drawRoundRect(
                     color = tint,
                     topLeft = Offset(x, y),

@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -65,6 +62,8 @@ import kotlin.math.roundToInt
 fun MpgYearChart(
     points: List<MpgPointDto>,
     modifier: Modifier = Modifier,
+    /** False when rendered as a [TrendsCarousel] page: no card, no title. */
+    framed: Boolean = true,
 ) {
     val cleaned = remember(points) {
         points.filter { (it.mpg ?: 0.0) > 0 }.takeLast(12)
@@ -80,19 +79,15 @@ fun MpgYearChart(
         }
     }
     val unit = UnitFormat.economyUnit(system)
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
-        shape = RoundedCornerShape(12.dp),
-    ) {
+    TrendFrame(framed = framed, modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                "${if (system == "imperial") "MPG" else "L/100 km"}  ·  last 12 months",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (framed) {
+                Text(
+                    "${if (system == "imperial") "MPG" else "L/100 km"}  ·  last 12 months",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (smoothed.size < 2) {
                 Spacer(Modifier.height(8.dp))
                 Text(

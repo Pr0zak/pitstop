@@ -78,8 +78,8 @@ object Fixtures {
         ),
         mpgMonthly = months.zip(mpg) { m, v -> MpgPointDto(period = m, mpg = v, miles = 900.0) },
         mpgYearly = listOf(
-            MpgPointDto("2023", 18.7), MpgPointDto("2024", 19.1),
-            MpgPointDto("2025", 19.6), MpgPointDto("2026", 20.2),
+            MpgPointDto("2023", 18.7, fillupCount = 27), MpgPointDto("2024", 19.1, fillupCount = 31),
+            MpgPointDto("2025", 19.6, fillupCount = 29), MpgPointDto("2026", 20.2, fillupCount = 21),
         ),
         costPerMile = months.mapIndexed { i, m ->
             CostPerMilePointDto(period = m, costPerMi = 0.15 + (i % 4) * 0.01, miles = 900.0, totalCost = 150.0)
@@ -88,9 +88,9 @@ object Fixtures {
             MonthlySpendPointDto(month = m, fuel = 120.0 + (i * 37 % 60), service = if (i == 5) 89.0 else 0.0, total = 0.0)
         },
         recentTrips = listOf(
-            trip("t1", "2026-09-24T08:14:00Z", 1320, 19.9, 109.0),
-            trip("t2", "2026-09-23T17:42:00Z", 1860, 27.4, 113.0),
-            trip("t3", "2026-09-23T07:58:00Z", 1270, 19.6, 105.0),
+            trip("t2", iso(0, 22, 42), 1860, 27.4, 113.0).copy(fuelUsedL = 2.6),
+            trip("t3", iso(1, 12, 58), 1270, 19.6, 105.0),
+            trip("t4", iso(3, 17, 5), 5400, 96.3, 121.0).copy(fuelUsedL = null),
         ),
         activeDtcs = listOf(
             DtcDto(id = "d1", vehicleId = "v1", code = "P0420", seenAt = "2026-09-22T18:03:00Z",
@@ -131,10 +131,15 @@ object Fixtures {
 
     val trips = listOf(
         trip("t1", iso(0, 13, 14), 1320, 19.9, 109.0),
-        trip("t2", iso(0, 22, 42), 1860, 27.4, 113.0).copy(category = "Commute", source = "phone_batch"),
+        // Three driveway shuffles between two real drives → one folded row.
+        trip("h1", iso(0, 20, 5), 95, 0.31, 18.0).copy(fuelUsedL = 0.04),
+        trip("h2", iso(0, 20, 12), 70, 0.42, 21.0).copy(fuelUsedL = null),
+        trip("h3", iso(0, 20, 21), 60, 0.18, 14.0).copy(fuelUsedL = null),
+        trip("t2", iso(0, 22, 42), 1860, 27.4, 113.0).copy(category = "Commute", source = "phone_batch", fuelUsedL = 2.6),
         trip("t3", iso(1, 12, 58), 1270, 19.6, 105.0).copy(source = "phone_batch"),
-        trip("t4", iso(2, 17, 5), 5400, 96.3, 121.0).copy(isTowing = true, category = "Boat"),
-        trip("t5", iso(3, 14, 20), 640, 4.1, 58.0).copy(gpsOnly = true, source = "phone_batch"),
+        trip("t4", iso(2, 17, 5), 5400, 96.3, 121.0).copy(isTowing = true, category = "Boat", fuelUsedL = 15.8),
+        // GPS-only capture has no fuel figure: the row must read "— mpg", not 0.
+        trip("t5", iso(3, 14, 20), 640, 4.1, 58.0).copy(gpsOnly = true, source = "phone_batch", fuelUsedL = null),
         trip("t6", iso(5, 11, 45), 2100, 31.8, 118.0).copy(dtcCount = 1, source = "manual_merge"),
         trip("t7", iso(9, 16, 30), 900, 11.2, 84.0),
         trip("t8", iso(12, 13, 10), 1500, 22.7, 104.0),
