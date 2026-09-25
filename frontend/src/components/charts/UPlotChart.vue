@@ -2,12 +2,15 @@
 import { onMounted, onBeforeUnmount, ref, watch } from "vue";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { applyChartTheme } from "@/lib/chartTheme";
 
 interface Props {
   data: uPlot.AlignedData;
   options: uPlot.Options;
+  /** Merge lib/chartTheme.ts defaults (token palette, axes, grid). */
+  themed?: boolean;
 }
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { themed: true });
 const emit = defineEmits<{
   (e: "ready", chart: uPlot): void;
 }>();
@@ -32,8 +35,9 @@ function build() {
   if (!root.value) return;
   destroy();
   // Honor dynamic width based on container, leave height from caller.
+  const base = props.themed ? applyChartTheme(props.options) : props.options;
   const opts: uPlot.Options = {
-    ...props.options,
+    ...base,
     width: root.value.clientWidth || props.options.width || 400,
     height: props.options.height ?? 240,
     hooks: {

@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { fmtFuelRateLh, fmtPressureKpa, fmtTempC } from "./useFormat";
+import {
+  fmtElevationM,
+  fmtFuelRateLh,
+  fmtMoney,
+  fmtMpg,
+  fmtOdo,
+  fmtOdoKm,
+  fmtPressureKpa,
+  fmtPricePerVolume,
+  fmtTempC,
+  fmtVolume,
+} from "./useFormat";
 
 /**
  * Unit conversions are the recurring defect class in this repo: a value gets
@@ -60,5 +71,34 @@ describe("fmtTempC", () => {
     // catalyst scale.
     expect(fmtTempC(560, "imperial")).toBe("1040 °F");
     expect(fmtTempC(560, "metric")).toBe("560 °C");
+  });
+});
+
+describe("Intl quantity formatters", () => {
+  it("groups odometer readings and converts source units", () => {
+    expect(fmtOdo(48210.4, "mi", "imperial")).toBe("48,210 mi");
+    expect(fmtOdo(100, "km", "imperial")).toBe("62 mi");
+    expect(fmtOdoKm(100, "metric")).toBe("100 km");
+  });
+
+  it("formats money with Intl currency", () => {
+    expect(fmtMoney(1234.5)).toBe("$1,234.50");
+    expect(fmtMoney("41.07")).toBe("$41.07");
+    expect(fmtMoney(null)).toBe("—");
+  });
+
+  it("converts price per volume inversely to volume", () => {
+    expect(fmtPricePerVolume(3.785, "gal", 3, "imperial")).toBe("$3.785/gal");
+    expect(fmtPricePerVolume(3.785, "gal", 2, "metric")).toBe("$1.00/L");
+  });
+
+  it("converts volume and elevation", () => {
+    expect(fmtVolume(10, "gal", 1, "metric")).toBe("37.9 L");
+    expect(fmtElevationM(100, "imperial")).toBe("328 ft");
+  });
+
+  it("renders economy per system", () => {
+    expect(fmtMpg(23.5, "imperial")).toBe("23.5 mpg");
+    expect(fmtMpg(23.5, "metric")).toBe("10.0 L/100km");
   });
 });

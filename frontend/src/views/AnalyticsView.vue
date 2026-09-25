@@ -1,18 +1,43 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
+import { RouterLink } from "vue-router";
+import StateCard from "@/components/StateCard.vue";
+import WindowChips from "@/components/WindowChips.vue";
+import { useQueryParam } from "@/composables/useQueryParam";
+import { chartPalette, withAlpha } from "@/lib/chartTheme";
 import { useVehiclesStore } from "@/stores/vehicles";
-import { useUnitsStore } from "@/stores/units";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import type { AnalyticsWindow } from "@/api/types";
-import { fmtDateTime, fmtMpg, fmtRelative } from "@/composables/useFormat";
+import {
+  fmtMpg,
+  fmtMoney,
+  fmtInt,
+  fmtDistance,
+  fmtPricePerVolume,
+  convEconomyMpg,
+  convDistance,
+  convTempC,
+  economyUnitLabel,
+  distUnitLabel,
+  tempUnitLabel,
+  speedUnitLabel,
+  vehicleVolUnit,
+} from "@/composables/useFormat";
 
 const vehicles = useVehiclesStore();
-const units = useUnitsStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
-const window = ref<AnalyticsWindow>("all");
+// Shared window chips, synced to ?window=.
+const WINDOW_OPTIONS = [
+  { value: "month" as const, label: "30 days" },
+  { value: "3m" as const, label: "3 months" },
+  { value: "year" as const, label: "12 months" },
+  { value: "all" as const, label: "All time" },
+];
+const window = useQueryParam<AnalyticsWindow>("window", "all", ["month", "3m", "year", "all"]);
+const PAL = chartPalette();
 
 // Time range for aggregate calls
 const fromIso = computed(() => {
@@ -68,13 +93,6 @@ const tempCoolantQ = useAsync(
   [vehicleId, window],
 );
 
-const dtcsQ = useAsync(
-  () =>
-    vehicleId.value
-      ? api.listDtcs(vehicleId.value, false)
-      : Promise.resolve([]),
-  [vehicleId],
-);
 
 // (No manual watch on vehicleId — useAsync already re-fetches when any
 // dep ref changes, so each of these queries reloads on vehicle switch.
@@ -93,11 +111,11 @@ const mpgOpts = computed<uPlot.Options>(() => {
   const epa = epaMpg.value;
   const series: uPlot.Series[] = [
     {},
-    { label: "MPG", stroke: "#2f81f7", width: 2 },
+    { label: economyUnitLabel() === "mpg" ? "MPG" : economyUnitLabel(), stroke: PAL[0], width: 2 },
   ];
   if (epa != null) {
     series.push({
-      label: `EPA combined (${epa})`,
+      label: `EPA combined (${fmtMpg(epa)})`,
       stroke: "rgba(154,160,170,0.65)",
       width: 1,
       dash: [4, 3],
@@ -107,7 +125,7 @@ const mpgOpts = computed<uPlot.Options>(() => {
     width: 600,
     height: 220,
     scales: { x: { time: true } },
-    axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
+    axes: [{}, { label: economyUnitLabel() }],
     series,
   };
 });
@@ -115,11 +133,11 @@ const mpgData = computed<uPlot.AlignedData | null>(() => {
   const points = mpgQ.data.value?.points ?? [];
   if (points.length === 0) return null;
   const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
-  const y = points.map((p) => p.mpg ?? null);
+  const y = points.map((p) => (p.mpg != null ? convEconomyMpg(p.mpg) : null));
   // The per-point EPA column belongs to the aligned data; it's only present
   // when the vehicle has a sticker value. Series count in mpgOpts matches.
   const epa = epaMpg.value;
-  const epaCol = epa != null ? t.map(() => epa) : null;
+  const epaCol = epa != null ? t.map(() => convEconomyMpg(epa)) : null;
   return epaCol ? [t, y, epaCol] : [t, y];
 });
 
@@ -128,14 +146,14 @@ const rpmOpts = computed<uPlot.Options>(() => ({
   width: 600,
   height: 220,
   scales: { x: { time: true } },
-  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "avg rpm" }],
+  axes: [{}, { label: "avg rpm" }],
   series: [
     {},
     {
       label: "Avg RPM",
-      stroke: "#3fb950",
+      stroke: PAL[1],
       width: 1.5,
-      fill: "rgba(63, 185, 80, 0.18)",
+      fill: withAlpha(PAL[1], 0.18),
     },
   ],
 }));
@@ -153,22 +171,18 @@ const rpmData = computed<uPlot.AlignedData | null>(() => {
 // Only the Coolant series is currently plotted, so the series shape is fixed;
 // opts recomputes only when the unit system flips (rare). Data holds the
 // aligned columns and refreshes cheaply via setData().
-const imperial = computed(() => units.resolved === "imperial");
+// Unit labels read the units store, so opts rebuild when the system flips.
 const tempOpts = computed<uPlot.Options>(() => ({
   width: 600,
   height: 220,
   scales: { x: { time: true } },
-  axes: [
-    { stroke: "#9aa0aa" },
-    { stroke: "#9aa0aa", label: imperial.value ? "°F" : "°C" },
-  ],
-  series: [{}, { label: "Coolant", stroke: "#d29922", width: 1.5 }],
+  axes: [{}, { label: tempUnitLabel() }],
+  series: [{}, { label: "Coolant", stroke: PAL[2], width: 1.5 }],
 }));
 const tempData = computed<uPlot.AlignedData | null>(() => {
   const points = tempCoolantQ.data.value;
   if (!points || points.length === 0) return null;
-  const toDisplay = (c: number | null): number | null =>
-    c == null ? null : imperial.value ? (c * 9) / 5 + 32 : c;
+  const toDisplay = (c: number | null): number | null => (c == null ? null : convTempC(c));
   const ts = points
     .map((p) => Math.round((Date.parse(p.bucket) || 0) / 1000))
     .sort((a, b) => a - b);
@@ -197,14 +211,14 @@ const hoursOpts = computed<uPlot.Options>(() => ({
   height: 220,
   scales: { x: { time: true }, hrs: {}, ratio: {} },
   axes: [
-    { stroke: "#9aa0aa" },
-    { scale: "hrs", stroke: "#9aa0aa", label: "engine hours", side: 3 },
-    { scale: "ratio", stroke: "#9aa0aa", label: "hrs / 100 mi", side: 1, grid: { show: false } },
+    {},
+    { scale: "hrs", label: "engine hours", side: 3 },
+    { scale: "ratio", label: `hrs / 100 ${distUnitLabel()}`, side: 1, grid: { show: false } },
   ],
   series: [
     {},
-    { label: "Cum. engine hrs", scale: "hrs", stroke: "#3fb950", width: 1.6 },
-    { label: "Hrs / 100 mi", scale: "ratio", stroke: "#a78bfa", width: 1.4, dash: [4, 3] },
+    { label: "Cum. engine hrs", scale: "hrs", stroke: PAL[1], width: 1.6 },
+    { label: `Hrs / 100 ${distUnitLabel()}`, scale: "ratio", stroke: PAL[3], width: 1.4, dash: [4, 3] },
   ],
 }));
 const hoursData = computed<uPlot.AlignedData | null>(() => {
@@ -218,8 +232,8 @@ const hoursData = computed<uPlot.AlignedData | null>(() => {
     t.push(ts);
     hrs.push(p.cumulative_hours);
     if (p.cumulative_km != null && p.cumulative_km > 0) {
-      const mi = p.cumulative_km / 1.609344;
-      ratio.push(mi > 0 ? (p.cumulative_hours / mi) * 100 : null);
+      const d = convDistance(p.cumulative_km, "km");
+      ratio.push(d > 0 ? (p.cumulative_hours / d) * 100 : null);
     } else {
       ratio.push(null);
     }
@@ -243,10 +257,10 @@ const trimQ = useAsync(
 // count. Only changes on vehicle switch (trimQ's sole dep), so the resulting
 // opts identity is stable across everything else.
 const TRIM_SPECS: Array<{ key: string; label: string; stroke: string; dash?: number[] }> = [
-  { key: "ltft_b1", label: "LTFT B1", stroke: "#2f81f7" },
-  { key: "ltft_b2", label: "LTFT B2", stroke: "#a78bfa" },
-  { key: "stft_b1", label: "STFT B1", stroke: "rgba(47,129,247,0.55)", dash: [3, 3] },
-  { key: "stft_b2", label: "STFT B2", stroke: "rgba(167,139,250,0.55)", dash: [3, 3] },
+  { key: "ltft_b1", label: "LTFT B1", stroke: PAL[0] },
+  { key: "ltft_b2", label: "LTFT B2", stroke: PAL[3] },
+  { key: "stft_b1", label: "STFT B1", stroke: withAlpha(PAL[0], 0.55), dash: [3, 3] },
+  { key: "stft_b2", label: "STFT B2", stroke: withAlpha(PAL[3], 0.55), dash: [3, 3] },
 ];
 const trimBuild = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } | null>(() => {
   const series = trimQ.data.value?.series;
@@ -288,7 +302,7 @@ const trimBuild = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options } |
       width: 600,
       height: 220,
       scales: { x: { time: true } },
-      axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "%" }],
+      axes: [{}, { label: "%" }],
       series: seriesDefs,
     },
   };
@@ -307,16 +321,16 @@ const breakdownQ = useAsync(
 );
 // Stable per-category color so the legend matches the bars.
 const CATEGORY_COLORS: Record<string, string> = {
-  Fuel: "#2f81f7",
-  Service: "#f59e0b",
-  Maintenance: "#f59e0b",
-  Repair: "#ef4444",
-  Tires: "#a78bfa",
-  Insurance: "#06b6d4",
-  Registration: "#3fb950",
-  Oil: "#facc15",
-  Tax: "#14b8a6",
-  Other: "#94a3b8",
+  Fuel: "var(--chart-1)",
+  Service: "var(--chart-3)",
+  Maintenance: "var(--chart-3)",
+  Repair: "var(--chart-5)",
+  Tires: "var(--chart-4)",
+  Insurance: "var(--chart-6)",
+  Registration: "var(--chart-2)",
+  Oil: "var(--chart-8)",
+  Tax: "var(--chart-7)",
+  Other: "var(--c-ink3)",
 };
 function categoryColor(name: string): string {
   return CATEGORY_COLORS[name] ?? CATEGORY_COLORS.Other;
@@ -336,10 +350,24 @@ const mpgClassQ = useAsync(
   [vehicleId],
 );
 function speedClassColor(label: string): string {
-  return label === "Highway" ? "#2f81f7"
-    : label === "Mixed" ? "#22c55e"
-    : "#f59e0b";
+  return label === "Highway" ? "var(--c-info)"
+    : label === "Mixed" ? "var(--c-success)"
+    : "var(--c-warn)";
 }
+/** Class cutoffs (35 / 55 mph) in the display unit. */
+const speedClassText = computed(() => {
+  const u = speedUnitLabel();
+  const [lo, hi] = u === "mph" ? [35, 55] : [56, 89];
+  return `Highway ≥ ${hi} ${u}, Mixed ${lo}–${hi} ${u}, City < ${lo} ${u}`;
+});
+const breakdownTotal = computed(() =>
+  Object.values(breakdownQ.data.value?.summary ?? {}).reduce((a, b) => a + b, 0),
+);
+const volSrc = computed(() => vehicleVolUnit(vehicles.selectedVehicle));
+/** Odometer ignores 30d/3m (the backend's shortest window is a year). */
+const odoFixedTag = computed(() =>
+  window.value === "month" || window.value === "3m" ? "fixed: 12 mo" : null,
+);
 
 // Fuel-grade comparison (Task #93). Per-grade chain MPG + price.
 // Independent of `window` — comparison only makes sense over the
@@ -375,10 +403,10 @@ const odoOpts = computed<uPlot.Options>(() => ({
   width: 600,
   height: 220,
   scales: { x: { time: true } },
-  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mi" }],
+  axes: [{}, { label: distUnitLabel(), values: (_u, v) => v.map((x) => fmtInt(x)) }],
   series: [
     {},
-    { label: "Odometer", stroke: "#2f81f7", width: 1.6, fill: "rgba(47,129,247,0.08)" },
+    { label: "Odometer", stroke: PAL[0], width: 1.6, fill: withAlpha(PAL[0], 0.08) },
   ],
 }));
 const odoData = computed<uPlot.AlignedData | null>(() => {
@@ -389,8 +417,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
   for (const p of pts) {
     const ts = Math.round((Date.parse(p.time) || 0) / 1000);
     t.push(ts);
-    // km → mi for display
-    y.push(p.odo_km != null ? p.odo_km * 0.621371 : null);
+    y.push(p.odo_km != null ? convDistance(p.odo_km, "km") : null);
   }
   return [t, y];
 });
@@ -400,29 +427,23 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
   <div class="analytics">
     <header class="head">
       <h1>Engine analytics</h1>
-      <div class="window">
-        <button
-          v-for="w in (['month', '3m', 'year', 'all'] as AnalyticsWindow[])"
-          :key="w"
-          type="button"
-          class="ghost"
-          :class="{ active: window === w }"
-          @click="window = w"
-        >
-          {{ w }}
-        </button>
-      </div>
+      <WindowChips v-model="window" :options="WINDOW_OPTIONS" />
     </header>
 
-    <div v-if="!vehicleId" class="card">
-      <p class="muted">Select a vehicle.</p>
-    </div>
+    <StateCard v-if="!vehicleId" state="empty" title="Select a vehicle." />
     <template v-else>
+      <nav class="elsewhere" aria-label="Related pages">
+        <span class="muted small">Also see</span>
+        <RouterLink to="/fuel?tab=stats">Spending &amp; fuel stats →</RouterLink>
+        <RouterLink to="/dtcs">DTC history →</RouterLink>
+        <RouterLink to="/">Lifetime cost →</RouterLink>
+      </nav>
       <div class="grid">
         <section class="card">
-          <h3>MPG trend</h3>
-          <div v-if="mpgQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!mpgData" class="muted">No fillups in window.</div>
+          <h3>Economy trend</h3>
+          <StateCard v-if="mpgQ.loading.value" state="loading" bare />
+          <StateCard v-else-if="mpgQ.error.value" state="error" bare :message="mpgQ.error.value" @retry="mpgQ.reload()" />
+          <StateCard v-else-if="!mpgData" state="empty" bare title="No fillups in window." />
           <UPlotChart v-else :data="mpgData" :options="mpgOpts" />
           <p class="muted small" v-if="mpgQ.data.value?.points.length">
             Latest: {{ fmtMpg(mpgQ.data.value.points[mpgQ.data.value.points.length - 1].mpg) }}
@@ -431,26 +452,25 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 
         <section class="card">
           <h3>Engine RPM (daily avg)</h3>
-          <div v-if="rpmQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!rpmData" class="muted">No readings.</div>
+          <StateCard v-if="rpmQ.loading.value" state="loading" bare />
+          <StateCard v-else-if="rpmQ.error.value" state="error" bare :message="rpmQ.error.value" @retry="rpmQ.reload()" />
+          <StateCard v-else-if="!rpmData" state="empty" bare title="No readings." />
           <UPlotChart v-else :data="rpmData" :options="rpmOpts" />
         </section>
 
         <section class="card">
-          <h3>Engine temps</h3>
-          <div v-if="tempCoolantQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!tempData" class="muted">No temperature readings.</div>
+          <h3>Coolant temperature (daily avg)</h3>
+          <StateCard v-if="tempCoolantQ.loading.value" state="loading" bare />
+          <StateCard v-else-if="tempCoolantQ.error.value" state="error" bare :message="tempCoolantQ.error.value" @retry="tempCoolantQ.reload()" />
+          <StateCard v-else-if="!tempData" state="empty" bare title="No temperature readings." />
           <UPlotChart v-else :data="tempData" :options="tempOpts" />
         </section>
 
         <section v-if="hoursData" class="card">
           <header class="head-inline">
-            <h3>Engine hours vs miles</h3>
+            <h3>Engine hours vs distance <span class="tag-fixed">fixed: all time</span></h3>
             <span v-if="hoursQ.data.value" class="muted small">
-              {{ hoursQ.data.value.total_hours.toFixed(0) }} hrs total
-              <span v-if="hoursQ.data.value.hrs_per_100mi != null">
-                · {{ hoursQ.data.value.hrs_per_100mi.toFixed(2) }} hrs/100 mi
-              </span>
+              {{ fmtInt(hoursQ.data.value.total_hours) }} hrs total
             </span>
           </header>
           <UPlotChart :data="hoursData" :options="hoursOpts" />
@@ -458,8 +478,8 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 
         <section v-if="trimData && trimOpts" class="card">
           <header class="head-inline">
-            <h3>Fuel trim drift</h3>
-            <span class="muted small">180 days · LTFT solid, STFT dashed</span>
+            <h3>Fuel trim drift <span class="tag-fixed">fixed: 180d</span></h3>
+            <span class="muted small">LTFT solid, STFT dashed</span>
           </header>
           <UPlotChart :data="trimData" :options="trimOpts" />
           <p class="muted small">
@@ -470,11 +490,8 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 
         <section v-if="breakdownQ.data.value?.months?.length" class="card">
           <header class="head-inline">
-            <h3>Annual cost breakdown</h3>
-            <span v-if="breakdownQ.data.value!.summary" class="muted small">
-              {{ Object.values(breakdownQ.data.value!.summary).reduce((a, b) => a + b, 0).toFixed(0) }}
-              total · 12 mo
-            </span>
+            <h3>Cost by category <span class="tag-fixed">fixed: 12 mo</span></h3>
+            <span class="muted small num">{{ fmtMoney(breakdownTotal, 0) }} total</span>
           </header>
           <div class="breakdown-rows">
             <div
@@ -489,7 +506,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
                 class="breakdown-bar"
                 :title="
                   Object.entries(m.categories)
-                    .map(([k, v]) => `${k}: $${v.toFixed(0)}`)
+                    .map(([k, v]) => `${k}: ${fmtMoney(v, 0)}`)
                     .join('  ·  ')
                 "
               >
@@ -503,7 +520,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
                   }"
                 />
               </span>
-              <span class="breakdown-total num">${{ m.total.toFixed(0) }}</span>
+              <span class="breakdown-total num">{{ fmtMoney(m.total, 0) }}</span>
             </div>
           </div>
           <div class="breakdown-legend">
@@ -514,7 +531,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
             >
               <span class="dot" :style="{ background: categoryColor(cat) }"></span>
               {{ cat }}
-              <span class="muted">${{ (breakdownQ.data.value!.summary[cat] ?? 0).toFixed(0) }}</span>
+              <span class="muted num">{{ fmtMoney(breakdownQ.data.value!.summary[cat] ?? 0, 0) }}</span>
             </span>
           </div>
         </section>
@@ -524,8 +541,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
           class="card"
         >
           <header class="head-inline">
-            <h3>MPG by driving environment</h3>
-            <span class="muted small">avg_speed-bucketed trips</span>
+            <h3>Economy by driving environment <span class="tag-fixed">fixed: all time</span></h3>
           </header>
           <ul class="speed-class-rows">
             <li
@@ -534,38 +550,34 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
             >
               <span class="dot" :style="{ background: speedClassColor(c.class) }"></span>
               <span class="speed-class-label">{{ c.class }}</span>
-              <span class="num speed-class-mpg">
-                {{ c.avg_mpg != null ? c.avg_mpg.toFixed(1) : "—" }}
-                <span class="muted small">mpg</span>
-              </span>
+              <span class="num speed-class-mpg">{{ fmtMpg(c.avg_mpg) }}</span>
               <span class="muted small">{{ c.trip_count }} trip{{ c.trip_count === 1 ? "" : "s" }}</span>
             </li>
           </ul>
           <p class="muted small">
-            Trips classified by avg speed: Highway ≥ 55 mph, Mixed 35–55 mph, City &lt; 35 mph.
-            OBD-derived MPG averaged per class.
+            Trips classified by average speed: {{ speedClassText }}. OBD-derived economy averaged per class.
           </p>
         </section>
 
         <section v-if="(gradeQ.data.value?.grades?.length ?? 0) >= 2" class="card">
-          <h3>Fuel grade comparison</h3>
+          <h3>Fuel grade comparison <span class="tag-fixed">fixed: all time</span></h3>
           <table class="data grade-table">
             <thead>
               <tr>
                 <th>Grade</th>
-                <th>Fillups</th>
-                <th>Avg MPG</th>
-                <th>Avg $/gal</th>
-                <th>Total cost</th>
+                <th class="num">Fillups</th>
+                <th class="num">Avg {{ economyUnitLabel() }}</th>
+                <th class="num">Avg price</th>
+                <th class="num">Total cost</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="g in gradeQ.data.value!.grades" :key="g.grade">
                 <td>{{ gradeLabel(g.grade) }}</td>
-                <td>{{ g.fillup_count }}</td>
-                <td>{{ g.avg_mpg != null ? g.avg_mpg.toFixed(1) : "—" }}</td>
-                <td>{{ g.avg_price_per_unit != null ? "$" + g.avg_price_per_unit.toFixed(3) : "—" }}</td>
-                <td>${{ g.total_cost.toFixed(2) }}</td>
+                <td class="num">{{ g.fillup_count }}</td>
+                <td class="num">{{ fmtMpg(g.avg_mpg) }}</td>
+                <td class="num">{{ fmtPricePerVolume(g.avg_price_per_unit, volSrc) }}</td>
+                <td class="num">{{ fmtMoney(g.total_cost) }}</td>
               </tr>
             </tbody>
           </table>
@@ -573,41 +585,19 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 
         <section class="card">
           <header class="head-inline">
-            <h3>Odometer history</h3>
-            <span v-if="odoQ.data.value?.summary.current_mi" class="muted small">
-              {{ Math.round(odoQ.data.value.summary.current_mi).toLocaleString() }} mi
-              <span v-if="odoQ.data.value.summary.delta_mi != null">
-                · +{{ Math.round(odoQ.data.value.summary.delta_mi).toLocaleString() }} in window
-              </span>
-              <span v-if="odoQ.data.value.summary.miles_per_day != null">
-                · {{ odoQ.data.value.summary.miles_per_day.toFixed(1) }} mi/day
-              </span>
+            <h3>Odometer history <span v-if="odoFixedTag" class="tag-fixed">{{ odoFixedTag }}</span></h3>
+            <span v-if="odoQ.data.value?.summary.current_km ?? odoQ.data.value?.summary.current_mi" class="muted small num">
+              <template v-if="odoQ.data.value!.summary.current_km != null">{{ fmtDistance(odoQ.data.value!.summary.current_km, "km", 0) }}</template>
+              <template v-else>{{ fmtDistance(odoQ.data.value!.summary.current_mi, "mi", 0) }}</template>
+              <template v-if="odoQ.data.value!.summary.delta_mi != null">
+                · +{{ fmtDistance(odoQ.data.value!.summary.delta_mi, "mi", 0) }} in window
+              </template>
             </span>
           </header>
-          <div v-if="odoQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!odoData" class="muted">
-            No odometer history in this window.
-          </div>
+          <StateCard v-if="odoQ.loading.value" state="loading" bare />
+          <StateCard v-else-if="odoQ.error.value" state="error" bare :message="odoQ.error.value" @retry="odoQ.reload()" />
+          <StateCard v-else-if="!odoData" state="empty" bare title="No odometer history in this window." />
           <UPlotChart v-else :data="odoData" :options="odoOpts" />
-        </section>
-
-        <section class="card">
-          <h3>DTC history</h3>
-          <div v-if="dtcsQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="!dtcsQ.data.value || dtcsQ.data.value.length === 0" class="muted">
-            No DTCs ever recorded.
-          </div>
-          <ul v-else class="dtc-list">
-            <li v-for="d in dtcsQ.data.value" :key="d.id">
-              <code>{{ d.code }}</code>
-              <span>{{ d.description ?? "—" }}</span>
-              <span class="muted small">
-                {{ fmtRelative(d.detected_at) }}
-                · {{ d.active ? "active" : "cleared" }}
-                · <span class="ts">{{ fmtDateTime(d.detected_at) }}</span>
-              </span>
-            </li>
-          </ul>
         </section>
       </div>
     </template>
@@ -625,28 +615,20 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
   justify-content: space-between;
   align-items: center;
 }
-.window {
-  display: inline-flex;
-  gap: 0.2rem;
-  background: var(--c-surface-2);
-  border: 1px solid var(--c-border-soft);
-  border-radius: var(--r-sm);
-  padding: 2px;
+.head {
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
-.window button {
-  border: none;
-  background: transparent;
-  text-transform: capitalize;
+.elsewhere {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
   font-size: 0.85rem;
-  padding: 0.3rem 0.7rem;
-}
-.window button.active {
-  background: var(--c-accent-soft);
-  color: var(--c-accent);
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: 1rem;
 }
 .head-inline {
@@ -680,7 +662,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
   height: 14px;
   border-radius: 3px;
   overflow: hidden;
-  background: var(--c-surface-soft);
+  background: var(--c-bg3);
 }
 .breakdown-seg {
   display: inline-block;
@@ -741,22 +723,6 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 }
 .speed-class-mpg {
   font-variant-numeric: tabular-nums;
-}
-.dtc-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.dtc-list li {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 0.5rem;
-  align-items: baseline;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid var(--c-border-soft);
 }
 .small {
   font-size: 0.78rem;

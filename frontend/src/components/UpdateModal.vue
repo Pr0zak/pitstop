@@ -2,8 +2,10 @@
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { checkUpdates, triggerUpgrade, getVersion, type UpdateCheck } from "@/api/endpoints";
 import { useAuthStore } from "@/stores/auth";
+import { useModalA11y } from "@/composables/useModalA11y";
 
-defineProps<{ open: boolean }>();
+const props = defineProps<{ open: boolean }>();
+const panel = ref<HTMLElement | null>(null);
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const auth = useAuthStore();
@@ -106,6 +108,9 @@ function reloadApp() {
 onMounted(() => {
   void reload();
 });
+useModalA11y(() => props.open, panel, () => {
+  if (phase.value !== "kicking" && phase.value !== "pulling") close();
+});
 onBeforeUnmount(() => {
   stopPolling();
 });
@@ -113,10 +118,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="open" class="modal-backdrop" @click.self="close">
-    <div class="modal">
+    <div ref="panel" class="modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
       <header class="modal-head">
-        <h2>Updates</h2>
-        <button class="close-btn" @click="close" :disabled="phase === 'kicking' || phase === 'pulling'">
+        <h2 id="update-modal-title">Updates</h2>
+        <button class="close-btn" type="button" aria-label="Close" @click="close" :disabled="phase === 'kicking' || phase === 'pulling'">
           ×
         </button>
       </header>
@@ -260,7 +265,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--c-line0);
 }
 .btn {
-  background: var(--c-surface2, var(--c-surface));
+  background: var(--c-bg3);
   border: 1px solid var(--c-line0);
   color: var(--c-ink0);
   padding: 0.45rem 0.85rem;
@@ -291,8 +296,8 @@ onBeforeUnmount(() => {
 .arrow { font-size: 1.4rem; color: var(--c-ink3); }
 .muted { color: var(--c-ink3); }
 .small { font-size: 0.78rem; }
-.ok { padding: 0.7rem; background: rgba(74, 222, 128, 0.08); border-left: 3px solid #4ade80; border-radius: 4px; }
-.err { padding: 0.7rem; background: rgba(255, 58, 46, 0.08); border-left: 3px solid #ff3a2e; border-radius: 4px; color: var(--c-ink0); white-space: pre-wrap; }
+.ok { padding: 0.7rem; background: rgba(74, 222, 128, 0.08); border-left: 3px solid var(--c-success); border-radius: 4px; }
+.err { padding: 0.7rem; background: rgba(255, 58, 46, 0.08); border-left: 3px solid var(--c-danger); border-radius: 4px; color: var(--c-ink0); white-space: pre-wrap; }
 .release-notes h3 { font-size: 0.8rem; margin: 0.5rem 0 0.3rem; color: var(--c-ink3); text-transform: uppercase; letter-spacing: 0.06em; }
 .release-notes pre {
   font-family: 'Geist Mono', ui-monospace, monospace;
@@ -301,14 +306,14 @@ onBeforeUnmount(() => {
   max-height: 240px;
   overflow-y: auto;
   padding: 0.6rem;
-  background: var(--c-surface2, rgba(0,0,0,0.2));
+  background: var(--c-bg1);
   border-radius: 4px;
   margin: 0;
 }
 .progress {
   display: flex; gap: 0.7rem; align-items: flex-start;
   padding: 0.7rem;
-  background: var(--c-surface2, rgba(255,255,255,0.03));
+  background: var(--c-bg3);
   border-radius: 4px;
 }
 .spinner {

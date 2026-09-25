@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, computed } from "vue";
+import { ref, watch, computed, useId } from "vue";
 import { format, parseISO } from "date-fns";
 import { X, MapPin } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
 import type { Fillup, Vehicle } from "@/api/types";
+import { useModalA11y } from "@/composables/useModalA11y";
+import { fmtInt, vehicleDistUnit, vehicleVolUnit } from "@/composables/useFormat";
 
 // `fillup_date` is a timestamptz (UTC) on the wire. A <input type="datetime-local">
 // works in LOCAL wall-clock, so display must convert UTC ISO → local wall-clock
@@ -81,6 +83,59 @@ const saveError = ref<string | null>(null);
 const showStationDropdown = ref(false);
 
 const isEdit = computed(() => Boolean(props.initial?.id));
+
+// Units the numbers are ENTERED in — the target vehicle's stored units, not
+// the display preference (fillup rows persist in the vehicle's own units).
+const targetVehicle = computed<Vehicle>(
+  () => availableVehicles.value.find((v) => v.id === selectedVehicleId.value) ?? props.vehicle,
+);
+const distUnit = computed(() => vehicleDistUnit(targetVehicle.value));
+const volUnit = computed(() => vehicleVolUnit(targetVehicle.value));
+
+// ── Any two of volume / total / unit price compute the third ──────────
+// The two most-recently typed fields are the inputs; the remaining one is
+// derived and badged "calc". Typing into the calc field makes it an input
+// and the oldest input becomes the derived one.
+type MoneyField = "fuel_volume" | "price_total" | "price_per_unit";
+const touched = ref<MoneyField[]>([]);
+const calcField = computed<MoneyField | null>(() => {
+  if (touched.value.length < 2) return null;
+  const inputs = touched.value.slice(-2);
+  const all: MoneyField[] = ["fuel_volume", "price_total", "price_per_unit"];
+  return all.find((f) => !inputs.includes(f)) ?? null;
+});
+function onMoneyInput(f: MoneyField) {
+  touched.value = [...touched.value.filter((x) => x !== f), f];
+  recompute();
+}
+function recompute() {
+  const c = calcField.value;
+  if (!c) return;
+  const { fuel_volume: v, price_total: t, price_per_unit: p } = form.value;
+  const ok = (n: number | undefined): n is number => n != null && Number.isFinite(n) && n > 0;
+  if (c === "price_total" && ok(v) && ok(p)) form.value.price_total = Math.round(v * p * 100) / 100;
+  else if (c === "price_per_unit" && ok(v) && ok(t)) form.value.price_per_unit = Math.round((t / v) * 1000) / 1000;
+  else if (c === "fuel_volume" && ok(t) && ok(p)) form.value.fuel_volume = Math.round((t / p) * 1000) / 1000;
+}
+
+// Odometer sanity: a new fillup at or below the previous one breaks the
+// Δodo chain MPG is computed from. Warn inline; don't block (backfills
+// are legitimate).
+const odoWarning = computed<string | null>(() => {
+  if (isEdit.value) return null;
+  const last = props.lastFillupOdo;
+  const odo = form.value.odo;
+  if (last == null || odo == null || !Number.isFinite(odo)) return null;
+  if (odo <= last) {
+    return `At or below the last fillup (${fmtInt(last)} ${distUnit.value}) — check the reading, or this is a backfill.`;
+  }
+  return null;
+});
+
+const panel = ref<HTMLElement | null>(null);
+const titleId = useId();
+useModalA11y(() => true, panel, () => emit("close"));
+const geoError = ref<string | null>(null);
 const tankCount = computed(() => props.vehicle.tank_count ?? 1);
 
 /** Live-OBD odometer prefill (Add Fillup new entry). Backend stores
@@ -119,6 +174,7 @@ function prefillOdoForVehicle(v: Vehicle): number | undefined {
 watch(
   () => props.initial,
   (init) => {
+    touched.value = [];
     if (init) {
       form.value = {
         fillup_date: isoToLocalInput(init.fillup_date),
@@ -183,8 +239,9 @@ function hideStationDropdownLater() {
 }
 
 function geolocate() {
+  geoError.value = null;
   if (!("geolocation" in navigator)) {
-    alert("Geolocation not available");
+    geoError.value = "Geolocation isn't available in this browser.";
     return;
   }
   navigator.geolocation.getCurrentPosition(
@@ -192,7 +249,7 @@ function geolocate() {
       form.value.lat = Math.round(pos.coords.latitude * 1e5) / 1e5;
       form.value.lon = Math.round(pos.coords.longitude * 1e5) / 1e5;
     },
-    (err) => alert(`Geolocation failed: ${err.message}`),
+    (err) => (geoError.value = `Geolocation failed: ${err.message}`),
     { enableHighAccuracy: false, timeout: 10_000 },
   );
 }
@@ -269,10 +326,10 @@ async function save() {
 <template>
   <Teleport to="body">
     <div class="modal-mask" @click.self="emit('close')">
-      <div class="modal">
+      <div ref="panel" class="modal" role="dialog" aria-modal="true" :aria-labelledby="titleId">
         <header class="m-head">
-          <h3>{{ isEdit ? "Edit fillup" : "New fillup" }}</h3>
-          <button class="ghost" type="button" @click="emit('close')">
+          <h3 :id="titleId">{{ isEdit ? "Edit fillup" : "New fillup" }}</h3>
+          <button class="ghost" type="button" aria-label="Close" @click="emit('close')">
             <X :size="14" />
           </button>
         </header>
@@ -300,16 +357,19 @@ async function save() {
               <input type="datetime-local" v-model="form.fillup_date" required />
             </label>
             <label>
-              Odometer (mi)
+              Odometer ({{ distUnit }})
               <input
                 type="number"
                 step="0.1"
+                autofocus
                 v-model.number="form.odo"
-                :placeholder="props.lastFillupOdo != null ? props.lastFillupOdo.toLocaleString() : undefined"
+                :aria-invalid="odoWarning ? 'true' : undefined"
+                :placeholder="props.lastFillupOdo != null ? fmtInt(props.lastFillupOdo) : undefined"
               />
-              <small v-if="props.lastFillupOdo != null" class="muted">
+              <small v-if="odoWarning" class="warn-text" role="status">{{ odoWarning }}</small>
+              <small v-else-if="props.lastFillupOdo != null" class="muted">
                 Last:
-                <code class="tabular">{{ props.lastFillupOdo.toLocaleString() }}</code>
+                <code class="tabular">{{ fmtInt(props.lastFillupOdo) }} {{ distUnit }}</code>
                 <template v-if="props.lastFillupDate">
                   · {{ props.lastFillupDate.slice(0, 10) }}
                 </template>
@@ -318,16 +378,34 @@ async function save() {
           </div>
           <div class="row three">
             <label>
-              Volume (gal)
-              <input type="number" step="0.001" v-model.number="form.fuel_volume" />
+              <span>Volume ({{ volUnit }}) <span v-if="calcField === 'fuel_volume'" class="calc">calc</span></span>
+              <input
+                type="number"
+                step="0.001"
+                v-model.number="form.fuel_volume"
+                :class="{ calculated: calcField === 'fuel_volume' }"
+                @input="onMoneyInput('fuel_volume')"
+              />
             </label>
             <label>
-              Total ($)
-              <input type="number" step="0.01" v-model.number="form.price_total" />
+              <span>Total ($) <span v-if="calcField === 'price_total'" class="calc">calc</span></span>
+              <input
+                type="number"
+                step="0.01"
+                v-model.number="form.price_total"
+                :class="{ calculated: calcField === 'price_total' }"
+                @input="onMoneyInput('price_total')"
+              />
             </label>
             <label>
-              Unit price ($/gal)
-              <input type="number" step="0.001" v-model.number="form.price_per_unit" />
+              <span>Price ($/{{ volUnit }}) <span v-if="calcField === 'price_per_unit'" class="calc">calc</span></span>
+              <input
+                type="number"
+                step="0.001"
+                v-model.number="form.price_per_unit"
+                :class="{ calculated: calcField === 'price_per_unit' }"
+                @input="onMoneyInput('price_per_unit')"
+              />
             </label>
           </div>
           <div class="row" :class="tankCount > 1 ? 'two' : ''">
@@ -362,6 +440,7 @@ async function save() {
               </div>
             </label>
           </div>
+          <p class="hint muted">Enter any two of volume, total and price — the third is calculated.</p>
           <div class="row three">
             <label>
               Latitude
@@ -380,6 +459,7 @@ async function save() {
             <button type="button" class="ghost" @click="geolocate">
               <MapPin :size="14" /> Use current location
             </button>
+            <small v-if="geoError" class="warn-text" role="status">{{ geoError }}</small>
           </div>
           <label>
             Notes
@@ -496,6 +576,34 @@ form label.cb {
 }
 .suggest-pop button:hover {
   background: var(--c-surface-3);
+}
+.calc {
+  display: inline-block;
+  margin-left: 0.3rem;
+  font-size: 10px;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--c-info-soft);
+  color: var(--c-info);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+input.calculated {
+  border-style: dashed;
+  color: var(--c-info);
+}
+.hint {
+  font-size: 0.78rem;
+  margin: -0.2rem 0 0.6rem;
+}
+.warn-text {
+  color: var(--c-warn);
+}
+@media (max-width: 560px) {
+  .row.two,
+  .row.three {
+    grid-template-columns: 1fr;
+  }
 }
 .error {
   color: var(--c-danger);

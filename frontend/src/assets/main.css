@@ -48,7 +48,39 @@
   --c-success-deep: #16a34a;
   --c-warn: #ffb020;
   --c-danger: #ff3a2e;
+  --c-danger-deep: #c0261d;
   --c-info: #60a5fa;
+  --c-success-soft: rgba(74, 222, 128, 0.10);
+  --c-warn-soft: rgba(255, 176, 32, 0.10);
+  --c-danger-soft: rgba(255, 58, 46, 0.10);
+  --c-info-soft: rgba(96, 165, 250, 0.12);
+
+  /* ── Aliases for names that views reached for but were never defined.
+     Kept so any straggler resolves to the ramp instead of `initial`. ── */
+  --c-surface-soft: var(--c-bg3);
+  --c-surface2: var(--c-bg3);
+  --c-line: var(--c-line1);
+  --c-ok: var(--c-success);
+  --c-accent-tint: var(--c-accent-soft);
+  --danger: var(--c-danger);
+  --border: var(--c-line1);
+
+  /* ── Chart palette (read by lib/chartTheme.ts via getComputedStyle) ── */
+  --chart-1: #60a5fa;
+  --chart-2: #4ade80;
+  --chart-3: #ffb020;
+  --chart-4: #c084fc;
+  --chart-5: #ff5b3a;
+  --chart-6: #2dd4bf;
+  --chart-7: #f472b6;
+  --chart-8: #a3e635;
+  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-axis: #6a6f78;
+
+  /* ── Focus ring ─── */
+  --focus-ring: 0 0 0 2px var(--c-bg), 0 0 0 4px var(--c-info);
+
+  --tabbar-h: 60px;
 
   /* ── Layout ─── */
   --sidebar-w: 220px;
@@ -159,6 +191,80 @@ pre {
   color: #fff;
 }
 
+/* Global keyboard focus ring. Mouse clicks don't trigger :focus-visible,
+   so this only paints for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--c-info);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none; /* inputs get the accent border + soft ring below */
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Shared filter / window chips. Views used to redefine these each. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--c-line1);
+  background: transparent;
+  color: var(--c-ink2);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover:not(:disabled) {
+  background: var(--c-bg3);
+  color: var(--c-ink0);
+}
+.chip.active,
+.chip[aria-pressed="true"],
+.chip[aria-selected="true"] {
+  background: var(--c-accent-soft);
+  border-color: rgba(255, 91, 58, 0.45);
+  color: var(--c-ink0);
+}
+.tag-fixed {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--c-line1);
+  color: var(--c-ink3);
+  margin-left: 0.4rem;
+}
+.unit {
+  color: var(--c-ink3);
+  font-weight: 500;
+}
+
 /* form primitives */
 input,
 select,
@@ -220,8 +326,8 @@ button.primary:hover:not(:disabled) {
   border-color: var(--c-accent-1);
 }
 button.danger {
-  background: var(--c-danger);
-  border-color: var(--c-danger);
+  background: var(--c-danger-deep);
+  border-color: var(--c-danger-deep);
   color: #fff;
 }
 button.ghost {
@@ -368,4 +474,12 @@ table.data th.tabular {
 }
 .u-legend th {
   color: var(--c-muted);
+}
+
+/* Horizontal-scroll wrapper for wide tables on narrow screens. Positioned
+   so absolutely-placed children (e.g. .sr-only header text) are clipped by
+   it instead of widening the page. */
+.table-scroll {
+  position: relative;
+  overflow-x: auto;
 }

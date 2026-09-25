@@ -41,5 +41,16 @@ export function useLive(vehicleIdRef: { value: string | null }) {
     return live.sessions[id]?.status ?? ("idle" as const);
   });
 
-  return { metrics, status };
+  /** Capture time (epoch ms) of the newest metric frame, or null. */
+  const lastFrameAt = computed<number | null>(() => {
+    const m = metrics.value as Record<string, { time: number }>;
+    let best: number | null = null;
+    for (const k in m) {
+      const t = m[k]?.time;
+      if (t != null && Number.isFinite(t) && (best == null || t > best)) best = t;
+    }
+    return best;
+  });
+
+  return { metrics, status, lastFrameAt };
 }

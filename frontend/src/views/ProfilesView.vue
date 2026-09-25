@@ -3,7 +3,12 @@ import { ref, computed } from "vue";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type { Profile } from "@/api/types";
-import { Plus, Save, X, FileJson } from "lucide-vue-next";
+import { Plus, Save, X, FileJson, Wand2 } from "lucide-vue-next";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import StateCard from "@/components/StateCard.vue";
+import { useToastStore, errMessage } from "@/stores/toast";
+
+const toast = useToastStore();
 
 const { data: profiles, loading, error, reload } = useAsync(() => api.listProfiles(), []);
 
@@ -16,6 +21,33 @@ const saving = ref(false);
 const saveError = ref<string | null>(null);
 
 const isNew = computed(() => selectedId.value === "__new__");
+
+/** Live JSON validation with a line / column for the first error. Engines
+ *  report either "(line L column C)" or "at position N"; both map to L:C. */
+const jsonError = computed<string | null>(() => {
+  const text = editorText.value;
+  if (!text.trim()) return "Empty — the body must be a JSON object";
+  try {
+    JSON.parse(text);
+    return null;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const lc = /line (\d+) column (\d+)/.exec(msg);
+    if (lc) return `Line ${lc[1]}, col ${lc[2]}: ${msg.replace(/\s*\(line \d+ column \d+\)/, "")}`;
+    const pos = /position (\d+)/.exec(msg);
+    if (pos) {
+      const upTo = text.slice(0, Number(pos[1]));
+      const line = upTo.split("\n").length;
+      const col = upTo.length - upTo.lastIndexOf("\n");
+      return `Line ${line}, col ${col}: ${msg.replace(/\s*(in JSON )?at position \d+.*$/, "")}`;
+    }
+    return msg;
+  }
+});
+function formatJson() {
+  if (jsonError.value) return;
+  editorText.value = JSON.stringify(JSON.parse(editorText.value), null, 2);
+}
 
 async function selectProfile(id: string) {
   selectedId.value = id;
@@ -46,7 +78,7 @@ async function save() {
   try {
     body = JSON.parse(editorText.value);
   } catch {
-    saveError.value = "Invalid JSON in profile body";
+    saveError.value = jsonError.value ?? "Invalid JSON in profile body";
     return;
   }
   saving.value = true;
@@ -59,6 +91,7 @@ async function save() {
       });
       await reload();
       await selectProfile(created.id);
+      toast.success(`Created ${created.name}`);
     } else {
       const updated = await api.updateProfile(detail.value.id, {
         name: detail.value.name,
@@ -68,24 +101,33 @@ async function save() {
       detail.value = updated;
       editorText.value = JSON.stringify(updated.body ?? {}, null, 2);
       await reload();
+      toast.success(`Saved ${updated.name}`);
     }
   } catch (e: unknown) {
-    saveError.value = e instanceof Error ? e.message : "save failed";
+    saveError.value = errMessage(e, "save failed");
   } finally {
     saving.value = false;
   }
 }
 
+const confirmDelete = ref(false);
+const deleting = ref(false);
 async function remove() {
   if (!detail.value || isNew.value) return;
-  if (!window.confirm(`Delete profile "${detail.value.name}"?`)) return;
+  deleting.value = true;
+  const name = detail.value.name;
   try {
     await api.deleteProfile(detail.value.id);
+    confirmDelete.value = false;
     selectedId.value = null;
     detail.value = null;
     await reload();
+    toast.success(`Deleted ${name}`);
   } catch (e: unknown) {
-    saveError.value = e instanceof Error ? e.message : "delete failed";
+    confirmDelete.value = false;
+    saveError.value = errMessage(e, "delete failed");
+  } finally {
+    deleting.value = false;
   }
 }
 </script>
@@ -95,26 +137,25 @@ async function remove() {
     <header class="head">
       <h1>PID profiles</h1>
       <button class="primary" type="button" @click="newProfile">
-        <Plus :size="14" /> New profile
+        <Plus :size="14" aria-hidden="true" /> New profile
       </button>
     </header>
 
     <div class="layout">
       <aside class="list card no-pad">
-        <div v-if="loading" class="muted hint">Loading…</div>
-        <div v-else-if="error" class="muted hint">Failed: {{ error }}</div>
-        <div v-else-if="!profiles || profiles.length === 0" class="muted hint">
-          No profiles yet.
-        </div>
+        <StateCard v-if="loading" state="loading" bare class="hint" />
+        <StateCard v-else-if="error" state="error" bare class="hint" :message="error" @retry="reload()" />
+        <StateCard v-else-if="!profiles || profiles.length === 0" state="empty" bare class="hint" title="No profiles yet." />
         <button
           v-for="p in profiles ?? []"
           :key="p.id"
           type="button"
           class="row-btn"
           :class="{ selected: p.id === selectedId }"
+          :aria-current="p.id === selectedId ? 'true' : undefined"
           @click="selectProfile(p.id)"
         >
-          <FileJson :size="14" />
+          <FileJson :size="14" aria-hidden="true" />
           <span>
             <strong>{{ p.name }}</strong>
             <small v-if="p.description" class="muted">{{ p.description }}</small>
@@ -123,15 +164,9 @@ async function remove() {
       </aside>
 
       <section class="editor">
-        <div v-if="!selectedId" class="card">
-          <p class="muted">Select a profile from the list, or create a new one.</p>
-        </div>
-        <div v-else-if="detailLoading" class="card">
-          <p class="muted">Loading profile…</p>
-        </div>
-        <div v-else-if="detailError" class="card">
-          <p class="muted">Failed to load: {{ detailError }}</p>
-        </div>
+        <StateCard v-if="!selectedId" state="empty" title="Select a profile from the list, or create a new one." />
+        <StateCard v-else-if="detailLoading" state="loading" title="Loading profile…" />
+        <StateCard v-else-if="detailError" state="error" :message="detailError" @retry="selectProfile(selectedId!)" />
         <div v-else-if="detail" class="card editor-card">
           <div class="meta">
             <label>
@@ -144,22 +179,47 @@ async function remove() {
             </label>
           </div>
           <div class="body">
-            <label>Profile JSON (WiCAN AutoPID format)</label>
-            <textarea v-model="editorText" rows="20" spellcheck="false" />
+            <div class="body-head">
+              <label for="profile-json">Profile JSON (WiCAN AutoPID format)</label>
+              <button type="button" class="ghost fmt" :disabled="!!jsonError" @click="formatJson">
+                <Wand2 :size="13" aria-hidden="true" /> Format
+              </button>
+            </div>
+            <textarea
+              id="profile-json"
+              v-model="editorText"
+              rows="20"
+              spellcheck="false"
+              :class="{ invalid: jsonError }"
+              :aria-invalid="jsonError ? 'true' : undefined"
+              aria-describedby="profile-json-status"
+            />
+            <p id="profile-json-status" class="json-status" :class="jsonError ? 'bad' : 'ok'" role="status">
+              {{ jsonError ?? "Valid JSON" }}
+            </p>
           </div>
           <p v-if="saveError" class="error">{{ saveError }}</p>
           <div class="actions">
-            <button v-if="!isNew" class="danger" type="button" @click="remove">
-              <X :size="14" /> Delete
+            <button v-if="!isNew" class="danger" type="button" @click="confirmDelete = true">
+              <X :size="14" aria-hidden="true" /> Delete
             </button>
             <span class="spacer"></span>
-            <button class="primary" type="button" @click="save" :disabled="saving">
-              <Save :size="14" /> {{ saving ? "Saving…" : "Save" }}
+            <button class="primary" type="button" @click="save" :disabled="saving || !!jsonError">
+              <Save :size="14" aria-hidden="true" /> {{ saving ? "Saving…" : "Save" }}
             </button>
           </div>
         </div>
       </section>
     </div>
+
+    <ConfirmDialog
+      v-model:open="confirmDelete"
+      :title="`Delete profile “${detail?.name ?? ''}”?`"
+      message="Vehicles using it fall back to no profile. This can't be undone."
+      confirm-label="Delete"
+      :busy="deleting"
+      @confirm="remove"
+    />
   </div>
 </template>
 
@@ -260,5 +320,40 @@ textarea {
 }
 .error {
   color: var(--c-danger);
+}
+.body-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+.fmt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.5rem;
+}
+textarea.invalid {
+  border-color: rgba(255, 58, 46, 0.6);
+}
+.json-status {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+.json-status.ok {
+  color: var(--c-success);
+}
+.json-status.bad {
+  color: var(--c-danger);
+}
+@media (max-width: 700px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .meta {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

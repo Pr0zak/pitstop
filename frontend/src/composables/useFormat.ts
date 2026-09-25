@@ -36,24 +36,208 @@ export function fmtNumber(
   return opts.suffix ? `${v} ${opts.suffix}` : v;
 }
 
-export function fmtMpg(v: number | null | undefined): string {
-  return fmtNumber(v, { digits: 1, suffix: "mpg" });
+// ─── Intl number formatting ───────────────────────────────────────────────
+// Every grouped / fixed-precision number goes through one cached
+// Intl.NumberFormat so "12,345 mi" and "$1,234.00" look the same on every
+// screen. Temperatures / pressures keep toFixed() (no grouping) — their
+// tests pin that shape and a thousands separator on "1040 °F" is noise.
+const nfCache = new Map<string, Intl.NumberFormat>();
+export function nf(minDigits: number, maxDigits = minDigits, grouping = true): Intl.NumberFormat {
+  const key = `${minDigits}:${maxDigits}:${grouping}`;
+  let f = nfCache.get(key);
+  if (!f) {
+    f = new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: minDigits,
+      maximumFractionDigits: maxDigits,
+      useGrouping: grouping,
+    });
+    nfCache.set(key, f);
+  }
+  return f;
 }
+const moneyCache = new Map<number, Intl.NumberFormat>();
+function moneyNf(digits: number): Intl.NumberFormat {
+  let f = moneyCache.get(digits);
+  if (!f) {
+    f = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+    moneyCache.set(digits, f);
+  }
+  return f;
+}
+
+/** Coerce Decimal-as-string OR number OR null to a finite number, or null. */
+export function toNum(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim().length > 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function bad(v: unknown): boolean {
+  return v == null || (typeof v === "number" && Number.isNaN(v));
+}
+
+// ─── Source units ─────────────────────────────────────────────────────────
+// Fillup / expense rows keep the unit they were entered in (the vehicle's
+// Fuelio dist_unit / fuel_unit). OBD-derived values are canonical metric.
+export type DistUnit = "km" | "mi";
+export type VolUnit = "L" | "gal";
+
+export function vehicleDistUnit(v?: { dist_unit?: number | null } | null): DistUnit {
+  return v?.dist_unit === 0 ? "km" : "mi";
+}
+export function vehicleVolUnit(v?: { fuel_unit?: number | null } | null): VolUnit {
+  return v?.fuel_unit === 0 ? "L" : "gal";
+}
+
+// ─── Unit labels (headers, axis titles, input suffixes) ──────────────────
+export function distUnitLabel(system?: ResolvedUnitSystem): string {
+  return resolved(system) === "imperial" ? "mi" : "km";
+}
+export function volUnitLabel(system?: ResolvedUnitSystem): string {
+  return resolved(system) === "imperial" ? "gal" : "L";
+}
+export function speedUnitLabel(system?: ResolvedUnitSystem): string {
+  return resolved(system) === "imperial" ? "mph" : "km/h";
+}
+export function tempUnitLabel(system?: ResolvedUnitSystem): string {
+  return resolved(system) === "imperial" ? "°F" : "°C";
+}
+export function economyUnitLabel(system?: ResolvedUnitSystem): string {
+  return resolved(system) === "imperial" ? "mpg" : "L/100km";
+}
+export function elevUnitLabel(system?: ResolvedUnitSystem): string {
+  return resolved(system) === "imperial" ? "ft" : "m";
+}
+
+// ─── Numeric converters (for charts, inputs, arithmetic) ─────────────────
+/** Distance in `src` units → display units. */
+export function convDistance(v: number, src: DistUnit = "km", system?: ResolvedUnitSystem): number {
+  const imperial = resolved(system) === "imperial";
+  if (src === "km") return imperial ? KM_TO_MI(v) : v;
+  return imperial ? v : v / 0.621371;
+}
+/** Volume in `src` units → display units. */
+export function convVolume(v: number, src: VolUnit = "L", system?: ResolvedUnitSystem): number {
+  const imperial = resolved(system) === "imperial";
+  if (src === "L") return imperial ? L_TO_USGAL(v) : v;
+  return imperial ? v : v / 0.264172;
+}
+/** Price per `src` volume unit → price per display volume unit. */
+export function convPricePerVolume(v: number, src: VolUnit = "gal", system?: ResolvedUnitSystem): number {
+  // $/gal → $/L divides by 3.785; i.e. price scales inversely to volume.
+  const oneSrcInDisplay = convVolume(1, src, system);
+  return oneSrcInDisplay > 0 ? v / oneSrcInDisplay : v;
+}
+export function convSpeedKph(kph: number, system?: ResolvedUnitSystem): number {
+  return resolved(system) === "imperial" ? KPH_TO_MPH(kph) : kph;
+}
+export function convTempC(c: number, system?: ResolvedUnitSystem): number {
+  return resolved(system) === "imperial" ? C_TO_F(c) : c;
+}
+/** US mpg → display economy (mpg or L/100km). */
+export function convEconomyMpg(mpg: number, system?: ResolvedUnitSystem): number {
+  if (resolved(system) === "imperial") return mpg;
+  return mpg > 0 ? 235.214583 / mpg : 0;
+}
+export function convElevationM(m: number, system?: ResolvedUnitSystem): number {
+  return resolved(system) === "imperial" ? m * 3.28084 : m;
+}
+
+// ─── Quantity formatters ─────────────────────────────────────────────────
+/** Money, Intl currency. `digits` defaults to cents. */
+export function fmtMoney(v: number | string | null | undefined, digits = 2): string {
+  const n = toNum(v);
+  if (n == null) return "—";
+  return moneyNf(digits).format(n);
+}
+/** Fuel economy from a US-mpg value, rendered in the display system. */
+export function fmtMpg(v: number | null | undefined, system?: ResolvedUnitSystem): string {
+  if (bad(v) || (v as number) <= 0) return "—";
+  return `${nf(1).format(convEconomyMpg(v as number, system))} ${economyUnitLabel(system)}`;
+}
+/** Distance. `src` is the unit the value is stored in. */
+export function fmtDistance(
+  v: number | string | null | undefined,
+  src: DistUnit = "km",
+  digits = 1,
+  system?: ResolvedUnitSystem,
+): string {
+  const n = toNum(v);
+  if (n == null) return "—";
+  return `${nf(digits).format(convDistance(n, src, system))} ${distUnitLabel(system)}`;
+}
+/** @deprecated prefer fmtDistance(v, "mi"). Value in miles. */
 export function fmtMiles(v: number | null | undefined): string {
-  return fmtNumber(v, { digits: 1, suffix: "mi" });
+  return fmtDistance(v, "mi");
 }
-/** Whole-mile odometer reading (no decimal). Use for any "odo" field
- *  rendered in tables / cards — Fuelio stores it as float but the
- *  real-world value is always a whole mile, so the .0 just clutters. */
-export function fmtOdo(v: number | null | undefined): string {
-  return fmtNumber(v, { digits: 0, suffix: "mi" });
+/** Whole-unit odometer reading, grouped ("48,210 mi"). */
+export function fmtOdo(
+  v: number | string | null | undefined,
+  src: DistUnit = "mi",
+  system?: ResolvedUnitSystem,
+): string {
+  const n = toNum(v);
+  if (n == null) return "—";
+  return `${nf(0).format(convDistance(n, src, system))} ${distUnitLabel(system)}`;
 }
+/** Odometer from canonical km. */
+export function fmtOdoKm(km: number | null | undefined, system?: ResolvedUnitSystem): string {
+  return fmtOdo(km, "km", system);
+}
+/** Volume. `src` is the unit the value is stored in. */
+export function fmtVolume(
+  v: number | string | null | undefined,
+  src: VolUnit = "L",
+  digits = 2,
+  system?: ResolvedUnitSystem,
+): string {
+  const n = toNum(v);
+  if (n == null) return "—";
+  return `${nf(digits).format(convVolume(n, src, system))} ${volUnitLabel(system)}`;
+}
+/** @deprecated prefer fmtVolume(v, "gal"). Value in US gallons. */
 export function fmtGallons(v: number | null | undefined): string {
-  return fmtNumber(v, { digits: 2, suffix: "gal" });
+  return fmtVolume(v, "gal");
 }
-export function fmtMoney(v: number | null | undefined, currency = "$"): string {
-  if (v == null || Number.isNaN(v)) return "—";
-  return `${currency}${Number(v).toFixed(2)}`;
+/** Price per volume ("$3.459/gal"). `src` is the volume unit the price is per. */
+export function fmtPricePerVolume(
+  v: number | string | null | undefined,
+  src: VolUnit = "gal",
+  digits = 3,
+  system?: ResolvedUnitSystem,
+): string {
+  const n = toNum(v);
+  if (n == null) return "—";
+  return `${moneyNf(digits).format(convPricePerVolume(n, src, system))}/${volUnitLabel(system)}`;
+}
+/** Elevation / altitude from metres. */
+export function fmtElevationM(m: number | null | undefined, system?: ResolvedUnitSystem): string {
+  if (bad(m)) return "—";
+  return `${nf(0).format(convElevationM(m as number, system))} ${elevUnitLabel(system)}`;
+}
+/** Money per distance ("$0.142/mi"). Value is $ per `src` unit. */
+export function fmtMoneyPerDistance(
+  v: number | null | undefined,
+  src: DistUnit = "mi",
+  digits = 3,
+  system?: ResolvedUnitSystem,
+): string {
+  if (bad(v)) return "—";
+  const oneSrc = convDistance(1, src, system);
+  return `${moneyNf(digits).format((v as number) / (oneSrc || 1))}/${distUnitLabel(system)}`;
+}
+/** Plain grouped integer / decimal ("1,234"). */
+export function fmtInt(v: number | null | undefined): string {
+  if (bad(v)) return "—";
+  return nf(0).format(v as number);
 }
 export function fmtPct(v: number | null | undefined): string {
   return fmtNumber(v, { digits: 1, suffix: "%" });
@@ -84,18 +268,17 @@ export function fmtSpeedKph(kph: number | null | undefined, system?: ResolvedUni
     : `${kph.toFixed(0)} km/h`;
 }
 
+/** Wind speed from km/h — same conversion as vehicle speed. */
+export function fmtWindKph(kph: number | null | undefined, system?: ResolvedUnitSystem): string {
+  return fmtSpeedKph(kph, system);
+}
+
 export function fmtDistanceKm(km: number | null | undefined, system?: ResolvedUnitSystem): string {
-  if (km == null || Number.isNaN(km)) return "—";
-  return resolved(system) === "imperial"
-    ? `${KM_TO_MI(km).toFixed(1)} mi`
-    : `${km.toFixed(1)} km`;
+  return fmtDistance(km, "km", 1, system);
 }
 
 export function fmtVolumeL(l: number | null | undefined, system?: ResolvedUnitSystem): string {
-  if (l == null || Number.isNaN(l)) return "—";
-  return resolved(system) === "imperial"
-    ? `${L_TO_USGAL(l).toFixed(2)} gal`
-    : `${l.toFixed(2)} L`;
+  return fmtVolume(l, "L", 2, system);
 }
 
 export function fmtFuelRateLh(lh: number | null | undefined, system?: ResolvedUnitSystem): string {

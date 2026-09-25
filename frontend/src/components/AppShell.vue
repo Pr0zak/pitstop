@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import Sidebar from "./Sidebar.vue";
 import TopBar from "./TopBar.vue";
+import BottomTabBar from "./BottomTabBar.vue";
+import ToastHost from "./ToastHost.vue";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
+const route = useRoute();
+const router = useRouter();
 
 onMounted(async () => {
   if (!auth.hasQueryToken) return;
@@ -17,17 +22,37 @@ onMounted(async () => {
     /* the auth interceptor already routes to /settings on 401 */
   }
 });
+
+// ?vehicle=<id|slug> works on every route: it selects that vehicle, then
+// drops itself from the URL so the global picker stays the one source of
+// truth (a sticky param would fight the picker on the next switch).
+watch(
+  [() => route.query.vehicle, () => vehicles.loaded],
+  ([q, loaded]) => {
+    const want = Array.isArray(q) ? q[0] : q;
+    if (!want || !loaded) return;
+    const hit = vehicles.vehicles.find((v) => v.id === want || v.slug === want);
+    if (hit) vehicles.selectVehicle(hit.id);
+    const query = { ...route.query };
+    delete query.vehicle;
+    void router.replace({ query });
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
   <div class="shell">
+    <a href="#main" class="skip-link">Skip to content</a>
     <Sidebar />
     <div class="main">
       <TopBar />
-      <div class="content">
+      <main id="main" class="content" tabindex="-1">
         <slot />
-      </div>
+      </main>
     </div>
+    <BottomTabBar />
+    <ToastHost />
   </div>
 </template>
 
@@ -52,20 +77,29 @@ onMounted(async () => {
   padding: 1.5rem;
   flex: 1;
   min-width: 0;
+  outline: none;
+}
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0.5rem;
+  z-index: 400;
+  background: var(--c-bg3);
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--r-sm);
+}
+.skip-link:focus {
+  left: 0.5rem;
 }
 
-/* Web-mobile (≤ 700 px) — narrow viewports get the icons-only sidebar
-   automatically so the content has full breathing room. The user can
-   still expand it manually on tablet sizes. The design's full bottom-
-   tab-bar layout is a follow-up; this is the no-code-shape change
-   that gets the live cluster + tables + cards usable at 390 wide
-   without breaking the desktop layout. */
+/* Phone width: the rail is gone, the bottom tab bar takes over. */
 @media (max-width: 700px) {
-  .main {
-    margin-left: var(--sidebar-w-collapsed);
+  .main,
+  .shell:has(.sidebar.collapsed) .main {
+    margin-left: 0;
   }
   .content {
-    padding: 1rem 0.85rem;
+    padding: 1rem 0.85rem calc(var(--tabbar-h) + 1.25rem + env(safe-area-inset-bottom));
   }
 }
 </style>

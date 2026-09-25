@@ -11,14 +11,33 @@ import {
   fmtDate,
   fmtMpg,
   fmtMoney,
-  fmtMiles,
   fmtOdo,
-  fmtGallons,
-  fmtNumber,
+  fmtVolume,
+  fmtPricePerVolume,
+  fmtDistance,
+  fmtTempC,
+  fmtWindKph,
+  nf,
+  toNum,
+  convDistance,
+  convVolume,
+  convPricePerVolume,
+  convEconomyMpg,
+  convTempC,
+  economyUnitLabel,
+  volUnitLabel,
+  distUnitLabel,
+  tempUnitLabel,
+  vehicleDistUnit,
+  vehicleVolUnit,
 } from "@/composables/useFormat";
 import { Plus, Pencil, X, Upload } from "lucide-vue-next";
 import FillupModal from "@/components/FillupModal.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import StateCard from "@/components/StateCard.vue";
+import WindowChips from "@/components/WindowChips.vue";
+import { useQueryParam } from "@/composables/useQueryParam";
+import { chartColors, chartPalette, withAlpha } from "@/lib/chartTheme";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
 import { WMO_CODE } from "@/api/types";
@@ -34,8 +53,7 @@ function weatherTitle(f: Fillup): string {
   if (lbl) parts.push(lbl);
   if (f.weather_humidity_pct != null) parts.push(`${f.weather_humidity_pct}% rh`);
   if (f.weather_wind_kph != null) {
-    const mph = Math.round(f.weather_wind_kph * 0.621371);
-    parts.push(`wind ${mph} mph`);
+    parts.push(`wind ${fmtWindKph(f.weather_wind_kph)}`);
   }
   if (f.weather_precip_mm != null && f.weather_precip_mm > 0) {
     parts.push(`${f.weather_precip_mm.toFixed(1)} mm precip`);
@@ -47,21 +65,34 @@ const vehicles = useVehiclesStore();
 const settings = useSettingsStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 
-// uPlot draws to <canvas>; ctx.strokeStyle can't resolve CSS custom properties
-// like "var(--c-accent)" — they render as transparent/black. Resolve the token
-// to a concrete hex once at setup; fall back to the known accent value when
-// getComputedStyle is unavailable (SSR / test env).
-const ACCENT = (() => {
-  try {
-    const v = getComputedStyle(document.documentElement)
-      .getPropertyValue("--c-accent")
-      .trim();
-    return v || "#ff5b3a";
-  } catch {
-    return "#ff5b3a";
-  }
-})();
-const tab = ref<"fillups" | "map" | "stats">("fillups");
+// uPlot draws to <canvas>, which can't resolve CSS custom properties, so the
+// chart colours come from lib/chartTheme (tokens read via getComputedStyle).
+const C = chartColors();
+const PAL = chartPalette();
+const ACCENT = C.accent;
+// Tab lives in ?tab= so a link / reload lands on the same view.
+const tab = useQueryParam<"fillups" | "map" | "stats">("tab", "fillups", ["fillups", "map", "stats"]);
+
+// Fillup numbers are stored in the vehicle's own units.
+const distSrc = computed(() => vehicleDistUnit(vehicles.selectedVehicle));
+const volSrc = computed(() => vehicleVolUnit(vehicles.selectedVehicle));
+
+/** Per-fillup total — price_total, or unit price × volume when missing. */
+function fillupTotal(f: Fillup): number | null {
+  const t = toNum(f.price_total);
+  if (t != null) return t;
+  const p = toNum(f.price_per_unit);
+  const v = toNum(f.fuel_volume);
+  return p != null && v != null ? p * v : null;
+}
+/** Per-fillup unit price — price_per_unit, or total ÷ volume when missing. */
+function fillupPpu(f: Fillup): number | null {
+  const p = toNum(f.price_per_unit);
+  if (p != null && p > 0) return p;
+  const t = toNum(f.price_total);
+  const v = toNum(f.fuel_volume);
+  return t != null && v != null && v > 0 ? t / v : null;
+}
 
 onMounted(() => {
   if (!settings.settings) void settings.fetchSettings();
@@ -101,6 +132,13 @@ const offset = ref(0);
 // view survives reload. Window applies to spend / cost-per-mile /
 // fillup-history charts. Chart-visibility toggles are per-chart.
 type StatsWindow = "30d" | "3m" | "12m" | "all";
+const STATS_WINDOWS = ["30d", "3m", "12m", "all"] as const;
+const STATS_WINDOW_OPTIONS = [
+  { value: "30d" as const, label: "30 days" },
+  { value: "3m" as const, label: "3 months" },
+  { value: "12m" as const, label: "12 months" },
+  { value: "all" as const, label: "All time" },
+];
 const STATS_WINDOW_KEY = "pitstop_stats_window";
 const STATS_CHARTS_KEY = "pitstop_stats_charts";
 
@@ -133,7 +171,9 @@ const DEFAULT_VISIBLE: Record<string, boolean> = {
   vol: true,
   mpgVsTemp: true,
 };
-const statsWindow = ref<StatsWindow>(loadStatsWindow());
+// ?window= wins; otherwise the last choice from localStorage.
+const statsWindowParam = useQueryParam<StatsWindow>("window", loadStatsWindow(), STATS_WINDOWS);
+const statsWindow = statsWindowParam;
 const chartVisible = ref<Record<string, boolean>>(loadVisible());
 
 watch(statsWindow, (v) => {
@@ -150,13 +190,13 @@ watch(
 const chartChoices = [
   { key: "kpis", label: "KPIs" },
   { key: "monthly", label: "Monthly spend" },
-  { key: "cpm", label: "$/mile" },
+  { key: "cpm", label: "Cost / distance" },
   { key: "overlay", label: "OBD vs fillup" },
   { key: "range", label: "Range" },
-  { key: "ppg", label: "$/gal trend" },
+  { key: "ppg", label: "Price trend" },
   { key: "freq", label: "Frequency" },
   { key: "vol", label: "Volume" },
-  { key: "mpgVsTemp", label: "MPG vs temp" },
+  { key: "mpgVsTemp", label: "Economy vs temp" },
 ] as const;
 
 const statsWindowMonths = computed<number>(() => {
@@ -270,7 +310,7 @@ watch([vehicleId], () => {
 // Sorting. Header click-targets keep the conceptual names (odometer, volume,
 // total_price, mpg_recomputed) since the user reads them; the comparator
 // translates each to the actual API field name.
-type SortKey = "fillup_date" | "odometer" | "volume" | "total_price" | "mpg_recomputed";
+type SortKey = "fillup_date" | "odometer" | "volume" | "total_price" | "unit_price" | "mpg_recomputed";
 const sortKey = ref<SortKey>("fillup_date");
 const sortDir = ref<"asc" | "desc">("desc");
 
@@ -279,6 +319,7 @@ const SORT_FIELD: Record<SortKey, keyof Fillup> = {
   odometer: "odo",
   volume: "fuel_volume",
   total_price: "price_total",
+  unit_price: "price_per_unit",
   mpg_recomputed: "mpg",
 };
 
@@ -299,13 +340,21 @@ const sortedFillups = computed<Fillup[]>(() => {
         ? String(av).localeCompare(String(bv))
         : String(bv).localeCompare(String(av));
     }
-    const ax = Number(av);
-    const bx = Number(bv);
+    const ax = sortKey.value === "unit_price" ? (fillupPpu(a) ?? 0) : Number(av);
+    const bx = sortKey.value === "unit_price" ? (fillupPpu(b) ?? 0) : Number(bv);
     return sortDir.value === "asc" ? ax - bx : bx - ax;
   });
   return items;
 });
 
+function ariaSort(k: SortKey): "ascending" | "descending" | "none" {
+  if (sortKey.value !== k) return "none";
+  return sortDir.value === "asc" ? "ascending" : "descending";
+}
+function sortArrow(k: SortKey): string {
+  if (sortKey.value !== k) return "";
+  return sortDir.value === "asc" ? "▲" : "▼";
+}
 function changeSort(k: SortKey) {
   if (sortKey.value === k) {
     sortDir.value = sortDir.value === "asc" ? "desc" : "asc";
@@ -386,6 +435,7 @@ function openEdit(f: Fillup) {
 }
 function onSaved() {
   void fillupsQ.reload();
+  void vehicles.fetchVehicles().catch(() => {});
 }
 
 // Delete fillup — in-app confirm (ConfirmDialog) instead of native
@@ -496,8 +546,8 @@ const monthlyBuild = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options 
       : [t, fuel, service];
   const series: uPlot.Series[] = [
     {},
-    { label: "Fuel", stroke: "#2f81f7", fill: "rgba(47,129,247,0.18)", width: 1.5 },
-    { label: "Service", stroke: "#d29922", fill: "rgba(210,153,34,0.18)", width: 1.5 },
+    { label: "Fuel", stroke: PAL[0], fill: withAlpha(PAL[0], 0.18), width: 1.5 },
+    { label: "Service", stroke: PAL[2], fill: withAlpha(PAL[2], 0.18), width: 1.5 },
   ];
   if (hasGhost1) {
     series.push({
@@ -521,7 +571,7 @@ const monthlyBuild = computed<{ aligned: uPlot.AlignedData; opts: uPlot.Options 
       width: 600,
       height: 220,
       scales: { x: { time: true } },
-      axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$" }],
+      axes: [{}, { label: "$", values: (_u, v) => v.map((x) => fmtMoney(x, 0)) }],
       series,
     },
   };
@@ -533,14 +583,16 @@ const cpmOpts = computed<uPlot.Options>(() => ({
   width: 600,
   height: 200,
   scales: { x: { time: true } },
-  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "$/mi" }],
-  series: [{}, { label: "$/mi", stroke: "#3fb950", width: 2 }],
+  axes: [{}, { label: `$/${distUnitLabel()}` }],
+  series: [{}, { label: `$/${distUnitLabel()}`, stroke: PAL[1], width: 2 }],
 }));
 const cpmData = computed<uPlot.AlignedData | null>(() => {
   const points = cpmQ.data.value?.points ?? [];
   if (points.length === 0) return null;
   const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
-  const y = points.map((p) => p.cost_per_mi ?? null);
+  // cost_per_mi is $ per MILE; per-km for metric = ÷ 1.609.
+  const perUnit = convDistance(1, "mi");
+  const y = points.map((p) => (p.cost_per_mi != null ? p.cost_per_mi / perUnit : null));
   return [t, y];
 });
 
@@ -548,11 +600,11 @@ const overlayOpts = computed<uPlot.Options>(() => ({
   width: 600,
   height: 220,
   scales: { x: { time: true } },
-  axes: [{ stroke: "#9aa0aa" }, { stroke: "#9aa0aa", label: "mpg" }],
+  axes: [{}, { label: economyUnitLabel() }],
   series: [
     {},
-    { label: "OBD MPG", stroke: "#3fb950", width: 1.5 },
-    { label: "Fillup MPG", stroke: "#2f81f7", width: 1.5, dash: [4, 3] },
+    { label: "OBD (per trip)", stroke: PAL[1], width: 1.5 },
+    { label: "Fillup", stroke: PAL[0], width: 1.5, dash: [4, 3] },
   ],
 }));
 const overlayData = computed<uPlot.AlignedData | null>(() => {
@@ -569,11 +621,11 @@ const overlayData = computed<uPlot.AlignedData | null>(() => {
   const fillCol: (number | null)[] = new Array(ts.length).fill(null);
   for (const p of obd) {
     const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
-    if (i != null) obdCol[i] = p.mpg ?? null;
+    if (i != null) obdCol[i] = p.mpg != null ? convEconomyMpg(p.mpg) : null;
   }
   for (const p of fillup) {
     const i = idx.get(Math.round((Date.parse(p.time) || 0) / 1000));
-    if (i != null) fillCol[i] = p.mpg ?? null;
+    if (i != null) fillCol[i] = p.mpg != null ? convEconomyMpg(p.mpg) : null;
   }
   return [ts, obdCol, fillCol];
 });
@@ -646,17 +698,14 @@ const ppgChart = computed(() => {
     );
   if (items.length < 2) return null;
   const t = items.map((f) => Math.round((Date.parse(f.fillup_date) || 0) / 1000));
-  const y = items.map((f) => f.ppg);
+  const y = items.map((f) => convPricePerVolume(f.ppg, volSrc.value));
   const aligned: uPlot.AlignedData = [t, y];
   const opts: uPlot.Options = {
     width: 600,
     height: 200,
     scales: { x: { time: true } },
-    axes: [
-      { stroke: "#9aa0aa" },
-      { stroke: "#9aa0aa", label: "$/gal" },
-    ],
-    series: [{}, { label: "$/gal", stroke: ACCENT, width: 1.5 }],
+    axes: [{}, { label: `$/${volUnitLabel()}` }],
+    series: [{}, { label: `$/${volUnitLabel()}`, stroke: ACCENT, width: 1.5 }],
   };
   return { aligned, opts };
 });
@@ -693,11 +742,8 @@ const frequencyChart = computed(() => {
     height: 200,
     scales: { x: { time: false } },
     axes: [
-      {
-        stroke: "#9aa0aa",
-        values: (_u, vals) => vals.map((v) => labels[v as number] ?? ""),
-      },
-      { stroke: "#9aa0aa", label: "fillups" },
+      { values: (_u, vals) => vals.map((v) => labels[v as number] ?? "") },
+      { label: "fillups" },
     ],
     series: [
       {},
@@ -705,7 +751,7 @@ const frequencyChart = computed(() => {
         label: "Fillups",
         stroke: ACCENT,
         width: 0,
-        fill: "rgba(255,91,58,0.55)",
+        fill: withAlpha(ACCENT, 0.55),
         paths: (_u, _seriesIdx, idx0, idx1) => {
           const path = new Path2D();
           // We render the bar shape ourselves via uPlot's clip; this
@@ -728,8 +774,9 @@ const frequencyChart = computed(() => {
 // Tank-fill volume distribution histogram. Bins are 5L wide.
 const volumeDistChart = computed(() => {
   const items = (statsFillupsFiltered.value as Fillup[])
-    .map((f) => f.fuel_volume)
-    .filter((v): v is number => typeof v === "number" && v > 0);
+    .map((f) => toNum(f.fuel_volume))
+    .filter((v): v is number => v != null && v > 0)
+    .map((v) => convVolume(v, volSrc.value));
   if (items.length < 4) return null;
 
   // Auto-pick bin width from data range.
@@ -751,8 +798,8 @@ const volumeDistChart = computed(() => {
     height: 200,
     scales: { x: { time: false } },
     axes: [
-      { stroke: "#9aa0aa", label: "Volume (gal)" },
-      { stroke: "#9aa0aa", label: "fillups" },
+      { label: `Volume (${volUnitLabel()})` },
+      { label: "fillups" },
     ],
     series: [
       {},
@@ -760,7 +807,7 @@ const volumeDistChart = computed(() => {
         label: "Fillups",
         stroke: ACCENT,
         width: 0,
-        fill: "rgba(255,91,58,0.55)",
+        fill: withAlpha(ACCENT, 0.55),
         paths: (_u, _seriesIdx, idx0, idx1) => {
           const path = new Path2D();
           for (let i = idx0; i <= idx1; i++) {
@@ -803,7 +850,8 @@ const rangeEstimate = computed<{
   if (mpg == null || mpg <= 0) {
     return { miles: null, fuelLevel, rollingMpg: null };
   }
-  const tankGal = tankL * 0.264172;
+  // tank1_capacity is in the vehicle's fuel unit; → US gal for mpg math.
+  const tankGal = convVolume(convVolume(tankL, volSrc.value, "metric"), "L", "imperial");
   const remainingGal = tankGal * (fuelLevel / 100);
   const miles = remainingGal * mpg;
   return { miles, fuelLevel, rollingMpg: mpg };
@@ -818,14 +866,13 @@ const mpgVsTempChart = computed(() => {
   const items = (statsFillupsFiltered.value as Fillup[])
     .filter((f) => f.weather_temp_c != null && f.mpg != null && (f.mpg as number) > 0);
   if (items.length < 4) return null;
-  // Group into 10°F buckets centred on each integer label.
-  const C_TO_F = (c: number) => (c * 9) / 5 + 32;
+  // Group into 10° buckets (display unit) centred on each label.
   const buckets = new Map<number, number[]>();
   for (const f of items) {
-    const fF = C_TO_F(f.weather_temp_c as number);
-    const bucket = Math.round(fF / 10) * 10;
+    const deg = convTempC(f.weather_temp_c as number);
+    const bucket = Math.round(deg / 10) * 10;
     const arr = buckets.get(bucket) ?? [];
-    arr.push(f.mpg as number);
+    arr.push(convEconomyMpg(f.mpg as number));
     buckets.set(bucket, arr);
   }
   const bins = Array.from(buckets.keys()).sort((a, b) => a - b);
@@ -841,16 +888,13 @@ const mpgVsTempChart = computed(() => {
     cursor: { drag: { x: false, y: false, setScale: false } },
     legend: { show: false },
     scales: { x: { time: false }, y: {} },
-    axes: [
-      { stroke: "#9aa0aa", label: "°F" },
-      { stroke: "#9aa0aa", label: "mpg" },
-    ],
+    axes: [{ label: tempUnitLabel() }, { label: economyUnitLabel() }],
     series: [
       {},
       {
-        label: "Avg MPG",
-        stroke: "#3fb950",
-        fill: "rgba(63,185,80,0.45)",
+        label: "Avg economy",
+        stroke: PAL[1],
+        fill: withAlpha(PAL[1], 0.45),
         width: 1.5,
         paths: (_u, sIdx, i0, i1) => {
           const path = new Path2D();
@@ -876,111 +920,119 @@ const mpgVsTempChart = computed(() => {
       <h1>Fuel</h1>
       <div class="actions">
         <RouterLink to="/fuel/import" class="link">
-          <Upload :size="14" /> Import
+          <Upload :size="14" aria-hidden="true" /> Import
         </RouterLink>
         <button class="primary" type="button" @click="openCreate" :disabled="!vehicleId">
-          <Plus :size="14" /> New fillup
+          <Plus :size="14" aria-hidden="true" /> New fillup
         </button>
       </div>
     </header>
 
-    <div v-if="!vehicleId" class="card">
-      <p class="muted">Select a vehicle.</p>
-    </div>
+    <StateCard v-if="!vehicleId" state="empty" title="Select a vehicle." />
     <template v-else>
-      <nav class="tabs">
+      <nav class="tabs" role="tablist" aria-label="Fuel sections">
         <button
+          v-for="t in ([['fillups', 'Fillups'], ['map', 'Stations map'], ['stats', 'Stats']] as const)"
+          :key="t[0]"
           type="button"
-          :class="{ active: tab === 'fillups' }"
-          @click="tab = 'fillups'"
-        >Fillups</button>
-        <button
-          type="button"
-          :class="{ active: tab === 'map' }"
-          @click="tab = 'map'"
-        >Stations map</button>
-        <button
-          type="button"
-          :class="{ active: tab === 'stats' }"
-          @click="tab = 'stats'"
-        >Stats</button>
+          role="tab"
+          :aria-selected="tab === t[0]"
+          :class="{ active: tab === t[0] }"
+          @click="tab = t[0]"
+        >{{ t[1] }}</button>
       </nav>
 
       <!-- Fillups -->
       <template v-if="tab === 'fillups'">
-        <div v-if="fillupsQ.loading.value && !fillupsQ.data.value" class="card">
-          <p class="muted">Loading…</p>
-        </div>
-        <div v-else-if="!fillupsQ.data.value || fillupsQ.data.value.items.length === 0" class="card">
-          <p class="muted">No fillups yet. Import your Fuelio history or add one manually.</p>
-        </div>
+        <StateCard v-if="fillupsQ.loading.value && !fillupsQ.data.value" state="loading" title="Loading fillups…" />
+        <StateCard
+          v-else-if="fillupsQ.error.value && !fillupsQ.data.value"
+          state="error"
+          :message="fillupsQ.error.value"
+          @retry="fillupsQ.reload()"
+        />
+        <StateCard
+          v-else-if="!fillupsQ.data.value || fillupsQ.data.value.items.length === 0"
+          state="empty"
+          title="No fillups yet."
+          message="Import your Fuelio history or add one manually."
+        />
         <template v-else>
         <div class="filter-bar">
-          <div class="chip-row" role="tablist" aria-label="Fillup filter">
+          <div class="chip-row" role="group" aria-label="Fillup filter">
             <button
               v-for="opt in (['all','full','partial'] as const)"
               :key="opt"
               type="button"
               class="chip"
-              :class="{ active: fillupFilter === opt }"
+              :aria-pressed="fillupFilter === opt"
               @click="fillupFilter = opt"
             >
-              {{ opt === 'all' ? 'All' : opt === 'full' ? 'Full' : 'Partial' }}
+              {{ opt === 'all' ? 'All' : opt === 'full' ? 'Full tanks' : 'Partial fills' }}
             </button>
           </div>
-          <span class="muted small">
-            Click column headers to sort
-          </span>
         </div>
-        <div v-if="groupedFillups.length === 0" class="card">
-          <p class="muted">No fillups match the current filter.</p>
-        </div>
+        <StateCard v-if="groupedFillups.length === 0" state="empty" title="No fillups match the current filter." />
         <div v-for="group in groupedFillups" :key="group.key" class="card no-pad">
           <header class="group-head">
             <span class="group-label">{{ group.label }}</span>
             <span class="muted small">{{ group.items.length }}</span>
           </header>
+          <div class="table-scroll">
           <table class="data">
             <thead>
               <tr>
-                <th class="sortable" @click="changeSort('fillup_date')">Date</th>
-                <th class="sortable" @click="changeSort('odometer')">Odo</th>
-                <th class="sortable" @click="changeSort('volume')">Volume</th>
-                <th class="sortable" @click="changeSort('total_price')">Total</th>
-                <th>Station</th>
-                <th title="Conditions at fillup time">Wx</th>
-                <th class="sortable" @click="changeSort('mpg_recomputed')">
-                  MPG <small class="muted">(reported)</small>
+                <th
+                  v-for="h in ([
+                    ['fillup_date', 'Date', false],
+                    ['odometer', 'Odo', true],
+                    ['volume', 'Volume', true],
+                    ['total_price', 'Total', true],
+                    ['unit_price', `$/${volUnitLabel()}`, true],
+                  ] as const)"
+                  :key="h[0]"
+                  :class="{ num: h[2] }"
+                  :aria-sort="ariaSort(h[0])"
+                >
+                  <button type="button" class="sort-btn" @click="changeSort(h[0])">
+                    {{ h[1] }}<span class="arrow" aria-hidden="true">{{ sortArrow(h[0]) }}</span>
+                  </button>
                 </th>
-                <th></th>
+                <th>Station</th>
+                <th class="num" title="Air temperature at fillup time">Wx</th>
+                <th class="num" :aria-sort="ariaSort('mpg_recomputed')">
+                  <button
+                    type="button"
+                    class="sort-btn"
+                    :title="`Recomputed from odometer deltas (full-to-full, partials rolled up). The value in parentheses is what Fuelio recorded.`"
+                    @click="changeSort('mpg_recomputed')"
+                  >
+                    {{ economyUnitLabel() === 'mpg' ? 'MPG' : economyUnitLabel() }}<span class="arrow" aria-hidden="true">{{ sortArrow('mpg_recomputed') }}</span>
+                  </button>
+                </th>
+                <th><span class="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="f in group.items" :key="f.id">
                 <td>{{ fmtDate(f.fillup_date) }}</td>
-                <td>{{ fmtOdo(f.odo) }}</td>
-                <td>
-                  {{ fmtGallons(f.fuel_volume) }}
-                  <span v-if="f.is_missed" class="badge warn" title="Missed">M</span>
-                  <span v-if="f.is_full === false" class="badge warn" title="Partial fill">P</span>
+                <td class="num">{{ fmtOdo(f.odo, distSrc) }}</td>
+                <td class="num">
+                  {{ fmtVolume(f.fuel_volume, volSrc) }}
+                  <span v-if="f.is_missed" class="badge warn" title="A fillup before this one wasn't logged; MPG skipped">Missed</span>
+                  <span v-if="f.is_full === false" class="badge" title="Partial fill — MPG rolls into the next full tank">Partial</span>
                 </td>
-                <td>
-                  {{ f.price_total != null
-                      ? fmtMoney(Number(f.price_total))
-                      : fmtMoney(
-                          (Number(f.price_per_unit) || 0) * (f.fuel_volume ?? 0)
-                        )
-                  }}
-                </td>
+                <td class="num">{{ fmtMoney(fillupTotal(f)) }}</td>
+                <td class="num">{{ fmtPricePerVolume(fillupPpu(f), volSrc) }}</td>
                 <td>{{ f.city ?? f.station_id ?? "—" }}</td>
-                <td :title="weatherTitle(f)">
+                <td class="num" :title="weatherTitle(f)">
                   <span v-if="f.weather_temp_c != null">
-                    {{ wxIcon(f.weather_code) }}
-                    {{ Math.round(f.weather_temp_c * 9 / 5 + 32) }}°
+                    <span aria-hidden="true">{{ wxIcon(f.weather_code) }}</span>
+                    {{ fmtTempC(f.weather_temp_c) }}
                   </span>
                   <span v-else class="muted">—</span>
                 </td>
-                <td>
+                <td class="num">
                   <strong v-if="f.mpg != null">{{ fmtMpg(f.mpg) }}</strong>
                   <span
                     v-else-if="f.mpg_reported != null && f.mpg_reported > 0"
@@ -994,20 +1046,21 @@ const mpgVsTempChart = computed(() => {
                     v-if="f.mpg != null && f.mpg_reported != null && f.mpg_reported > 0"
                     class="muted small"
                   >
-                    ({{ fmtNumber(f.mpg_reported, { digits: 1 }) }})
+                    ({{ nf(1).format(convEconomyMpg(f.mpg_reported)) }})
                   </span>
                 </td>
                 <td class="row-actions">
-                  <button class="ghost" type="button" @click="openEdit(f)" title="Edit">
+                  <button class="ghost" type="button" @click="openEdit(f)" :aria-label="`Edit fillup from ${fmtDate(f.fillup_date)}`" title="Edit">
                     <Pencil :size="14" />
                   </button>
-                  <button class="ghost" type="button" @click="requestRemove(f)" title="Delete">
+                  <button class="ghost" type="button" @click="requestRemove(f)" :aria-label="`Delete fillup from ${fmtDate(f.fillup_date)}`" title="Delete">
                     <X :size="14" />
                   </button>
                 </td>
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
         <footer v-if="fillupsQ.data.value" class="pager">
           <span class="muted">
@@ -1032,18 +1085,17 @@ const mpgVsTempChart = computed(() => {
 
       <!-- Stations map -->
       <template v-else-if="tab === 'map'">
-        <div v-if="stationsQ.loading.value" class="card">
-          <p class="muted">Loading stations…</p>
-        </div>
-        <div v-else-if="stationMarkers.length === 0" class="card">
-          <p class="muted">
-            No stations with GPS coordinates yet. Add fillups with location set, or import
-            from Fuelio.
-          </p>
-        </div>
+        <StateCard v-if="stationsQ.loading.value" state="loading" title="Loading stations…" />
+        <StateCard v-else-if="stationsQ.error.value" state="error" :message="stationsQ.error.value" @retry="stationsQ.reload()" />
+        <StateCard
+          v-else-if="stationMarkers.length === 0"
+          state="empty"
+          title="No stations with GPS coordinates yet."
+          message="Add fillups with a location set, or import from Fuelio."
+        />
         <template v-else>
           <div class="map-actions">
-            <button class="btn ghost" @click="useCurrentLocation">
+            <button class="btn ghost" type="button" @click="useCurrentLocation">
               Use current location
             </button>
             <span v-if="liveCenter" class="muted small">
@@ -1068,7 +1120,7 @@ const mpgVsTempChart = computed(() => {
               <dt>Fillup count</dt>
               <dd>{{ selectedStation.properties.fillup_count }}</dd>
               <dt>Total volume</dt>
-              <dd>{{ fmtGallons(Number(selectedStation.properties.total_volume) || null) }}</dd>
+              <dd>{{ fmtVolume(Number(selectedStation.properties.total_volume) || null, volSrc) }}</dd>
               <dt>Last visit</dt>
               <dd>
                 {{
@@ -1096,11 +1148,12 @@ const mpgVsTempChart = computed(() => {
             visits per station. Delta column compares the most recent
             price against the average of the others before it.
           </p>
+          <div class="table-scroll">
           <table class="data station-prices">
             <thead>
               <tr>
                 <th>Station</th>
-                <th class="num">Latest $/gal</th>
+                <th class="num">Latest $/{{ volUnitLabel() }}</th>
                 <th class="num">Δ vs prev avg</th>
                 <th class="num">Avg</th>
                 <th class="num">Visits</th>
@@ -1110,7 +1163,7 @@ const mpgVsTempChart = computed(() => {
             <tbody>
               <tr v-for="s in stationPricesQ.data.value" :key="s.cluster_id">
                 <td>{{ s.name ?? "Unnamed station" }}</td>
-                <td class="num">${{ s.latest_price.toFixed(3) }}</td>
+                <td class="num">{{ fmtPricePerVolume(s.latest_price, volSrc) }}</td>
                 <td
                   class="num"
                   :class="{
@@ -1124,12 +1177,13 @@ const mpgVsTempChart = computed(() => {
                   </template>
                   <template v-else>—</template>
                 </td>
-                <td class="num">${{ s.avg_price.toFixed(3) }}</td>
+                <td class="num">{{ fmtPricePerVolume(s.avg_price, volSrc) }}</td>
                 <td class="num">{{ s.fillup_count }}</td>
                 <td>{{ fmtDate(s.latest_date) }}</td>
               </tr>
             </tbody>
           </table>
+          </div>
         </section>
       </template>
 
@@ -1137,30 +1191,27 @@ const mpgVsTempChart = computed(() => {
       <template v-else>
         <div class="stats-controls">
           <div class="control-row">
-            <span class="muted small">Window:</span>
-            <button
-              v-for="w in (['30d', '3m', '12m', 'all'] as const)"
-              :key="w"
-              class="chip"
-              :class="{ active: statsWindow === w }"
-              @click="statsWindow = w"
-            >{{ { '30d': '30 days', '3m': '3 months', '12m': '12 months', 'all': 'All time' }[w] }}</button>
+            <span class="muted small">Window</span>
+            <WindowChips v-model="statsWindow" :options="STATS_WINDOW_OPTIONS" />
           </div>
           <div class="control-row">
-            <span class="muted small">Charts:</span>
-            <button
-              v-for="c in chartChoices"
-              :key="c.key"
-              class="chip"
-              :class="{ active: chartVisible[c.key] }"
-              @click="chartVisible[c.key] = !chartVisible[c.key]"
-            >{{ c.label }}</button>
+            <span class="muted small">Charts</span>
+            <div class="chip-row" role="group" aria-label="Visible charts">
+              <button
+                v-for="c in chartChoices"
+                :key="c.key"
+                type="button"
+                class="chip"
+                :aria-pressed="!!chartVisible[c.key]"
+                @click="chartVisible[c.key] = !chartVisible[c.key]"
+              >{{ c.label }}</button>
+            </div>
           </div>
         </div>
         <div class="grid stats">
           <template v-if="chartVisible.kpis">
           <div class="card kpi">
-            <h3>Avg MPG (recent)</h3>
+            <h3>Avg economy <span class="tag-fixed">last 6 fillups</span></h3>
             <div class="big">{{ fmtMpg(summary.avgMpg) }}</div>
           </div>
           <div class="card kpi">
@@ -1168,44 +1219,45 @@ const mpgVsTempChart = computed(() => {
             <div class="big">{{ fmtMoney(summary.totalSpendWindow) }}</div>
           </div>
           <div class="card kpi">
-            <h3>Miles tracked</h3>
-            <div class="big">{{ fmtMiles(summary.totalMiles) }}</div>
+            <h3>Distance tracked ({{ spendWindowLabel }})</h3>
+            <div class="big">{{ fmtDistance(summary.totalMiles, "mi", 0) }}</div>
           </div>
           </template>
           <div v-if="chartVisible.monthly" class="card chart-card">
             <h3>Monthly spend</h3>
-            <div v-if="monthlyQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!monthlyData || !monthlyOpts" class="muted">No data.</div>
+            <StateCard v-if="monthlyQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="monthlyQ.error.value" state="error" bare :message="monthlyQ.error.value" @retry="monthlyQ.reload()" />
+            <StateCard v-else-if="!monthlyData || !monthlyOpts" state="empty" bare title="No data." />
             <UPlotChart v-else :data="monthlyData" :options="monthlyOpts" />
           </div>
           <div v-if="chartVisible.cpm" class="card chart-card">
-            <h3>$/mile</h3>
-            <div v-if="cpmQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!cpmData" class="muted">No data.</div>
+            <h3>Cost per {{ distUnitLabel() }}</h3>
+            <StateCard v-if="cpmQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="cpmQ.error.value" state="error" bare :message="cpmQ.error.value" @retry="cpmQ.reload()" />
+            <StateCard v-else-if="!cpmData" state="empty" bare title="No data." />
             <UPlotChart v-else :data="cpmData" :options="cpmOpts" />
           </div>
           <div v-if="chartVisible.overlay" class="card chart-card wide">
-            <h3>OBD vs fillup MPG</h3>
-            <div v-if="overlayQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!overlayData" class="muted">
-              No OBD data yet — drive with the WiCAN connected to populate this chart.
-            </div>
+            <h3>OBD vs fillup economy <span class="tag-fixed">all time</span></h3>
+            <StateCard v-if="overlayQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="overlayQ.error.value" state="error" bare :message="overlayQ.error.value" @retry="overlayQ.reload()" />
+            <StateCard v-else-if="!overlayData" state="empty" bare title="No OBD data yet" message="Drive with the WiCAN connected to populate this chart." />
             <UPlotChart v-else :data="overlayData" :options="overlayOpts" />
           </div>
 
           <!-- Range-to-empty KPI: depends on tank1_capacity + live fuel
                level. When either is missing, surfaces a hint. -->
           <div v-if="chartVisible.range" class="card kpi">
-            <h3>Range to empty</h3>
+            <h3>Range to empty <span class="tag-fixed">now</span></h3>
             <div v-if="!rangeEstimate" class="muted small">
               Set tank capacity on the
               <RouterLink to="/vehicles">vehicle</RouterLink> first.
             </div>
             <template v-else-if="rangeEstimate.miles != null">
-              <div class="big">{{ rangeEstimate.miles.toFixed(0) }} mi</div>
+              <div class="big">{{ fmtDistance(rangeEstimate.miles, "mi", 0) }}</div>
               <div class="muted small">
                 {{ rangeEstimate.fuelLevel?.toFixed(0) }}% fuel ·
-                {{ rangeEstimate.rollingMpg?.toFixed(1) }} mpg avg
+                {{ fmtMpg(rangeEstimate.rollingMpg) }} avg
               </div>
             </template>
             <template v-else>
@@ -1219,40 +1271,35 @@ const mpgVsTempChart = computed(() => {
           </div>
 
           <div v-if="chartVisible.ppg" class="card chart-card">
-            <h3>$/gallon trend</h3>
-            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!ppgChart" class="muted">No price data.</div>
+            <h3>Price per {{ volUnitLabel() === 'gal' ? 'gallon' : 'litre' }}</h3>
+            <StateCard v-if="statsFillupsQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="statsFillupsQ.error.value" state="error" bare :message="statsFillupsQ.error.value" @retry="statsFillupsQ.reload()" />
+            <StateCard v-else-if="!ppgChart" state="empty" bare title="No price data." />
             <UPlotChart v-else :data="ppgChart.aligned" :options="ppgChart.opts" />
           </div>
 
           <div v-if="chartVisible.freq" class="card chart-card">
             <h3>Fillup frequency</h3>
-            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!frequencyChart" class="muted">
-              Need at least 2 fillups for a frequency histogram.
-            </div>
+            <StateCard v-if="statsFillupsQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="!frequencyChart" state="empty" bare title="Need at least 2 fillups for a frequency histogram." />
             <UPlotChart v-else :data="frequencyChart.aligned" :options="frequencyChart.opts" />
           </div>
 
           <div v-if="chartVisible.vol" class="card chart-card">
             <h3>Volume per fill</h3>
-            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!volumeDistChart" class="muted">
-              Need at least 4 fillups for a distribution.
-            </div>
+            <StateCard v-if="statsFillupsQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="!volumeDistChart" state="empty" bare title="Need at least 4 fillups for a distribution." />
             <UPlotChart v-else :data="volumeDistChart.aligned" :options="volumeDistChart.opts" />
           </div>
 
           <div v-if="chartVisible.mpgVsTemp" class="card chart-card">
-            <h3>MPG by temperature</h3>
-            <div v-if="statsFillupsQ.loading.value" class="muted">Loading…</div>
-            <div v-else-if="!mpgVsTempChart" class="muted">
-              Need at least 4 fillups with weather data — backfill is in progress.
-            </div>
+            <h3>Economy by temperature</h3>
+            <StateCard v-if="statsFillupsQ.loading.value" state="loading" bare />
+            <StateCard v-else-if="!mpgVsTempChart" state="empty" bare title="Need at least 4 fillups with weather data." />
             <template v-else>
               <UPlotChart :data="mpgVsTempChart.aligned" :options="mpgVsTempChart.opts" />
               <p class="muted small">
-                Average recomputed MPG grouped into 10°F buckets across
+                Average recomputed economy grouped into 10{{ tempUnitLabel() }} buckets across
                 {{ mpgVsTempChart.bucketCount }} temperature ranges.
               </p>
             </template>
@@ -1280,7 +1327,7 @@ const mpgVsTempChart = computed(() => {
         deleteError
           ? deleteError
           : deleteTarget
-            ? fmtDate(deleteTarget.fillup_date) + ' · ' + fmtGallons(deleteTarget.fuel_volume)
+            ? fmtDate(deleteTarget.fillup_date) + ' · ' + fmtVolume(deleteTarget.fuel_volume, volSrc)
             : null
       "
       confirm-label="Delete"
@@ -1345,13 +1392,6 @@ const mpgVsTempChart = computed(() => {
   padding: 0;
   overflow: hidden;
 }
-.sortable {
-  cursor: pointer;
-  user-select: none;
-}
-.sortable:hover {
-  color: var(--c-text);
-}
 .mpg-fallback {
   font-style: italic;
   color: var(--c-ink2);
@@ -1397,23 +1437,6 @@ const mpgVsTempChart = computed(() => {
   align-items: center;
   gap: 0.4rem;
 }
-.chip {
-  padding: 0.32rem 0.7rem;
-  font-size: 0.78rem;
-  border-radius: 999px;
-  border: 1px solid var(--c-border-soft);
-  background: var(--c-surface);
-  color: var(--c-muted);
-  cursor: pointer;
-}
-.chip:hover {
-  background: var(--c-surface-2);
-}
-.chip.active {
-  background: var(--c-accent-tint);
-  color: var(--c-ink0);
-  border-color: var(--c-accent);
-}
 .chart-card {
   grid-column: span 1;
 }
@@ -1426,7 +1449,7 @@ const mpgVsTempChart = computed(() => {
   gap: 0.4rem 0.6rem;
 }
 .kv dt {
-  color: #9aa0aa;
+  color: var(--c-ink2);
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1454,37 +1477,60 @@ const mpgVsTempChart = computed(() => {
   padding: 8px 4px 0;
   flex-wrap: wrap;
 }
-.chip-row {
-  display: inline-flex;
-  gap: 4px;
-}
-.chip {
-  background: var(--c-surface-soft, #1e1c2a);
-  border: 1px solid var(--c-border-soft, #2a2d33);
-  border-radius: 999px;
-  color: var(--c-text, #e7e9ee);
-  padding: 4px 10px;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-.chip.active {
-  background: var(--c-accent, #f97316);
-  color: white;
-  border-color: var(--c-accent, #f97316);
-}
 .group-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--c-border-soft, #2a2d33);
+  border-bottom: 1px solid var(--c-line0);
 }
 .group-label {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.78rem;
   font-weight: 500;
-  color: var(--c-accent, #f97316);
+  color: var(--c-ink2);
   flex: 1;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.sort-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sort-btn:hover:not(:disabled) {
+  background: none;
+  color: var(--c-ink0);
+}
+.sort-btn .arrow {
+  margin-left: 0.25rem;
+  font-size: 0.7em;
+  color: var(--c-accent);
+}
+th[aria-sort="ascending"],
+th[aria-sort="descending"] {
+  color: var(--c-ink1);
+}
+td .badge {
+  margin-left: 0.3rem;
+  font-family: 'Geist', sans-serif;
+  font-size: 0.68rem;
+}
+.control-row > .muted {
+  min-width: 4rem;
+}
+@media (max-width: 700px) {
+  .head {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
 }
 </style>

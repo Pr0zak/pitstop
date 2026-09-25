@@ -56,6 +56,9 @@ function pick(id: string) {
       v-if="showPicker"
       class="trigger"
       type="button"
+      aria-haspopup="listbox"
+      :aria-expanded="open"
+      aria-label="Select vehicle"
       @click="open = !open"
     >
       <Car :size="16" />

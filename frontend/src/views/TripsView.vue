@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import StateCard from "@/components/StateCard.vue";
+import { useQueryParam } from "@/composables/useQueryParam";
+import { useToastStore } from "@/stores/toast";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
@@ -16,6 +20,7 @@ import {
 
 const vehicles = useVehiclesStore();
 const router = useRouter();
+const toast = useToastStore();
 // Date-range presets (TRIPS, C16). Chips compute LOCAL boundaries so the
 // server window matches what the user means by a calendar day; "custom"
 // reveals the two date inputs. This also sidesteps the date-only-as-UTC bug:
@@ -88,15 +93,37 @@ function toggleSelected(id: string) {
   selectedIds.value = next;
 }
 
-// Client-side sort + source filter (TRIPS-2). Apply over the
-// currently-loaded page; for narrow date windows the server-side
-// from/to handles bigger ranges efficiently.
-type SortOrder = "recent" | "distance" | "speed" | "duration";
-type SrcFilter = "all" | "phone_batch" | "manual_merge" | "other";
-const sort = ref<SortOrder>("recent");
-const srcFilter = ref<SrcFilter>("all");
+// Sort / source / towing are SERVER-side now (GET /trips sort, source,
+// towing) so a "longest" ranking covers every trip, not the loaded page.
+// The same filter + sort is re-applied client-side to the returned page:
+// idempotent against a backend that honoured the params, and a correct
+// per-page fallback against one that predates them. All three round-trip
+// through the URL.
+type SortOrder = api.TripSort;
+type SrcFilter = "all" | api.TripSourceFilter;
+const SORTS = ["recent", "distance", "duration", "top_speed", "max_rpm", "fuel"] as const;
+const SORT_LABEL: Record<SortOrder, string> = {
+  recent: "Most recent",
+  distance: "Longest distance",
+  duration: "Longest duration",
+  top_speed: "Fastest top speed",
+  max_rpm: "Highest RPM",
+  fuel: "Most fuel used",
+};
+const sort = useQueryParam<SortOrder>("sort", "recent", SORTS);
+const srcFilter = useQueryParam<SrcFilter>("source", "all", ["all", "phone_batch", "manual_merge", "other"]);
 // Towing is a load condition, so it filters independently of source.
-const towingOnly = ref(false);
+const towingParam = useQueryParam<"0" | "1">("towing", "0", ["0", "1"]);
+const towingOnly = computed<boolean>({
+  get: () => towingParam.value === "1",
+  set: (v) => (towingParam.value = v ? "1" : "0"),
+});
+const SRC_LABEL: Record<SrcFilter, string> = {
+  all: "All sources",
+  phone_batch: "Phone",
+  manual_merge: "Merged",
+  other: "Other",
+};
 
 // Relative-date bucket for group headers.
 type GroupKey =
@@ -137,12 +164,15 @@ const { data, loading, error, reload } = useAsync(
           to: toIso.value,
           limit: limit.value,
           offset: offset.value,
+          ...(sort.value !== "recent" ? { sort: sort.value } : {}),
+          ...(srcFilter.value !== "all" ? { source: srcFilter.value } : {}),
+          ...(towingOnly.value ? { towing: true } : {}),
         })
       : Promise.resolve({ items: [], total: 0 }),
-  [vehicleId, fromIso, toIso, limit, offset],
+  [vehicleId, fromIso, toIso, limit, offset, sort, srcFilter, towingOnly],
 );
 
-watch([vehicleId, fromIso, toIso], () => {
+watch([vehicleId, fromIso, toIso, sort, srcFilter, towingOnly], () => {
   offset.value = 0;
 });
 
@@ -166,6 +196,7 @@ async function doMerge() {
   try {
     await api.mergeTrips(ids[0], ids.slice(1));
     action.value = { kind: "done", verb: "merge", message: "Trips merged" };
+    toast.success(`Merged ${ids.length} trips`);
     selectMode.value = false;
     selectedIds.value = new Set();
     await reload();
@@ -211,6 +242,7 @@ async function doDelete() {
       verb: "delete",
       message: `Deleted ${ids.length} trip${ids.length === 1 ? "" : "s"}`,
     };
+    toast.success(action.value.message);
     selectMode.value = false;
     selectedIds.value = new Set();
     await reload();
@@ -270,7 +302,7 @@ function reset() {
   fromDate.value = "";
   toDate.value = "";
   offset.value = 0;
-  void reload();
+  void router.replace({ query: {} });
 }
 
 const DATE_PRESET_LABEL: Record<DatePreset, string> = {
@@ -281,28 +313,39 @@ const DATE_PRESET_LABEL: Record<DatePreset, string> = {
   custom: "Custom",
 };
 
-// Filter + sort + group the current page (TRIPS-2). Always shown
-// across whatever from/to range the server delivered.
-const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: import("@/api/types").Trip[] }>>(() => {
-  const items = data.value?.items ?? [];
-  const filtered = items.filter((t) => {
-    if (towingOnly.value && !t.is_towing) return false;
-    if (srcFilter.value === "all") return true;
-    if (srcFilter.value === "phone_batch") return t.source === "phone_batch";
-    if (srcFilter.value === "manual_merge") return t.source === "manual_merge";
-    return t.source !== "phone_batch" && t.source !== "manual_merge";
-  });
-  const cmp = (a: import("@/api/types").Trip, b: import("@/api/types").Trip): number => {
-    switch (sort.value) {
-      case "distance": return (b.distance_km ?? 0) - (a.distance_km ?? 0);
-      case "speed": return (b.max_speed_kph ?? 0) - (a.max_speed_kph ?? 0);
-      case "duration": return (b.duration_s ?? 0) - (a.duration_s ?? 0);
-      default:
-        return new Date(b.started_at).getTime() - new Date(a.started_at).getTime();
-    }
-  };
-  const byKey = new Map<GroupKey, import("@/api/types").Trip[]>();
-  for (const t of filtered) {
+// Filter + sort the returned page (see the note on `sort` above).
+function matches(t: Trip): boolean {
+  if (towingOnly.value && !t.is_towing) return false;
+  if (srcFilter.value === "all") return true;
+  if (srcFilter.value === "phone_batch") return t.source === "phone_batch";
+  if (srcFilter.value === "manual_merge") return t.source === "manual_merge";
+  return t.source !== "phone_batch" && t.source !== "manual_merge";
+}
+function cmp(a: Trip, b: Trip): number {
+  switch (sort.value) {
+    case "distance": return (b.distance_km ?? 0) - (a.distance_km ?? 0);
+    case "top_speed": return (b.max_speed_kph ?? 0) - (a.max_speed_kph ?? 0);
+    case "duration": return (b.duration_s ?? 0) - (a.duration_s ?? 0);
+    case "max_rpm": return (b.max_rpm ?? 0) - (a.max_rpm ?? 0);
+    case "fuel": return (b.fuel_used_l ?? 0) - (a.fuel_used_l ?? 0);
+    default:
+      return new Date(b.started_at).getTime() - new Date(a.started_at).getTime();
+  }
+}
+const visibleTrips = computed<Trip[]>(() => (data.value?.items ?? []).filter(matches).sort(cmp));
+
+/** Non-recent sorts render as one ranked list — date groups would scatter
+ *  the ranking across headers. */
+const ranked = computed(() => sort.value !== "recent");
+
+const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: Trip[] }>>(() => {
+  if (ranked.value) {
+    return visibleTrips.value.length
+      ? [{ key: "older" as GroupKey, label: SORT_LABEL[sort.value], items: visibleTrips.value }]
+      : [];
+  }
+  const byKey = new Map<GroupKey, Trip[]>();
+  for (const t of visibleTrips.value) {
     const k = bucketFor(t.started_at);
     let list = byKey.get(k);
     if (!list) {
@@ -313,9 +356,16 @@ const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: impor
   }
   const order: GroupKey[] = ["today", "yesterday", "past7", "past30", "thisYear", "older"];
   return order
-    .map((k) => ({ key: k, label: GROUP_LABEL[k], items: (byKey.get(k) ?? []).sort(cmp) }))
+    .map((k) => ({ key: k, label: GROUP_LABEL[k], items: byKey.get(k) ?? [] }))
     .filter((g) => g.items.length > 0);
 });
+
+function onStartedClick(e: MouseEvent, id: string) {
+  if (selectMode.value) {
+    e.preventDefault();
+    toggleSelected(id);
+  }
+}
 
 // Per-purpose rollup over the currently visible page (Task #94).
 // Untagged trips collapse into a single "—" bucket so the user can
@@ -340,69 +390,68 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   <div class="trips">
     <header class="head">
       <h1>Trips</h1>
-      <div class="filters">
-        <div class="chip-row" role="tablist" aria-label="Date range">
-          <button
-            v-for="opt in (['7d','30d','90d','all','custom'] as const)"
-            :key="opt"
-            type="button"
-            class="chip"
-            :class="{ active: datePreset === opt }"
-            @click="datePreset = opt"
-          >
-            {{ DATE_PRESET_LABEL[opt] }}
-          </button>
-        </div>
-        <template v-if="datePreset === 'custom'">
-          <label>
-            <span class="lbl">From</span>
-            <input type="date" v-model="fromDate" />
-          </label>
-          <label>
-            <span class="lbl">To</span>
-            <input type="date" v-model="toDate" />
-          </label>
-        </template>
-        <div class="chip-row" role="tablist" aria-label="Source filter">
-          <button
-            v-for="opt in (['all','phone_batch','manual_merge','other'] as const)"
-            :key="opt"
-            type="button"
-            class="chip"
-            :class="{ active: srcFilter === opt }"
-            @click="srcFilter = opt"
-          >
-            {{ opt === 'all' ? 'All' : opt === 'phone_batch' ? 'Phone' : opt === 'manual_merge' ? 'Merged' : 'Other' }}
-          </button>
-        </div>
-        <label class="sort">
-          <span class="lbl">Sort</span>
-          <select v-model="sort">
-            <option value="recent">Most recent</option>
-            <option value="distance">Longest distance</option>
-            <option value="speed">Fastest top speed</option>
-            <option value="duration">Longest duration</option>
-          </select>
-        </label>
+      <div class="head-actions">
         <button type="button" class="ghost" @click="reset">Reset</button>
-        <button
-          v-if="!selectMode"
-          type="button"
-          class="ghost"
-          @click="enterSelectMode"
-        >Select</button>
+        <button v-if="!selectMode" type="button" class="ghost" @click="enterSelectMode">Select</button>
       </div>
     </header>
 
+    <div class="filters">
+      <div class="chip-row" role="group" aria-label="Date range">
+        <button
+          v-for="opt in (['7d','30d','90d','all','custom'] as const)"
+          :key="opt"
+          type="button"
+          class="chip"
+          :aria-pressed="datePreset === opt"
+          @click="datePreset = opt"
+        >
+          {{ DATE_PRESET_LABEL[opt] }}
+        </button>
+      </div>
+      <template v-if="datePreset === 'custom'">
+        <label>
+          <span class="lbl">From</span>
+          <input type="date" v-model="fromDate" />
+        </label>
+        <label>
+          <span class="lbl">To</span>
+          <input type="date" v-model="toDate" />
+        </label>
+      </template>
+      <div class="chip-row" role="group" aria-label="Source and load">
+        <button
+          v-for="opt in (['all','phone_batch','manual_merge','other'] as const)"
+          :key="opt"
+          type="button"
+          class="chip"
+          :aria-pressed="srcFilter === opt"
+          @click="srcFilter = opt"
+        >
+          {{ SRC_LABEL[opt] }}
+        </button>
+        <button
+          type="button"
+          class="chip"
+          :aria-pressed="towingOnly"
+          title="Only trips flagged as towing"
+          @click="towingOnly = !towingOnly"
+        >
+          Towing
+        </button>
+      </div>
+      <label class="sort">
+        <span class="lbl">Sort</span>
+        <select v-model="sort">
+          <option v-for="o in SORTS" :key="o" :value="o">{{ SORT_LABEL[o] }}</option>
+        </select>
+      </label>
+    </div>
+
     <div v-if="selectMode" class="action-bar" role="toolbar" aria-label="Trip selection actions">
-      <span class="action-label">{{ actionBarLabel }}</span>
+      <span class="action-label" role="status">{{ actionBarLabel }}</span>
       <span v-if="action.kind === 'in_progress'" class="spinner" aria-hidden="true"></span>
-      <button
-        type="button"
-        class="ghost"
-        :disabled="action.kind === 'in_progress'"
-        @click="exitSelectMode"
-      >Cancel</button>
+      <button type="button" class="ghost" :disabled="action.kind === 'in_progress'" @click="exitSelectMode">Cancel</button>
       <button
         type="button"
         class="primary"
@@ -417,53 +466,31 @@ const purposeRollup = computed<PurposeRow[]>(() => {
       >Delete</button>
     </div>
 
-    <div
-      v-if="confirmDelete"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="delete-confirm-title"
-      @click.self="cancelDelete"
+    <ConfirmDialog
+      :open="confirmDelete"
+      :title="`Delete ${deleteTargets.length} trip${deleteTargets.length === 1 ? '' : 's'}?`"
+      message="This can't be undone."
+      confirm-label="Delete"
+      @confirm="doDelete"
+      @cancel="cancelDelete"
     >
-      <div class="modal">
-        <h3 id="delete-confirm-title">Delete {{ deleteTargets.length }} trip{{ deleteTargets.length === 1 ? '' : 's' }}?</h3>
-        <p class="muted">This can't be undone.</p>
-        <ul v-if="deleteTargets.length <= 5" class="target-list">
-          <li v-for="t in deleteTargets" :key="t.id">
-            {{ fmtDateTime(t.started_at) }}
-            <span class="muted">·</span>
-            {{ fmtDistanceKm(t.distance_km ?? null) }}
-          </li>
-        </ul>
-        <div class="modal-actions">
-          <button type="button" class="ghost" @click="cancelDelete">Cancel</button>
-          <button type="button" class="danger" @click="doDelete">Delete</button>
-        </div>
-      </div>
-    </div>
+      <ul v-if="deleteTargets.length <= 5" class="target-list">
+        <li v-for="t in deleteTargets" :key="t.id">
+          {{ fmtDateTime(t.started_at) }}
+          <span class="muted">·</span>
+          {{ fmtDistanceKm(t.distance_km ?? null) }}
+        </li>
+      </ul>
+    </ConfirmDialog>
 
-    <!-- Thin top progress bar during background revalidation. Replaces the
-         old full-card "Loading…" blank so stale rows stay visible while the
-         next page/sort/window loads (stale-while-revalidate, B9). -->
-    <div
-      v-if="loading && data"
-      class="revalidate-bar"
-      role="progressbar"
-      aria-label="Loading"
-    ></div>
+    <!-- Thin top progress bar during background revalidation (stale rows
+         stay visible while the next page / sort / filter loads). -->
+    <div v-if="loading && data" class="revalidate-bar" role="progressbar" aria-label="Loading"></div>
 
-    <div v-if="!vehicleId" class="card">
-      <p class="muted">Select a vehicle to view its trips.</p>
-    </div>
-    <div v-else-if="loading && !data" class="card">
-      <p class="muted">Loading trips…</p>
-    </div>
-    <div v-else-if="error && !data" class="card">
-      <p class="muted">Failed to load: {{ error }}</p>
-    </div>
-    <div v-else-if="!data || data.items.length === 0" class="card">
-      <p class="muted">No trips in this range.</p>
-    </div>
+    <StateCard v-if="!vehicleId" state="empty" title="Select a vehicle to view its trips." />
+    <StateCard v-else-if="loading && !data" state="loading" title="Loading trips…" />
+    <StateCard v-else-if="error && !data" state="error" :message="error" @retry="reload()" />
+    <StateCard v-else-if="!data || data.items.length === 0" state="empty" title="No trips in this range." />
     <template v-else>
       <div v-if="purposeRollup.length > 1" class="card purposes">
         <h3>By purpose <span class="muted small">— this page</span></h3>
@@ -478,31 +505,32 @@ const purposeRollup = computed<PurposeRow[]>(() => {
         </ul>
       </div>
 
-      <div v-if="groupedTrips.length === 0" class="card">
-        <p class="muted">No trips match the current filter.</p>
-      </div>
+      <StateCard v-if="groupedTrips.length === 0" state="empty" title="No trips match the current filter." />
       <div v-for="group in groupedTrips" :key="group.key" class="card no-pad">
         <header class="group-head">
           <span class="group-label">{{ group.label }}</span>
           <span class="muted small">{{ group.items.length }}</span>
         </header>
-        <table class="data">
+
+        <!-- Desktop / tablet: table -->
+        <table class="data trip-table">
           <thead>
             <tr>
-              <th v-if="selectMode" class="sel-cell"></th>
+              <th v-if="selectMode" class="sel-cell"><span class="sr-only">Selected</span></th>
+              <th v-if="ranked" class="num">#</th>
               <th>Started</th>
-              <th>Duration</th>
-              <th>Distance</th>
-              <th>Max speed</th>
-              <th>Max RPM</th>
-              <th>Fuel</th>
+              <th class="num">Duration</th>
+              <th class="num">Distance</th>
+              <th class="num">Max speed</th>
+              <th class="num">Max RPM</th>
+              <th class="num">Fuel</th>
               <th>Purpose</th>
-              <th>DTCs</th>
+              <th class="num">DTCs</th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="t in group.items"
+              v-for="(t, i) in group.items"
               :key="t.id"
               class="clickable"
               :class="{ selected: selectedIds.has(t.id) }"
@@ -513,32 +541,54 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                   <span v-if="selectedIds.has(t.id)">✓</span>
                 </span>
               </td>
+              <td v-if="ranked" class="num muted">{{ offset + i + 1 }}</td>
               <td>
-                {{ fmtDateTime(t.started_at) }}
-                <span
-                  v-if="t.gps_only"
-                  class="gps-badge"
-                  title="No engine data — recorded by the phone alone, so this may not be this vehicle"
-                >GPS ONLY</span>
-                <span
-                  v-if="t.is_towing"
-                  class="tow-badge"
-                  title="Towing — fuel economy on this trip is not comparable"
-                >TOW</span>
+                <RouterLink
+                  :to="`/trips/${t.id}`"
+                  class="started-link"
+                  :aria-pressed="selectMode ? selectedIds.has(t.id) : undefined"
+                  @click.stop="onStartedClick($event, t.id)"
+                >{{ fmtDateTime(t.started_at) }}</RouterLink>
+                <span v-if="t.gps_only" class="gps-badge" title="No engine data — recorded by the phone alone, so this may not be this vehicle">GPS ONLY</span>
+                <span v-if="t.is_towing" class="tow-badge" title="Towing — fuel economy on this trip is not comparable">TOW</span>
               </td>
-              <td>{{ fmtDuration(t.duration_s) }}</td>
-              <td>{{ fmtDistanceKm(t.distance_km ?? null) }}</td>
-              <td>{{ fmtSpeedKph(t.max_speed_kph ?? null) }}</td>
-              <td>{{ fmtRpm(t.max_rpm) }}</td>
-              <td>{{ fmtVolumeL(t.fuel_used_l ?? null) }}</td>
+              <td class="num">{{ fmtDuration(t.duration_s) }}</td>
+              <td class="num">{{ fmtDistanceKm(t.distance_km ?? null) }}</td>
+              <td class="num">{{ fmtSpeedKph(t.max_speed_kph ?? null) }}</td>
+              <td class="num">{{ fmtRpm(t.max_rpm) }}</td>
+              <td class="num">{{ fmtVolumeL(t.fuel_used_l ?? null) }}</td>
               <td>
                 <span v-if="t.category" class="tag">{{ t.category }}</span>
                 <span v-else class="muted">—</span>
               </td>
-              <td>{{ t.dtc_count ?? 0 }}</td>
+              <td class="num">
+                <span v-if="(t.dtc_count ?? 0) > 0" class="badge danger">{{ t.dtc_count }}</span>
+              </td>
             </tr>
           </tbody>
         </table>
+
+        <!-- Phone: cards -->
+        <ul class="trip-cards">
+          <li v-for="(t, i) in group.items" :key="t.id" :class="{ selected: selectedIds.has(t.id) }">
+            <RouterLink :to="`/trips/${t.id}`" class="trip-card" @click="onStartedClick($event, t.id)">
+              <div class="tc-top">
+                <span v-if="ranked" class="rank num">#{{ offset + i + 1 }}</span>
+                <span class="tc-date">{{ fmtDateTime(t.started_at) }}</span>
+                <span v-if="(t.dtc_count ?? 0) > 0" class="badge danger">{{ t.dtc_count }} DTC</span>
+                <span v-if="t.is_towing" class="tow-badge">TOW</span>
+                <span v-if="t.gps_only" class="gps-badge">GPS ONLY</span>
+              </div>
+              <div class="tc-stats num">
+                <span>{{ fmtDistanceKm(t.distance_km ?? null) }}</span>
+                <span>{{ fmtDuration(t.duration_s) }}</span>
+                <span>{{ fmtSpeedKph(t.max_speed_kph ?? null) }} max</span>
+                <span>{{ fmtVolumeL(t.fuel_used_l ?? null) }}</span>
+              </div>
+              <div v-if="t.category" class="tc-tag"><span class="tag">{{ t.category }}</span></div>
+            </RouterLink>
+          </li>
+        </ul>
       </div>
       <footer class="pager">
         <span class="muted">
@@ -546,11 +596,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
           of {{ data.total }}
         </span>
         <button type="button" :disabled="offset === 0" @click="prevPage">Prev</button>
-        <button
-          type="button"
-          :disabled="offset + limit >= data.total"
-          @click="nextPage"
-        >Next</button>
+        <button type="button" :disabled="offset + limit >= data.total" @click="nextPage">Next</button>
       </footer>
     </template>
   </div>
@@ -571,7 +617,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   height: 2px;
   border-radius: 1px;
   overflow: hidden;
-  background: var(--c-accent-soft, rgba(255, 91, 58, 0.18));
+  background: var(--c-accent-soft);
   z-index: 20;
 }
 .revalidate-bar::after {
@@ -580,7 +626,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   top: 0;
   bottom: 0;
   width: 40%;
-  background: var(--c-accent, #ff5b3a);
+  background: var(--c-accent);
   border-radius: 1px;
   animation: revalidate-slide 1s ease-in-out infinite;
 }
@@ -590,18 +636,23 @@ const purposeRollup = computed<PurposeRow[]>(() => {
 }
 .head {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
   flex-wrap: wrap;
+}
+.head-actions {
+  display: flex;
+  gap: 0.4rem;
 }
 .head h1 {
   margin: 0;
 }
 .filters {
   display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
 }
 .filters label {
   display: flex;
@@ -647,8 +698,8 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #8b95a7;
-  border: 1px solid #8b95a7;
+  color: var(--c-ink2);
+  border: 1px solid var(--c-ink3);
   vertical-align: 1px;
 }
 
@@ -660,13 +711,13 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #ffb020;
-  border: 1px solid #ffb020;
+  color: var(--c-warn);
+  border: 1px solid var(--c-warn);
   vertical-align: 1px;
 }
 
 .tag {
-  background: var(--c-surface-soft);
+  background: var(--c-bg3);
   border: 1px solid var(--c-border-soft);
   border-radius: 999px;
   padding: 0 0.55rem;
@@ -684,34 +735,13 @@ const purposeRollup = computed<PurposeRow[]>(() => {
 .small {
   font-size: 0.78rem;
 }
-.chip-row {
+.filters label.sort {
   display: inline-flex;
-  gap: 4px;
-}
-.chip {
-  background: var(--c-surface-soft, #1e1c2a);
-  border: 1px solid var(--c-border-soft, #2a2d33);
-  border-radius: 999px;
-  color: var(--c-text, #e7e9ee);
-  padding: 4px 10px;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-.chip.active {
-  background: var(--c-accent, #f97316);
-  color: white;
-  border-color: var(--c-accent, #f97316);
-}
-.sort {
-  display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 6px;
 }
 .sort select {
-  background: var(--c-surface-soft, #1e1c2a);
-  border: 1px solid var(--c-border-soft, #2a2d33);
-  border-radius: 6px;
-  color: var(--c-text);
   padding: 4px 8px;
   font-size: 0.85rem;
 }
@@ -720,14 +750,14 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--c-border-soft, #2a2d33);
+  border-bottom: 1px solid var(--c-line1);
 }
 .group-label {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.78rem;
   font-weight: 500;
-  color: var(--c-accent, #f97316);
+  color: var(--c-ink2);
   flex: 1;
 }
 
@@ -737,8 +767,8 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   align-items: center;
   gap: 0.5rem;
   padding: 0.6rem 0.9rem;
-  background: var(--c-surface-soft, #1e1c2a);
-  border: 1px solid var(--c-border-soft, #2a2d33);
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line1);
   border-radius: 8px;
   position: sticky;
   top: 0;
@@ -747,7 +777,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
 .action-label {
   flex: 1;
   font-size: 0.88rem;
-  color: var(--c-text, #e7e9ee);
+  color: var(--c-ink1);
 }
 .action-bar button.primary,
 .action-bar button.danger,
@@ -756,17 +786,17 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   padding: 0.32rem 0.85rem;
   border-radius: 6px;
   cursor: pointer;
-  border: 1px solid var(--c-border-soft, #2a2d33);
+  border: 1px solid var(--c-line1);
 }
 .action-bar button.primary {
-  background: var(--c-accent, #f97316);
+  background: var(--c-accent);
   color: white;
-  border-color: var(--c-accent, #f97316);
+  border-color: var(--c-accent);
 }
 .action-bar button.danger {
-  background: #b91c1c;
+  background: var(--c-danger-deep);
   color: white;
-  border-color: #b91c1c;
+  border-color: var(--c-danger-deep);
 }
 .action-bar button.danger:disabled,
 .action-bar button.primary:disabled,
@@ -778,8 +808,8 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid var(--c-border-soft, #2a2d33);
-  border-top-color: var(--c-accent, #f97316);
+  border: 2px solid var(--c-line1);
+  border-top-color: var(--c-accent);
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin {
@@ -796,47 +826,24 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   width: 18px;
   height: 18px;
   border-radius: 4px;
-  border: 1.5px solid var(--c-border-soft, #2a2d33);
+  border: 1.5px solid var(--c-line1);
   background: transparent;
   color: white;
   font-size: 0.7rem;
   line-height: 1;
 }
 .checkbox.on {
-  background: var(--c-accent, #f97316);
-  border-color: var(--c-accent, #f97316);
+  background: var(--c-accent);
+  border-color: var(--c-accent);
 }
 tr.selected {
-  background: rgba(249, 115, 22, 0.12);
-}
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-}
-.modal {
-  background: var(--c-surface, #14121d);
-  border: 1px solid var(--c-border-soft, #2a2d33);
-  border-radius: 10px;
-  padding: 1.2rem 1.4rem;
-  width: min(420px, calc(100% - 2rem));
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
-.modal h3 {
-  margin: 0;
-  font-size: 1.05rem;
+  background: var(--c-accent-soft);
 }
 .target-list {
   list-style: none;
   margin: 0;
   padding: 0.4rem 0.6rem;
-  background: var(--c-surface-soft, #1e1c2a);
+  background: var(--c-bg3);
   border-radius: 6px;
   font-size: 0.85rem;
   max-height: 9rem;
@@ -845,23 +852,66 @@ tr.selected {
 .target-list li {
   padding: 0.15rem 0;
 }
-.modal-actions {
+.started-link {
+  color: var(--c-ink1);
+}
+.started-link:hover {
+  color: var(--c-ink0);
+}
+.trip-cards {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+@media (max-width: 700px) {
+  .trip-table {
+    display: none;
+  }
+  .trip-cards {
+    display: block;
+  }
+}
+.trip-cards li {
+  border-bottom: 1px solid var(--c-line0);
+}
+.trip-cards li:last-child {
+  border-bottom: none;
+}
+.trip-cards li.selected {
+  background: var(--c-accent-soft);
+}
+.trip-card {
   display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.7rem 0.9rem;
+  color: var(--c-ink1);
+  text-decoration: none;
 }
-.modal-actions button {
-  font-size: 0.9rem;
-  padding: 0.4rem 1rem;
-  border-radius: 6px;
-  cursor: pointer;
-  border: 1px solid var(--c-border-soft, #2a2d33);
-  background: transparent;
-  color: var(--c-text, #e7e9ee);
+.trip-card:hover {
+  text-decoration: none;
+  background: var(--c-bg3);
 }
-.modal-actions button.danger {
-  background: #b91c1c;
-  color: white;
-  border-color: #b91c1c;
+.tc-top {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.tc-date {
+  font-weight: 500;
+  color: var(--c-ink0);
+  flex: 1;
+}
+.rank {
+  color: var(--c-ink3);
+}
+.tc-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+  font-size: 0.82rem;
+  color: var(--c-ink2);
 }
 </style>

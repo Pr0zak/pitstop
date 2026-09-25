@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from "vue";
-import { useRoute } from "vue-router";
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue";
+import { useRoute, RouterLink } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useSettingsStore } from "@/stores/settings";
 import { useUnitsStore, type UnitSystem } from "@/stores/units";
-import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2 } from "lucide-vue-next";
+import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2, Undo2, Bug, Palette } from "lucide-vue-next";
+import HondaLinkTest from "@/components/HondaLinkTest.vue";
+import { useToastStore, errMessage } from "@/stores/toast";
+import type { Settings } from "@/api/types";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
 import UpdateModal from "@/components/UpdateModal.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
@@ -16,6 +19,40 @@ import type { StorageStats } from "@/api/endpoints";
 const route = useRoute();
 const auth = useAuthStore();
 const settings = useSettingsStore();
+const toast = useToastStore();
+
+// Left anchor nav. Order is the page order.
+const SECTIONS = [
+  { id: "about", label: "About" },
+  { id: "access", label: "Access" },
+  { id: "units", label: "Units" },
+  { id: "home", label: "Home" },
+  { id: "integrations", label: "Integrations" },
+  { id: "devices", label: "Devices" },
+  { id: "storage", label: "Storage" },
+  { id: "developer", label: "Developer" },
+] as const;
+const activeSection = ref<string>("about");
+let sectionObserver: IntersectionObserver | null = null;
+onMounted(async () => {
+  await nextTick();
+  if (typeof IntersectionObserver !== "undefined") {
+    sectionObserver = new IntersectionObserver(
+      (entries) => {
+        const vis = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (vis[0]) activeSection.value = vis[0].target.id;
+      },
+      { rootMargin: "-80px 0px -60% 0px" },
+    );
+    for (const sct of SECTIONS) {
+      const el = document.getElementById(sct.id);
+      if (el) sectionObserver.observe(el);
+    }
+  }
+  const hash = route.hash?.slice(1);
+  if (hash) document.getElementById(hash)?.scrollIntoView();
+});
+onBeforeUnmount(() => sectionObserver?.disconnect());
 
 const localQueryToken = ref("");
 const localIngestToken = ref("");
@@ -63,40 +100,65 @@ const reasonHint = computed(() => {
   return null;
 });
 
+/** Server-backed form fields, and the snapshot they were loaded from —
+ *  the save bar appears only when the two differ. */
+function formState() {
+  return {
+    haEnabled: haEnabled.value,
+    haUrl: haUrl.value,
+    haDiscoveryPrefix: haDiscoveryPrefix.value,
+    haToken: haToken.value,
+    homeLat: homeLat.value,
+    homeLon: homeLon.value,
+    diskAlertPct: diskAlertPct.value,
+    retentionReadingsDays: retentionReadingsDays.value,
+    retentionLogsDays: retentionLogsDays.value,
+    retentionLogsDebugDays: retentionLogsDebugDays.value,
+  };
+}
+const snapshot = ref<string>(JSON.stringify(formState()));
+// v-model.number turns a cleared field into "" — treat that as null.
+const norm = (v: unknown) => (v === "" || v === undefined ? null : v);
+function normState(st: ReturnType<typeof formState>) {
+  return Object.fromEntries(Object.entries(st).map(([k, v]) => [k, norm(v)]));
+}
+const dirty = computed(() => JSON.stringify(normState(formState())) !== JSON.stringify(normState(JSON.parse(snapshot.value))));
+
+function applyFromServer(s: Settings) {
+  haEnabled.value = s.ha?.enabled ?? false;
+  haUrl.value = s.ha?.url ?? "";
+  haDiscoveryPrefix.value = s.ha?.discovery_prefix ?? "homeassistant";
+  haToken.value = "";
+  homeLat.value = s.home?.lat ?? null;
+  homeLon.value = s.home?.lon ?? null;
+  diskAlertPct.value = s.disk_alert_pct ?? null;
+  retentionReadingsDays.value = s.retention_readings_days ?? null;
+  retentionLogsDays.value = s.retention_logs_days ?? null;
+  retentionLogsDebugDays.value = s.retention_logs_debug_days ?? null;
+  snapshot.value = JSON.stringify(formState());
+}
+function discardChanges() {
+  if (settings.settings) applyFromServer(settings.settings);
+}
+
 onMounted(async () => {
   void loadServerVersion();
   localQueryToken.value = auth.queryToken;
   localIngestToken.value = auth.ingestToken;
   if (auth.hasQueryToken) {
     await settings.fetchSettings();
-    if (settings.settings) {
-      const s = settings.settings;
-      haEnabled.value = s.ha?.enabled ?? false;
-      haUrl.value = s.ha?.url ?? "";
-      haDiscoveryPrefix.value = s.ha?.discovery_prefix ?? "homeassistant";
-      homeLat.value = s.home?.lat ?? null;
-      homeLon.value = s.home?.lon ?? null;
-      diskAlertPct.value = s.disk_alert_pct ?? null;
-      retentionReadingsDays.value = s.retention_readings_days ?? null;
-      retentionLogsDays.value = s.retention_logs_days ?? null;
-      retentionLogsDebugDays.value = s.retention_logs_debug_days ?? null;
-    }
-    await loadStorage();
-    await loadDevices();
+    await Promise.all([loadStorage(), loadDevices()]);
   }
 });
 
+// Reload the form whenever the server copy changes — but never clobber
+// unsaved edits (the pre-v0.1.83 form-init race class).
 watch(
   () => settings.settings,
   (s) => {
-    if (!s) return;
-    haEnabled.value = s.ha?.enabled ?? false;
-    haUrl.value = s.ha?.url ?? "";
-    haDiscoveryPrefix.value = s.ha?.discovery_prefix ?? "homeassistant";
-    homeLat.value = s.home?.lat ?? null;
-    homeLon.value = s.home?.lon ?? null;
-    diskAlertPct.value = s.disk_alert_pct ?? null;
+    if (s && !dirty.value) applyFromServer(s);
   },
+  { immediate: true },
 );
 
 function saveTokens() {
@@ -104,6 +166,7 @@ function saveTokens() {
   auth.setIngestToken(localIngestToken.value);
   tokensSaved.value = true;
   setTimeout(() => (tokensSaved.value = false), 2_000);
+  toast.success("Tokens saved in this browser");
   void settings.fetchSettings();
 }
 
@@ -143,11 +206,14 @@ async function saveAll() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await settings.patchSettings(payload as any);
     haToken.value = ""; // clear after save
+    if (settings.settings) applyFromServer(settings.settings);
+    else snapshot.value = JSON.stringify(formState());
     saveStatus.value = "saved";
+    toast.success("Settings saved");
     setTimeout(() => (saveStatus.value = "idle"), 2_000);
   } catch (e: unknown) {
     saveStatus.value = "error";
-    saveError.value = e instanceof Error ? e.message : "save failed";
+    saveError.value = errMessage(e, "save failed");
   }
 }
 
@@ -261,6 +327,7 @@ async function assignDevice(deviceId: string, vehicleId: string) {
   if (!vehicleId) return;
   try {
     await api.mapDevice(deviceId, vehicleId);
+    toast.success(`Mapped ${deviceId}`);
     await loadDevices();
   } catch (e: unknown) {
     devicesError.value = e instanceof Error ? e.message : "assign failed";
@@ -366,7 +433,7 @@ async function commitPurge() {
 
 function geolocate() {
   if (!("geolocation" in navigator)) {
-    alert("Geolocation not available in this browser");
+    toast.error("Geolocation isn't available in this browser");
     return;
   }
   navigator.geolocation.getCurrentPosition(
@@ -375,274 +442,212 @@ function geolocate() {
       homeLat.value = Math.round(pos.coords.latitude * 1e5) / 1e5;
       homeLon.value = Math.round(pos.coords.longitude * 1e5) / 1e5;
     },
-    (err) => alert(`Geolocation failed: ${err.message}`),
+    (err) => toast.error(`Geolocation failed: ${err.message}`),
     { enableHighAccuracy: false, timeout: 10_000 },
   );
 }
 </script>
 
 <template>
-  <div class="settings">
-    <h1>Settings</h1>
+  <div class="settings-page">
+    <nav class="anchor-nav" aria-label="Settings sections">
+      <a
+        v-for="sct in SECTIONS"
+        :key="sct.id"
+        :href="`#${sct.id}`"
+        :class="{ active: activeSection === sct.id }"
+        :aria-current="activeSection === sct.id ? 'location' : undefined"
+      >{{ sct.label }}</a>
+    </nav>
 
-    <div v-if="reasonHint" class="banner warn">{{ reasonHint }}</div>
+    <div class="settings">
+      <h1>Settings</h1>
 
-    <section class="card">
-      <h3>About</h3>
-      <div class="about-row">
-        <div>
-          <div class="muted small">Running version</div>
-          <div class="version-line">
-            <span class="version-number">{{ serverVersion ?? '—' }}</span>
-            <span v-if="serverSha && serverSha !== 'unknown'" class="muted small">
-              · {{ serverSha.slice(0, 7) }}
-            </span>
+      <div v-if="reasonHint" class="banner warn" role="alert">{{ reasonHint }}</div>
+
+      <section id="about" class="card">
+        <h3>About <span class="saves">read-only</span></h3>
+        <div class="about-row">
+          <div>
+            <div class="muted small">Running version</div>
+            <div class="version-line">
+              <span class="version-number">{{ serverVersion ?? '—' }}</span>
+              <span v-if="serverSha && serverSha !== 'unknown'" class="muted small">
+                · {{ serverSha.slice(0, 7) }}
+              </span>
+            </div>
+          </div>
+          <button type="button" class="check-updates" @click="updateModalOpen = true">
+            <RefreshCw :size="14" aria-hidden="true" /> Check for updates
+          </button>
+        </div>
+        <p class="muted small">
+          Compares the deployed backend to the latest GitHub release. The Upgrade button (in the
+          modal) pulls the new images and recreates backend + frontend containers — no SSH needed.
+        </p>
+      </section>
+
+      <UpdateModal :open="updateModalOpen" @close="updateModalOpen = false" />
+
+      <section id="access" class="card">
+        <h3>Access tokens <span class="saves">this browser · Save tokens</span></h3>
+        <p class="muted">
+          The query token is used for read endpoints and the live websocket; the ingest token for
+          writes. Kept in this browser's localStorage only.
+        </p>
+        <div class="grid two">
+          <label>
+            QUERY token
+            <input type="password" v-model="localQueryToken" autocomplete="off" placeholder="paste QUERY_TOKEN" />
+          </label>
+          <label>
+            INGEST token
+            <input type="password" v-model="localIngestToken" autocomplete="off" placeholder="paste INGEST_TOKEN" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="primary" type="button" @click="saveTokens">
+            <Save :size="14" aria-hidden="true" /> Save tokens
+          </button>
+          <span v-if="tokensSaved" class="muted" role="status">Saved.</span>
+        </div>
+      </section>
+
+      <section id="units" class="card">
+        <h3>Display units <span class="saves">this browser · applies instantly</span></h3>
+        <p class="muted">
+          How values are rendered. <strong>Auto</strong> follows the selected vehicle's Fuelio unit
+          codes. Storage is unchanged — this is render-only.
+        </p>
+        <div class="seg" role="radiogroup" aria-label="Display units">
+          <button type="button" role="radio" :aria-checked="units.preference === 'auto'" :class="{ active: units.preference === 'auto' }" @click="setUnits('auto')">
+            Auto <small class="muted">(currently {{ units.resolved }})</small>
+          </button>
+          <button type="button" role="radio" :aria-checked="units.preference === 'metric'" :class="{ active: units.preference === 'metric' }" @click="setUnits('metric')">
+            Metric <small class="muted">km / L / °C</small>
+          </button>
+          <button type="button" role="radio" :aria-checked="units.preference === 'imperial'" :class="{ active: units.preference === 'imperial' }" @click="setUnits('imperial')">
+            Imperial <small class="muted">mi / gal / °F</small>
+          </button>
+        </div>
+      </section>
+
+      <section id="home" class="card">
+        <h3>Home location <span class="saves">server · save bar</span></h3>
+        <p class="muted">
+          Used for "trips that started/ended at home" and to centre the stations map.
+        </p>
+        <div class="grid two">
+          <label>
+            Latitude
+            <input id="home-lat" type="number" step="0.00001" v-model.number="homeLat" />
+          </label>
+          <label>
+            Longitude
+            <input id="home-lon" type="number" step="0.00001" v-model.number="homeLon" />
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" @click="showPicker = true">
+            <MapPin :size="14" aria-hidden="true" /> Pick on map
+          </button>
+          <button type="button" @click="geolocate">Use current location</button>
+        </div>
+        <div class="share-row">
+          <label>
+            <span class="row-label"><LinkIcon :size="12" aria-hidden="true" /> Paste shared link or coords</span>
+            <div class="share-input-row">
+              <input
+                type="text"
+                v-model="shareLink"
+                placeholder="https://www.google.com/maps/…/@40.71,-74.00,15z … or 40.71, -74.00"
+                @keydown.enter.prevent="applyShareLink"
+              />
+              <button type="button" @click="applyShareLink" :disabled="!shareLink.trim()">Apply</button>
+            </div>
+            <small v-if="shareLinkStatus === 'ok'" class="badge success">{{ shareLinkMsg }}</small>
+            <small v-else-if="shareLinkStatus === 'fail'" class="muted warn-text">{{ shareLinkMsg }}</small>
+            <small v-else-if="shareLinkMsg" class="muted">{{ shareLinkMsg }}</small>
+            <small v-else class="muted">
+              Google Maps long &amp; short URLs (incl. <code>maps.app.goo.gl/…</code>), Apple Maps,
+              OpenStreetMap, or a plain <code>lat, lon</code> pair.
+            </small>
+          </label>
+        </div>
+      </section>
+
+      <HomeLocationPicker
+        v-if="showPicker"
+        :initial-lat="homeLat"
+        :initial-lon="homeLon"
+        @pick="onPicked"
+        @cancel="showPicker = false"
+      />
+
+      <section id="integrations" class="card">
+        <h3>Integrations</h3>
+        <div class="sub">
+          <h4>Home Assistant mirror <span class="saves">server · save bar</span></h4>
+          <p class="muted">
+            Built but disabled by default. When enabled, the backend re-publishes readings as MQTT
+            discovery sensors so HA picks them up automatically.
+          </p>
+          <label class="cb">
+            <input type="checkbox" v-model="haEnabled" />
+            Enable HA mirror
+          </label>
+          <div class="grid two" :class="{ dim: !haEnabled }">
+            <label>
+              HA URL
+              <input type="url" v-model="haUrl" placeholder="http://homeassistant.local:8123" />
+            </label>
+            <label>
+              Discovery prefix
+              <input v-model="haDiscoveryPrefix" placeholder="homeassistant" />
+            </label>
+            <label class="full">
+              Long-lived token
+              <input type="password" v-model="haToken" placeholder="leave blank to keep current" autocomplete="off" />
+              <small v-if="settings.settings?.ha?.token_set" class="muted">(token currently set on server)</small>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="button" @click="testHa" :disabled="!haEnabled || !haUrl">
+              <Plug :size="14" aria-hidden="true" /> Test connection
+            </button>
+            <span v-if="haTestStatus === 'ok'" class="badge success">{{ haTestMsg }}</span>
+            <span v-else-if="haTestStatus === 'fail'" class="badge danger">{{ haTestMsg }}</span>
+            <span v-else-if="haTestStatus === 'running'" class="muted"><RefreshCw :size="12" aria-hidden="true" /> testing…</span>
           </div>
         </div>
-        <button type="button" class="check-updates" @click="updateModalOpen = true">
-          <RefreshCw :size="14" /> Check for updates
-        </button>
-      </div>
-      <p class="muted small">
-        Compares the deployed backend to the latest GitHub release. The
-        Upgrade button (in the modal) pulls the new images and recreates
-        backend + frontend containers — no SSH needed.
-      </p>
-    </section>
+        <div class="sub">
+          <h4>HondaLink connection test <span class="saves">nothing is saved</span></h4>
+          <HondaLinkTest />
+        </div>
+      </section>
 
-    <UpdateModal :open="updateModalOpen" @close="updateModalOpen = false" />
-
-    <section class="card">
-      <h3>API tokens</h3>
-      <p class="muted">
-        Stored in your browser's localStorage. The query token is used for read endpoints
-        and the live websocket. The ingest token is used for writes.
-      </p>
-      <div class="grid two">
-        <label>
-          QUERY token
-          <input
-            type="password"
-            v-model="localQueryToken"
-            autocomplete="off"
-            placeholder="paste QUERY_TOKEN"
-          />
-        </label>
-        <label>
-          INGEST token
-          <input
-            type="password"
-            v-model="localIngestToken"
-            autocomplete="off"
-            placeholder="paste INGEST_TOKEN"
-          />
-        </label>
-      </div>
-      <div class="actions">
-        <button class="primary" type="button" @click="saveTokens">
-          <Save :size="14" /> Save tokens
-        </button>
-        <span v-if="tokensSaved" class="muted">Saved.</span>
-      </div>
-    </section>
-
-    <section class="card">
-      <h3>Home location</h3>
-      <p class="muted">
-        Used for "trips that started/ended at home" and disk alerts when the CT is offline.
-        Stored on the server.
-      </p>
-      <div class="grid two">
-        <label>
-          Latitude
-          <input type="number" step="0.00001" v-model.number="homeLat" />
-        </label>
-        <label>
-          Longitude
-          <input type="number" step="0.00001" v-model.number="homeLon" />
-        </label>
-      </div>
-      <div class="actions">
-        <button type="button" @click="showPicker = true">
-          <MapPin :size="14" /> Pick on map
-        </button>
-        <button type="button" @click="geolocate">Use current location</button>
-      </div>
-      <div class="share-row">
-        <label>
-          <span class="row-label"><LinkIcon :size="12" /> Paste shared link or coords</span>
-          <div class="share-input-row">
-            <input
-              type="text"
-              v-model="shareLink"
-              placeholder="https://www.google.com/maps/place/.../@39.0,-94.6,15z … or 39.0, -94.6"
-              @keydown.enter.prevent="applyShareLink"
-            />
-            <button type="button" @click="applyShareLink" :disabled="!shareLink.trim()">
-              Apply
-            </button>
-          </div>
-          <small
-            v-if="shareLinkStatus === 'ok'"
-            class="badge success"
-          >{{ shareLinkMsg }}</small>
-          <small
-            v-else-if="shareLinkStatus === 'fail'"
-            class="muted warn-text"
-          >{{ shareLinkMsg }}</small>
-          <small v-else-if="shareLinkMsg" class="muted">{{ shareLinkMsg }}</small>
-          <small v-else class="muted">
-            Supports Google Maps long &amp; short URLs (incl.
-            <code>maps.app.goo.gl/...</code>), Apple Maps, OpenStreetMap, or a
-            plain <code>lat, lon</code> pair.
-          </small>
-        </label>
-      </div>
-    </section>
-
-    <HomeLocationPicker
-      v-if="showPicker"
-      :initial-lat="homeLat"
-      :initial-lon="homeLon"
-      @pick="onPicked"
-      @cancel="showPicker = false"
-    />
-
-    <section class="card">
-      <h3>Home Assistant mirror</h3>
-      <p class="muted">
-        Plumbing is built but disabled by default. When enabled, the backend re-publishes
-        readings as MQTT discovery sensors so HA picks them up automatically.
-      </p>
-      <label class="cb">
-        <input type="checkbox" v-model="haEnabled" />
-        Enable HA mirror
-      </label>
-      <div class="grid two" :class="{ dim: !haEnabled }">
-        <label>
-          HA URL
-          <input
-            type="url"
-            v-model="haUrl"
-            placeholder="http://homeassistant.local:8123"
-          />
-        </label>
-        <label>
-          Discovery prefix
-          <input v-model="haDiscoveryPrefix" placeholder="homeassistant" />
-        </label>
-        <label class="full">
-          Long-lived token
-          <input
-            type="password"
-            v-model="haToken"
-            placeholder="leave blank to keep current"
-            autocomplete="off"
-          />
-          <small v-if="settings.settings?.ha?.token_set" class="muted">
-            (token currently set on server)
-          </small>
-        </label>
-      </div>
-      <div class="actions">
-        <button type="button" @click="testHa" :disabled="!haEnabled || !haUrl">
-          <Plug :size="14" /> Test connection
-        </button>
-        <span
-          v-if="haTestStatus === 'ok'"
-          class="badge success"
-        >{{ haTestMsg }}</span>
-        <span
-          v-else-if="haTestStatus === 'fail'"
-          class="badge danger"
-        >{{ haTestMsg }}</span>
-        <span
-          v-else-if="haTestStatus === 'running'"
-          class="muted"
-        ><RefreshCw :size="12" /> testing…</span>
-      </div>
-    </section>
-
-    <section class="card">
-      <h3>Display units</h3>
-      <p class="muted">
-        How values are rendered in the UI. <strong>Auto</strong> uses the
-        selected vehicle's stored Fuelio unit codes (miles+gallons for the
-        Pilot's import). DB storage is unchanged — this is a render-only
-        toggle. Persisted in your browser.
-      </p>
-      <div class="seg">
-        <button
-          type="button"
-          :class="{ active: units.preference === 'auto' }"
-          @click="setUnits('auto')"
-        >
-          Auto <small class="muted">(currently {{ units.resolved }})</small>
-        </button>
-        <button
-          type="button"
-          :class="{ active: units.preference === 'metric' }"
-          @click="setUnits('metric')"
-        >
-          Metric <small class="muted">km / l / °C</small>
-        </button>
-        <button
-          type="button"
-          :class="{ active: units.preference === 'imperial' }"
-          @click="setUnits('imperial')"
-        >
-          Imperial <small class="muted">mi / gal / °F</small>
-        </button>
-      </div>
-    </section>
-
-    <section class="card">
-      <h3>Monitoring</h3>
-      <label>
-        Disk alert threshold (%)
-        <input
-          type="number"
-          min="0"
-          max="100"
-          v-model.number="diskAlertPct"
-          placeholder="80"
-        />
-      </label>
-    </section>
-
-    <div class="footer-actions">
-      <button class="primary" type="button" @click="saveAll" :disabled="saveStatus === 'saving'">
-        <Save :size="14" />
-        {{ saveStatus === "saving" ? "Saving…" : "Save settings" }}
-      </button>
-      <span v-if="saveStatus === 'saved'" class="badge success">Saved</span>
-      <span v-if="saveStatus === 'error'" class="badge danger">{{ saveError }}</span>
-    </div>
-
-    <!-- Devices: WiCAN → vehicle mapping -->
-    <section class="card">
-      <h3>
-        Devices
-        <button
-          type="button"
-          class="ghost"
-          style="margin-left: auto; font-size: 0.78rem"
-          @click="loadDevices"
-          :disabled="devicesLoading"
-        >
-          <RefreshCw :size="12" /> {{ devicesLoading ? "…" : "Refresh" }}
-        </button>
-      </h3>
-      <p class="muted">
-        Tie a WiCAN OBD device (or a phone bridge) to a vehicle so its
-        published metrics route correctly. Devices listed below
-        <strong>without</strong> a vehicle have been dropping messages
-        — pick a vehicle to start ingesting.
-      </p>
+      <section id="devices" class="card">
+        <h3>
+          Devices <span class="saves">applies instantly</span>
+          <button
+            type="button"
+            class="ghost refresh"
+            @click="loadDevices"
+            :disabled="devicesLoading"
+          >
+            <RefreshCw :size="12" aria-hidden="true" /> {{ devicesLoading ? "…" : "Refresh" }}
+          </button>
+        </h3>
+        <p class="muted">
+          Tie a WiCAN OBD device (or a phone bridge) to a vehicle so its published metrics route
+          correctly. Devices <strong>without</strong> a vehicle have been dropping messages — pick
+          one to start ingesting.
+        </p>
 
       <div v-if="devicesError" class="banner warn">{{ devicesError }}</div>
 
-      <table v-if="devices.length > 0" class="data" style="margin-top: 0.5rem">
+      <div v-if="devices.length > 0" class="table-scroll">
+      <table class="data" style="margin-top: 0.5rem">
         <thead>
           <tr>
             <th>Device ID</th>
@@ -667,6 +672,7 @@ function geolocate() {
             </td>
             <td>
               <select
+                :aria-label="`Vehicle for ${d.device_id}`"
                 :value="d.vehicle_id ?? ''"
                 @change="(e) => assignDevice(d.device_id, (e.target as HTMLSelectElement).value)"
               >
@@ -693,6 +699,7 @@ function geolocate() {
                 type="button"
                 @click="requestUnassign(d.device_id)"
                 title="Unmap"
+                :aria-label="`Unmap ${d.device_id}`"
               >
                 <Trash2 :size="14" />
               </button>
@@ -700,35 +707,34 @@ function geolocate() {
           </tr>
         </tbody>
       </table>
+      </div>
       <p v-else class="muted small">
         No devices seen yet. Once your WiCAN starts publishing it'll
         appear here.
       </p>
-    </section>
+      </section>
 
-    <!-- Storage / data retention -->
-    <section class="card">
-      <h3>
-        <HardDrive :size="14" /> Storage
-        <button
-          type="button"
-          class="ghost"
-          style="margin-left: auto; font-size: 0.78rem"
-          @click="loadStorage"
-          :disabled="storageLoading"
-        >
-          <RefreshCw :size="12" /> {{ storageLoading ? "…" : "Refresh" }}
-        </button>
-      </h3>
-      <p class="muted">
-        How big is the database and how old is the oldest data? Use the
-        Purge action below to drop OBD readings beyond a chosen age — the
-        UI shows a preview before committing.
-      </p>
+      <section id="storage" class="card">
+        <h3>
+          <HardDrive :size="14" aria-hidden="true" /> Storage
+          <span class="saves">retention: save bar · purge: immediate</span>
+          <button type="button" class="ghost refresh" @click="loadStorage" :disabled="storageLoading">
+            <RefreshCw :size="12" aria-hidden="true" /> {{ storageLoading ? "…" : "Refresh" }}
+          </button>
+        </h3>
+        <p class="muted">
+          Database size and the oldest data. Purge drops OBD readings beyond a chosen age after a
+          preview.
+        </p>
+        <label class="inline-num">
+          Disk alert threshold (%)
+          <input type="number" min="0" max="100" v-model.number="diskAlertPct" placeholder="80" />
+        </label>
 
       <div v-if="storageError" class="banner warn">{{ storageError }}</div>
 
-      <table v-if="storageStats" class="data" style="margin-top: 0.6rem">
+      <div v-if="storageStats" class="table-scroll">
+      <table class="data" style="margin-top: 0.6rem">
         <thead>
           <tr>
             <th>Table</th>
@@ -756,6 +762,7 @@ function geolocate() {
           </tr>
         </tfoot>
       </table>
+      </div>
 
       <p
         v-if="storageStats?.oldest_reading_at"
@@ -810,7 +817,7 @@ function geolocate() {
             />
             days
           </label>
-          <span class="muted small">Save settings below to apply</span>
+          <span class="muted small">Saved with the save bar</span>
         </div>
 
         <h4 style="margin-top: 1rem">Manual purge</h4>
@@ -834,7 +841,7 @@ function geolocate() {
             @click="requestCommitPurge"
             :disabled="purgeBusy || !purgePreview"
           >
-            <Trash2 :size="14" /> Commit purge
+            <Trash2 :size="14" aria-hidden="true" /> Commit purge
           </button>
         </div>
         <p v-if="purgePreview" class="muted small">
@@ -843,7 +850,24 @@ function geolocate() {
         </p>
         <p v-if="purgeMessage" class="muted small">{{ purgeMessage }}</p>
       </div>
-    </section>
+      </section>
+
+      <section id="developer" class="card">
+        <h3>Developer</h3>
+        <ul class="dev-links">
+          <li>
+            <RouterLink to="/debug"><Bug :size="14" aria-hidden="true" /> Debug &amp; logs</RouterLink>
+            <span class="muted small">Live log tail across phone, web, backend and WiCAN.</span>
+          </li>
+          <li>
+            <RouterLink to="/logos"><Palette :size="14" aria-hidden="true" /> Logo concepts</RouterLink>
+            <span class="muted small">Pick the sidebar mark (saved in this browser).</span>
+          </li>
+          <li>
+            <RouterLink to="/hondalink-test"><Plug :size="14" aria-hidden="true" /> HondaLink test (standalone page)</RouterLink>
+          </li>
+        </ul>
+      </section>
 
     <ConfirmDialog
       :open="unmapTarget != null"
@@ -868,23 +892,211 @@ function geolocate() {
       @confirm="commitPurge"
       @cancel="confirmPurgeOpen = false"
     />
+    </div>
+
+    <!-- Sticky save bar: only while server-backed fields differ from what
+         was loaded. Covers HA, home, disk alert and all retention fields. -->
+    <Transition name="savebar">
+      <div v-if="dirty || saveStatus === 'error'" class="save-bar" role="region" aria-label="Unsaved changes">
+        <span class="msg">
+          <template v-if="saveStatus === 'error'">Save failed: {{ saveError }}</template>
+          <template v-else>Unsaved changes</template>
+        </span>
+        <button type="button" class="ghost" :disabled="saveStatus === 'saving'" @click="discardChanges">
+          <Undo2 :size="14" aria-hidden="true" /> Discard
+        </button>
+        <button class="primary" type="button" @click="saveAll" :disabled="saveStatus === 'saving'">
+          <Save :size="14" aria-hidden="true" />
+          {{ saveStatus === "saving" ? "Saving…" : "Save changes" }}
+        </button>
+      </div>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
+.settings-page {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 820px);
+  gap: 1.5rem;
+  align-items: start;
+  padding-bottom: 4.5rem;
+}
+.anchor-nav {
+  position: sticky;
+  top: calc(var(--topbar-h) + 1rem);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 3rem;
+}
+.anchor-nav a {
+  color: var(--c-ink2);
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--r-sm);
+  font-size: 0.88rem;
+  border-left: 2px solid transparent;
+}
+.anchor-nav a:hover {
+  text-decoration: none;
+  color: var(--c-ink0);
+  background: var(--c-bg2);
+}
+.anchor-nav a.active {
+  color: var(--c-ink0);
+  border-left-color: var(--c-accent);
+}
 .settings {
-  max-width: 760px;
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-width: 0;
+}
+.settings section {
+  scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
+}
+.card h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.saves {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--c-ink3);
+  border: 1px solid var(--c-line1);
+  border-radius: 999px;
+  padding: 0 0.5rem;
+}
+.refresh {
+  margin-left: auto;
+  font-size: 0.78rem;
+  text-transform: none;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.sub + .sub {
+  margin-top: 1.2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--c-line0);
+}
+.sub h4 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+  margin-bottom: 0.4rem;
+}
+.inline-num {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+}
+.inline-num input {
+  width: 90px;
+}
+.dev-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.dev-links li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.dev-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.save-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 1rem;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.6rem 0.55rem 1rem;
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line2);
+  border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  max-width: calc(100vw - 2rem);
+}
+.save-bar .msg {
+  font-size: 0.9rem;
+  color: var(--c-ink1);
+  margin-right: 0.5rem;
+}
+.save-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.savebar-enter-active,
+.savebar-leave-active {
+  transition: opacity 150ms, transform 150ms;
+}
+.savebar-enter-from,
+.savebar-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 8px);
+}
+@media (max-width: 900px) {
+  .settings-page {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.6rem;
+  }
+  .anchor-nav {
+    position: sticky;
+    top: var(--topbar-h);
+    z-index: 5;
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0.4rem 0;
+    background: var(--c-bg);
+    order: 0;
+  }
+  .anchor-nav a {
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .anchor-nav a.active {
+    border-bottom-color: var(--c-accent);
+  }
+}
+@media (max-width: 700px) {
+  .save-bar {
+    bottom: calc(var(--tabbar-h) + 0.75rem + env(safe-area-inset-bottom));
+  }
+  .grid.two {
+    grid-template-columns: 1fr;
+  }
 }
 .banner {
   border-radius: var(--r-md);
   padding: 0.6rem 0.9rem;
 }
 .banner.warn {
-  background: rgba(210, 153, 34, 0.12);
-  border: 1px solid rgba(210, 153, 34, 0.3);
+  background: var(--c-warn-soft);
+  border: 1px solid rgba(255, 176, 32, 0.3);
   color: var(--c-warn);
 }
 .about-row {
@@ -952,11 +1164,7 @@ label.cb {
   align-items: center;
   gap: 0.3rem;
 }
-.footer-actions {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-}
+
 small {
   font-size: 0.75rem;
 }
@@ -1014,5 +1222,22 @@ small {
 }
 .warn-text {
   color: var(--c-warn);
+}
+.grid.two > label {
+  min-width: 0;
+}
+.grid.two input {
+  width: 100%;
+  min-width: 0;
+}
+@media (max-width: 700px) {
+  .grid.two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.purge-row label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
 }
 </style>

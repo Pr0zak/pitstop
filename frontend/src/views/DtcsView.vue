@@ -1,16 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAsync } from "@/composables/useAsync";
+import { useQueryParam } from "@/composables/useQueryParam";
 import { getDtcsTimeline, type DtcTimelineCode } from "@/api/endpoints";
-import { fmtDateTime } from "@/composables/useFormat";
+import { fmtDateTime, fmtDistanceKm } from "@/composables/useFormat";
+import StateCard from "@/components/StateCard.vue";
+import WindowChips from "@/components/WindowChips.vue";
 
 const vehicles = useVehiclesStore();
 // Window selector — same options as the Trips page so users
 // don't relearn the chrome. "all" caps at 10y to keep the SQL
 // honest (matches the backend's 3650-day clamp).
 type Window = "30d" | "90d" | "year" | "all";
-const window = ref<Window>("year");
+const WINDOW_OPTIONS = [
+  { value: "30d" as const, label: "30 days" },
+  { value: "90d" as const, label: "90 days" },
+  { value: "year" as const, label: "12 months" },
+  { value: "all" as const, label: "All time" },
+];
+const window = useQueryParam<Window>("window", "year", ["30d", "90d", "year", "all"]);
 const days = computed(() =>
   window.value === "30d" ? 30
   : window.value === "90d" ? 90
@@ -26,7 +36,6 @@ const { data, loading, error, reload } = useAsync(
       : Promise.resolve({ codes: [], window_days: days.value }),
   [vehicleId, days],
 );
-watch(vehicleId, () => void reload());
 
 // Bounds across all events — used to scale the SVG.
 interface Bounds { tMin: number; tMax: number }
@@ -58,15 +67,19 @@ const GUTTER_TOP = 18;
 const GUTTER_BOTTOM = 24;
 
 const svgWidth = ref(960);
-function onSvgRef(el: unknown) {
-  if (!(el instanceof Element)) return;
-  // ResizeObserver keeps the timeline responsive without a full
-  // re-render — we just rescale the x-positions.
-  const ro = new ResizeObserver(() => {
-    svgWidth.value = (el as SVGElement).clientWidth || 960;
+// One ResizeObserver on the chart wrapper. (A function :ref used to create
+// a fresh observer on every re-render and never disconnect them.)
+const chartWrap = ref<HTMLElement | null>(null);
+let ro: ResizeObserver | null = null;
+watch(chartWrap, (el) => {
+  ro?.disconnect();
+  if (!el || typeof ResizeObserver === "undefined") return;
+  ro = new ResizeObserver(() => {
+    svgWidth.value = Math.max(600, el.clientWidth - 16);
   });
   ro.observe(el);
-}
+});
+onBeforeUnmount(() => ro?.disconnect());
 
 function xFor(t: number, b: Bounds, plotW: number): number {
   if (b.tMax === b.tMin) return GUTTER_LEFT + plotW / 2;
@@ -99,58 +112,87 @@ const axisTicks = computed<AxisTick[]>(() => {
   return out;
 });
 
-// Hover state — show seen_at on the dot under the cursor.
-const hoverEvent = ref<{ code: string; seen_at: string; x: number; y: number } | null>(null);
-function onDotEnter(c: DtcTimelineCode, idx: number, ev: MouseEvent) {
+// Tooltip: hover previews, click / tap / Enter PINS it (with a link to
+// the trip the code fired in). Esc or a click elsewhere unpins.
+interface TipState {
+  code: string;
+  active: boolean;
+  seen_at: string;
+  trip_id: string | null;
+  trip_distance_km: number | null;
+  x: number;
+  y: number;
+}
+const hoverEvent = ref<TipState | null>(null);
+const pinned = ref(false);
+function tipFor(c: DtcTimelineCode, idx: number, target: Element): TipState {
   const e = c.events[idx];
-  const target = ev.currentTarget as SVGElement;
   const rect = target.getBoundingClientRect();
-  hoverEvent.value = {
+  return {
     code: c.code,
+    active: c.active,
     seen_at: e.seen_at,
+    trip_id: e.trip_id ?? null,
+    trip_distance_km: e.trip_distance_km ?? null,
     x: rect.left + rect.width / 2,
     y: rect.top,
   };
 }
+function onDotEnter(c: DtcTimelineCode, idx: number, ev: MouseEvent) {
+  if (pinned.value) return;
+  hoverEvent.value = tipFor(c, idx, ev.currentTarget as Element);
+}
 function onDotLeave() {
+  if (!pinned.value) hoverEvent.value = null;
+}
+function onDotPin(c: DtcTimelineCode, idx: number, ev: Event) {
+  ev.stopPropagation();
+  hoverEvent.value = tipFor(c, idx, ev.currentTarget as Element);
+  pinned.value = true;
+}
+function unpin() {
+  pinned.value = false;
   hoverEvent.value = null;
 }
+function onDocClick(e: MouseEvent) {
+  if (!pinned.value) return;
+  const t = e.target as Element | null;
+  if (t?.closest?.(".tooltip")) return;
+  unpin();
+}
+function onDocKey(e: KeyboardEvent) {
+  if (e.key === "Escape" && pinned.value) unpin();
+}
+onMounted(() => {
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onDocKey);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onDocClick);
+  document.removeEventListener("keydown", onDocKey);
+});
+watch([vehicleId, window], unpin);
 </script>
 
 <template>
   <div class="dtcs">
     <header class="head">
       <h1>Diagnostic codes</h1>
-      <div class="filters">
-        <button
-          v-for="w in ['30d','90d','year','all'] as Window[]"
-          :key="w"
-          type="button"
-          class="ghost"
-          :class="{ active: window === w }"
-          @click="window = w"
-        >
-          {{ w === '30d' ? '30 d' : w === '90d' ? '90 d' : w === 'year' ? '1 yr' : 'All' }}
-        </button>
-      </div>
+      <WindowChips v-model="window" :options="WINDOW_OPTIONS" />
     </header>
 
-    <div v-if="!vehicleId" class="card">
-      <p class="muted">Select a vehicle to view its DTC history.</p>
-    </div>
-    <div v-else-if="loading" class="card">
-      <p class="muted">Loading…</p>
-    </div>
-    <div v-else-if="error" class="card">
-      <p class="muted">Failed to load DTCs: {{ error }}</p>
-    </div>
-    <div v-else-if="!data || data.codes.length === 0" class="card">
-      <p class="muted">No diagnostic codes recorded in this window.</p>
-    </div>
+    <StateCard v-if="!vehicleId" state="empty" title="Select a vehicle to view its DTC history." />
+    <StateCard v-else-if="loading && !data" state="loading" title="Loading codes…" />
+    <StateCard v-else-if="error" state="error" :message="error" @retry="reload()" />
+    <StateCard v-else-if="!data || data.codes.length === 0" state="empty" title="No diagnostic codes recorded in this window." />
     <template v-else>
-      <div class="card chart-card">
+      <div class="legend-line muted small">
+        <span><span class="dot active" aria-hidden="true"></span> active</span>
+        <span><span class="dot cleared" aria-hidden="true"></span> cleared</span>
+        <span>Click a dot to pin it and jump to its trip.</span>
+      </div>
+      <div ref="chartWrap" class="card chart-card">
         <svg
-          :ref="onSvgRef"
           class="timeline"
           :viewBox="`0 0 ${svgWidth} ${svgHeight}`"
           :width="svgWidth"
@@ -166,7 +208,7 @@ function onDotLeave() {
               :y="GUTTER_TOP + i * ROW_H + 4"
               :width="plotW"
               :height="ROW_H - 8"
-              :fill="i % 2 === 0 ? 'var(--c-surface-soft)' : 'transparent'"
+              :fill="i % 2 === 0 ? 'var(--c-bg3)' : 'transparent'"
               rx="4"
             />
           </g>
@@ -199,11 +241,16 @@ function onDotLeave() {
                 :key="e.id"
                 :cx="xFor(Date.parse(e.seen_at), bounds, plotW)"
                 :cy="GUTTER_TOP + i * ROW_H + ROW_H / 2"
-                :r="4"
-                :fill="c.active ? 'var(--c-warn, #ef4444)' : 'var(--c-accent, #2f81f7)'"
-                :opacity="0.85"
+                :r="5"
+                :class="['ev-dot', c.active ? 'active' : 'cleared']"
+                tabindex="0"
+                role="button"
+                :aria-label="`${c.code} ${c.active ? 'active' : 'cleared'}, seen ${fmtDateTime(e.seen_at)}`"
                 @mouseenter="(ev) => onDotEnter(c, j, ev)"
                 @mouseleave="onDotLeave"
+                @click="(ev) => onDotPin(c, j, ev)"
+                @keydown.enter.prevent="(ev) => onDotPin(c, j, ev)"
+                @keydown.space.prevent="(ev) => onDotPin(c, j, ev)"
               />
               <!-- Active end-cap: a thicker square at the right edge -->
               <rect
@@ -213,7 +260,7 @@ function onDotLeave() {
                 width="10"
                 height="10"
                 rx="2"
-                fill="var(--c-warn, #ef4444)"
+                fill="var(--c-danger)"
               />
             </g>
           </g>
@@ -241,12 +288,13 @@ function onDotLeave() {
 
       <!-- Code legend / detail strip beneath the chart -->
       <div class="card no-pad">
+        <div class="table-scroll">
         <table class="data">
           <thead>
             <tr>
               <th>Code</th>
               <th>Description</th>
-              <th>Count</th>
+              <th class="num">Count</th>
               <th>First seen</th>
               <th>Last seen</th>
               <th>Status</th>
@@ -254,33 +302,46 @@ function onDotLeave() {
           </thead>
           <tbody>
             <tr v-for="c in data.codes" :key="`row-${c.code}`">
-              <td><code>{{ c.code }}</code></td>
+              <td><code :class="c.active ? 'code-active' : 'code-cleared'">{{ c.code }}</code></td>
               <td>{{ c.description ?? "—" }}</td>
-              <td>{{ c.count }}</td>
+              <td class="num">{{ c.count }}</td>
               <td>{{ fmtDateTime(c.first_seen) }}</td>
               <td>{{ fmtDateTime(c.last_seen) }}</td>
               <td>
-                <span class="badge" :class="c.active ? 'danger' : 'success'">
+                <span class="badge" :class="c.active ? 'danger' : ''">
                   {{ c.active ? "active" : "cleared" }}
                 </span>
               </td>
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
     </template>
 
-    <!-- Floating tooltip on hover -->
+    <!-- Tooltip: hover preview, pinned on click / Enter -->
     <div
       v-if="hoverEvent"
       class="tooltip"
+      :class="{ pinned }"
+      :role="pinned ? 'dialog' : 'tooltip'"
+      :aria-label="pinned ? `${hoverEvent.code} occurrence` : undefined"
       :style="{
         left: hoverEvent.x + 'px',
-        top: hoverEvent.y - 36 + 'px',
+        top: hoverEvent.y - (pinned ? 70 : 44) + 'px',
       }"
     >
-      <div><code>{{ hoverEvent.code }}</code></div>
+      <div>
+        <code :class="hoverEvent.active ? 'code-active' : 'code-cleared'">{{ hoverEvent.code }}</code>
+        <span class="muted small"> · {{ hoverEvent.active ? "active" : "cleared" }}</span>
+      </div>
       <div class="muted small">{{ fmtDateTime(hoverEvent.seen_at) }}</div>
+      <template v-if="pinned">
+        <RouterLink v-if="hoverEvent.trip_id" :to="`/trips/${hoverEvent.trip_id}`" class="trip-link">
+          Trip<template v-if="hoverEvent.trip_distance_km != null"> · {{ fmtDistanceKm(hoverEvent.trip_distance_km) }}</template> →
+        </RouterLink>
+        <span v-else class="muted small">No trip recorded at this time</span>
+      </template>
     </div>
   </div>
 </template>
@@ -300,14 +361,62 @@ function onDotLeave() {
 .head h1 {
   margin: 0;
 }
-.filters {
-  display: flex;
-  gap: 0.3rem;
+.head {
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
-.filters .ghost.active {
-  background: var(--c-surface-soft);
-  color: var(--c-text);
-  border-color: var(--c-accent);
+.legend-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+}
+.legend-line .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.25rem;
+}
+.dot.active,
+.ev-dot.active {
+  background: var(--c-danger);
+  fill: var(--c-danger);
+}
+.dot.cleared,
+.ev-dot.cleared {
+  background: var(--c-ink3);
+  fill: var(--c-ink3);
+}
+.ev-dot {
+  cursor: pointer;
+  outline: none;
+}
+.ev-dot:hover,
+.ev-dot:focus-visible {
+  stroke: var(--c-ink0);
+  stroke-width: 2;
+}
+.code-active {
+  color: var(--c-danger);
+}
+.code-cleared {
+  color: var(--c-ink2);
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.trip-link {
+  display: inline-block;
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
+}
+/* Phone: the timeline can't be read at 390 px — table only. */
+@media (max-width: 700px) {
+  .chart-card,
+  .legend-line {
+    display: none;
+  }
 }
 .chart-card {
   padding: 0.5rem;
@@ -347,6 +456,10 @@ function onDotLeave() {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   pointer-events: none;
   z-index: 200;
+}
+.tooltip.pinned {
+  pointer-events: auto;
+  border-color: var(--c-line2);
 }
 .tooltip code {
   font-size: 0.85rem;

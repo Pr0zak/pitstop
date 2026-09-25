@@ -92,12 +92,20 @@ export async function aggregateReadings(p: AggregateParams): Promise<AggregateBu
 
 // ─── trips ────────────────────────────────────────────────────────────
 
+export type TripSort = "recent" | "distance" | "duration" | "top_speed" | "max_rpm" | "fuel";
+export type TripSourceFilter = "phone_batch" | "manual_merge" | "other";
 export interface TripListParams {
   vehicle_id?: string;
   from?: string;
   to?: string;
   limit?: number;
   offset?: number;
+  /** Server-side ordering (newer backends; older ones ignore it). */
+  sort?: TripSort;
+  /** Server-side provenance filter; omit for all. */
+  source?: TripSourceFilter;
+  /** true → towing trips only. */
+  towing?: boolean;
 }
 export async function listTrips(
   p: TripListParams,
@@ -247,7 +255,9 @@ export interface DtcTimelineCode {
   first_seen: string;
   last_seen: string;
   active: boolean;
-  events: { id: string; seen_at: string }[];
+  /** trip_id / trip_distance_km: the drive the occurrence fell in (newer
+   *  backends; absent or null otherwise). */
+  events: { id: string; seen_at: string; trip_id?: string | null; trip_distance_km?: number | null }[];
 }
 export interface DtcTimeline {
   codes: DtcTimelineCode[];
@@ -569,6 +579,9 @@ export interface CostOfOwnership {
   total: number;
   lifetime_mi: number | null;
   cost_per_mi: number | null;
+  /** Lifetime priced-fillup volume in the vehicle's fuel unit (newer
+   *  backends). Lifetime $/volume = fuel_total / this. */
+  fuel_volume_total?: number | null;
 }
 export async function getCostOfOwnership(vehicleId: string): Promise<CostOfOwnership> {
   const r = await apiQuery.get<CostOfOwnership>("/analytics/cost-of-ownership", {

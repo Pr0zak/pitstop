@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { Upload, FilePlus, X, ChevronLeft } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
 import type { FuelioImportPreview, Vehicle } from "@/api/types";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import { useVehiclesStore } from "@/stores/vehicles";
+import { useToastStore, errMessage } from "@/stores/toast";
+
+const vehiclesStore = useVehiclesStore();
+const toast = useToastStore();
+const fileInput = ref<HTMLInputElement | null>(null);
+/** Names of dropped / picked files that weren't .zip / .csv. */
+const skipped = ref<string[]>([]);
 
 const files = ref<File[]>([]);
 const preview = ref<FuelioImportPreview | null>(null);
@@ -39,15 +48,32 @@ function onDrop(e: DragEvent) {
   addFiles(Array.from(e.dataTransfer.files));
 }
 function addFiles(list: File[]) {
+  const bad: string[] = [];
   for (const f of list) {
-    if (f.name.endsWith(".zip") || f.name.endsWith(".csv")) {
+    const n = f.name.toLowerCase();
+    if (n.endsWith(".zip") || n.endsWith(".csv")) {
       files.value.push(f);
+    } else {
+      bad.push(f.name);
     }
   }
+  skipped.value = bad;
 }
 function remove(idx: number) {
   files.value.splice(idx, 1);
 }
+
+// Any change to the inputs invalidates the preview: the old one described
+// a different file set / target vehicle, and committing against it would
+// apply something the user never previewed.
+watch(
+  [() => files.value.map((f) => `${f.name}:${f.size}:${f.lastModified}`).join("|"), attachSlug],
+  () => {
+    preview.value = null;
+    committed.value = null;
+    error.value = null;
+  },
+);
 
 async function runDryRun() {
   if (files.value.length === 0) return;
@@ -62,17 +88,29 @@ async function runDryRun() {
       attachSlug.value || null,
     );
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "import failed";
+    error.value = errMessage(e, "import failed");
   } finally {
     isLoading.value = false;
   }
 }
 
+const confirmOpen = ref(false);
+const confirmMessage = computed(() => {
+  const p = preview.value;
+  if (!p) return "";
+  const parts: string[] = [];
+  if (p.fillups) parts.push(`${p.fillups.new} new / ${p.fillups.updated} updated fillups`);
+  if (p.expenses) parts.push(`${p.expenses.new} new / ${p.expenses.updated} updated expenses`);
+  const nv = (p.vehicles ?? []).filter((v) => !v.existing).length;
+  if (nv) parts.push(`${nv} new vehicle${nv === 1 ? "" : "s"}`);
+  return `${parts.join(", ") || "No changes detected"}. Existing rows with matching Fuelio IDs are updated in place.`;
+});
+function requestCommit() {
+  if (files.value.length === 0 || !preview.value) return;
+  confirmOpen.value = true;
+}
 async function commit() {
   if (files.value.length === 0) return;
-  if (!window.confirm("Commit this import? Existing rows with matching guids will be updated.")) {
-    return;
-  }
   isCommitting.value = true;
   error.value = null;
   try {
@@ -81,14 +119,19 @@ async function commit() {
       false,
       attachSlug.value || null,
     );
+    confirmOpen.value = false;
+    toast.success("Fuelio import applied");
+    void vehiclesStore.fetchVehicles().catch(() => {});
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "commit failed";
+    error.value = errMessage(e, "commit failed");
+    confirmOpen.value = false;
   } finally {
     isCommitting.value = false;
   }
 }
 
 function reset() {
+  skipped.value = [];
   files.value = [];
   preview.value = null;
   committed.value = null;
@@ -105,7 +148,7 @@ const previewJson = computed(() =>
   <div class="import">
     <header class="head">
       <RouterLink to="/fuel" class="back">
-        <ChevronLeft :size="14" /> Fuel
+        <ChevronLeft :size="14" aria-hidden="true" /> Fuel
       </RouterLink>
       <h1>Fuelio import</h1>
     </header>
@@ -124,13 +167,17 @@ const previewJson = computed(() =>
         @dragover.prevent
         @drop="onDrop"
       >
-        <FilePlus :size="22" />
+        <FilePlus :size="22" aria-hidden="true" />
         <p>Drag &amp; drop zip(s) or CSV files here</p>
-        <label class="picker primary">
-          <Upload :size="14" /> Browse
-          <input type="file" multiple accept=".zip,.csv" @change="onPick" hidden />
-        </label>
+        <button type="button" class="picker primary" @click="fileInput?.click()">
+          <Upload :size="14" aria-hidden="true" /> Browse
+        </button>
+        <input ref="fileInput" type="file" multiple accept=".zip,.csv" hidden @change="onPick" />
       </div>
+      <p v-if="skipped.length" class="warn-text" role="status">
+        Skipped {{ skipped.length }} unsupported file{{ skipped.length === 1 ? "" : "s" }}
+        (only .zip and .csv are read): {{ skipped.join(", ") }}
+      </p>
 
       <div class="attach-row">
         <label for="attach-vehicle">
@@ -151,7 +198,7 @@ const previewJson = computed(() =>
         <li v-for="(f, i) in files" :key="f.name + i">
           <span class="name">{{ f.name }}</span>
           <span class="muted small">{{ (f.size / 1024).toFixed(1) }} KB</span>
-          <button class="ghost" type="button" @click="remove(i)" title="Remove">
+          <button class="ghost" type="button" @click="remove(i)" title="Remove" :aria-label="`Remove ${f.name}`">
             <X :size="14" />
           </button>
         </li>
@@ -172,23 +219,35 @@ const previewJson = computed(() =>
         <button
           class="primary"
           type="button"
-          @click="commit"
-          :disabled="!preview || isCommitting"
+          @click="requestCommit"
+          :disabled="!preview || isCommitting || !!committed"
+          :title="committed ? 'Already imported — change the files to import again' : !preview ? 'Run a dry-run preview first' : undefined"
         >
-          {{ isCommitting ? "Committing…" : "Commit import" }}
+          {{ isCommitting ? "Committing…" : committed ? "Imported" : "Commit import" }}
         </button>
       </div>
 
       <p v-if="error" class="error">{{ error }}</p>
     </section>
 
-    <section v-if="committed" class="card success-card">
+    <section v-if="committed" class="card success-card" role="status">
       <h3>Import complete</h3>
       <p class="muted">
         The selected exports were applied to the database. Re-importing the same files is
         a no-op.
       </p>
+      <RouterLink to="/fuel" class="link">View fillups →</RouterLink>
     </section>
+
+    <ConfirmDialog
+      v-model:open="confirmOpen"
+      title="Commit this import?"
+      :message="confirmMessage"
+      confirm-label="Commit import"
+      tone="primary"
+      :busy="isCommitting"
+      @confirm="commit"
+    />
 
     <section v-if="previewSummary" class="card">
       <h3>{{ committed ? "Result" : "Dry-run summary" }}</h3>
@@ -349,8 +408,13 @@ const previewJson = computed(() =>
   margin-top: 0.5rem;
 }
 .success-card {
-  border-color: rgba(63, 185, 80, 0.3);
-  background: rgba(63, 185, 80, 0.06);
+  border-color: rgba(74, 222, 128, 0.3);
+  background: var(--c-success-soft);
+}
+.warn-text {
+  color: var(--c-warn);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
 }
 .summary-grid {
   display: grid;

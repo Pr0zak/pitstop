@@ -5,12 +5,15 @@ import { useAuthStore } from "@/stores/auth";
 import { useLive } from "@/composables/useLive";
 import ArcGauge from "@/components/charts/ArcGauge.vue";
 import Pill from "@/components/Pill.vue";
+import QtyValue from "@/components/QtyValue.vue";
+import { agoLabel } from "@/composables/useNow";
 import {
   fmtPct,
   fmtTempC,
   fmtSpeedKph,
   fmtFuelRateLh,
   fmtPressureKpa,
+  speedUnitLabel,
 } from "@/composables/useFormat";
 import { useUnitsStore } from "@/stores/units";
 
@@ -98,22 +101,23 @@ const streamLabel = computed<{ text: string; state: PillState }>(() => {
   return { text: "Stream off", state: "offline" };
 });
 
-const statusLabel = computed<{
-  text: string;
-  state: PillState;
-}>(() => {
-  switch (status.value) {
-    case "connecting":
-      return { text: "connecting", state: "connecting" };
-    case "open":
-      return { text: "live", state: "healthy" };
-    case "stale":
-      return { text: "stale", state: "degraded" };
-    case "disconnected":
-      return { text: "disconnected", state: "offline" };
-    default:
-      return { text: "idle", state: "neutral" };
+/** Stream older than 60 s → tiles dim and a banner names the frame age. */
+const STALE_MS = 60_000;
+const streamStale = computed(
+  () => lastFrameMs.value != null && tick.value - lastFrameMs.value > STALE_MS,
+);
+
+// RPM gauge scale from the vehicle's redline (null → the old constants).
+const rpmScale = computed(() => {
+  const r = vehicles.selectedVehicle?.redline_rpm;
+  if (r == null || !Number.isFinite(r) || r < 1000) {
+    return { max: 8000, warn: 5500, danger: 6500 };
   }
+  return {
+    max: Math.ceil((r + 1000) / 1000) * 1000,
+    warn: Math.max(0, r - 1000),
+    danger: r,
+  };
 });
 
 // === Live values, by category ============================================
@@ -240,10 +244,10 @@ const instantEconomy = computed<{ value: number | null; unit: string }>(() => {
   const s = speed.value; // km/h per WiCAN convention
   const fr = fuelRate.value; // l/h
   if (s == null || fr == null || fr <= 0.05 || s < 1) {
-    return { value: null, unit: useImperial.value ? "mpg" : "l/100km" };
+    return { value: null, unit: useImperial.value ? "mpg" : "L/100km" };
   }
   if (useImperial.value) return { value: (s / fr) * 2.35215, unit: "mpg" };
-  return { value: (fr / s) * 100, unit: "l/100km" };
+  return { value: (fr / s) * 100, unit: "L/100km" };
 });
 
 // Computed instant lb-ft from torque % and reference torque (Honda Mode 01)
@@ -310,13 +314,22 @@ function trimClass(v: number | null): string {
       <p class="muted">Select a vehicle from the picker above.</p>
     </div>
     <template v-else>
+      <div v-if="streamStale" class="stale-banner" role="status">
+        <span class="dot" aria-hidden="true" />
+        Last frame {{ agoLabel(lastFrameMs, tick) }} — values below are the last reading, not live.
+      </div>
+      <div v-else-if="lastFrameMs == null && status !== 'connecting'" class="stale-banner idle" role="status">
+        <span class="dot" aria-hidden="true" />
+        Waiting for the first frame — the vehicle is probably parked.
+      </div>
+      <div class="live-body" :class="{ dimmed: streamStale }">
       <!-- Hero: RPM + speed -->
       <section class="hero">
         <ArcGauge
           :value="rpm"
-          :max="8000"
-          :warn-at="5500"
-          :danger-at="6500"
+          :max="rpmScale.max"
+          :warn-at="rpmScale.warn"
+          :danger-at="rpmScale.danger"
           label="Engine RPM"
           unit="rpm"
           :size="240"
@@ -326,7 +339,7 @@ function trimClass(v: number | null): string {
           :max="useImperial ? 120 : 200"
           :warn-at="useImperial ? 75 : 120"
           label="Speed"
-          :unit="useImperial ? 'mph' : 'km/h'"
+          :unit="speedUnitLabel()"
           :size="240"
         />
       </section>
@@ -337,19 +350,15 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Coolant</h3>
-            <div class="big">{{ fmtTempC(coolant) }}</div>
+            <div class="big"><QtyValue :text="fmtTempC(coolant)" /></div>
           </div>
           <div class="card tile">
             <h3>Battery</h3>
-            <div class="big">
-              {{ voltage != null ? voltage.toFixed(2) + " V" : "—" }}
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(voltage, 2)" unit="V" /></div>
           </div>
           <div class="card tile">
             <h3>Fuel level</h3>
-            <div class="big">
-              {{ fuelLvl != null ? Math.round(fuelLvl) + "%" : "—" }}
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(fuelLvl, 0)" unit="%" /></div>
           </div>
         </div>
       </section>
@@ -360,33 +369,26 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Throttle</h3>
-            <div class="big">{{ fmtPct(throttle) }}</div>
+            <div class="big"><QtyValue :text="fmtPct(throttle)" /></div>
           </div>
           <div class="card tile">
             <h3>Engine load</h3>
-            <div class="big">{{ fmtPct(load) }}</div>
+            <div class="big"><QtyValue :text="fmtPct(load)" /></div>
           </div>
           <div class="card tile">
             <h3>MAF</h3>
-            <div class="big">
-              {{ maf != null ? maf.toFixed(2) + " g/s" : "—" }}
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(maf, 2)" unit="g/s" /></div>
           </div>
           <div class="card tile">
             <h3>Torque</h3>
-            <div class="big">
-              {{ torque != null ? Math.round(torque) + "%" : "—" }}
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(torque, 0)" unit="%" /></div>
             <div class="muted small" v-if="instantTorqueLbft != null">
               ≈ {{ instantTorqueLbft.toFixed(0) }} lb·ft
             </div>
           </div>
           <div class="card tile">
             <h3>{{ useImperial ? "Speed (km/h)" : "Speed (mph)" }}</h3>
-            <div class="big">
-              {{ fmtSpeedAlt(speed) }}
-              <span class="unit">{{ useImperial ? "km/h" : "mph" }}</span>
-            </div>
+            <div class="big"><QtyValue :text="fmtSpeedAlt(speed)" :unit="useImperial ? 'km/h' : 'mph'" /></div>
           </div>
         </div>
       </section>
@@ -397,20 +399,18 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Fuel rate</h3>
-            <div class="big">{{ fmtFuelRateLh(fuelRate) }}</div>
+            <div class="big"><QtyValue :text="fmtFuelRateLh(fuelRate)" /></div>
           </div>
           <div class="card tile">
             <h3>Exhaust flow</h3>
-            <div class="big">
-              {{ exhaustFlow != null ? exhaustFlow.toFixed(1) + " kg/h" : "—" }}
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(exhaustFlow, 1)" unit="kg/h" /></div>
           </div>
           <div class="card tile highlight">
-            <h3>{{ useImperial ? "Instant MPG" : "Instant l/100km" }}</h3>
+            <h3>Instant economy</h3>
             <div class="big">
-              {{ instantEconomy.value != null ? instantEconomy.value.toFixed(1) : "—" }}
+              <QtyValue :text="fmtNum(instantEconomy.value, 1)" :unit="instantEconomy.unit" />
             </div>
-            <div class="muted small">{{ instantEconomy.unit }} (computed)</div>
+            <div class="muted small">computed from fuel rate ÷ speed</div>
           </div>
           <div class="card tile">
             <h3>STFT B1</h3>
@@ -437,24 +437,16 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Commanded AFR</h3>
-            <div class="big">
-              {{ cmdAfr != null ? cmdAfr.toFixed(3) : "—" }}
-              <span class="unit">λ</span>
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(cmdAfr, 3)" unit="λ" /></div>
           </div>
           <div class="card tile">
             <h3>O2 S1 lambda</h3>
-            <div class="big">
-              {{ o2S1Lambda != null ? o2S1Lambda.toFixed(3) : "—" }}
-              <span class="unit">λ</span>
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(o2S1Lambda, 3)" unit="λ" /></div>
             <div class="muted small">upstream wide-range</div>
           </div>
           <div class="card tile">
             <h3>Fuel rail</h3>
-            <div class="big">
-              {{ fmtPressureKpa(fuelRail) }}
-            </div>
+            <div class="big"><QtyValue :text="fmtPressureKpa(fuelRail)" /></div>
           </div>
         </div>
       </section>
@@ -465,19 +457,19 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Catalyst B1</h3>
-            <div class="big">{{ fmtTempC(catB1) }}</div>
+            <div class="big"><QtyValue :text="fmtTempC(catB1)" /></div>
           </div>
           <div class="card tile">
             <h3>Catalyst B2</h3>
-            <div class="big">{{ fmtTempC(catB2) }}</div>
+            <div class="big"><QtyValue :text="fmtTempC(catB2)" /></div>
           </div>
           <div class="card tile">
             <h3>Commanded EGR</h3>
-            <div class="big">{{ fmtPct(cmdEgr) }}</div>
+            <div class="big"><QtyValue :text="fmtPct(cmdEgr)" /></div>
           </div>
           <div class="card tile">
             <h3>Evap purge</h3>
-            <div class="big">{{ fmtPct(cmdEvapPurge) }}</div>
+            <div class="big"><QtyValue :text="fmtPct(cmdEvapPurge)" /></div>
           </div>
         </div>
       </section>
@@ -488,25 +480,19 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Intake air</h3>
-            <div class="big">{{ fmtTempC(iat) }}</div>
+            <div class="big"><QtyValue :text="fmtTempC(iat)" /></div>
           </div>
           <div class="card tile">
             <h3>MAP</h3>
-            <div class="big">
-              {{ fmtPressureKpa(map) }}
-            </div>
+            <div class="big"><QtyValue :text="fmtPressureKpa(map)" /></div>
           </div>
           <div class="card tile">
             <h3>Baro</h3>
-            <div class="big">
-              {{ fmtPressureKpa(baro) }}
-            </div>
+            <div class="big"><QtyValue :text="fmtPressureKpa(baro)" /></div>
           </div>
           <div class="card tile">
             <h3>Timing</h3>
-            <div class="big">
-              {{ timing != null ? timing.toFixed(1) + "°" : "—" }}
-            </div>
+            <div class="big"><QtyValue :text="fmtNum(timing, 1)" unit="°" /></div>
           </div>
         </div>
       </section>
@@ -517,20 +503,19 @@ function trimClass(v: number | null): string {
         <div class="tiles">
           <div class="card tile">
             <h3>Odometer</h3>
-            <div class="big">{{ fmtInt(odometer) }} <span class="unit">{{ odometerUnit }}</span></div>
+            <div class="big"><QtyValue :text="fmtInt(odometer)" :unit="odometerUnit" /></div>
           </div>
           <div class="card tile">
             <h3>Run time</h3>
-            <div class="big">{{ fmtRunTime(timeSinceStart) }}</div>
+            <div class="big"><QtyValue :text="fmtRunTime(timeSinceStart)" unit="" /></div>
           </div>
           <div class="card tile">
             <h3>Distance since DTC clear</h3>
-            <div class="big">
-              {{ fmtInt(distSinceClear) }} <span class="unit">{{ distUnit }}</span>
-            </div>
+            <div class="big"><QtyValue :text="fmtInt(distSinceClear)" :unit="distUnit" /></div>
           </div>
         </div>
       </section>
+      </div>
     </template>
   </div>
 </template>
@@ -574,8 +559,43 @@ function trimClass(v: number | null): string {
 }
 .tile .big {
   font-size: 1.55rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.live-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  transition: opacity 200ms;
+}
+.live-body.dimmed {
+  opacity: 0.45;
+}
+.stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  background: var(--c-warn-soft);
+  color: var(--c-ink1);
+  font-size: 0.88rem;
+}
+.stale-banner .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-warn);
+}
+.stale-banner.idle {
+  border-color: var(--c-line1);
+  background: var(--c-bg2);
+  color: var(--c-ink2);
+}
+.stale-banner.idle .dot {
+  background: var(--c-ink4);
 }
 .tile .big.ok {
   color: var(--c-success);
@@ -586,14 +606,9 @@ function trimClass(v: number | null): string {
 .tile .big.danger {
   color: var(--c-danger);
 }
-.tile .unit {
-  font-size: 0.85rem;
-  color: var(--c-muted);
-  font-weight: 500;
-}
 .tile.highlight {
-  border-color: rgba(63, 185, 80, 0.35);
-  box-shadow: 0 0 0 1px rgba(63, 185, 80, 0.2);
+  border-color: rgba(74, 222, 128, 0.35);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.2);
 }
 .tile .small {
   font-size: 0.72rem;

@@ -25,7 +25,8 @@
  */
 
 import { computed, onMounted, ref } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
+import StateCard from "@/components/StateCard.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useVehiclesStore } from "@/stores/vehicles";
 import * as api from "@/api/endpoints";
@@ -35,6 +36,27 @@ import Pill from "@/components/Pill.vue";
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
+const router = useRouter();
+
+/** Select the vehicle, THEN open its Overview. (The tile link used to pass
+ *  ?vehicle= to a page that never read it, so you landed on whichever
+ *  vehicle was already selected.) ?vehicle= is also honoured app-wide now,
+ *  so the href stays correct for open-in-new-tab. */
+function openVehicle(e: MouseEvent, id: string) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+  e.preventDefault();
+  vehicles.selectVehicle(id);
+  void router.push({ name: "overview" });
+}
+
+/** "Worst signal" for the score tooltip. */
+function scoreTitle(row: FleetRow): string {
+  const h = healthFor(row);
+  const rank = { bad: 0, warn: 1, ok: 2 } as const;
+  const worst = [...h.signals].sort((a, b) => rank[a.status] - rank[b.status])[0];
+  if (!worst || worst.status === "ok") return `Health ${h.score}/100 — all signals OK`;
+  return `Health ${h.score}/100 — worst: ${worst.label} (${worst.detail})`;
+}
 
 interface FleetRow {
   vehicle: Vehicle;
@@ -227,32 +249,21 @@ const overall = computed(() => {
         {{ vehicles.vehicles.length }} vehicle{{ vehicles.vehicles.length === 1 ? '' : 's' }}
         <template v-if="overall != null">
           · avg health
-          <strong>{{ overall.avg }}</strong>
+          <strong>{{ overall.avg }}/100</strong>
           · worst
-          <strong>{{ overall.worst }}</strong>
+          <strong>{{ overall.worst }}/100</strong>
         </template>
       </p>
     </header>
 
-    <div v-if="!auth.hasQueryToken" class="card">
-      <p class="muted">
-        Set up your QUERY token in
-        <RouterLink to="/settings">Settings</RouterLink>
-        to load fleet data.
-      </p>
-    </div>
-
-    <div v-else-if="loading && rows.length === 0" class="card">
-      <p class="muted">Loading fleet…</p>
-    </div>
-
-    <div v-else-if="error" class="card">
-      <p class="muted">Failed to load: {{ error }}</p>
-    </div>
-
-    <div v-else-if="rows.length === 0" class="card">
-      <p class="muted">No vehicles yet — add one on the Vehicles page.</p>
-    </div>
+    <StateCard v-if="!auth.hasQueryToken" state="empty" title="No query token">
+      Set up your QUERY token in <RouterLink to="/settings">Settings</RouterLink> to load fleet data.
+    </StateCard>
+    <StateCard v-else-if="loading && rows.length === 0" state="loading" title="Loading fleet…" />
+    <StateCard v-else-if="error" state="error" :message="error" @retry="loadFleet" />
+    <StateCard v-else-if="rows.length === 0" state="empty" title="No vehicles yet">
+      Add one on the <RouterLink to="/vehicles">Vehicles</RouterLink> page.
+    </StateCard>
 
     <div v-else class="grid">
       <article
@@ -268,6 +279,7 @@ const overall = computed(() => {
           <RouterLink
             :to="{ name: 'overview', query: { vehicle: row.vehicle.id } }"
             class="title"
+            @click="(e: MouseEvent) => openVehicle(e, row.vehicle.id)"
           >
             <span class="name">{{ row.vehicle.name }}</span>
             <span class="meta muted">
@@ -275,11 +287,13 @@ const overall = computed(() => {
               {{ row.vehicle.model ?? row.vehicle.slug }}
             </span>
           </RouterLink>
-          <Pill
-            :state="pillStateFor(healthFor(row).score)"
-            :label="`${healthFor(row).score}`"
-            mono
-          />
+          <span :title="scoreTitle(row)" :aria-label="scoreTitle(row)">
+            <Pill
+              :state="pillStateFor(healthFor(row).score)"
+              :label="`${healthFor(row).score}/100`"
+              mono
+            />
+          </span>
         </header>
 
         <div class="tile-body">
@@ -296,7 +310,7 @@ const overall = computed(() => {
           </div>
 
           <div class="spark-wrap">
-            <span class="t-label">Year MPG</span>
+            <span class="t-label">12-mo economy</span>
             <svg
               v-if="row.mpgSeries.length >= 2"
               :viewBox="`0 0 80 22`"

@@ -77,6 +77,10 @@ export interface Vehicle {
   // NULL = "not calibrated", which is deliberately distinct from a measured
   // 0.0. Presentation-only: nothing server-side rewrites stored readings.
   odometer_offset_km?: number | null;
+  /** Engine redline. Scales the Live RPM gauge; null = default 6500. */
+  redline_rpm?: number | null;
+  /** Server-augmented count of fillups (newer backends). */
+  fillup_count?: number | null;
 }
 
 export interface Profile {
@@ -296,12 +300,14 @@ export interface Fillup {
 export interface Expense {
   id: string;
   vehicle_id: string;
-  title: string;
+  title?: string | null;
   expense_date: string;
-  odometer?: number | null;
-  cost: number;
-  category_id?: string | null;
-  category_name?: string | null;
+  /** Odometer in the vehicle's distance unit (backend field name). */
+  odo?: number | null;
+  /** Decimal on the wire — may arrive as a JSON string. */
+  cost: number | string;
+  /** Integer FK into /expense-categories. */
+  cost_type_id?: number | null;
   notes?: string | null;
   remind_odo?: number | null;
   remind_date?: string | null;
@@ -309,10 +315,11 @@ export interface Expense {
   repeat_months?: number | null;
   is_income?: boolean;
   is_template?: boolean;
+  fuelio_guid?: string | null;
 }
 
 export interface Category {
-  id: string;
+  id: number | string;
   name: string;
   priority?: number | null;
   color?: string | null;

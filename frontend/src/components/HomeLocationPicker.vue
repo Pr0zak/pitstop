@@ -4,6 +4,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { roundCoords } from "@/utils/parseLatLon";
 import { LIGHT_STYLE } from "@/lib/mapStyles";
+import { useModalA11y } from "@/composables/useModalA11y";
 
 interface Props {
   initialLat: number | null;
@@ -16,6 +17,9 @@ const emit = defineEmits<{
 }>();
 
 const root = ref<HTMLDivElement | null>(null);
+const panel = ref<HTMLElement | null>(null);
+const geoError = ref<string | null>(null);
+useModalA11y(() => true, panel, () => emit("cancel"));
 const lat = ref<number | null>(props.initialLat);
 const lon = ref<number | null>(props.initialLon);
 
@@ -86,7 +90,11 @@ function confirm() {
 }
 
 function useGeolocation() {
-  if (!("geolocation" in navigator)) return;
+  geoError.value = null;
+  if (!("geolocation" in navigator)) {
+    geoError.value = "Geolocation isn't available in this browser.";
+    return;
+  }
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       const r = roundCoords(pos.coords.latitude, pos.coords.longitude);
@@ -97,7 +105,7 @@ function useGeolocation() {
         setMarker(r.lon, r.lat);
       }
     },
-    (err) => alert(`Geolocation failed: ${err.message}`),
+    (err) => (geoError.value = `Geolocation failed: ${err.message}`),
     { enableHighAccuracy: false, timeout: 10_000 },
   );
 }
@@ -105,10 +113,10 @@ function useGeolocation() {
 
 <template>
   <div class="modal-backdrop" @click.self="emit('cancel')">
-    <div class="modal">
+    <div ref="panel" class="modal" role="dialog" aria-modal="true" aria-labelledby="home-pick-title">
       <header>
-        <h3>Pick home location</h3>
-        <button class="ghost" type="button" @click="emit('cancel')">×</button>
+        <h3 id="home-pick-title">Pick home location</h3>
+        <button class="ghost" type="button" aria-label="Close" @click="emit('cancel')">×</button>
       </header>
       <p class="muted hint">
         Click anywhere on the map to drop a marker. Drag the marker to fine-tune.
@@ -121,6 +129,7 @@ function useGeolocation() {
           </template>
           <template v-else>(no location selected yet)</template>
         </span>
+        <span v-if="geoError" class="geo-err" role="status">{{ geoError }}</span>
         <span class="spacer" />
         <button type="button" @click="useGeolocation">Use current location</button>
         <button type="button" @click="emit('cancel')">Cancel</button>
@@ -133,6 +142,10 @@ function useGeolocation() {
 </template>
 
 <style scoped>
+.geo-err {
+  color: var(--c-warn);
+  font-size: 0.8rem;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;

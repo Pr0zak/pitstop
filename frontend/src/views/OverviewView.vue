@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
+import FillupModal from "@/components/FillupModal.vue";
+import StateCard from "@/components/StateCard.vue";
+import type { Fillup } from "@/api/types";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
 import { useAsync } from "@/composables/useAsync";
@@ -11,8 +14,24 @@ import {
   fmtMoney,
   fmtDate,
   fmtDistanceKm,
+  fmtVolume,
+  fmtPricePerVolume,
+  fmtDistance,
+  fmtOdoKm,
+  fmtInt,
+  nf,
+  toNum,
+  convEconomyMpg,
+  convVolume,
+  convDistance,
+  convPricePerVolume,
+  economyUnitLabel,
+  volUnitLabel,
+  distUnitLabel,
+  vehicleDistUnit,
+  vehicleVolUnit,
 } from "@/composables/useFormat";
-import { Fuel, Route, AlertTriangle } from "lucide-vue-next";
+import { Fuel, Route, AlertTriangle, ChevronDown } from "lucide-vue-next";
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
@@ -107,16 +126,6 @@ interface HeroFillup {
   is_missed: boolean;
 }
 
-/** Coerce Decimal-as-string OR number OR null to a finite number, or null. */
-function toNum(v: unknown): number | null {
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string" && v.length > 0) {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
 /** Convert an ISO 8601 UTC timestamp into a short relative-time string
  *  ("live" / "Nm ago" / "Nh ago" / "Nd ago") for hero-card subtitles.
  *  Mirrors the phone-side helper in StatusViewModel.formatReadingAge. */
@@ -193,9 +202,7 @@ const heroData = computed(() => {
     // user's setting; if that's gallons, estimateL needs the L→gal
     // conversion. If the user has fuel_unit set to L, the "gallons"
     // variable is technically liters — name is historical.
-    const isUserUnitGallons =
-      tankCapacityGal != null && tankCapacityL > tankCapacityGal * 1.5;
-    fuelGallons = isUserUnitGallons ? estimateL * 0.264172 : estimateL;
+    fuelGallons = convVolume(estimateL, "L");
     fuelLevelAge = sv?.fuel_level_estimate_updated_at
       ? formatReadingAge(sv.fuel_level_estimate_updated_at)
       : null;
@@ -206,7 +213,7 @@ const heroData = computed(() => {
         : null;
     fuelGallons =
       fuelLevelPct != null && tankCapacityGal != null && tankCapacityGal > 0
-        ? (tankCapacityGal * fuelLevelPct) / 100
+        ? convVolume((tankCapacityGal * fuelLevelPct) / 100, vehicleVolUnit(sv))
         : null;
     fuelLevelAge = fuelEntry?.time ? formatReadingAge(fuelEntry.time) : null;
   }
@@ -280,9 +287,9 @@ const heroData = computed(() => {
 const gaugeColor = computed(() => {
   const p = heroData.value.fuelLevelPct;
   if (p == null) return 'var(--c-line0)';
-  if (p < 15) return '#ff3a2e';
-  if (p < 35) return '#ffb020';
-  return '#4ade80';
+  if (p < 15) return 'var(--c-danger)';
+  if (p < 35) return 'var(--c-warn)';
+  return 'var(--c-success)';
 });
 
 function gaugeArcPath(pctIn: number): string {
@@ -386,8 +393,9 @@ const mpgTrendHero = computed<MpgTrendHero>(() => {
   };
 });
 
-// Odometer hero: current mi + lifetime delta + sparkline of
-// cumulative miles over time.
+// Odometer hero: current reading + lifetime delta + sparkline. All three
+// numbers are canonical km (field names are historical); the template
+// converts at render.
 interface OdoHero {
   currentMi: number | null;
   deltaMi: number | null;
@@ -397,13 +405,15 @@ interface OdoHero {
 const odoHero = computed<OdoHero>(() => {
   const summary = odoHistoryQ.data.value?.summary;
   const pts = odoHistoryQ.data.value?.points ?? [];
+  // current/delta in km (fall back to the mi fields for older backends).
+  const curKm = summary?.current_km ?? (summary?.current_mi != null ? summary.current_mi * 1.609344 : null);
+  const deltaKm = summary?.delta_km ?? (summary?.delta_mi != null ? summary.delta_mi * 1.609344 : null);
+  const perDayKm = summary?.miles_per_day != null ? summary.miles_per_day * 1.609344 : null;
   return {
-    currentMi: summary?.current_mi ?? null,
-    deltaMi: summary?.delta_mi ?? null,
-    milesPerDay: summary?.miles_per_day ?? null,
-    spark: pts.length >= 2
-      ? sparkPath(pts.map((p) => (p.odo_km != null ? p.odo_km * 0.621371 : null)))
-      : null,
+    currentMi: curKm,
+    deltaMi: deltaKm,
+    milesPerDay: perDayKm,
+    spark: pts.length >= 2 ? sparkPath(pts.map((p) => p.odo_km ?? null)) : null,
   };
 });
 
@@ -456,6 +466,56 @@ function dismissAnomaly(fingerprint: string) {
   // Force the visibleAnomaly computed to re-evaluate.
   void anomQ.reload();
 }
+
+// ── Display-unit helpers for the hero numbers ─────────────────────────
+// Fillup-derived values are in the vehicle's own units; convert once here.
+const volSrc = computed(() => vehicleVolUnit(vehicles.selectedVehicle));
+const distSrc = computed(() => vehicleDistUnit(vehicles.selectedVehicle));
+function econ(mpg: number | null | undefined): string {
+  return mpg != null && mpg > 0 ? nf(1).format(convEconomyMpg(mpg)) : "—";
+}
+function ppv(v: number | null | undefined): string {
+  return v != null ? fmtMoney(convPricePerVolume(v, volSrc.value), 3) : "—";
+}
+
+// Lifetime $/volume. Needs the lifetime fillup VOLUME the backend now
+// returns (fuel_volume_total); dividing lifetime dollars by the last-30
+// fillups' volume (the old code) overstated it several-fold. When an older
+// backend omits the field the sub-line is hidden rather than wrong.
+const lifetimePpv = computed<number | null>(() => {
+  const c = cooQ.data.value;
+  const vol = toNum(c?.fuel_volume_total);
+  if (!c || vol == null || vol <= 0 || !(c.fuel_total > 0)) return null;
+  return c.fuel_total / vol;
+});
+
+// Secondary "Ownership" tiles collapse behind a toggle; remember the choice.
+const OWN_KEY = "pitstop_overview_ownership_open";
+const ownershipOpen = ref<boolean>(
+  (() => {
+    try {
+      return localStorage.getItem(OWN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })(),
+);
+function toggleOwnership() {
+  ownershipOpen.value = !ownershipOpen.value;
+  try {
+    localStorage.setItem(OWN_KEY, ownershipOpen.value ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+// Recent-fillup rows open the shared FillupModal in edit mode.
+const editing = ref<Fillup | null>(null);
+function onFillupSaved() {
+  void heroFillupsQ.reload();
+  void cooQ.reload();
+  void vehicles.fetchVehicles().catch(() => {});
+}
 </script>
 
 <template>
@@ -473,7 +533,7 @@ function dismissAnomaly(fingerprint: string) {
       :class="`tone-${visibleAnomaly.severity}`"
     >
       <div class="anomaly-icon">
-        <AlertTriangle :size="20" />
+        <AlertTriangle :size="20" aria-hidden="true" />
       </div>
       <div class="anomaly-body">
         <div class="anomaly-headline">{{ visibleAnomaly.headline }}</div>
@@ -502,79 +562,27 @@ function dismissAnomaly(fingerprint: string) {
       <RouterLink to="/settings" class="link">Open Settings →</RouterLink>
     </div>
 
-    <div v-else-if="vehicles.loading && !vehicles.loaded" class="card">
-      <p class="muted">Loading vehicles…</p>
-    </div>
+    <StateCard v-else-if="vehicles.loading && !vehicles.loaded" state="loading" title="Loading vehicles…" />
+    <StateCard
+      v-else-if="vehicles.error && !vehicles.loaded"
+      state="error"
+      :message="vehicles.error"
+      @retry="vehicles.fetchVehicles().catch(() => {})"
+    />
 
-    <div v-else-if="vehicles.vehicles.length === 0" class="card">
-      <h3>No vehicles yet</h3>
-      <p class="muted">
-        Add a vehicle on the
-        <RouterLink to="/vehicles">Vehicles</RouterLink>
-        page, or import your Fuelio history on the
-        <RouterLink to="/fuel/import">Fuel Import</RouterLink>
-        page.
-      </p>
-    </div>
+    <StateCard v-else-if="vehicles.vehicles.length === 0" state="empty" title="No vehicles yet">
+      Add a vehicle on the <RouterLink to="/vehicles">Vehicles</RouterLink> page, or import your
+      Fuelio history on the <RouterLink to="/fuel/import">Fuel Import</RouterLink> page.
+    </StateCard>
 
     <template v-else-if="vehicles.selectedVehicle">
-      <!-- Hero cards: fuel consumption + gas price + this-month spend +
-           miles since last fill. Sit above the live OBD metric grid so
-           the eye lands on long-running averages first; live readings
-           come second. -->
-      <section v-if="heroData.hasLatest" class="hero-grid">
-        <div class="card hero">
-          <h3>Avg consumption</h3>
-          <div class="hero-value">
-            <span class="big">{{ heroData.mpg90 != null ? heroData.mpg90.toFixed(1) : '—' }}</span>
-            <span class="unit">mpg</span>
-          </div>
-          <div class="hero-sub muted">90-day rolling</div>
-        </div>
-        <div class="card hero">
-          <h3>Gas price</h3>
-          <div class="hero-value">
-            <span class="big">{{ heroData.latestPpg != null ? '$' + heroData.latestPpg.toFixed(3) : '—' }}</span>
-            <span class="unit">/gal</span>
-          </div>
-          <div
-            v-if="heroData.ppgDelta != null"
-            class="hero-sub"
-            :class="{ up: heroData.ppgDelta > 0, down: heroData.ppgDelta < 0 }"
-          >
-            <span>{{ heroData.ppgDelta > 0 ? '▲' : heroData.ppgDelta < 0 ? '▼' : '·' }}</span>
-            {{ Math.abs(heroData.ppgDelta).toFixed(1) }}% vs 30-day avg
-          </div>
-          <div
-            v-if="heroData.ppgVsRegion != null"
-            class="hero-sub"
-            :class="{ up: heroData.ppgVsRegion > 0, down: heroData.ppgVsRegion < 0 }"
-          >
-            <span>{{ heroData.ppgVsRegion > 0 ? '▲' : heroData.ppgVsRegion < 0 ? '▼' : '·' }}</span>
-            {{ Math.abs(heroData.ppgVsRegion).toFixed(1) }}% vs {{ heroData.eiaRegionLabel }}
-            <span class="muted small"> · ${{ heroData.eiaLatest!.toFixed(3) }}/gal</span>
-          </div>
-        </div>
-        <div class="card hero">
-          <h3>This month</h3>
-          <div class="hero-value">
-            <span class="big">${{ heroData.monthCost.toFixed(2) }}</span>
-          </div>
-          <div class="hero-sub muted">
-            {{ heroData.monthCount }} fillup{{ heroData.monthCount === 1 ? '' : 's' }}
-          </div>
-        </div>
+      <!-- Four primary tiles. Every tile names the window it covers. -->
+      <section class="hero-grid primary" aria-label="Key figures">
         <div class="card hero fuel-gauge" :style="{ '--gauge-accent': gaugeColor }">
           <h3>Fuel level</h3>
           <div class="fuel-gauge-wrap">
-            <svg class="fuel-gauge-svg" viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet">
-              <path
-                class="gauge-track"
-                :d="gaugeArcPath(100)"
-                fill="none"
-                stroke-width="14"
-                stroke-linecap="round"
-              />
+            <svg class="fuel-gauge-svg" viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+              <path class="gauge-track" :d="gaugeArcPath(100)" fill="none" stroke-width="14" stroke-linecap="round" />
               <path
                 v-if="heroData.fuelLevelPct != null && heroData.fuelLevelPct > 0"
                 :d="gaugeArcPath(heroData.fuelLevelPct)"
@@ -583,16 +591,10 @@ function dismissAnomaly(fingerprint: string) {
                 stroke-width="14"
                 stroke-linecap="round"
               />
-              <path
-                class="gauge-tick"
-                :d="gaugeTickPath()"
-                fill="none"
-                stroke-width="1.5"
-                stroke-linecap="round"
-              />
+              <path class="gauge-tick" :d="gaugeTickPath()" fill="none" stroke-width="1.5" stroke-linecap="round" />
             </svg>
-            <span class="fuel-gauge-end e">E</span>
-            <span class="fuel-gauge-end f">F</span>
+            <span class="fuel-gauge-end e" aria-hidden="true">E</span>
+            <span class="fuel-gauge-end f" aria-hidden="true">F</span>
             <span class="fuel-gauge-pct">
               {{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) + '%' : '—' }}
             </span>
@@ -603,213 +605,223 @@ function dismissAnomaly(fingerprint: string) {
             >stale</span>
           </div>
           <div class="hero-sub muted">
-            {{ heroData.fuelGallons != null && heroData.fuelLevelAge
-              ? heroData.fuelGallons.toFixed(1) + ' gal · ' + heroData.fuelLevelAge
-              : heroData.fuelGallons != null
-                ? heroData.fuelGallons.toFixed(1) + ' gal'
-                : heroData.fuelLevelAge ?? '—' }}
-          </div>
-        </div>
-        <div class="card hero">
-          <h3>Cost / mile</h3>
-          <div class="hero-value">
-            <span class="big">{{ heroData.costPerMile != null ? '$' + heroData.costPerMile.toFixed(3) : '—' }}</span>
-          </div>
-          <div class="hero-sub muted">
-            {{ heroData.totalMiles != null
-              ? heroData.totalMiles.toFixed(0) + ' mi · $' + heroData.totalCost.toFixed(0) + ' total'
-              : 'last 30 fillups' }}
-          </div>
-        </div>
-        <div class="card hero">
-          <h3>Best MPG</h3>
-          <div class="hero-value">
-            <span class="big">{{ heroData.bestMpg != null ? heroData.bestMpg.toFixed(1) : '—' }}</span>
-            <span class="unit">mpg</span>
-          </div>
-          <div class="hero-sub muted">
-            {{ heroData.worstMpg != null
-              ? 'worst ' + heroData.worstMpg.toFixed(1) + ' mpg'
-              : 'this year' }}
-          </div>
-        </div>
-        <div class="card hero">
-          <h3>Total fuel</h3>
-          <div class="hero-value">
-            <span class="big">{{ heroData.totalGallons != null ? heroData.totalGallons.toFixed(0) : '—' }}</span>
-            <span class="unit">gal</span>
-          </div>
-          <div class="hero-sub muted">
-            last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups
+            <template v-if="heroData.fuelGallons != null">
+              {{ nf(1).format(heroData.fuelGallons) }} {{ volUnitLabel() }}
+            </template>
+            <template v-if="heroData.fuelGallons != null && heroData.fuelLevelAge"> · </template>
+            <template v-if="heroData.fuelLevelAge">now · {{ heroData.fuelLevelAge }}</template>
+            <template v-if="heroData.fuelGallons == null && !heroData.fuelLevelAge">no reading yet</template>
           </div>
         </div>
 
-        <!-- MPG trend over the full history (yearly buckets). -->
-        <div v-if="mpgTrendHero.latest != null" class="card hero">
-          <h3>MPG trend</h3>
+        <div class="card hero">
+          <h3>Avg economy</h3>
           <div class="hero-value">
-            <span class="big">{{ mpgTrendHero.latest!.toFixed(1) }}</span>
-            <span class="unit">mpg</span>
+            <span class="big">{{ econ(heroData.mpg90) }}</span>
+            <span class="unit">{{ economyUnitLabel() }}</span>
+          </div>
+          <div class="hero-sub muted">last 90 days · fillup-based</div>
+        </div>
+
+        <div class="card hero">
+          <h3>Gas price</h3>
+          <div class="hero-value">
+            <span class="big">{{ ppv(heroData.latestPpg) }}</span>
+            <span class="unit">/{{ volUnitLabel() }}</span>
+          </div>
+          <div class="hero-sub muted" v-if="recentFillups[0]">latest fillup · {{ fmtDate(recentFillups[0].fillup_date, "MMM d") }}</div>
+          <div
+            v-if="heroData.ppgDelta != null"
+            class="hero-sub"
+            :class="{ up: heroData.ppgDelta > 0, down: heroData.ppgDelta < 0 }"
+          >
+            <span aria-hidden="true">{{ heroData.ppgDelta > 0 ? '▲' : heroData.ppgDelta < 0 ? '▼' : '·' }}</span>
+            {{ Math.abs(heroData.ppgDelta).toFixed(1) }}% vs last-30-fillup avg
           </div>
           <div
-            v-if="mpgTrendHero.deltaPct != null"
+            v-if="heroData.ppgVsRegion != null"
             class="hero-sub"
-            :class="{ up: mpgTrendHero.deltaPct < 0, down: mpgTrendHero.deltaPct > 0 }"
+            :class="{ up: heroData.ppgVsRegion > 0, down: heroData.ppgVsRegion < 0 }"
           >
-            <span>{{ mpgTrendHero.deltaPct > 0 ? '▲' : mpgTrendHero.deltaPct < 0 ? '▼' : '·' }}</span>
-            {{ Math.abs(mpgTrendHero.deltaPct).toFixed(1) }}% vs prior year
-          </div>
-          <div v-else class="hero-sub muted">yearly average</div>
-          <svg
-            v-if="mpgTrendHero.spark"
-            class="hero-spark"
-            viewBox="0 0 100 30"
-            preserveAspectRatio="none"
-            aria-hidden="true"
-          >
-            <path :d="mpgTrendHero.spark" stroke="#2f81f7" stroke-width="1.4" fill="none" />
-          </svg>
-        </div>
-
-        <!-- Lifetime fuel spend from the COO endpoint. -->
-        <div v-if="cooQ.data.value && cooQ.data.value.fuel_total > 0" class="card hero">
-          <h3>Fuel cost</h3>
-          <div class="hero-value">
-            <span class="big">${{ Math.round(cooQ.data.value.fuel_total).toLocaleString() }}</span>
-          </div>
-          <div class="hero-sub muted">
-            lifetime
-            <span v-if="heroData.totalGallons != null">
-              · ${{
-                (cooQ.data.value.fuel_total / Math.max(1, heroData.totalGallons)).toFixed(2)
-              }}/gal avg
-            </span>
+            <span aria-hidden="true">{{ heroData.ppgVsRegion > 0 ? '▲' : heroData.ppgVsRegion < 0 ? '▼' : '·' }}</span>
+            {{ Math.abs(heroData.ppgVsRegion).toFixed(1) }}% vs {{ heroData.eiaRegionLabel }}
+            <span class="muted small"> · {{ fmtPricePerVolume(heroData.eiaLatest, "gal") }} this week</span>
           </div>
         </div>
 
-        <!-- Odometer history sparkline. -->
-        <div v-if="odoHero.currentMi != null" class="card hero">
-          <h3>Odometer</h3>
+        <div class="card hero">
+          <h3>This month</h3>
           <div class="hero-value">
-            <span class="big">{{ Math.round(odoHero.currentMi).toLocaleString() }}</span>
-            <span class="unit">mi</span>
-          </div>
-          <div v-if="odoHero.deltaMi != null" class="hero-sub muted">
-            +{{ Math.round(odoHero.deltaMi).toLocaleString() }} mi
-            <span v-if="odoHero.milesPerDay != null">
-              · {{ odoHero.milesPerDay.toFixed(1) }}/day
-            </span>
-          </div>
-          <svg
-            v-if="odoHero.spark"
-            class="hero-spark"
-            viewBox="0 0 100 30"
-            preserveAspectRatio="none"
-            aria-hidden="true"
-          >
-            <path :d="odoHero.spark" stroke="#3fb950" stroke-width="1.4" fill="none" />
-          </svg>
-        </div>
-        <!--
-          Engine hours (Task #96). Total engine-on hours + the
-          hrs-per-100-mi idle ratio. Tile hides if we have zero
-          time_since_engine_start samples (pre-WiCAN history).
-        -->
-        <div v-if="hoursQ.data.value && hoursQ.data.value.total_hours > 0" class="card hero">
-          <h3>Engine hours</h3>
-          <div class="hero-value">
-            <span class="big">{{ Math.round(hoursQ.data.value.total_hours).toLocaleString() }}</span>
-            <span class="unit">hrs</span>
+            <span class="big">{{ fmtMoney(heroData.monthCost) }}</span>
           </div>
           <div class="hero-sub muted">
-            <span v-if="hoursQ.data.value.hrs_per_100mi != null">
-              {{ hoursQ.data.value.hrs_per_100mi.toFixed(2) }} hrs/100 mi
-            </span>
-            <span v-else>cumulative</span>
-          </div>
-        </div>
-
-        <!--
-          Cost of ownership (Task #98). Headline number lights up only
-          when the user has set a purchase price; otherwise the card
-          falls back to fuel + maintenance lifetime totals so the
-          slot doesn't go dark.
-        -->
-        <div v-if="cooQ.data.value" class="card hero coo">
-          <h3>Lifetime $/mi</h3>
-          <div class="hero-value">
-            <span class="big">
-              {{ cooQ.data.value.cost_per_mi != null
-                ? '$' + cooQ.data.value.cost_per_mi.toFixed(3)
-                : '—' }}
-            </span>
-          </div>
-          <div class="hero-sub muted">
-            <template v-if="cooQ.data.value.purchase_price != null">
-              ${{ Math.round(cooQ.data.value.total).toLocaleString() }} total
-              <span v-if="cooQ.data.value.lifetime_mi != null">
-                · {{ Math.round(cooQ.data.value.lifetime_mi).toLocaleString() }} mi
-              </span>
-            </template>
-            <template v-else>
-              <RouterLink to="/settings" class="link">
-                Add purchase price →
-              </RouterLink>
-            </template>
-          </div>
-          <!-- Stacked breakdown bar; only renders when total > 0 -->
-          <div v-if="cooQ.data.value.total > 0" class="coo-bar">
-            <span
-              class="coo-seg coo-purchase"
-              :style="{
-                width: ((cooQ.data.value.purchase_price ?? 0) /
-                  cooQ.data.value.total * 100).toFixed(1) + '%',
-              }"
-              :title="`Purchase $${(cooQ.data.value.purchase_price ?? 0).toFixed(0)}`"
-            />
-            <span
-              class="coo-seg coo-fuel"
-              :style="{
-                width: (cooQ.data.value.fuel_total /
-                  cooQ.data.value.total * 100).toFixed(1) + '%',
-              }"
-              :title="`Fuel $${cooQ.data.value.fuel_total.toFixed(0)}`"
-            />
-            <span
-              class="coo-seg coo-maint"
-              :style="{
-                width: (cooQ.data.value.maintenance_total /
-                  cooQ.data.value.total * 100).toFixed(1) + '%',
-              }"
-              :title="`Maintenance $${cooQ.data.value.maintenance_total.toFixed(0)}`"
-            />
+            calendar month · {{ heroData.monthCount }} fillup{{ heroData.monthCount === 1 ? '' : 's' }}
           </div>
         </div>
       </section>
 
-      <!-- Brand tape: a thin redline accent under the hero strip. -->
-      <div class="brand-tape" aria-hidden="true">
-        <span class="tape-track" />
-        <span class="tape-redline" />
-      </div>
+      <!-- Ownership row: everything else, collapsed by default. -->
+      <section class="ownership">
+        <button
+          type="button"
+          class="own-toggle ghost"
+          :aria-expanded="ownershipOpen"
+          aria-controls="ownership-grid"
+          @click="toggleOwnership"
+        >
+          <ChevronDown :size="14" class="chev" :class="{ open: ownershipOpen }" aria-hidden="true" />
+          Ownership
+          <span class="muted own-summary" v-if="!ownershipOpen">
+            <template v-if="cooQ.data.value">{{ fmtMoney(cooQ.data.value.fuel_total, 0) }} fuel lifetime</template>
+            <template v-if="odoHero.currentMi != null"> · {{ fmtOdoKm(odoHero.currentMi) }}</template>
+          </span>
+        </button>
+        <div v-show="ownershipOpen" id="ownership-grid" class="hero-grid secondary">
+          <div class="card hero">
+            <h3>Cost / {{ distUnitLabel() }}</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ heroData.costPerMile != null ? fmtMoney(heroData.costPerMile / convDistance(1, distSrc), 3) : '—' }}</span>
+              <span class="unit">/{{ distUnitLabel() }}</span>
+            </div>
+            <div class="hero-sub muted">
+              fuel only · last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups
+              <template v-if="heroData.totalMiles != null">
+                · {{ fmtDistance(heroData.totalMiles, distSrc, 0) }}
+              </template>
+            </div>
+          </div>
+
+          <div class="card hero">
+            <h3>Best month</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ econ(heroData.bestMpg) }}</span>
+              <span class="unit">{{ economyUnitLabel() }}</span>
+            </div>
+            <div class="hero-sub muted">
+              monthly avg · last 90 days<template v-if="heroData.worstMpg != null"> · worst {{ fmtMpg(heroData.worstMpg) }}</template>
+            </div>
+          </div>
+
+          <div class="card hero">
+            <h3>Fuel bought</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ heroData.totalGallons ? nf(0).format(convVolume(heroData.totalGallons, volSrc)) : '—' }}</span>
+              <span class="unit">{{ volUnitLabel() }}</span>
+            </div>
+            <div class="hero-sub muted">last {{ heroFillupsQ.data.value?.items?.length ?? 0 }} fillups · {{ fmtMoney(heroData.totalCost, 0) }}</div>
+          </div>
+
+          <div v-if="mpgTrendHero.latest != null" class="card hero">
+            <h3>Economy trend</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ econ(mpgTrendHero.latest) }}</span>
+              <span class="unit">{{ economyUnitLabel() }}</span>
+            </div>
+            <div
+              v-if="mpgTrendHero.deltaPct != null"
+              class="hero-sub"
+              :class="{ up: mpgTrendHero.deltaPct < 0, down: mpgTrendHero.deltaPct > 0 }"
+            >
+              <span aria-hidden="true">{{ mpgTrendHero.deltaPct > 0 ? '▲' : mpgTrendHero.deltaPct < 0 ? '▼' : '·' }}</span>
+              {{ Math.abs(mpgTrendHero.deltaPct).toFixed(1) }}% this year vs last
+            </div>
+            <div v-else class="hero-sub muted">this calendar year · yearly avg</div>
+            <svg v-if="mpgTrendHero.spark" class="hero-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+              <path :d="mpgTrendHero.spark" stroke="var(--chart-1)" stroke-width="1.4" fill="none" />
+            </svg>
+          </div>
+
+          <div v-if="cooQ.data.value && cooQ.data.value.fuel_total > 0" class="card hero">
+            <h3>Fuel cost</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ fmtMoney(cooQ.data.value.fuel_total, 0) }}</span>
+            </div>
+            <div class="hero-sub muted">
+              lifetime<template v-if="lifetimePpv != null"> · {{ ppv(lifetimePpv) }}/{{ volUnitLabel() }} avg</template>
+            </div>
+          </div>
+
+          <div v-if="odoHero.currentMi != null" class="card hero">
+            <h3>Odometer</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ fmtInt(convDistance(odoHero.currentMi, 'km')) }}</span>
+              <span class="unit">{{ distUnitLabel() }}</span>
+            </div>
+            <div v-if="odoHero.deltaMi != null" class="hero-sub muted">
+              lifetime · +{{ fmtOdoKm(odoHero.deltaMi) }} tracked
+              <template v-if="odoHero.milesPerDay != null"> · {{ fmtDistance(odoHero.milesPerDay, 'km', 1) }}/day</template>
+            </div>
+            <svg v-if="odoHero.spark" class="hero-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+              <path :d="odoHero.spark" stroke="var(--chart-2)" stroke-width="1.4" fill="none" />
+            </svg>
+          </div>
+
+          <div v-if="hoursQ.data.value && hoursQ.data.value.total_hours > 0" class="card hero">
+            <h3>Engine hours</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ fmtInt(hoursQ.data.value.total_hours) }}</span>
+              <span class="unit">hrs</span>
+            </div>
+            <div class="hero-sub muted">
+              lifetime (tracked)
+              <template v-if="hoursQ.data.value.hrs_per_100mi != null">
+                · {{ hoursQ.data.value.hrs_per_100mi.toFixed(2) }} hrs/100 mi
+              </template>
+            </div>
+          </div>
+
+          <div v-if="cooQ.data.value" class="card hero coo">
+            <h3>Lifetime cost / mi</h3>
+            <div class="hero-value">
+              <span class="big sm">{{ cooQ.data.value.cost_per_mi != null ? fmtMoney(cooQ.data.value.cost_per_mi, 3) : '—' }}</span>
+            </div>
+            <div class="hero-sub muted">
+              <template v-if="cooQ.data.value.purchase_price != null">
+                lifetime · {{ fmtMoney(cooQ.data.value.total, 0) }} total
+                <template v-if="cooQ.data.value.lifetime_mi != null">
+                  · {{ fmtDistance(cooQ.data.value.lifetime_mi, 'mi', 0) }}
+                </template>
+              </template>
+              <RouterLink
+                v-else
+                :to="{ path: '/vehicles', query: { edit: vehicles.selectedVehicle.id } }"
+                class="link"
+              >Add purchase price →</RouterLink>
+            </div>
+            <div v-if="cooQ.data.value.total > 0" class="coo-bar" aria-hidden="true">
+              <span
+                class="coo-seg coo-purchase"
+                :style="{ width: (((cooQ.data.value.purchase_price ?? 0) / cooQ.data.value.total) * 100).toFixed(1) + '%' }"
+                :title="`Purchase ${fmtMoney(cooQ.data.value.purchase_price ?? 0, 0)}`"
+              />
+              <span
+                class="coo-seg coo-fuel"
+                :style="{ width: ((cooQ.data.value.fuel_total / cooQ.data.value.total) * 100).toFixed(1) + '%' }"
+                :title="`Fuel ${fmtMoney(cooQ.data.value.fuel_total, 0)}`"
+              />
+              <span
+                class="coo-seg coo-maint"
+                :style="{ width: ((cooQ.data.value.maintenance_total / cooQ.data.value.total) * 100).toFixed(1) + '%' }"
+                :title="`Maintenance ${fmtMoney(cooQ.data.value.maintenance_total, 0)}`"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
 
       <div class="row-grid">
         <section class="card">
           <h3>
-            <Route :size="14" /> Recent trips
+            <Route :size="14" aria-hidden="true" /> Recent trips
             <RouterLink to="/trips" class="more">all →</RouterLink>
           </h3>
-          <div v-if="tripsQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="tripsQ.error.value" class="muted">
-            Failed to load: {{ tripsQ.error.value }}
-          </div>
-          <div v-else-if="!tripsQ.data.value || tripsQ.data.value.items.length === 0" class="muted">
-            No trips yet.
-          </div>
+          <StateCard v-if="tripsQ.loading.value && !tripsQ.data.value" state="loading" bare />
+          <StateCard v-else-if="tripsQ.error.value" state="error" bare :message="tripsQ.error.value" @retry="tripsQ.reload()" />
+          <StateCard v-else-if="!tripsQ.data.value || tripsQ.data.value.items.length === 0" state="empty" bare title="No trips yet." />
           <ul v-else class="recent">
             <li v-for="t in tripsQ.data.value.items" :key="t.id">
               <RouterLink :to="`/trips/${t.id}`">
-                <span>{{ fmtDate(t.started_at) }}</span>
+                <span>{{ fmtDate(t.started_at, "MMM d, HH:mm") }}</span>
                 <span class="muted">{{ fmtDistanceKm(t.distance_km ?? null) }}</span>
               </RouterLink>
             </li>
@@ -818,44 +830,49 @@ function dismissAnomaly(fingerprint: string) {
 
         <section class="card">
           <h3>
-            <Fuel :size="14" /> Recent fillups
+            <Fuel :size="14" aria-hidden="true" /> Recent fillups
             <RouterLink to="/fuel" class="more">all →</RouterLink>
           </h3>
-          <div v-if="heroFillupsQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="heroFillupsQ.error.value" class="muted">
-            Failed to load: {{ heroFillupsQ.error.value }}
-          </div>
-          <div v-else-if="recentFillups.length === 0" class="muted">
-            No fillups recorded.
-          </div>
+          <StateCard v-if="heroFillupsQ.loading.value && !heroFillupsQ.data.value" state="loading" bare />
+          <StateCard v-else-if="heroFillupsQ.error.value" state="error" bare :message="heroFillupsQ.error.value" @retry="heroFillupsQ.reload()" />
+          <StateCard v-else-if="recentFillups.length === 0" state="empty" bare title="No fillups recorded." />
           <ul v-else class="recent">
             <li v-for="f in recentFillups" :key="f.id">
-              <span>{{ fmtDate(f.fillup_date) }}</span>
-              <span class="muted">{{ fmtMpg(f.mpg) }} · {{ fmtMoney(toNum(f.price_total) ?? 0) }}</span>
+              <button type="button" class="row-btn" :aria-label="`Edit fillup from ${fmtDate(f.fillup_date)}`" @click="editing = f">
+                <span>{{ fmtDate(f.fillup_date, "MMM d") }}</span>
+                <span class="muted">
+                  {{ fmtVolume(f.fuel_volume, volSrc, 1) }} · {{ fmtMpg(f.mpg) }} · {{ fmtMoney(f.price_total) }}
+                </span>
+              </button>
             </li>
           </ul>
         </section>
 
         <section class="card">
           <h3>
-            <AlertTriangle :size="14" /> Active DTCs
+            <AlertTriangle :size="14" aria-hidden="true" /> Active DTCs
             <RouterLink to="/dtcs" class="more">all →</RouterLink>
           </h3>
-          <div v-if="dtcsQ.loading.value" class="muted">Loading…</div>
-          <div v-else-if="dtcsQ.error.value" class="muted">
-            Failed to load: {{ dtcsQ.error.value }}
-          </div>
-          <div v-else-if="!dtcsQ.data.value || dtcsQ.data.value.length === 0" class="muted">
-            No active codes.
-          </div>
+          <StateCard v-if="dtcsQ.loading.value && !dtcsQ.data.value" state="loading" bare />
+          <StateCard v-else-if="dtcsQ.error.value" state="error" bare :message="dtcsQ.error.value" @retry="dtcsQ.reload()" />
+          <StateCard v-else-if="!dtcsQ.data.value || dtcsQ.data.value.length === 0" state="empty" bare title="No active codes." />
           <ul v-else class="recent">
             <li v-for="d in dtcsQ.data.value" :key="d.id">
               <span><code>{{ d.code }}</code> {{ d.description ?? "" }}</span>
             </li>
           </ul>
         </section>
-
       </div>
+
+      <FillupModal
+        v-if="editing"
+        :vehicle="vehicles.selectedVehicle"
+        :initial="editing"
+        :station-suggestions="[]"
+        :all-vehicles="vehicles.vehicles"
+        @close="editing = null"
+        @saved="onFillupSaved"
+      />
     </template>
   </div>
 </template>
@@ -873,6 +890,65 @@ function dismissAnomaly(fingerprint: string) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.8rem;
+}
+.hero-grid.primary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 1000px) {
+  .hero-grid.primary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.hero-grid.secondary {
+  margin-top: 0.6rem;
+}
+.hero-value .big.sm {
+  font-size: 1.5rem;
+}
+.ownership {
+  display: flex;
+  flex-direction: column;
+}
+.own-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--c-ink2);
+}
+.own-summary {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8rem;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+.chev {
+  transition: transform 120ms;
+  transform: rotate(-90deg);
+}
+.chev.open {
+  transform: none;
+}
+.row-btn {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  font-weight: 400;
+  color: var(--c-ink1);
+  text-align: left;
+  gap: 0.5rem;
+}
+.row-btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--c-ink0);
 }
 .hero {
   display: flex;
@@ -987,26 +1063,10 @@ function dismissAnomaly(fingerprint: string) {
   letter-spacing: 0.06em;
   padding: 1px 5px;
   border-radius: 999px;
-  color: #f59e0b;
-  background: #f59e0b1f;
-  border: 1px solid #f59e0b66;
+  color: var(--c-warn);
+  background: var(--c-warn-soft);
+  border: 1px solid rgba(255, 176, 32, 0.4);
   cursor: help;
-}
-.brand-tape {
-  position: relative;
-  height: 2px;
-  margin: 0.2rem 0 0.4rem 0;
-  border-radius: 1px;
-  overflow: hidden;
-}
-.tape-track {
-  position: absolute; left: 0; top: 0; bottom: 0; right: 26%;
-  background: var(--c-line0);
-}
-.tape-redline {
-  position: absolute; left: 74%; top: 0; bottom: 0; right: 0;
-  background: linear-gradient(90deg, transparent 0%, var(--c-accent) 35%);
-  border-radius: 1px;
 }
 .row-grid {
   display: grid;
@@ -1067,12 +1127,12 @@ function dismissAnomaly(fingerprint: string) {
   background: var(--c-surface);
 }
 .anomaly-card.tone-warn {
-  border-color: #f59e0b66;
-  background: linear-gradient(0deg, #f59e0b0e, transparent);
+  border-color: rgba(255, 176, 32, 0.4);
+  background: linear-gradient(0deg, var(--c-warn-soft), transparent);
 }
 .anomaly-card.tone-danger {
-  border-color: #ef444466;
-  background: linear-gradient(0deg, #ef44440e, transparent);
+  border-color: rgba(255, 58, 46, 0.4);
+  background: linear-gradient(0deg, var(--c-danger-soft), transparent);
 }
 .anomaly-icon {
   display: grid;
@@ -1080,11 +1140,11 @@ function dismissAnomaly(fingerprint: string) {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: var(--c-surface-soft);
-  color: #f59e0b;
+  background: var(--c-bg3);
+  color: var(--c-warn);
 }
 .anomaly-card.tone-danger .anomaly-icon {
-  color: #ef4444;
+  color: var(--c-danger);
 }
 .anomaly-body {
   display: flex;
@@ -1111,13 +1171,13 @@ function dismissAnomaly(fingerprint: string) {
   margin-top: 0.5rem;
   border-radius: 3px;
   overflow: hidden;
-  background: var(--c-surface-soft);
+  background: var(--c-bg3);
 }
 .coo-seg {
   display: inline-block;
   height: 100%;
 }
-.coo-purchase { background: #6366f1; }
-.coo-fuel    { background: #2f81f7; }
-.coo-maint   { background: #f59e0b; }
+.coo-purchase { background: var(--chart-4); }
+.coo-fuel    { background: var(--chart-1); }
+.coo-maint   { background: var(--chart-3); }
 </style>

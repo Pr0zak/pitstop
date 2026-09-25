@@ -1,26 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import {
-  LayoutDashboard,
-  LayoutGrid,
-  Activity,
-  Route,
-  BarChart3,
-  Fuel,
-  Wrench,
-  AlertTriangle,
-  Bug,
-  Car,
-  FileJson,
-  HelpCircle,
-  Map as MapIcon,
-  Settings as SettingsIcon,
-  Plug,
-  ChevronLeft,
-  ChevronRight,
-  Github,
-} from "lucide-vue-next";
+import { ChevronLeft, ChevronRight, Github } from "lucide-vue-next";
+import { PRIMARY_NAV, SECONDARY_NAV, isNavActive } from "@/lib/nav";
 import PitstopLogo from "@/components/logos/PitstopLogo.vue";
 import UpdateModal from "@/components/UpdateModal.vue";
 import {
@@ -111,32 +93,11 @@ function toggle() {
 
 const route = useRoute();
 
-// Primary nav (top of sidebar) → live/operational items.
-// Secondary nav (bottom) → admin / setup / config that the user
-// touches once and rarely returns to.
-const items = [
-  { to: "/", label: "Overview", icon: LayoutDashboard },
-  { to: "/fleet", label: "Fleet", icon: LayoutGrid },
-  { to: "/live", label: "Live", icon: Activity },
-  { to: "/trips", label: "Trips", icon: Route },
-  { to: "/heatmap", label: "Map", icon: MapIcon },
-  { to: "/analytics", label: "Analytics", icon: BarChart3 },
-  { to: "/fuel", label: "Fuel", icon: Fuel },
-  { to: "/maintenance", label: "Maintenance", icon: Wrench },
-  { to: "/dtcs", label: "DTCs", icon: AlertTriangle },
-];
-const secondaryItems = [
-  { to: "/vehicles", label: "Vehicles", icon: Car },
-  { to: "/profiles", label: "Profiles", icon: FileJson },
-  { to: "/debug", label: "Debug", icon: Bug },
-  { to: "/setup", label: "Setup", icon: HelpCircle },
-  { to: "/hondalink-test", label: "HondaLink", icon: Plug },
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-];
+const items = PRIMARY_NAV;
+const secondaryItems = SECONDARY_NAV;
 
 function isActive(to: string): boolean {
-  if (to === "/") return route.path === "/";
-  return route.path === to || route.path.startsWith(to + "/");
+  return isNavActive(to, route.path);
 }
 
 const widthVar = computed(() =>
@@ -146,7 +107,7 @@ const widthVar = computed(() =>
 
 <template>
   <aside class="sidebar" :class="{ collapsed }" :style="{ width: widthVar }">
-    <RouterLink to="/logos" class="brand" title="Pick a logo">
+    <RouterLink to="/" class="brand" aria-label="pitstop — Overview">
       <div class="logo">
         <!-- White cool body so the mark reads on the dark plate; redline
              stays warm coral so it pops the same way it does in the live
@@ -163,6 +124,8 @@ const widthVar = computed(() =>
         class="nav-item"
         :class="{ active: isActive(item.to) }"
         :title="collapsed ? item.label : undefined"
+        :aria-label="collapsed ? item.label : undefined"
+        :aria-current="isActive(item.to) ? 'page' : undefined"
       >
         <component :is="item.icon" :size="18" />
         <span v-if="!collapsed" class="label">{{ item.label }}</span>
@@ -176,6 +139,8 @@ const widthVar = computed(() =>
         class="nav-item secondary"
         :class="{ active: isActive(item.to) }"
         :title="collapsed ? item.label : undefined"
+        :aria-label="collapsed ? item.label : undefined"
+        :aria-current="isActive(item.to) ? 'page' : undefined"
       >
         <component :is="item.icon" :size="18" />
         <span v-if="!collapsed" class="label">{{ item.label }}</span>
@@ -213,11 +178,19 @@ const widthVar = computed(() =>
         rel="noopener noreferrer"
         class="github-link"
         title="View on GitHub"
+        aria-label="View pitstop on GitHub"
       >
         <Github :size="14" />
       </a>
     </div>
-    <button class="collapse" @click="toggle" :title="collapsed ? 'Expand' : 'Collapse'">
+    <button
+      class="collapse"
+      type="button"
+      :title="collapsed ? 'Expand' : 'Collapse'"
+      :aria-label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+      :aria-expanded="!collapsed"
+      @click="toggle"
+    >
       <ChevronRight v-if="collapsed" :size="16" />
       <ChevronLeft v-else :size="16" />
     </button>
@@ -238,21 +211,10 @@ const widthVar = computed(() =>
   z-index: 20;
   transition: width 0.15s ease;
 }
-/* On narrow viewports the AppShell forces an icons-only layout via
-   margin-left override; the sidebar matches by clamping its width and
-   centering the icons regardless of the user-saved collapsed flag. */
+/* Under 700 px the bottom tab bar (BottomTabBar.vue) replaces the rail. */
 @media (max-width: 700px) {
   .sidebar {
-    width: var(--sidebar-w-collapsed) !important;
-  }
-  .sidebar .label,
-  .sidebar .brand-name,
-  .sidebar .collapse {
-    display: none !important;
-  }
-  .sidebar .nav-item {
-    justify-content: center;
-    padding: 0.55rem 0;
+    display: none;
   }
 }
 .brand {
@@ -375,7 +337,7 @@ nav.nav-secondary {
   align-items: center;
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
-  background: var(--c-accent, #f97316);
+  background: var(--c-accent);
   color: white;
   font-size: 0.7rem;
   font-weight: 500;

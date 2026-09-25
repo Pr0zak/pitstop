@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRoute, RouterLink } from "vue-router";
+import { useRoute, useRouter, RouterLink } from "vue-router";
+import StateCard from "@/components/StateCard.vue";
+import { chartColors } from "@/lib/chartTheme";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
@@ -13,8 +15,12 @@ import {
   fmtSpeedKph,
   fmtRpm,
   fmtVolumeL,
-  fmtTemp,
   fmtTempC,
+  fmtWindKph,
+  fmtElevationM,
+  fmtOdoKm,
+  fmtMpg,
+  fmtInt,
 } from "@/composables/useFormat";
 import { WMO_CODE } from "@/api/types";
 import { useUnitsStore } from "@/stores/units";
@@ -23,9 +29,10 @@ function weatherEmoji(code: number | null | undefined): string {
   if (code == null) return "—";
   return WMO_CODE[code]?.icon ?? "·";
 }
-import { ChevronLeft, RefreshCw } from "lucide-vue-next";
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-vue-next";
 
 const route = useRoute();
+const router = useRouter();
 const tripId = computed(() => String(route.params.id ?? ""));
 
 const { data: trip, loading, error, reload } = useAsync(
@@ -62,6 +69,15 @@ const { data: baseline } = useAsync(
 );
 
 interface BaselineRow { label: string; thisTrip: string; avg: string; deltaPct: number | null }
+
+/** Trip fuel economy in US mpg (null when fuel reading is too small to mean
+ *  anything). Rendered through fmtMpg so metric users see L/100km. */
+const tripMpg = computed<number | null>(() => {
+  const t = trip.value;
+  if (!t || t.distance_km == null || t.fuel_used_l == null || t.fuel_used_l <= 0.4) return null;
+  const mpg = (t.distance_km * 0.621371) / (t.fuel_used_l * 0.264172);
+  return mpg > 1 && mpg < 100 ? mpg : null;
+});
 const baselineRows = computed<BaselineRow[]>(() => {
   if (!trip.value || !baseline.value || !baseline.value.sufficient) return [];
   const t = trip.value;
@@ -79,37 +95,30 @@ const baselineRows = computed<BaselineRow[]>(() => {
     });
   }
   if (b.avg_speed_kph != null && t.avg_speed_kph != null) {
-    const tMph = t.avg_speed_kph * 0.621371;
-    const aMph = b.avg_speed_kph * 0.621371;
     rows.push({
       label: "Avg speed",
-      thisTrip: `${tMph.toFixed(0)} mph`,
-      avg: `${aMph.toFixed(0)} mph`,
-      deltaPct: aMph > 0 ? ((tMph - aMph) / aMph) * 100 : null,
+      thisTrip: fmtSpeedKph(t.avg_speed_kph),
+      avg: fmtSpeedKph(b.avg_speed_kph),
+      deltaPct: b.avg_speed_kph > 0 ? ((t.avg_speed_kph - b.avg_speed_kph) / b.avg_speed_kph) * 100 : null,
     });
   }
   if (b.avg_max_speed_kph != null && t.max_speed_kph != null) {
-    const tMph = t.max_speed_kph * 0.621371;
-    const aMph = b.avg_max_speed_kph * 0.621371;
     rows.push({
       label: "Top speed",
-      thisTrip: `${tMph.toFixed(0)} mph`,
-      avg: `${aMph.toFixed(0)} mph`,
-      deltaPct: aMph > 0 ? ((tMph - aMph) / aMph) * 100 : null,
+      thisTrip: fmtSpeedKph(t.max_speed_kph),
+      avg: fmtSpeedKph(b.avg_max_speed_kph),
+      deltaPct: b.avg_max_speed_kph > 0 ? ((t.max_speed_kph - b.avg_max_speed_kph) / b.avg_max_speed_kph) * 100 : null,
     });
   }
-  if (b.avg_mpg != null && t.distance_km != null && t.fuel_used_l != null && t.fuel_used_l > 0.4) {
-    const mi = t.distance_km * 0.621371;
-    const gal = t.fuel_used_l * 0.264172;
-    if (gal > 0) {
-      const tMpg = mi / gal;
-      rows.push({
-        label: "MPG",
-        thisTrip: tMpg.toFixed(1),
-        avg: b.avg_mpg.toFixed(1),
-        deltaPct: b.avg_mpg > 0 ? ((tMpg - b.avg_mpg) / b.avg_mpg) * 100 : null,
-      });
-    }
+  const tMpg = tripMpg.value;
+  if (b.avg_mpg != null && tMpg != null) {
+    rows.push({
+      label: "Economy",
+      thisTrip: fmtMpg(tMpg),
+      avg: fmtMpg(b.avg_mpg),
+      // Delta on mpg regardless of display unit: "+8 %" = 8 % more efficient.
+      deltaPct: b.avg_mpg > 0 ? ((tMpg - b.avg_mpg) / b.avg_mpg) * 100 : null,
+    });
   }
   return rows;
 });
@@ -120,7 +129,7 @@ const baselineRows = computed<BaselineRow[]>(() => {
 // (faster, but not necessarily better).
 function deltaTone(label: string, pct: number): string {
   if (Math.abs(pct) < 3) return "neutral";
-  const goodIfPositive = label === "MPG" || label === "Avg speed";
+  const goodIfPositive = label === "Economy" || label === "Avg speed";
   const goodIfNegative = label === "Duration";
   if (goodIfPositive) return pct > 0 ? "good" : "bad";
   if (goodIfNegative) return pct < 0 ? "good" : "bad";
@@ -621,7 +630,7 @@ const chartOpts = computed<uPlot.Options | null>(() => {
   for (const s of visible) scales[s.scale] = {};
   // Axes — first is x; then one per *unique* scale, alternating sides.
   const axisScalesSeen = new Set<string>();
-  const axes: uPlot.Axis[] = [{ stroke: "#9aa0aa" }];
+  const axes: uPlot.Axis[] = [{}];
   let side = 0; // 0 = left (3 for top, but we want bottom-default), 1 = right
   for (const s of visible) {
     if (axisScalesSeen.has(s.scale)) continue;
@@ -631,7 +640,6 @@ const chartOpts = computed<uPlot.Options | null>(() => {
     const dp = s.decimals;
     axes.push({
       scale: s.scale,
-      stroke: "#9aa0aa",
       label: s.axisLabel,
       side: side === 0 ? 3 : 1,
       grid: { show: side === 0 },
@@ -647,6 +655,7 @@ const chartOpts = computed<uPlot.Options | null>(() => {
     .map((d) => ({ ts: Math.round(Date.parse(d.seen_at) / 1000), code: d.code }))
     .filter((d) => Number.isFinite(d.ts));
   const hasMarkers = dtcMarkers.length > 0;
+  const dtcColor = chartColors().danger;
   const markerPlugin: uPlot.Plugin | null = hasMarkers
     ? {
         hooks: {
@@ -655,8 +664,8 @@ const chartOpts = computed<uPlot.Options | null>(() => {
             ctx.save();
             ctx.font = "11px ui-sans-serif";
             // DTC rules — solid red, code label above
-            ctx.strokeStyle = "#ef4444";
-            ctx.fillStyle = "#ef4444";
+            ctx.strokeStyle = dtcColor;
+            ctx.fillStyle = dtcColor;
             ctx.lineWidth = 1;
             for (const m of dtcMarkers) {
               const x = u.valToPos(m.ts, "x", true);
@@ -763,13 +772,9 @@ const odoDelta = computed<number | null>(() => {
   return d;
 });
 
-function fmtOdoMi(km: number | null): string {
+function fmtOdoDelta(km: number | null): string {
   if (km == null) return "—";
-  return (km * 0.621371).toFixed(0);
-}
-function fmtOdoDeltaMi(km: number | null): string {
-  if (km == null) return "—";
-  return `+${(km * 0.621371).toFixed(1)} mi`;
+  return `+${fmtDistanceKm(km)}`;
 }
 
 const route2D = computed<[number, number][]>(() => {
@@ -804,7 +809,7 @@ const route2D = computed<[number, number][]>(() => {
  */
 const HEATMAP_MAX_MPS = 36;
 function speedColor(speedMps: number | null): string {
-  if (speedMps == null) return "#2f81f7";
+  if (speedMps == null) return "hsl(215, 80%, 55%)";
   const clamped = Math.max(0, Math.min(speedMps, HEATMAP_MAX_MPS));
   const t = clamped / HEATMAP_MAX_MPS;
   // HSL hue: red (0°) → magenta (300°). Skip the wrap back to red.
@@ -812,15 +817,14 @@ function speedColor(speedMps: number | null): string {
   return `hsl(${hue.toFixed(0)}, 80%, 50%)`;
 }
 
-// Discrete bucket — kept for the speed-distribution donut card,
-// where 4 fixed labels (Stopped / City / Suburban / Highway) make
-// sense even though the route line itself uses the continuous map.
-function bucketColor(speedMps: number | null): string {
-  if (speedMps == null) return "#2f81f7";
-  if (speedMps < 1) return "#ef4444";
-  if (speedMps < 10) return "#f59e0b";
-  if (speedMps < 24.6) return "#22c55e";   // <55 mph
-  return "#2f81f7";                        // ≥55 mph highway
+/** Speed-bucket labels in the display unit. Cutoffs are the shared ones
+ *  (<2 / 2–22 / 22–55 / ≥55 mph = 1 / 10 / 24.6 m/s); metric shows the
+ *  same cutoffs in km/h (3 / 36 / 89). */
+function speedBucketLabels(): [string, string, string, string] {
+  if (units.resolved === "imperial") {
+    return ["Stopped (<2 mph)", "City (2–22 mph)", "Suburban (22–55 mph)", "Highway (≥55 mph)"];
+  }
+  return ["Stopped (<4 km/h)", "City (4–36 km/h)", "Suburban (36–89 km/h)", "Highway (≥89 km/h)"];
 }
 
 // User preference for the route map: heatmap (continuous color
@@ -858,11 +862,12 @@ const speedDistribution = computed<SpeedBucket[]>(() => {
   // Bucket thresholds in m/s: <1, <10, <24.6, ≥24.6.
   // mph: <2, <22, <55, ≥55. The 55-mph highway cutoff matches the
   // backend's /analytics/mpg-by-speed-class boundary.
+  const [l0, l1, l2, l3] = speedBucketLabels();
   const buckets: SpeedBucket[] = [
-    { label: "Stopped (<2 mph)",     color: "#ef4444", seconds: 0 },
-    { label: "City (2–22 mph)",      color: "#f59e0b", seconds: 0 },
-    { label: "Suburban (22–55 mph)", color: "#22c55e", seconds: 0 },
-    { label: "Highway (≥55 mph)",    color: "#2f81f7", seconds: 0 },
+    { label: l0, color: "var(--c-danger)", seconds: 0 },
+    { label: l1, color: "var(--c-warn)", seconds: 0 },
+    { label: l2, color: "var(--c-success)", seconds: 0 },
+    { label: l3, color: "var(--c-info)", seconds: 0 },
   ];
   for (let i = 1; i < points.length; i++) {
     const dt = (Date.parse(points[i].t) - Date.parse(points[i - 1].t)) / 1000;
@@ -1011,17 +1016,14 @@ const summarySentence = computed<string>(() => {
 
   // 2) Weather. Suffix: "in 67°F clear conditions"
   if (t.weather_temp_c != null) {
-    const f = Math.round(t.weather_temp_c * 9 / 5 + 32);
     const wmo = t.weather_code != null ? WMO_CODE[t.weather_code]?.label : null;
-    parts.push(`in ${f}°F${wmo ? ` ${wmo}` : ""} conditions`);
+    parts.push(`in ${fmtTempC(t.weather_temp_c).replace(" ", "")}${wmo ? ` ${wmo}` : ""} conditions`);
   }
 
   // 3) Speed split. Use bucket distribution if it produced totals.
   if (speedTotalSeconds.value > 0) {
     const total = speedTotalSeconds.value;
-    const hwy = speedDistribution.value.find((b) => b.label.startsWith("Highway"));
-    const sub = speedDistribution.value.find((b) => b.label.startsWith("Suburban"));
-    const city = speedDistribution.value.find((b) => b.label.startsWith("City"));
+    const [, city, sub, hwy] = speedDistribution.value;
     const hwyPct = hwy ? Math.round((hwy.seconds / total) * 100) : 0;
     const subPct = sub ? Math.round((sub.seconds / total) * 100) : 0;
     const cityPct = city ? Math.round((city.seconds / total) * 100) : 0;
@@ -1033,8 +1035,7 @@ const summarySentence = computed<string>(() => {
 
   // 4) Stops & distance.
   if (t.distance_km != null && t.distance_km > 0) {
-    const mi = (t.distance_km * 0.621371).toFixed(1);
-    parts.push(`${mi} mi covered`);
+    parts.push(`${fmtDistanceKm(t.distance_km)} covered`);
   }
   if (stops.value.length >= 2) {
     parts.push(`${stops.value.length} stops`);
@@ -1042,18 +1043,11 @@ const summarySentence = computed<string>(() => {
 
   // 5) MPG. distance_km / fuel_used_l → mi/gal_us. Only when fuel reading
   // is meaningful (>0.1 gal).
-  if (t.distance_km != null && t.fuel_used_l != null && t.fuel_used_l > 0.4) {
-    const mi = t.distance_km * 0.621371;
-    const gal = t.fuel_used_l * 0.264172;
-    if (gal > 0) {
-      const mpg = mi / gal;
-      if (mpg > 1 && mpg < 100) parts.push(`averaged ${mpg.toFixed(1)} mpg`);
-    }
-  }
+  if (tripMpg.value != null) parts.push(`averaged ${fmtMpg(tripMpg.value)}`);
 
   // 6) Top speed.
   if (t.max_speed_kph != null && t.max_speed_kph > 0) {
-    parts.push(`peaked at ${Math.round(t.max_speed_kph * 0.621371)} mph`);
+    parts.push(`peaked at ${fmtSpeedKph(t.max_speed_kph)}`);
   }
 
   // 7) DTCs.
@@ -1078,6 +1072,55 @@ function resetZoom() {
   const [t] = chartRef.data;
   if (!t || t.length === 0) return;
   chartRef.setScale("x", { min: t[0] as number, max: t[t.length - 1] as number });
+}
+
+/** Peak coolant (°C) across long-form and legacy wide-form samples. */
+const coolantPeakC = computed<number | null>(() => {
+  let best = -Infinity;
+  for (const s of (trip.value?.samples ?? []) as Array<{
+    metric?: string;
+    value_num?: number | null;
+    coolant_temp?: number | null;
+  }>) {
+    if (s.metric === "coolant_temp" && s.value_num != null) best = Math.max(best, s.value_num);
+    if (s.coolant_temp != null) best = Math.max(best, s.coolant_temp);
+  }
+  return best === -Infinity ? null : best;
+});
+
+// ── Prev / next trip ────────────────────────────────────────────────
+// No neighbour endpoint, so two small list queries bracket this trip's
+// start: the newest trip before it and the oldest trip after it.
+const neighbours = ref<{ prev: string | null; next: string | null }>({ prev: null, next: null });
+watch(
+  () => [trip.value?.id, trip.value?.started_at, trip.value?.vehicle_id] as const,
+  async ([id, startedAt, vid]) => {
+    neighbours.value = { prev: null, next: null };
+    if (!id || !startedAt || !vid) return;
+    const t0 = Date.parse(startedAt);
+    try {
+      const [before, after] = await Promise.all([
+        api.listTrips({ vehicle_id: vid, to: new Date(t0 - 1).toISOString(), limit: 1 }),
+        api.listTrips({ vehicle_id: vid, from: new Date(t0 + 1).toISOString(), limit: 500 }),
+      ]);
+      let next: { id: string; started_at: string } | null = null;
+      for (const x of after.items) {
+        if (x.id === id) continue;
+        if (!next || Date.parse(x.started_at) < Date.parse(next.started_at)) next = x;
+      }
+      if (trip.value?.id !== id) return;
+      neighbours.value = {
+        prev: before.items[0]?.id ?? null,
+        next: next?.id ?? null,
+      };
+    } catch {
+      /* arrows just stay disabled */
+    }
+  },
+  { immediate: true },
+);
+function goTrip(id: string | null) {
+  if (id) void router.push(`/trips/${id}`);
 }
 
 // Editable inline notes/category.
@@ -1150,26 +1193,99 @@ async function saveMeta() {
   <div class="trip-detail">
     <header class="head">
       <div class="left">
-        <RouterLink to="/trips" class="back"><ChevronLeft :size="14" /> Trips</RouterLink>
+        <RouterLink to="/trips" class="back"><ChevronLeft :size="14" aria-hidden="true" /> Trips</RouterLink>
         <h1 v-if="trip">{{ fmtDateTime(trip.started_at) }}</h1>
         <h1 v-else>Trip</h1>
         <span v-if="tripBadge" class="tod-badge" :class="tripBadge.tone">
           {{ tripBadge.label }}
         </span>
       </div>
-      <button class="ghost" type="button" @click="reload"><RefreshCw :size="14" /></button>
+      <div class="head-nav">
+        <button
+          class="ghost icon-btn"
+          type="button"
+          :disabled="!neighbours.prev"
+          aria-label="Previous (older) trip"
+          title="Previous trip"
+          @click="goTrip(neighbours.prev)"
+        ><ChevronLeft :size="16" /></button>
+        <button
+          class="ghost icon-btn"
+          type="button"
+          :disabled="!neighbours.next"
+          aria-label="Next (newer) trip"
+          title="Next trip"
+          @click="goTrip(neighbours.next)"
+        ><ChevronRight :size="16" /></button>
+        <button class="ghost icon-btn" type="button" aria-label="Refresh trip" title="Refresh" @click="reload">
+          <RefreshCw :size="14" />
+        </button>
+      </div>
     </header>
 
-    <div v-if="loading && !trip" class="card">
-      <p class="muted">Loading trip…</p>
-    </div>
-    <div v-else-if="error" class="card">
-      <p class="muted">Failed to load: {{ error }}</p>
-    </div>
+    <StateCard v-if="loading && !trip" state="loading" title="Loading trip…" />
+    <StateCard v-else-if="error" state="error" :message="error" @retry="reload()" />
     <template v-else-if="trip">
-      <p v-if="summarySentence" class="trip-summary">{{ summarySentence }}</p>
+      <!-- Summary strip: the headline numbers, once. The side Stats card
+           carries only what isn't here. -->
+      <section class="summary-strip card" aria-label="Trip summary">
+        <div class="ss-item">
+          <span class="t-label">Distance</span>
+          <span class="ss-v">{{ fmtDistanceKm(trip.distance_km ?? null) }}</span>
+        </div>
+        <div class="ss-item">
+          <span class="t-label">Duration</span>
+          <span class="ss-v">{{ fmtDuration(trip.duration_s) }}</span>
+        </div>
+        <div class="ss-item">
+          <span class="t-label">Economy</span>
+          <span class="ss-v">{{ fmtMpg(tripMpg) }}</span>
+        </div>
+        <div class="ss-item">
+          <span class="t-label">Fuel used</span>
+          <span class="ss-v">{{ fmtVolumeL(trip.fuel_used_l ?? null) }}</span>
+        </div>
+        <div class="ss-item">
+          <span class="t-label">Max speed</span>
+          <span class="ss-v">{{ fmtSpeedKph(trip.max_speed_kph ?? null) }}</span>
+        </div>
+        <div class="ss-item">
+          <span class="t-label">Max RPM</span>
+          <span class="ss-v">{{ fmtRpm(trip.max_rpm) }}</span>
+        </div>
+        <p v-if="summarySentence" class="trip-summary">{{ summarySentence }}</p>
+      </section>
       <div class="layout">
         <section class="main-col">
+          <div class="card">
+            <header class="chart-head">
+              <h3>Route</h3>
+              <span v-if="routeData?.points?.length" class="muted small">
+                {{ fmtInt(routeData.points.length) }} GPS points
+              </span>
+            </header>
+            <StateCard v-if="route2D.length === 0" state="empty" bare title="No GPS data captured for this trip." />
+            <template v-else>
+              <MapLibreMap
+                :route-segments="routeSegments.length ? routeSegments : undefined"
+                :route="routeSegments.length ? undefined : route2D"
+                :hover-marker="hoverGps"
+                :height="360"
+              />
+              <div class="speed-legend">
+                <label class="toggle">
+                  <input type="checkbox" v-model="heatmapEnabled" />
+                  Speed colours
+                </label>
+                <template v-if="heatmapEnabled">
+                  <span class="muted small">0</span>
+                  <span class="heatmap-gradient" aria-hidden="true" />
+                  <span class="muted small">{{ fmtSpeedKph(HEATMAP_MAX_MPS * 3.6) }}</span>
+                </template>
+              </div>
+            </template>
+          </div>
+
           <div class="card">
             <header class="chart-head">
               <h3>Timeline</h3>
@@ -1197,48 +1313,18 @@ async function saveMeta() {
                 }"
                 :style="seriesVisible[s.metric] ? { borderColor: s.stroke, color: s.stroke } : {}"
                 :title="metricsWithData.has(s.metric) ? '' : 'No data for this trip'"
+                :aria-pressed="!!seriesVisible[s.metric]"
                 type="button"
                 @click="seriesVisible[s.metric] = !seriesVisible[s.metric]"
               >{{ s.label.replace(/ \(.*\)/, '') }}</button>
             </div>
-            <div v-if="!chartData || !chartOpts" class="muted">No metrics selected (or no samples in this trip).</div>
+            <StateCard v-if="!chartData || !chartOpts" state="empty" bare title="No metrics selected (or no samples in this trip)." />
             <UPlotChart
               v-else
               :data="chartData"
               :options="chartOpts"
               @ready="onChartReady"
             />
-          </div>
-
-          <div class="card">
-            <header class="chart-head">
-              <h3>Route</h3>
-              <span v-if="routeData?.points?.length" class="muted small">
-                {{ routeData.points.length }} GPS points
-              </span>
-            </header>
-            <div v-if="route2D.length === 0" class="muted">
-              No GPS data captured for this trip.
-            </div>
-            <template v-else>
-              <MapLibreMap
-                :route-segments="routeSegments.length ? routeSegments : undefined"
-                :route="routeSegments.length ? undefined : route2D"
-                :hover-marker="hoverGps"
-                :height="360"
-              />
-              <div class="speed-legend">
-                <label class="toggle">
-                  <input type="checkbox" v-model="heatmapEnabled" />
-                  Heatmap
-                </label>
-                <template v-if="heatmapEnabled">
-                  <span class="muted small">0</span>
-                  <span class="heatmap-gradient" aria-hidden="true" />
-                  <span class="muted small">{{ Math.round(HEATMAP_MAX_MPS * 2.237) }} mph</span>
-                </template>
-              </div>
-            </template>
           </div>
 
           <div v-if="stops.length" class="card">
@@ -1253,7 +1339,7 @@ async function saveMeta() {
             <ul class="stops">
               <li v-for="(s, i) in stops" :key="i">
                 <span class="num">{{ fmtClock(s.started_at) }}</span>
-                <span class="dot" style="background:#ef4444"></span>
+                <span class="dot stop-dot" aria-hidden="true"></span>
                 <span>{{ fmtBucketSeconds(s.duration_s) }} stop</span>
                 <a
                   class="muted small"
@@ -1301,14 +1387,16 @@ async function saveMeta() {
             <header class="chart-head">
               <h3>Elevation</h3>
               <span class="muted small">
-                {{ elevationStats.min.toFixed(0) }}–{{ elevationStats.max.toFixed(0) }} m
-                · climb {{ elevationStats.climb.toFixed(0) }} m
+                {{ fmtElevationM(elevationStats.min) }} – {{ fmtElevationM(elevationStats.max) }}
+                · climb {{ fmtElevationM(elevationStats.climb) }}
               </span>
             </header>
             <svg
               :viewBox="`0 0 ${elevationProfile.length} 100`"
               preserveAspectRatio="none"
               class="elev-svg"
+              role="img"
+              :aria-label="`Elevation profile, ${fmtElevationM(elevationStats.min)} to ${fmtElevationM(elevationStats.max)}`"
             >
               <polyline
                 :points="elevationProfile.map((p, i) => {
@@ -1319,7 +1407,7 @@ async function saveMeta() {
                   return `${i},${y}`;
                 }).join(' ')"
                 fill="none"
-                stroke="#22c55e"
+                stroke="var(--chart-2)"
                 stroke-width="1.4"
                 vector-effect="non-scaling-stroke"
               />
@@ -1331,73 +1419,67 @@ async function saveMeta() {
           <div class="card">
             <h3>Stats</h3>
             <dl class="stats">
-              <dt>Duration</dt>
-              <dd>{{ fmtDuration(trip.duration_s) }}</dd>
-              <dt>Distance</dt>
-              <dd>{{ fmtDistanceKm(trip.distance_km ?? null) }}</dd>
-              <dt>Max speed</dt>
-              <dd>{{ fmtSpeedKph(trip.max_speed_kph ?? null) }}</dd>
-              <dt>Max RPM</dt>
-              <dd>{{ fmtRpm(trip.max_rpm) }}</dd>
-              <dt>Fuel used</dt>
-              <dd>{{ fmtVolumeL(trip.fuel_used_l ?? null) }}</dd>
               <dt v-if="trip.weather_temp_c != null">Weather</dt>
               <dd v-if="trip.weather_temp_c != null">
-                <span>{{ weatherEmoji(trip.weather_code) }}</span>
+                <span aria-hidden="true">{{ weatherEmoji(trip.weather_code) }}</span>
                 {{ fmtTempC(trip.weather_temp_c) }}
-                <span v-if="trip.weather_wind_kph != null" class="muted small">
-                  · wind {{ Math.round(trip.weather_wind_kph * 0.621371) }} mph
+                <span v-if="trip.weather_wind_kph != null" class="muted small sub">
+                  wind {{ fmtWindKph(trip.weather_wind_kph) }}
                 </span>
-                <span v-if="trip.weather_humidity_pct != null" class="muted small">
-                  · {{ trip.weather_humidity_pct }}% rh
-                </span>
-              </dd>
-              <dt v-if="trip.idle_s != null && trip.idle_s > 0">Idle</dt>
-              <dd v-if="trip.idle_s != null && trip.idle_s > 0">
-                {{ fmtBucketSeconds(trip.idle_s) }}
-                <span class="muted small">
-                  · {{ trip.duration_s ? Math.round((trip.idle_s / trip.duration_s) * 100) : 0 }}%
+                <span v-if="trip.weather_humidity_pct != null" class="muted small sub">
+                  {{ trip.weather_humidity_pct }}% rh
                 </span>
               </dd>
+              <template v-if="trip.idle_s != null && trip.idle_s > 0">
+                <dt>Idle</dt>
+                <dd>
+                  {{ fmtBucketSeconds(trip.idle_s) }}
+                  <span class="muted small">
+                    · {{ trip.duration_s ? Math.round((trip.idle_s / trip.duration_s) * 100) : 0 }}%
+                  </span>
+                </dd>
+              </template>
               <template v-if="trip.odo_start_km != null && trip.odo_end_km != null">
-                <dt>Odo start</dt>
-                <dd><span class="num">{{ fmtOdoMi(trip.odo_start_km) }}</span> mi</dd>
-                <dt>Odo end</dt>
-                <dd><span class="num">{{ fmtOdoMi(trip.odo_end_km) }}</span> mi</dd>
-                <dt>Distance (odo Δ)</dt>
-                <dd><span class="num">{{ fmtOdoDeltaMi(odoDelta) }}</span></dd>
+                <dt>Odometer</dt>
+                <dd class="num">
+                  {{ fmtOdoKm(trip.odo_start_km) }}
+                  <span class="muted small sub">→ {{ fmtOdoKm(trip.odo_end_km) }}</span>
+                </dd>
+                <dt>Odo Δ</dt>
+                <dd class="num">{{ fmtOdoDelta(odoDelta) }}</dd>
               </template>
               <template v-if="trip.fuel_level_start_pct != null && trip.fuel_level_end_pct != null">
                 <dt>Fuel level</dt>
-                <dd>
-                  <span class="num">{{ Math.round(trip.fuel_level_start_pct) }}%</span>
+                <dd class="num">
+                  {{ Math.round(trip.fuel_level_start_pct) }}%
                   <span class="muted">→</span>
-                  <span class="num">{{ Math.round(trip.fuel_level_end_pct) }}%</span>
+                  {{ Math.round(trip.fuel_level_end_pct) }}%
                 </dd>
               </template>
-              <template v-if="trip.fuel_used_l != null && trip.fuel_used_l > 0.01">
-                <dt>Gas used (est.)</dt>
-                <dd>
-                  <span class="num">{{ (trip.fuel_used_l * 0.264172).toFixed(2) }}</span> gal
-                </dd>
+              <template v-if="coolantPeakC != null">
+                <dt>Coolant peak</dt>
+                <dd class="num">{{ fmtTempC(coolantPeakC) }}</dd>
+              </template>
+              <dt>Ended</dt>
+              <dd class="num">{{ trip.ended_at ? fmtClock(trip.ended_at) : "open" }}</dd>
+              <template v-if="trip.samples?.length">
+                <dt>Samples</dt>
+                <dd class="num">{{ fmtInt(trip.samples.length) }}</dd>
               </template>
               <dt>DTCs</dt>
               <dd>
-                <span>{{ trip.dtc_count ?? trip.dtcs?.length ?? 0 }}</span>
-                <ul v-if="trip.dtcs?.length" class="dtc-inline">
-                  <li v-for="d in trip.dtcs" :key="d.id">
-                    <code>{{ d.code }}</code>
-                    <span v-if="d.description" class="muted small">
-                      — {{ d.description }}
-                    </span>
-                  </li>
-                </ul>
+                <span v-if="(trip.dtc_count ?? trip.dtcs?.length ?? 0) > 0" class="badge danger">
+                  {{ trip.dtc_count ?? trip.dtcs?.length }}
+                </span>
+                <span v-else class="muted">none</span>
               </dd>
-              <dt>Started</dt>
-              <dd>{{ fmtDateTime(trip.started_at) }}</dd>
-              <dt>Ended</dt>
-              <dd>{{ fmtDateTime(trip.ended_at) }}</dd>
             </dl>
+            <ul v-if="trip.dtcs?.length" class="dtc-inline">
+              <li v-for="d in trip.dtcs" :key="d.id">
+                <code>{{ d.code }}</code>
+                <span v-if="d.description" class="muted small">{{ d.description }}</span>
+              </li>
+            </ul>
           </div>
 
           <div v-if="baselineRows.length" class="card">
@@ -1487,29 +1569,6 @@ async function saveMeta() {
             </button>
           </div>
 
-          <div v-if="trip.samples?.length" class="card">
-            <h3>Quick stats</h3>
-            <dl class="stats">
-              <dt>Samples</dt>
-              <dd>{{ trip.samples.length }}</dd>
-              <dt>Coolant peak</dt>
-              <dd>
-                {{
-                  fmtTemp(
-                    trip.samples.reduce(
-                      (m, s) => Math.max(m, s.coolant_temp ?? -Infinity),
-                      -Infinity,
-                    ) === -Infinity
-                      ? null
-                      : trip.samples.reduce(
-                          (m, s) => Math.max(m, s.coolant_temp ?? -Infinity),
-                          -Infinity,
-                        ),
-                  )
-                }}
-              </dd>
-            </dl>
-          </div>
         </aside>
       </div>
     </template>
@@ -1538,9 +1597,14 @@ async function saveMeta() {
   gap: 0.2rem;
   color: var(--c-muted);
 }
+/* minmax(0, 1fr): a bare 1fr has an `auto` minimum, so the timeline
+   canvas / map (sized in px at build time) could force the main column
+   wider than the viewport and shove the side column off the right edge
+   at 1280–1440 px. Both columns also get min-width: 0 so their own
+   content can't do the same from inside. */
 .layout {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
   gap: 1rem;
   align-items: start;
 }
@@ -1549,6 +1613,46 @@ async function saveMeta() {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-width: 0;
+}
+.side-col .card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.head-nav {
+  display: flex;
+  gap: 0.25rem;
+}
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem;
+}
+.summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.8rem;
+  align-items: flex-end;
+}
+.ss-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.ss-v {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--c-ink0);
+  letter-spacing: -0.02em;
+}
+.stop-dot {
+  background: var(--c-danger);
+}
+.stats dd .sub {
+  display: block;
 }
 .chart-head {
   display: flex;
@@ -1560,8 +1664,9 @@ async function saveMeta() {
   align-items: center;
   gap: 0.5rem;
 }
-.towing-toggle {
+.card label.towing-toggle {
   display: flex;
+  flex-direction: row;
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 10px;
@@ -1587,8 +1692,8 @@ async function saveMeta() {
   cursor: pointer;
 }
 .toggle-chip.active {
-  border-color: #f97316;
-  color: #f97316;
+  border-color: var(--c-accent);
+  color: var(--c-accent);
 }
 .toggle-chip:hover {
   opacity: 0.85;
@@ -1608,8 +1713,8 @@ async function saveMeta() {
 }
 .stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.4rem 0.6rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.45rem 0.9rem;
   margin: 0;
 }
 .stats dt {
@@ -1621,15 +1726,16 @@ async function saveMeta() {
 .stats dd {
   margin: 0;
   font-weight: 500;
+  min-width: 0;
+  text-align: right;
 }
 .trip-summary {
-  margin: 0;
-  padding: 0.7rem 0.95rem;
-  background: var(--c-surface-soft);
-  border-left: 3px solid var(--c-accent);
-  border-radius: var(--r-md);
-  color: var(--c-text);
-  font-size: 0.95rem;
+  flex-basis: 100%;
+  margin: 0.2rem 0 0;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--c-line0);
+  color: var(--c-ink2);
+  font-size: 0.92rem;
   line-height: 1.45;
 }
 .tod-badge {
@@ -1640,29 +1746,24 @@ async function saveMeta() {
   font-size: 0.78rem;
   font-weight: 500;
   border: 1px solid var(--c-border-soft);
-  background: var(--c-surface-soft);
+  background: var(--c-bg3);
   color: var(--c-muted);
   margin-left: 0.6rem;
 }
 .tod-badge.tone-rush {
-  border-color: #f59e0b66;
-  background: #f59e0b22;
-  color: #f59e0b;
+  background: var(--c-warn-soft);
+  color: var(--c-warn);
 }
 .tod-badge.tone-night {
-  border-color: #6366f166;
-  background: #6366f122;
-  color: #818cf8;
+  color: var(--chart-4);
 }
 .tod-badge.tone-weekend {
-  border-color: #22c55e66;
-  background: #22c55e22;
-  color: #22c55e;
+  background: var(--c-success-soft);
+  color: var(--c-success);
 }
 .tod-badge.tone-offpeak {
-  border-color: #2f81f766;
-  background: #2f81f722;
-  color: #2f81f7;
+  background: var(--c-info-soft);
+  color: var(--c-info);
 }
 .stops {
   list-style: none;
@@ -1713,8 +1814,8 @@ async function saveMeta() {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.baseline td.good { color: #3fb950; }
-.baseline td.bad { color: #ef4444; }
+.baseline td.good { color: var(--c-success); }
+.baseline td.bad { color: var(--c-danger); }
 .baseline td.neutral { color: var(--c-muted); }
 .dtc-inline {
   list-style: none;
@@ -1724,11 +1825,19 @@ async function saveMeta() {
   flex-direction: column;
   gap: 0.15rem;
 }
+.dtc-inline {
+  margin-top: 0.6rem;
+}
+.dtc-inline li {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+}
 .dtc-inline code {
-  background: var(--c-surface-soft);
+  background: var(--c-bg3);
   padding: 0 0.3rem;
   border-radius: 3px;
-  color: #ef4444;
+  color: var(--c-danger);
   font-size: 0.78rem;
 }
 .num {
@@ -1745,9 +1854,31 @@ async function saveMeta() {
 .error {
   color: var(--c-danger);
 }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 700px) {
+  .head {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .head h1 {
+    font-size: 1.3rem;
+  }
+  .summary-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .ss-v {
+    font-size: 1rem;
+  }
+  .trip-summary {
+    grid-column: 1 / -1;
+  }
+  .heatmap-gradient {
+    width: 120px;
   }
 }
 .speed-legend {
@@ -1761,6 +1892,8 @@ async function saveMeta() {
 }
 .speed-legend .toggle {
   display: inline-flex;
+  flex-direction: row;
+  margin: 0;
   align-items: center;
   gap: 0.3rem;
   cursor: pointer;

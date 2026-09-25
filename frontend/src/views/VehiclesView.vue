@@ -1,15 +1,55 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, useId, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useUnitsStore } from "@/stores/units";
-import { fmtRelative } from "@/composables/useFormat";
+import { fmtRelative, fmtOdoKm, fmtInt } from "@/composables/useFormat";
 import { Plus, Pencil, X } from "lucide-vue-next";
 import * as api from "@/api/endpoints";
 import type { Vehicle } from "@/api/types";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import StateCard from "@/components/StateCard.vue";
+import { useModalA11y } from "@/composables/useModalA11y";
+import { useToastStore, errMessage } from "@/stores/toast";
 
 const store = useVehiclesStore();
 const units = useUnitsStore();
+const route = useRoute();
+const router = useRouter();
+const toast = useToastStore();
+
+const L_PER_GAL = 3.785411784;
+
+// Fillup counts for the table. Newer backends put fillup_count on the
+// vehicle row; otherwise one limit=1 list per vehicle reads X-Total-Count.
+const fillupCounts = ref<Record<string, number>>({});
+watch(
+  () => store.vehicles.map((v) => v.id).join(","),
+  async () => {
+    const out: Record<string, number> = {};
+    await Promise.all(
+      store.vehicles.map(async (v) => {
+        if (v.fillup_count != null) {
+          out[v.id] = v.fillup_count;
+          return;
+        }
+        try {
+          out[v.id] = (await api.listFillups({ vehicle_id: v.id, limit: 1 })).total;
+        } catch {
+          /* leave blank */
+        }
+      }),
+    );
+    fillupCounts.value = out;
+  },
+  { immediate: true },
+);
+
+/** Dash-equivalent odometer (PCM reading minus the calibrated offset). */
+function dashOdoKm(v: Vehicle): number | null {
+  if (v.latest_odo_km == null) return null;
+  return v.latest_odo_km - (v.odometer_offset_km ?? 0);
+}
 
 const KM_PER_MI = 1.609344;
 const KM_TO_MI = (km: number) => km / KM_PER_MI;
@@ -40,6 +80,17 @@ const editorImperial = computed<boolean>(() => {
   return v.dist_unit === 1 || v.fuel_unit === 1 || v.fuel_unit === 2;
 });
 const offsetUnit = computed(() => (editorImperial.value ? "mi" : "km"));
+const tankUnit = computed(() => (editorImperial.value ? "gal" : "L"));
+function litresToTankInput(l: number | null | undefined): number | undefined {
+  if (l == null) return undefined;
+  const v = editorImperial.value ? l / L_PER_GAL : l;
+  return Math.round(v * 10) / 10;
+}
+function tankInputToLitres(raw: unknown): number | null {
+  const n = toNumOrNull(raw);
+  if (n == null) return null;
+  return Math.round((editorImperial.value ? n * L_PER_GAL : n) * 100) / 100;
+}
 
 /** km (storage) → the offset input's display unit. undefined for an
  *  uncalibrated vehicle so the input renders blank rather than "0". */
@@ -71,11 +122,11 @@ const form = ref({
   purchase_price: undefined as number | undefined,
   purchase_date: "" as string,
   epa_mpg_combined: undefined as number | undefined,
-  // Usable tank volume in liters — what the hybrid fuel-level estimator
-  // (migration 0017) reads to convert its persisted estimate_l into a
-  // percentage. Distinct from Fuelio's tank1_capacity (user-unit, used by
-  // the legacy range-to-empty card).
-  tank_capacity_l: undefined as number | undefined,
+  // Usable tank volume in the editor's unit (gal for imperial, L for
+  // metric); stored as tank_capacity_l, which the hybrid fuel-level
+  // estimator (migration 0017) reads. Converted on load and save.
+  tank_capacity: undefined as number | undefined,
+  redline_rpm: undefined as number | undefined,
   // Odometer offset in the USER'S distance unit (see [editorImperial]) — the
   // column is km, so this is converted on load and on save. undefined = the
   // field is blank = "not calibrated" (stored as NULL), which is deliberately
@@ -119,7 +170,8 @@ function openCreate() {
     purchase_price: undefined,
     purchase_date: "",
     epa_mpg_combined: undefined,
-    tank_capacity_l: undefined,
+    tank_capacity: undefined,
+    redline_rpm: undefined,
     odometer_offset: undefined,
   };
   showModal.value = true;
@@ -142,7 +194,8 @@ function openEdit(v: Vehicle) {
     purchase_price: v.purchase_price ?? undefined,
     purchase_date: v.purchase_date ?? "",
     epa_mpg_combined: v.epa_mpg_combined ?? undefined,
-    tank_capacity_l: v.tank_capacity_l ?? undefined,
+    tank_capacity: litresToTankInput(v.tank_capacity_l),
+    redline_rpm: v.redline_rpm ?? undefined,
     odometer_offset: kmToOffsetInput(v.odometer_offset_km),
   };
   showModal.value = true;
@@ -166,7 +219,8 @@ async function submit() {
       purchase_price: form.value.purchase_price ?? null,
       purchase_date: form.value.purchase_date || null,
       epa_mpg_combined: form.value.epa_mpg_combined ?? null,
-      tank_capacity_l: form.value.tank_capacity_l ?? null,
+      tank_capacity_l: tankInputToLitres(form.value.tank_capacity),
+      redline_rpm: toNumOrNull(form.value.redline_rpm),
       odometer_offset_km: offsetInputToKm(form.value.odometer_offset),
     };
     if (editing.value) {
@@ -174,14 +228,38 @@ async function submit() {
     } else {
       await api.createVehicle(payload);
     }
-    showModal.value = false;
+    toast.success(`Saved ${payload.name}`);
+    closeModal();
     await store.fetchVehicles();
   } catch (e: unknown) {
-    submitError.value = e instanceof Error ? e.message : "save failed";
+    submitError.value = errMessage(e, "save failed");
   } finally {
     submitting.value = false;
   }
 }
+
+// Modal a11y + ?edit=<id> deep link (Overview's "Add purchase price →").
+const modalPanel = ref<HTMLElement | null>(null);
+const modalTitleId = useId();
+function closeModal() {
+  showModal.value = false;
+  if (route.query.edit) {
+    const q = { ...route.query };
+    delete q.edit;
+    void router.replace({ query: q });
+  }
+}
+useModalA11y(showModal, modalPanel, closeModal);
+watch(
+  [() => route.query.edit, () => store.vehicles.length],
+  ([id]) => {
+    const want = Array.isArray(id) ? id[0] : id;
+    if (!want || showModal.value) return;
+    const v = store.vehicles.find((x) => x.id === want || x.slug === want);
+    if (v) openEdit(v);
+  },
+  { immediate: true },
+);
 
 // Delete vehicle — in-app confirm instead of native window.confirm/alert.
 const deleteTarget = ref<Vehicle | null>(null);
@@ -213,155 +291,152 @@ async function confirmRemove() {
     <header class="head">
       <h1>Vehicles</h1>
       <button class="primary" type="button" @click="openCreate">
-        <Plus :size="14" /> Add vehicle
+        <Plus :size="14" aria-hidden="true" /> Add vehicle
       </button>
     </header>
 
-    <div v-if="store.loading && store.vehicles.length === 0" class="card">
-      <p class="muted">Loading…</p>
-    </div>
-    <div v-else-if="store.error" class="card">
-      <p class="muted">Failed to load: {{ store.error }}</p>
-    </div>
-    <div v-else-if="store.vehicles.length === 0" class="card">
-      <p class="muted">No vehicles yet. Add one to get started.</p>
-    </div>
+    <StateCard v-if="store.loading && store.vehicles.length === 0" state="loading" title="Loading vehicles…" />
+    <StateCard v-else-if="store.error" state="error" :message="store.error" @retry="store.fetchVehicles().catch(() => {})" />
+    <StateCard v-else-if="store.vehicles.length === 0" state="empty" title="No vehicles yet." message="Add one to get started." />
     <div v-else class="card no-pad">
+      <div class="table-scroll">
       <table class="data">
         <thead>
           <tr>
             <th>Name</th>
-            <th>Year/Make/Model</th>
+            <th>Year / make / model</th>
+            <th class="num">Odometer</th>
+            <th class="num">Fillups</th>
             <th>Last seen</th>
             <th>Status</th>
-            <th></th>
+            <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="v in store.vehicles" :key="v.id">
-            <td><strong>{{ v.name }}</strong></td>
+          <tr v-for="v in store.vehicles" :key="v.id" class="clickable" @click="openEdit(v)">
+            <td>
+              <button type="button" class="name-btn" :aria-label="`Edit ${v.name}`" @click.stop="openEdit(v)">
+                {{ v.name }}
+              </button>
+            </td>
             <td>{{ [v.year, v.make, v.model].filter(Boolean).join(" ") || "—" }}</td>
+            <td class="num">{{ fmtOdoKm(dashOdoKm(v)) }}</td>
+            <td class="num">{{ fillupCounts[v.id] != null ? fmtInt(fillupCounts[v.id]) : "—" }}</td>
             <td>{{ v.last_seen_at ? fmtRelative(v.last_seen_at) : "never" }}</td>
             <td>
               <span class="badge" :class="v.active === false ? '' : 'success'">
-                {{ v.active === false ? "inactive" : "active" }}
+                {{ v.active === false ? "archived" : "active" }}
               </span>
             </td>
             <td class="actions">
-              <button class="ghost" type="button" @click="openEdit(v)" title="Edit">
+              <button class="ghost" type="button" :aria-label="`Edit ${v.name}`" title="Edit" @click.stop="openEdit(v)">
                 <Pencil :size="14" />
               </button>
-              <button class="ghost" type="button" @click="requestRemove(v)" title="Delete">
+              <button class="ghost" type="button" :aria-label="`Delete ${v.name}`" title="Delete" @click.stop="requestRemove(v)">
                 <X :size="14" />
               </button>
             </td>
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <Teleport to="body">
-      <div v-if="showModal" class="modal-mask" @click.self="showModal = false">
-        <div class="modal">
+      <div v-if="showModal" class="modal-mask" @click.self="closeModal">
+        <div ref="modalPanel" class="modal" role="dialog" aria-modal="true" :aria-labelledby="modalTitleId">
           <header class="m-head">
-            <h3>{{ editing ? "Edit vehicle" : "New vehicle" }}</h3>
-            <button class="ghost" type="button" @click="showModal = false">
+            <h3 :id="modalTitleId">{{ editing ? `Edit ${editing.name}` : "New vehicle" }}</h3>
+            <button class="ghost" type="button" aria-label="Close" @click="closeModal">
               <X :size="14" />
             </button>
           </header>
           <form @submit.prevent="submit">
-            <label>
-              Name
-              <input v-model="form.name" required @input="onNameInput" />
-            </label>
-            <label>
-              Slug
-              <input
-                v-model="form.slug"
-                placeholder="auto-derived from name"
-                pattern="[a-z0-9_-]+"
-                @input="onSlugInput"
-              />
-              <small class="muted">
-                Lowercase letters, digits, <code>_</code>, <code>-</code>.
-                This is the topic prefix the WiCAN device uses
-                (<code>wican/&lt;slug&gt;/...</code>).
-              </small>
-            </label>
-            <label>Description<input v-model="form.description" /></label>
-            <div class="grid">
-              <label>Year<input type="number" v-model.number="form.year" /></label>
-              <label>Make<input v-model="form.make" /></label>
-              <label>Model<input v-model="form.model" /></label>
-            </div>
-            <label>VIN<input v-model="form.vin" /></label>
-            <label>Fuelio GUID<input v-model="form.fuelio_guid" /></label>
-            <div class="grid">
+            <fieldset>
+              <legend>Identity</legend>
               <label>
-                Purchase price
+                Name
+                <input v-model="form.name" required autofocus @input="onNameInput" />
+              </label>
+              <label>
+                Slug
                 <input
-                  type="number"
-                  step="0.01"
-                  v-model.number="form.purchase_price"
-                  placeholder="0.00"
+                  v-model="form.slug"
+                  placeholder="auto-derived from name"
+                  pattern="[a-z0-9_-]+"
+                  @input="onSlugInput"
                 />
                 <small class="muted">
-                  Used for the lifetime $/mile card.
+                  Lowercase letters, digits, <code>_</code>, <code>-</code>. The WiCAN topic
+                  prefix (<code>wican/&lt;slug&gt;/…</code>).
                 </small>
               </label>
-              <label>
-                Purchase date
-                <input type="date" v-model="form.purchase_date" />
+              <label>Description<input v-model="form.description" /></label>
+              <div class="grid">
+                <label>Year<input type="number" v-model.number="form.year" /></label>
+                <label>Make<input v-model="form.make" /></label>
+                <label>Model<input v-model="form.model" /></label>
+              </div>
+              <div class="grid two">
+                <label>VIN<input v-model="form.vin" autocomplete="off" /></label>
+                <label>Fuelio GUID<input v-model="form.fuelio_guid" /></label>
+              </div>
+              <label class="cb">
+                <input type="checkbox" v-model="form.active" /> Active (unticked = archived)
               </label>
-              <label>
-                EPA combined MPG
-                <input
-                  type="number"
-                  step="0.1"
-                  v-model.number="form.epa_mpg_combined"
-                  placeholder="e.g. 23"
-                />
-                <small class="muted">
-                  Reference line on the MPG chart.
-                </small>
-              </label>
-              <label>
-                Tank capacity (L)
-                <input
-                  type="number"
-                  step="0.1"
-                  v-model.number="form.tank_capacity_l"
-                  placeholder="e.g. 80"
-                />
-                <small class="muted">
-                  Usable tank volume in liters. Feeds the fuel-level
-                  estimate and range-to-empty.
-                </small>
-              </label>
-              <label>
-                Odometer offset ({{ offsetUnit }})
-                <input
-                  type="number"
-                  step="0.1"
-                  v-model.number="form.odometer_offset"
-                  :placeholder="editorImperial ? 'e.g. 32' : 'e.g. 51'"
-                />
-                <small class="muted">
-                  How far the car's OBD odometer runs ahead of the dash
-                  (OBD&nbsp;−&nbsp;dash) — the engine computer and the
-                  instrument cluster keep separate counters. Fillup odometers
-                  are read off the dash, so this keeps live readings
-                  comparable. Negative if the OBD reads low; leave blank if
-                  you haven't measured it.
-                </small>
-              </label>
-            </div>
-            <label class="cb">
-              <input type="checkbox" v-model="form.active" /> Active
-            </label>
-            <p v-if="submitError" class="error">{{ submitError }}</p>
+            </fieldset>
+
+            <fieldset>
+              <legend>Ownership</legend>
+              <div class="grid two">
+                <label>
+                  Purchase price ($)
+                  <input type="number" step="0.01" v-model.number="form.purchase_price" placeholder="0.00" />
+                  <small class="muted">Drives the lifetime cost-per-distance tile.</small>
+                </label>
+                <label>
+                  Purchase date
+                  <input type="date" v-model="form.purchase_date" />
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Calibration</legend>
+              <div class="grid two">
+                <label>
+                  Tank capacity ({{ tankUnit }})
+                  <input type="number" step="0.1" v-model.number="form.tank_capacity" :placeholder="tankUnit === 'gal' ? 'e.g. 19.5' : 'e.g. 74'" />
+                  <small class="muted">Usable volume. Feeds the fuel-level estimate and range.</small>
+                </label>
+                <label>
+                  Redline (rpm)
+                  <input type="number" step="100" min="1000" max="20000" v-model.number="form.redline_rpm" placeholder="6500" />
+                  <small class="muted">Scales the Live RPM gauge. Blank = 6,500.</small>
+                </label>
+                <label>
+                  EPA combined (US mpg)
+                  <input type="number" step="0.1" v-model.number="form.epa_mpg_combined" placeholder="e.g. 23" />
+                  <small class="muted">Reference line on the economy chart.</small>
+                </label>
+                <label>
+                  Odometer offset ({{ offsetUnit }})
+                  <input
+                    type="number"
+                    step="0.1"
+                    v-model.number="form.odometer_offset"
+                    :placeholder="editorImperial ? 'e.g. 32' : 'e.g. 51'"
+                  />
+                  <small class="muted">
+                    OBD odometer minus the dash reading — the engine computer and cluster keep
+                    separate counters. Negative if OBD reads low; blank if not measured.
+                  </small>
+                </label>
+              </div>
+            </fieldset>
+            <p v-if="submitError" class="error" role="alert">{{ submitError }}</p>
             <div class="m-actions">
-              <button type="button" @click="showModal = false">Cancel</button>
+              <button type="button" @click="closeModal">Cancel</button>
               <button type="submit" class="primary" :disabled="submitting">
                 {{ submitting ? "Saving…" : "Save" }}
               </button>
@@ -420,8 +495,38 @@ async function confirmRemove() {
   border: 1px solid var(--c-border);
   border-radius: var(--r-lg);
   width: 100%;
-  max-width: 480px;
+  max-width: 600px;
   padding: 1.2rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+fieldset {
+  border: 1px solid var(--c-line0);
+  border-radius: var(--r-md);
+  padding: 0.6rem 0.8rem 0.2rem;
+  margin: 0 0 0.8rem;
+}
+legend {
+  padding: 0 0.35rem;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--c-ink3);
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.name-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-weight: 600;
+  color: var(--c-ink0);
+}
+.name-btn:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
 }
 .m-head {
   display: flex;
@@ -445,7 +550,16 @@ form label.cb {
 .grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 0.6rem;
+  gap: 0 0.6rem;
+}
+.grid.two {
+  grid-template-columns: repeat(2, 1fr);
+}
+@media (max-width: 560px) {
+  .grid,
+  .grid.two {
+    grid-template-columns: 1fr;
+  }
 }
 .error {
   color: var(--c-danger);
