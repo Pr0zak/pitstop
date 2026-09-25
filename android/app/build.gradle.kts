@@ -11,6 +11,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.paparazzi)
 }
 
 android {
@@ -243,4 +244,29 @@ dependencies {
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test)
     debugImplementation(libs.compose.ui.test.manifest)
+}
+
+// Screenshot spike: Paparazzi 2.0.0-alpha01 bundles layoutlib for API 35,
+// whose android.os.Build lacks nested classes android-36's android.jar has.
+// Force the JDK17 build of the API 36 layoutlib.
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "com.android.tools.layoutlib" && requested.name.startsWith("layoutlib") && requested.name != "layoutlib-api") {
+            useVersion("16.1.0-jdk17")
+        }
+        if (requested.group == "com.android.tools.layoutlib" && requested.name == "layoutlib-api") {
+            useVersion("31.11.0")
+        }
+    }
+}
+
+// Paparazzi alpha01 hard-codes icudt75l.dat; layoutlib 16 ships icudt76l.dat.
+tasks.withType<Test>().configureEach {
+    doFirst {
+        val root = systemProperties["paparazzi.layoutlib.runtime.root"]?.toString() ?: return@doFirst
+        val icu = File(root, "data/icu")
+        val src = File(icu, "icudt76l.dat")
+        val dst = File(icu, "icudt75l.dat")
+        if (src.exists() && !dst.exists()) src.copyTo(dst)
+    }
 }

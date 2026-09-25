@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -83,6 +85,19 @@ fun LiveScreen(
     // is zeroed because MainActivity's outer Scaffold already consumed
     // the system bars; without it this page re-applies the status-bar
     // inset and leaves an empty band on top.
+    LiveContent(metrics, bridgeStatus, brokerConnected, unitSystem, obdAgeS)
+}
+
+/** Stateless body of [LiveScreen], split out so screenshot tests can render it from fixtures. */
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+internal fun LiveContent(
+    metrics: Map<String, MetricSample>,
+    bridgeStatus: com.pitstop.service.BridgeStatus,
+    brokerConnected: Boolean,
+    unitSystem: String,
+    obdAgeS: Long?,
+) {
     Scaffold(
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
@@ -95,8 +110,10 @@ fun LiveScreen(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             // ── Connection pills ──────────────────────────────────────
-            Row(
+            // FlowRow: five pills don't fit one row on a 360 dp phone.
+            FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
             ) {
                 val (bleLabel, blePill) = bleStatusOf(bridgeStatus.phase)
@@ -138,6 +155,14 @@ fun LiveScreen(
                 }
             }
 
+            // Stale guard: once OBD has been quiet >10 s the numbers below are
+            // the last reading, not the current one — say so and dim them.
+            val stale = metrics.isNotEmpty() && (obdAgeS == null || obdAgeS > 10)
+            if (stale) StaleBanner(obdAgeS)
+            Column(
+                modifier = Modifier.alpha(if (stale) 0.45f else 1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
             // ── Hero gauges: Speed + RPM ──────────────────────────────
             val rpmRaw = metrics["engine_rpm"]?.value
             val speedKphRaw = metrics["vehicle_speed"]?.value
@@ -195,6 +220,7 @@ fun LiveScreen(
                 ),
                 metrics = metrics,
                 system = unitSystem,
+
             )
 
             // ── Fuel system ───────────────────────────────────────────
@@ -239,6 +265,7 @@ fun LiveScreen(
                 ),
                 metrics = metrics,
                 system = unitSystem,
+
             )
 
             // ── Emissions ─────────────────────────────────────────────
@@ -264,6 +291,7 @@ fun LiveScreen(
                 ),
                 metrics = metrics,
                 system = unitSystem,
+
             )
 
             // ── Electrical ────────────────────────────────────────────
@@ -275,6 +303,7 @@ fun LiveScreen(
                 ),
                 metrics = metrics,
                 system = unitSystem,
+
             )
 
             // ── GPS (from the phone bridge) ───────────────────────────
@@ -292,11 +321,15 @@ fun LiveScreen(
                 ),
                 metrics = metrics,
                 system = unitSystem,
+
             )
+
+            }
+
 
             if (metrics.isEmpty()) {
                 Text(
-                    "No live data yet — start the bridge service from Settings.",
+                    "No live data yet — start the bridge from Home.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 12.dp, start = 4.dp),
@@ -431,6 +464,22 @@ private fun SmallTile(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StaleBanner(obdAgeS: Long?) {
+    val age = obdAgeS?.let { s -> if (s >= 60) "${s / 60}m ${s % 60}s" else "${s}s" }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+    ) {
+        Text(
+            if (age != null) "No OBD data for $age — showing the last reading" else "No OBD data yet",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
     }
 }
 

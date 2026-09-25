@@ -22,6 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,6 +58,7 @@ import com.pitstop.ui.components.MpgLifetimeCard
 import com.pitstop.ui.components.MpgYearChart
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.UploadStatusCard
+import com.pitstop.drive.UploadProgress
 import kotlinx.coroutines.launch
 
 /**
@@ -84,6 +89,35 @@ fun StatusScreen(
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
     val pendingDrives by viewModel.pendingDriveCount.collectAsStateWithLifecycle()
+    StatusContent(
+        ui = ui,
+        uploadProgress = uploadProgress,
+        pendingDrives = pendingDrives,
+        onRefresh = { viewModel.refreshHomeData().join() },
+        onStart = { viewModel.startService() },
+        onStop = { viewModel.stopService() },
+        onSync = { viewModel.syncNow() },
+        onCancelSync = { viewModel.cancelSync() },
+        onOpenHistory = onOpenHistory,
+        onOpenSettings = onOpenSettings,
+    )
+}
+
+/** Stateless body of [StatusScreen], split out so screenshot tests can render it from fixtures. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun StatusContent(
+    ui: StatusUiState,
+    uploadProgress: UploadProgress,
+    pendingDrives: Int,
+    onRefresh: suspend () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onSync: () -> Unit,
+    onCancelSync: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     val context = LocalContext.current
     val refreshing = remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -111,7 +145,7 @@ fun StatusScreen(
                 coroutineScope.launch {
                     // Await actual completion so the spinner dismisses when
                     // data lands, not after a fixed delay.
-                    viewModel.refreshHomeData().join()
+                    onRefresh()
                     refreshing.value = false
                 }
             },
@@ -126,25 +160,6 @@ fun StatusScreen(
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // Bridge control + live status. Primary place to start /
-                // stop the bridge (moved here from Settings) plus the
-                // OBD-freshness / active-metrics / offline-buffer detail.
-                BridgeControlCard(
-                    status = ui.status,
-                    onStart = { viewModel.startService() },
-                    onStop = { viewModel.stopService() },
-                )
-
-                // Drive-upload state. Renders nothing when the queue is
-                // empty and no pass has run recently, so it costs the
-                // dashboard no space in the normal case.
-                UploadStatusCard(
-                    progress = uploadProgress,
-                    pendingCount = pendingDrives,
-                    onSync = { viewModel.syncNow() },
-                    onCancel = { viewModel.cancelSync() },
-                )
-
                 // Active DTCs sit at the top — most urgent thing.
                 // Empty list → render nothing per spec.
                 ui.activeDtcs?.takeIf { it.isNotEmpty() }?.let { codes ->
@@ -153,6 +168,26 @@ fun StatusScreen(
                         onOpen = { onOpenHistory() },
                     )
                 }
+
+                // Bridge control + live status. Primary place to start /
+                // stop the bridge (moved here from Settings) plus the
+                // OBD-freshness / active-metrics / offline-buffer detail.
+                BridgeControlCard(
+                    status = ui.status,
+                    onStart = onStart,
+                    onStop = onStop,
+                )
+
+                // Drive-upload state. Renders nothing when the queue is
+                // empty and no pass has run recently, so it costs the
+                // dashboard no space in the normal case.
+                UploadStatusCard(
+                    progress = uploadProgress,
+                    pendingCount = pendingDrives,
+                    onSync = onSync,
+                    onCancel = onCancelSync,
+                )
+
 
                 // Fresh install (no server/vehicle) → a setup CTA instead of
                 // shimmering forever. refreshHomeData() bails when unconfigured,
@@ -199,7 +234,7 @@ fun StatusScreen(
 
                 // Recent trips card.
                 ui.recentTrips?.takeIf { it.isNotEmpty() }?.let { trips ->
-                    RecentTripsCard(trips = trips)
+                    RecentTripsCard(trips = trips, onOpen = onOpenHistory)
                 }
 
                 // Update-available card (conditional).
@@ -269,6 +304,38 @@ private fun BridgeControlCard(
         com.pitstop.service.BridgePhase.Connected -> "Running" to com.pitstop.ui.components.PillState.Healthy
         com.pitstop.service.BridgePhase.Disconnected -> "Reconnecting" to com.pitstop.ui.components.PillState.Degraded
         com.pitstop.service.BridgePhase.Error -> "Error" to com.pitstop.ui.components.PillState.Offline
+    }
+    // Healthy capture collapses to one line; anything off-nominal (or a tap)
+    // shows the full detail and controls.
+    val obdAge = status.lastObdFrameAtMs?.let {
+        ((System.currentTimeMillis() - it) / 1000L).coerceAtLeast(0L)
+    }
+    val healthy = phase == com.pitstop.service.BridgePhase.Connected &&
+        obdAge != null && obdAge < 10 && status.errorMessage == null &&
+        status.offlineBufferBytes == 0L
+    var expanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    if (healthy && !expanded) {
+        Card(onClick = { expanded = true }) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                com.pitstop.ui.components.StatusPill(state = pillState, label = "Capturing", compact = true)
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    listOfNotNull("OBD ${obdAge}s", status.deviceName).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                androidx.compose.material3.FilledTonalIconButton(onClick = onStop) {
+                    Icon(Icons.Filled.Stop, contentDescription = "Stop bridge")
+                }
+            }
+        }
+        return
     }
     Card {
         Column(
@@ -527,7 +594,7 @@ private fun UpdateAvailableCard(
 }
 
 @Composable
-private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>) {
+private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>, onOpen: () -> Unit) {
     Card {
         Column(
             modifier = Modifier
@@ -535,14 +602,21 @@ private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>) {
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                "Recent trips",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Recent trips",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                androidx.compose.material3.TextButton(onClick = onOpen) { Text("See all") }
+            }
             for (trip in trips) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpen)
+                        .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -561,6 +635,11 @@ private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>) {
                         text = mi?.let { "%.1f mi".format(it) } ?: "—",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

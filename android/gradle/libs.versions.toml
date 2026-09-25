@@ -21,6 +21,7 @@ play-services-location = "21.3.0"
 nordic-ble = "2.7.5"
 car-app = "1.7.0"
 maplibre = "11.8.1"
+paparazzi = "2.0.0-alpha01"
 
 [libraries]
 # AndroidX Core
@@ -116,3 +117,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+paparazzi = { id = "app.cash.paparazzi", version.ref = "paparazzi" }
