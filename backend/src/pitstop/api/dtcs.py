@@ -75,22 +75,41 @@ async def dtcs_timeline(
     Surfaces recurring codes vs one-time blips at a glance — much
     harder to see in the existing flat /dtcs list.
     """
+    # Each event is attributed to the trip (same vehicle) whose
+    # [started_at, ended_at] window contains seen_at, so the clients can
+    # link an occurrence to its drive. Resolved by time rather than read
+    # from dtc_events.trip_id: that column is stamped at ingest and goes
+    # stale when the deriver re-keys or a merge folds the trip away. An
+    # open trip (ended_at NULL) only matches at its start instant, the
+    # same convention the 0022 backfill uses. Should two trips ever
+    # overlap, the later-started one wins.
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT
-                code,
-                count(*)                                         AS n,
-                min(seen_at)                                     AS first_seen,
-                max(seen_at)                                     AS last_seen,
-                array_agg(seen_at ORDER BY seen_at)              AS seen_ats,
-                array_agg(id ORDER BY seen_at)                   AS event_ids,
-                (array_agg(description ORDER BY seen_at DESC))[1] AS description,
-                bool_or(cleared_at IS NULL)                      AS has_active
-              FROM dtc_events
-             WHERE vehicle_id = $1
-               AND seen_at >= now() - make_interval(days => $2)
-             GROUP BY code
+                d.code,
+                count(*)                                           AS n,
+                min(d.seen_at)                                     AS first_seen,
+                max(d.seen_at)                                     AS last_seen,
+                array_agg(d.seen_at ORDER BY d.seen_at)            AS seen_ats,
+                array_agg(d.id ORDER BY d.seen_at)                 AS event_ids,
+                array_agg(t.id ORDER BY d.seen_at)                 AS trip_ids,
+                array_agg(t.distance_km ORDER BY d.seen_at)        AS trip_distances,
+                (array_agg(d.description ORDER BY d.seen_at DESC))[1] AS description,
+                bool_or(d.cleared_at IS NULL)                      AS has_active
+              FROM dtc_events d
+              LEFT JOIN LATERAL (
+                  SELECT tr.id, tr.distance_km
+                    FROM trips tr
+                   WHERE tr.vehicle_id = d.vehicle_id
+                     AND tr.started_at <= d.seen_at
+                     AND COALESCE(tr.ended_at, tr.started_at) >= d.seen_at
+                   ORDER BY tr.started_at DESC
+                   LIMIT 1
+              ) t ON true
+             WHERE d.vehicle_id = $1
+               AND d.seen_at >= now() - make_interval(days => $2)
+             GROUP BY d.code
              ORDER BY last_seen DESC
             """,
             vehicle_id, days,
@@ -104,8 +123,21 @@ async def dtcs_timeline(
             "last_seen": r["last_seen"],
             "active": bool(r["has_active"]),
             "events": [
-                {"id": str(eid), "seen_at": ts}
-                for eid, ts in zip(r["event_ids"], r["seen_ats"], strict=True)
+                {
+                    "id": str(eid),
+                    "seen_at": ts,
+                    "trip_id": str(tid) if tid is not None else None,
+                    "trip_distance_km": (
+                        float(dist) if dist is not None else None
+                    ),
+                }
+                for eid, ts, tid, dist in zip(
+                    r["event_ids"],
+                    r["seen_ats"],
+                    r["trip_ids"],
+                    r["trip_distances"],
+                    strict=True,
+                )
             ],
         }
         for r in rows

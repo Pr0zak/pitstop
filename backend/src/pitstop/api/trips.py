@@ -177,6 +177,35 @@ def _row_to_trip(row: asyncpg.Record) -> dict[str, Any]:
     }
 
 
+# `sort` values for GET /trips -> ORDER BY column. Every non-default order
+# is descending with NULLs last (a trip without a distance/fuel figure is
+# not "the longest"), tie-broken by recency so paging is stable. Column
+# names come only from this allowlist — never from the request.
+_TRIP_SORTS: dict[str, str] = {
+    "recent": "started_at",
+    "distance": "distance_km",
+    "duration": "duration_s",
+    "top_speed": "max_speed_kph",
+    "max_rpm": "max_rpm",
+    "fuel": "fuel_used_l",
+    # The web's pre-overhaul client-side sort called this "speed".
+    "speed": "max_speed_kph",
+}
+
+# Trip-provenance chips shared by web + phone. Values are the trips.source
+# column values the web already filters on (TripsView.vue), plus short
+# aliases; "other" is everything that is neither a phone upload nor a
+# manual merge (i.e. the deriver today).
+_TRIP_SOURCE_FILTERS: dict[str, str | None] = {
+    "all": None,
+    "phone_batch": "source = 'phone_batch'",
+    "phone": "source = 'phone_batch'",
+    "manual_merge": "source = 'manual_merge'",
+    "merged": "source = 'manual_merge'",
+    "other": "source NOT IN ('phone_batch', 'manual_merge')",
+}
+
+
 @router.get(
     "",
     response_model=list[TripOut],
@@ -189,8 +218,22 @@ async def list_trips(
     to: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    sort: str = Query(default="recent"),
+    source: str | None = Query(default=None),
+    towing: bool | None = Query(default=None),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> list[dict[str, Any]]:
+    sort_col = _TRIP_SORTS.get(sort)
+    if sort_col is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"sort must be one of {sorted(_TRIP_SORTS)}",
+        )
+    if source is not None and source not in _TRIP_SOURCE_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"source must be one of {sorted(_TRIP_SOURCE_FILTERS)}",
+        )
     where: list[str] = []
     args: list[Any] = []
     if vehicle_id is not None:
@@ -202,7 +245,17 @@ async def list_trips(
     if to is not None:
         args.append(to)
         where.append(f"started_at <= ${len(args)}")
+    source_clause = _TRIP_SOURCE_FILTERS.get(source) if source is not None else None
+    if source_clause is not None:
+        where.append(source_clause)
+    # towing=false is "no filter", not "exclude towing" — the chip is a
+    # show-only-towing toggle on both clients.
+    if towing:
+        where.append("is_towing")
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    order_sql = f"{sort_col} DESC NULLS LAST"
+    if sort_col != "started_at":
+        order_sql += ", started_at DESC"
 
     async with pool.acquire() as conn:
         total = await conn.fetchval(
@@ -211,7 +264,7 @@ async def list_trips(
         args.extend([limit, offset])
         rows = await conn.fetch(
             f"SELECT {_TRIP_COLS} FROM trips{where_sql} "
-            f"ORDER BY started_at DESC NULLS LAST "
+            f"ORDER BY {order_sql} "
             f"LIMIT ${len(args) - 1} OFFSET ${len(args)}",
             *args,
         )

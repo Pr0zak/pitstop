@@ -57,6 +57,10 @@ class VehicleBase(BaseModel):
     tank2_capacity: float | None = None
     active: bool = True
     pid_profile_id: UUID | None = None
+    # Tachometer redline for the RPM gauges (0023 migration). NULL = not
+    # configured; clients fall back to their own default. Range mirrors
+    # the ck_vehicles_redline_rpm_range CHECK.
+    redline_rpm: int | None = Field(default=None, ge=1000, le=20000)
 
     @field_validator("slug")
     @classmethod
@@ -117,6 +121,7 @@ class VehicleUpdate(BaseModel):
     purchase_date: date | None = None
     epa_mpg_combined: float | None = None
     odometer_offset_km: float | None = None
+    redline_rpm: int | None = Field(default=None, ge=1000, le=20000)
 
     @field_validator("slug")
     @classmethod

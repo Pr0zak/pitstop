@@ -893,10 +893,22 @@ async def cost_of_ownership(
         )
         if v is None:
             raise HTTPException(status_code=404, detail="vehicle not found")
-        fuel_total = await conn.fetchval(
-            "SELECT COALESCE(SUM(price_total), 0) FROM fillups WHERE vehicle_id = $1",
+        fuel = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(price_total), 0) AS fuel_total,
+                   COALESCE(SUM(fuel_volume) FILTER (WHERE price_total IS NOT NULL), 0)
+                       AS fuel_volume_total
+              FROM fillups
+             WHERE vehicle_id = $1
+            """,
             vehicle_id,
         )
+        fuel_total = fuel["fuel_total"] if fuel is not None else 0
+        # Lifetime volume in the fillups' own unit (vehicles.fuel_unit), so
+        # the client can derive lifetime $/volume = fuel_total / this. Only
+        # priced fillups count, matching fuel_total; an unpriced fillup's
+        # volume would otherwise drag the derived $/volume down.
+        fuel_volume_total = fuel["fuel_volume_total"] if fuel is not None else 0
         # Maintenance = sum of expenses where is_income is not true.
         maint_total = await conn.fetchval(
             """
@@ -932,6 +944,7 @@ async def cost_of_ownership(
         "purchase_price": purchase_price,
         "purchase_date": v["purchase_date"].isoformat() if v["purchase_date"] else None,
         "fuel_total": round(fuel_total_f, 2),
+        "fuel_volume_total": round(float(fuel_volume_total or 0), 2),
         "maintenance_total": round(maint_total_f, 2),
         "total": round(total, 2),
         "lifetime_mi": round(lifetime_mi, 1) if lifetime_mi else None,

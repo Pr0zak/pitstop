@@ -36,6 +36,7 @@ _VEHICLE_SELECT = """
         v.purchase_price, v.purchase_date,
         v.epa_mpg_combined,
         v.odometer_offset_km,
+        v.redline_rpm,
         s.last_seen_at, s.last_metric, COALESCE(s.latest, '{}'::jsonb) AS latest,
         p.name AS profile_name, p.description AS profile_description
       FROM vehicles v
@@ -115,6 +116,7 @@ def _row_to_vehicle(row: asyncpg.Record) -> dict[str, Any]:
             if row["odometer_offset_km"] is not None
             else None
         ),
+        "redline_rpm": row["redline_rpm"],
         "last_seen_at": row["last_seen_at"],
         "last_metric": row["last_metric"],
         "fuel_level_calibration_pct": (
@@ -289,14 +291,14 @@ async def create_vehicle(
                     dist_unit, fuel_unit, consumption_unit,
                     tank_count, tank1_type, tank2_type,
                     tank1_capacity, tank2_capacity,
-                    active, pid_profile_id
+                    active, pid_profile_id, redline_rpm
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6,
                     $7, $8, $9,
                     $10, $11, $12,
                     $13, $14, $15,
                     $16, $17,
-                    $18, $19
+                    $18, $19, $20
                 )
                 RETURNING id
                 """,
@@ -305,7 +307,7 @@ async def create_vehicle(
                 body.dist_unit, body.fuel_unit, body.consumption_unit,
                 body.tank_count, body.tank1_type, body.tank2_type,
                 body.tank1_capacity, body.tank2_capacity,
-                body.active, body.pid_profile_id,
+                body.active, body.pid_profile_id, body.redline_rpm,
             )
         except asyncpg.UniqueViolationError as exc:
             raise HTTPException(

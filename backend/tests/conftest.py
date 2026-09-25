@@ -14,6 +14,7 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from collections.abc import AsyncIterator, Iterator
@@ -91,9 +92,20 @@ def test_app() -> FastAPI:
     from pitstop.api import vehicles as vehicles_api
     from pitstop.workers.bus import EventBus
 
+    async def _init_conn(conn: asyncpg.Connection) -> None:
+        # Mirror main.py's pool init: JSONB/JSON decode to Python objects.
+        # Without it, vehicle_state.latest arrives as the string '{}' and
+        # every VehicleOut response fails validation.
+        for typ in ("jsonb", "json"):
+            await conn.set_type_codec(
+                typ, encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
+
     @asynccontextmanager
     async def slim_lifespan(app: FastAPI) -> AsyncIterator[None]:
-        pool = await asyncpg.create_pool(dsn=_dsn(), min_size=1, max_size=4)
+        pool = await asyncpg.create_pool(
+            dsn=_dsn(), min_size=1, max_size=4, init=_init_conn
+        )
         app.state.pg_pool = pool
         # Per-test bus so live_ws fixtures don't leak across tests.
         app.state.bus = EventBus(queue_maxsize=100)
