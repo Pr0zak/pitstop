@@ -23,6 +23,10 @@ data class FillupDetailUi(
      *  for the MPG trend chart and "cost per mile since previous"
      *  derived metrics. Capped at ~20 entries. */
     val context: List<FillupDto> = emptyList(),
+    val deleting: Boolean = false,
+    /** DELETE succeeded — the screen pops back and History refreshes. */
+    val deleted: Boolean = false,
+    val message: String? = null,
 )
 
 @HiltViewModel
@@ -41,6 +45,28 @@ class FillupDetailViewModel @Inject constructor(
     init { load() }
 
     fun refresh() = load()
+
+    /** DELETE /fillups/{id} (web FuelView parity), after the confirm dialog. */
+    fun delete() {
+        if (_ui.value.deleting) return
+        _ui.update { it.copy(deleting = true) }
+        viewModelScope.launch {
+            runCatching { api.deleteFillup(fillupId) }
+                .onSuccess {
+                    logBuffer.info("fillup-detail: deleted", mapOf("fillup_id" to fillupId))
+                    _ui.update { it.copy(deleting = false, deleted = true) }
+                }
+                .onFailure { e ->
+                    logBuffer.warn(
+                        "fillup-detail: delete failed",
+                        mapOf("fillup_id" to fillupId, "err" to (e.message ?: e::class.java.simpleName)),
+                    )
+                    _ui.update { it.copy(deleting = false, message = "Couldn't delete this fillup") }
+                }
+        }
+    }
+
+    fun messageShown() = _ui.update { it.copy(message = null) }
 
     private fun load() {
         viewModelScope.launch {

@@ -10,9 +10,11 @@ import javax.inject.Inject
 
 /**
  * One [Session] per car connection. We hand the [BridgeStateBus] through
- * to the screen; the screen invalidates on each state-bus emission so the
- * head-unit redraws whenever the foreground bridge service publishes a
- * new metric. Latency end-to-end is sub-second.
+ * to the screen, which samples it on a fixed 2 s tick and repaints only
+ * when the rendered text would change (LiveCarScreen.renderSignature) —
+ * NOT on every bus emission: mid-drive that is many updates a second, and
+ * the host rate-limits template updates. So a value on the head unit is
+ * at most ~2 s behind the phone.
  */
 class PitstopSession(
     private val stateBus: BridgeStateBus,

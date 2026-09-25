@@ -203,8 +203,9 @@
           and the IOT category register the app in the head-unit launcher
           (vs. NAVIGATION / COMMUNICATION categories which require special
           OEM treatment). The metadata pair declares the templated app desc
-          and the minimum Car App API level — 1 covers all production
-          AAP / AAOS hosts as of 2025.
+          and the minimum Car App API level — 6, because TabTemplate (the
+          screen's root template) requires Car API 6; an older host would
+          reject it, so the app is simply not offered there.
         -->
         <service
             android:name=".car.PitstopCarAppService"

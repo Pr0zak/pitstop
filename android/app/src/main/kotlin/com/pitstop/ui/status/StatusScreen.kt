@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -57,7 +60,16 @@ import com.pitstop.ui.components.MonthlySpendCard
 import com.pitstop.ui.components.MpgLifetimeCard
 import com.pitstop.ui.components.MpgYearChart
 import com.pitstop.ui.components.PitstopTopAppBar
+import com.pitstop.ui.components.PillTone
+import com.pitstop.ui.components.StatusPill
 import com.pitstop.ui.components.UploadStatusCard
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
+import com.pitstop.util.UnitFormat
+import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.ErrorOutline
 import com.pitstop.drive.UploadProgress
 import kotlinx.coroutines.launch
 
@@ -85,6 +97,8 @@ fun StatusScreen(
     viewModel: StatusViewModel = hiltViewModel(),
     onOpenHistory: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onOpenDtc: (code: String, vehicleId: String) -> Unit = { _, _ -> },
+    onOpenTrip: (id: String) -> Unit = {},
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
@@ -100,6 +114,8 @@ fun StatusScreen(
         onCancelSync = { viewModel.cancelSync() },
         onOpenHistory = onOpenHistory,
         onOpenSettings = onOpenSettings,
+        onOpenDtc = onOpenDtc,
+        onOpenTrip = onOpenTrip,
     )
 }
 
@@ -117,6 +133,8 @@ internal fun StatusContent(
     onCancelSync: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenDtc: (code: String, vehicleId: String) -> Unit = { _, _ -> },
+    onOpenTrip: (id: String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val refreshing = remember { mutableStateOf(false) }
@@ -165,7 +183,7 @@ internal fun StatusContent(
                 ui.activeDtcs?.takeIf { it.isNotEmpty() }?.let { codes ->
                     ActiveDtcsPanel(
                         dtcs = codes,
-                        onOpen = { onOpenHistory() },
+                        onOpen = { dtc -> onOpenDtc(dtc.code, dtc.vehicleId) },
                     )
                 }
 
@@ -234,7 +252,7 @@ internal fun StatusContent(
 
                 // Recent trips card.
                 ui.recentTrips?.takeIf { it.isNotEmpty() }?.let { trips ->
-                    RecentTripsCard(trips = trips, onOpen = onOpenHistory)
+                    RecentTripsCard(trips = trips, onOpenAll = onOpenHistory, onOpenTrip = onOpenTrip)
                 }
 
                 // Update-available card (conditional).
@@ -297,13 +315,13 @@ private fun BridgeControlCard(
     onStop: () -> Unit,
 ) {
     val phase = status.phase
-    val (statusText, pillState) = when (phase) {
-        com.pitstop.service.BridgePhase.Idle -> "Idle" to com.pitstop.ui.components.PillState.Neutral
-        com.pitstop.service.BridgePhase.Scanning -> "Scanning" to com.pitstop.ui.components.PillState.Connecting
-        com.pitstop.service.BridgePhase.Connecting -> "Connecting" to com.pitstop.ui.components.PillState.Connecting
-        com.pitstop.service.BridgePhase.Connected -> "Running" to com.pitstop.ui.components.PillState.Healthy
-        com.pitstop.service.BridgePhase.Disconnected -> "Reconnecting" to com.pitstop.ui.components.PillState.Degraded
-        com.pitstop.service.BridgePhase.Error -> "Error" to com.pitstop.ui.components.PillState.Offline
+    val (statusText, pillTone) = when (phase) {
+        com.pitstop.service.BridgePhase.Idle -> "Idle" to PillTone.Neutral
+        com.pitstop.service.BridgePhase.Scanning -> "Scanning" to PillTone.Connecting
+        com.pitstop.service.BridgePhase.Connecting -> "Connecting" to PillTone.Connecting
+        com.pitstop.service.BridgePhase.Connected -> "Running" to PillTone.Healthy
+        com.pitstop.service.BridgePhase.Disconnected -> "Reconnecting" to PillTone.Degraded
+        com.pitstop.service.BridgePhase.Error -> "Error" to PillTone.Offline
     }
     // Healthy capture collapses to one line; anything off-nominal (or a tap)
     // shows the full detail and controls.
@@ -322,7 +340,7 @@ private fun BridgeControlCard(
                     .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                com.pitstop.ui.components.StatusPill(state = pillState, label = "Capturing", compact = true)
+                StatusPill(tone = pillTone, label = "Capturing", compact = true, subject = "Bridge")
                 Spacer(Modifier.size(8.dp))
                 Text(
                     listOfNotNull("OBD ${obdAge}s", status.deviceName).joinToString(" · "),
@@ -345,7 +363,7 @@ private fun BridgeControlCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                com.pitstop.ui.components.StatusPill(state = pillState, label = statusText)
+                StatusPill(tone = pillTone, label = statusText, subject = "Bridge")
                 Spacer(Modifier.size(8.dp))
                 Text(
                     text = activeCollectorsLabel(status),
@@ -376,7 +394,7 @@ private fun BridgeControlCard(
                 }
                 val (obdText, obdColor) = when (ageS) {
                     null -> "OBD: no frames yet" to MaterialTheme.colorScheme.onSurfaceVariant
-                    in 0..9 -> "OBD: healthy (${ageS}s)" to MaterialTheme.colorScheme.primary
+                    in 0..9 -> "OBD: healthy (${ageS}s)" to MaterialTheme.ext.good
                     in 10..59 -> "OBD: degraded (${ageS}s)" to MaterialTheme.colorScheme.onSurfaceVariant
                     else -> "OBD: offline (${ageS}s)" to MaterialTheme.colorScheme.error
                 }
@@ -460,7 +478,12 @@ private fun SetupPromptCard(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(if (serverIncomplete) "🔌" else "📡", style = MaterialTheme.typography.headlineMedium)
+            Icon(
+                if (serverIncomplete) Icons.Outlined.CloudOff else Icons.Outlined.Bluetooth,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(36.dp),
+            )
             Text(
                 if (serverIncomplete) "Finish setup to see your data" else "One step from auto-logging",
                 style = MaterialTheme.typography.titleMedium,
@@ -506,9 +529,11 @@ private fun SetupChecklistRow(done: Boolean, label: String, missing: String) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            if (done) "✓" else "✕",
-            color = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        Icon(
+            if (done) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
+            contentDescription = if (done) "Done" else "Missing",
+            tint = if (done) MaterialTheme.ext.good else MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(20.dp),
         )
         Text(label, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.weight(1f))
@@ -594,28 +619,37 @@ private fun UpdateAvailableCard(
 }
 
 @Composable
-private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>, onOpen: () -> Unit) {
+private fun RecentTripsCard(
+    trips: List<com.pitstop.http.TripDto>,
+    onOpenAll: () -> Unit,
+    onOpenTrip: (String) -> Unit,
+) {
+    val system = LocalUnitSystem.current
     Card {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Recent trips",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { heading() },
                 )
-                androidx.compose.material3.TextButton(onClick = onOpen) { Text("See all") }
+                androidx.compose.material3.TextButton(onClick = onOpenAll) { Text("See all") }
             }
             for (trip in trips) {
+                // Each row opens THAT trip's detail (History → trip/{id}).
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(onClick = onOpen)
+                        .heightIn(min = 48.dp)
+                        .clickable(onClickLabel = "Open trip") { onOpenTrip(trip.id) }
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -625,14 +659,13 @@ private fun RecentTripsCard(trips: List<com.pitstop.http.TripDto>, onOpen: () ->
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
-                            text = formatTripSubtitle(trip),
+                            text = formatTripSubtitle(trip, system),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    val mi = trip.distanceKm?.let { it * 0.621371 }
                     Text(
-                        text = mi?.let { "%.1f mi".format(it) } ?: "—",
+                        text = UnitFormat.distanceKm(trip.distanceKm, system),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -659,12 +692,12 @@ private fun formatTripDate(iso: String): String {
     }
 }
 
-private fun formatTripSubtitle(trip: com.pitstop.http.TripDto): String {
+private fun formatTripSubtitle(trip: com.pitstop.http.TripDto, system: String): String {
     val parts = mutableListOf<String>()
     trip.durationS?.let {
         parts += if (it >= 60) "${it / 60}m ${it % 60}s" else "${it}s"
     }
-    trip.maxSpeedKph?.let { parts += "max %.0f mph".format(it * 0.621371) }
+    trip.maxSpeedKph?.let { parts += "max ${UnitFormat.Quantity.SpeedKph.format(it, system, 0)}" }
     trip.maxRpm?.let { parts += "%.0f rpm".format(it) }
     if (trip.dtcCount > 0) parts += "${trip.dtcCount} DTC"
     return parts.joinToString(" · ").ifEmpty { "—" }

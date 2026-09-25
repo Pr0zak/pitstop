@@ -30,7 +30,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.pitstop.http.MonthlySpendPointDto
+import com.pitstop.util.UnitFormat
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 
@@ -74,7 +77,7 @@ fun MonthlySpendCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "Last 12 mo  ·  $%,.0f".format(total),
+                        text = "Last 12 mo  ·  ${UnitFormat.money(total, 0)}",
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -87,7 +90,13 @@ fun MonthlySpendCard(
                 currentMonthPrefix = nowYm,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(110.dp),
+                    .height(110.dp)
+                    .semantics {
+                        contentDescription = "Fuel spend by month: " +
+                            recent.joinToString(", ") {
+                                "${formatMonthShort(it.month)} ${UnitFormat.money(it.fuel, 0)}"
+                            }
+                    },
                 accent = MaterialTheme.colorScheme.primary,
                 surfaceVariant = MaterialTheme.colorScheme.surfaceVariant,
                 onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -178,7 +187,7 @@ private fun SpendBars(
                     this.typeface = android.graphics.Typeface.MONOSPACE
                 }
                 drawContext.canvas.nativeCanvas.drawText(
-                    "$%.0f".format(p.fuel),
+                    UnitFormat.money(p.fuel, 0),
                     x,
                     y,
                     paint,

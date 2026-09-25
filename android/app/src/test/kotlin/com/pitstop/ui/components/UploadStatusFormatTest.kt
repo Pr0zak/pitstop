@@ -31,8 +31,8 @@ class UploadStatusFormatTest {
     fun `sample counts get thousands separators`() {
         assertEquals("0", formatCount(0))
         assertEquals("999", formatCount(999))
-        assertEquals("1,000", formatCount(1_000))
-        assertEquals("18,402", formatCount(18_402))
+        assertEquals("1,000", formatCount(1_000, java.util.Locale.US))
+        assertEquals("18,402", formatCount(18_402, java.util.Locale.US))
         assertEquals("1,234,567", formatCount(1_234_567))
     }
 }

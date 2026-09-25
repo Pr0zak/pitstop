@@ -75,16 +75,54 @@ data class HistoryUiState(
     val lastRefresh: RefreshInfo? = null,
 )
 
-/** Sort orders for the Trips list (TRIPS-1). Default is RecentFirst —
- *  what the server returns. Other orders are computed client-side
- *  from the cached page. */
-enum class TripSortOrder { RecentFirst, FurthestFirst, FastestFirst, LongestFirst }
+/** Sort orders for the Trips list (TRIPS-1). [param] is the server's
+ *  `sort` value — the list is fetched in that order, so "longest" means
+ *  the longest trips on record, not the longest of the 200 most recent.
+ *  The same order is re-applied client-side (see [groupAndSortTrips]) so
+ *  an older backend that ignores the param still reads correctly. */
+enum class TripSortOrder(val label: String, val param: String) {
+    RecentFirst("Most recent", "recent"),
+    FurthestFirst("Longest distance", "distance"),
+    LongestFirst("Longest duration", "duration"),
+    FastestFirst("Fastest top speed", "top_speed"),
+    HighestRpm("Highest RPM", "max_rpm"),
+    MostFuel("Most fuel used", "fuel"),
+}
 
-/** Source-filter chips for the Trips list. */
-enum class TripSourceFilter { All, Phone, ManualMerge, Other }
+/** Source-filter chips for the Trips list; [param] is the server's `source`. */
+enum class TripSourceFilter(val label: String, val param: String?) {
+    All("All", null),
+    Phone("Phone", "phone_batch"),
+    ManualMerge("Merged", "manual_merge"),
+    Other("Other", "other"),
+}
+
+/** History's four sub-tabs. Hoisted here (not `remember`ed in the screen)
+ *  so Home and notification deep links can pick one before the tab shows. */
+enum class HistorySubTab(val label: String) {
+    Trips("Trips"),
+    Fillups("Fillups"),
+    Dtcs("DTCs"),
+    Map("Map"),
+}
+
+/** A detail route History's NavHost should push once it is on screen. */
+sealed interface HistoryDeepLink {
+    data class Dtc(val code: String, val vehicleId: String) : HistoryDeepLink
+    data class Trip(val id: String) : HistoryDeepLink
+}
+
+/** Trips hidden from the list while their delete sits in the Undo window. */
+data class PendingTripDelete(val ids: Set<String>)
 
 /** Sort orders for the Fillups list (FILLUPS-1). */
-enum class FillupSortOrder { RecentFirst, HighestCost, MostFuel, BestMpg, HighestPpg }
+enum class FillupSortOrder(val label: String) {
+    RecentFirst("Most recent"),
+    HighestCost("Highest cost"),
+    MostFuel("Most fuel"),
+    BestMpg("Best economy"),
+    HighestPpg("Highest price"),
+}
 
 /** Full / partial filter chip for fillups. */
 enum class FillupFilter { All, Full, Partial }
@@ -126,14 +164,6 @@ sealed class MergeState {
     data class Failed(val message: String) : MergeState()
 }
 
-/** Mirrors [MergeState] for the multi-select delete flow. `Done`
- *  carries how many trips were removed so the banner can pluralize. */
-sealed class DeleteState {
-    data object Idle : DeleteState()
-    data object InProgress : DeleteState()
-    data class Done(val count: Int) : DeleteState()
-    data class Failed(val message: String) : DeleteState()
-}
 
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
@@ -168,21 +198,101 @@ class HistoryViewModel @Inject constructor(
     private val _mergeState = MutableStateFlow<MergeState>(MergeState.Idle)
     val mergeState: StateFlow<MergeState> = _mergeState.asStateFlow()
 
-    /** True while the "Delete N trips?" confirm dialog is showing for
-     *  the current multi-selection. */
-    private val _deleteConfirm = MutableStateFlow(false)
-    val deleteConfirm: StateFlow<Boolean> = _deleteConfirm.asStateFlow()
+    /** Delete in its Undo window: the rows are hidden locally, nothing has
+     *  been sent. Replaces the old "Delete N trips?" confirm dialog — an
+     *  undo is the gentler guard and costs no extra tap on the happy path. */
+    private val _pendingDelete = MutableStateFlow<PendingTripDelete?>(null)
+    val pendingDelete: StateFlow<PendingTripDelete?> = _pendingDelete.asStateFlow()
+    private var pendingDeleteJob: Job? = null
 
-    private val _deleteState = MutableStateFlow<DeleteState>(DeleteState.Idle)
-    val deleteState: StateFlow<DeleteState> = _deleteState.asStateFlow()
+    /** One-shot user messages (merge done/failed, delete failed) for the
+     *  screen's snackbar. */
+    private val _messages = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages: kotlinx.coroutines.flow.SharedFlow<String> = _messages
+
+    private val _subTab = MutableStateFlow(HistorySubTab.Trips)
+    val subTab: StateFlow<HistorySubTab> = _subTab.asStateFlow()
+    fun selectSubTab(t: HistorySubTab) { _subTab.value = t }
+
+    private val _pendingLink = MutableStateFlow<HistoryDeepLink?>(null)
+    /** Consumed by HistoryScreen's NavHost, then cleared via [consumeLink]. */
+    val pendingLink: StateFlow<HistoryDeepLink?> = _pendingLink.asStateFlow()
+
+    /** Home's active-DTC row: land on DTCs with that code's detail pushed. */
+    fun openDtc(code: String, vehicleId: String) {
+        _subTab.value = HistorySubTab.Dtcs
+        _pendingLink.value = HistoryDeepLink.Dtc(code, vehicleId)
+    }
+
+    /** Home's recent-trip row: land on Trips with that trip's detail pushed. */
+    fun openTrip(id: String) {
+        _subTab.value = HistorySubTab.Trips
+        _pendingLink.value = HistoryDeepLink.Trip(id)
+    }
+
+    fun consumeLink() { _pendingLink.value = null }
 
     private val _tripSort = MutableStateFlow(TripSortOrder.RecentFirst)
     val tripSort: StateFlow<TripSortOrder> = _tripSort.asStateFlow()
-    fun setTripSort(o: TripSortOrder) { _tripSort.value = o }
+    fun setTripSort(o: TripSortOrder) {
+        if (_tripSort.value == o) return
+        _tripSort.value = o
+        refetchTrips()
+    }
 
     private val _tripSourceFilter = MutableStateFlow(TripSourceFilter.All)
     val tripSourceFilter: StateFlow<TripSourceFilter> = _tripSourceFilter.asStateFlow()
-    fun setTripSourceFilter(f: TripSourceFilter) { _tripSourceFilter.value = f }
+    fun setTripSourceFilter(f: TripSourceFilter) {
+        if (_tripSourceFilter.value == f) return
+        _tripSourceFilter.value = f
+        refetchTrips()
+    }
+
+    /** Show-only-towing chip (server `towing=true`). */
+    private val _towingOnly = MutableStateFlow(false)
+    val towingOnly: StateFlow<Boolean> = _towingOnly.asStateFlow()
+    fun setTowingOnly(on: Boolean) {
+        if (_towingOnly.value == on) return
+        _towingOnly.value = on
+        refetchTrips()
+    }
+
+    /** Vehicle UUID from the last successful refresh; lets a sort/filter
+     *  change refetch just the trips page without re-resolving the slug. */
+    private var resolvedVehicleId: String? = null
+    private var tripsJob: Job? = null
+
+    private suspend fun fetchTrips(vehicleId: String, cacheControl: String?): List<TripDto> =
+        api.getTrips(
+            vehicleId,
+            // 200, not 30: the stat header aggregates a 14-day window, and at
+            // ~9 trips/day 30 rows is barely three days — the totals would
+            // silently under-report. Also gives the list more history.
+            limit = 200,
+            cacheControl = cacheControl,
+            sort = _tripSort.value.param.takeIf { it != TripSortOrder.RecentFirst.param },
+            source = _tripSourceFilter.value.param,
+            towing = if (_towingOnly.value) true else null,
+        )
+
+    /** Re-query only the trips page after a sort / filter change. */
+    private fun refetchTrips() {
+        val vehicleId = resolvedVehicleId ?: run { refresh(); return }
+        tripsJob?.cancel()
+        tripsJob = viewModelScope.launch {
+            _ui.update { it.copy(trips = it.trips.copy(loading = true, error = null)) }
+            val result = runCatching { fetchTrips(vehicleId, null) }
+            _ui.update {
+                it.copy(
+                    trips = HistoryListState(
+                        data = result.getOrNull() ?: it.trips.data,
+                        loading = false,
+                        error = result.exceptionOrNull()?.let { e -> e.message ?: e::class.java.simpleName },
+                    ),
+                )
+            }
+        }
+    }
 
     private val _fillupSort = MutableStateFlow(FillupSortOrder.RecentFirst)
     val fillupSort: StateFlow<FillupSortOrder> = _fillupSort.asStateFlow()
@@ -303,28 +413,38 @@ class HistoryViewModel @Inject constructor(
      *  same model as the web Trips view. */
     fun longPressTrip(tripId: String) = toggleTripSelection(tripId)
 
-    /** Selection-bar Delete → open the "Delete N trips?" confirm. The
-     *  API calls don't fire until the user confirms. */
-    fun requestDeleteSelection() {
-        if (_tripSelection.value.ids.isEmpty()) return
-        if (_deleteState.value is DeleteState.InProgress) return
-        _deleteConfirm.value = true
-    }
-
-    fun cancelDeleteSelection() {
-        _deleteConfirm.value = false
-    }
-
-    /** Fire DELETE /trips/{id} for every selected trip. Deletes are
-     *  independent, so a single failure doesn't abort the rest — the
-     *  banner reports partial failure. Refreshes and drops selection
-     *  mode when done. */
-    fun confirmDeleteSelection() {
-        if (_deleteState.value is DeleteState.InProgress) return
-        val ids = _tripSelection.value.ids.toList()
+    /**
+     * Contextual-bar Delete. Hides the selected trips immediately and opens
+     * the Undo window; the DELETEs only go out when [commitPendingDelete]
+     * runs (snackbar dismissed) or the safety timer lapses — whichever is
+     * first. A second delete while one is pending commits the first.
+     */
+    fun deleteSelection() {
+        val ids = _tripSelection.value.ids
         if (ids.isEmpty()) return
-        _deleteConfirm.value = false
-        _deleteState.value = DeleteState.InProgress
+        commitPendingDelete()
+        _pendingDelete.value = PendingTripDelete(ids)
+        _tripSelection.value = TripSelection()
+        pendingDeleteJob = viewModelScope.launch {
+            delay(UNDO_WINDOW_MS)
+            commitPendingDelete()
+        }
+    }
+
+    /** Snackbar Undo: forget the pending delete; the rows reappear. */
+    fun undoDelete() {
+        pendingDeleteJob?.cancel()
+        pendingDeleteJob = null
+        _pendingDelete.value = null
+    }
+
+    /** Send the DELETEs for the pending set. Deletes are independent, so a
+     *  single failure doesn't abort the rest — the snackbar reports it. */
+    fun commitPendingDelete() {
+        val pending = _pendingDelete.value ?: return
+        pendingDeleteJob?.cancel()
+        pendingDeleteJob = null
+        val ids = pending.ids.toList()
         logBuffer.info(
             "trips delete requested",
             mapOf("count" to ids.size, "ids" to ids.joinToString(",")),
@@ -340,19 +460,16 @@ class HistoryViewModel @Inject constructor(
                     )
                 }
             }
-            val deleted = ids.size - failed.size
-            _deleteState.value = if (failed.isEmpty()) {
-                logBuffer.info("trips delete accepted", mapOf("count" to deleted))
-                DeleteState.Done(deleted)
+            if (failed.isEmpty()) {
+                logBuffer.info("trips delete accepted", mapOf("count" to ids.size))
             } else {
-                DeleteState.Failed("$deleted of ${ids.size} deleted; ${failed.size} failed")
+                _messages.tryEmit("${ids.size - failed.size} of ${ids.size} deleted; ${failed.size} failed")
             }
-            _tripSelection.value = TripSelection()
+            // Refresh BEFORE clearing the hidden set, so the deleted rows
+            // never flash back in between the DELETE and the new page.
             refresh(forceNetwork = true)
-            delay(DELETE_DISMISS_MS)
-            if (_deleteState.value is DeleteState.Done || _deleteState.value is DeleteState.Failed) {
-                _deleteState.value = DeleteState.Idle
-            }
+            refreshJob?.join()
+            if (_pendingDelete.value == pending) _pendingDelete.value = null
         }
     }
 
@@ -395,6 +512,7 @@ class HistoryViewModel @Inject constructor(
             runCatching { api.mergeTrips(keep, TripMergeRequest(otherTripIds = others)) }
                 .onSuccess { merged ->
                     logBuffer.info("trip merge accepted", mapOf("kept" to merged.id))
+                    _messages.tryEmit("Merged ${ids.size} trips")
                     _mergeState.value = MergeState.Done(merged.id)
                     _tripSelection.value = TripSelection()
                     refresh(forceNetwork = true)
@@ -404,6 +522,7 @@ class HistoryViewModel @Inject constructor(
                 .onFailure { t ->
                     val msg = t.message ?: t::class.java.simpleName
                     logBuffer.warn("trip merge failed", mapOf("err" to msg))
+                    _messages.tryEmit("Couldn't merge those trips")
                     _mergeState.value = MergeState.Failed(msg)
                     delay(MERGE_DISMISS_MS)
                     if (_mergeState.value is MergeState.Failed) _mergeState.value = MergeState.Idle
@@ -413,7 +532,10 @@ class HistoryViewModel @Inject constructor(
 
     private companion object {
         const val MERGE_DISMISS_MS = 3_000L
-        const val DELETE_DISMISS_MS = 3_000L
+
+        /** Longest the Undo window stays open if the snackbar never reports
+         *  back (screen disposed). Just over a Long snackbar's 10 s. */
+        const val UNDO_WINDOW_MS = 12_000L
 
         /** How old the loaded page may be before returning to the tab
          *  re-fetches it. Matches the OkHttp fresh window so a
@@ -521,12 +643,9 @@ class HistoryViewModel @Inject constructor(
 
             // Fan out — three independent fetches.
             val freshnessBefore = networkFreshness.snapshot()
+            resolvedVehicleId = vehicleId
             val tripsDeferred = async {
-                // 200, not 30: the stat header aggregates a 14-day
-                // window, and at ~9 trips/day 30 rows is barely three
-                // days — the totals would silently under-report. Also
-                // gives the list itself more history to scroll.
-                runCatching { api.getTrips(vehicleId, limit = 200, cacheControl = cacheControl) }
+                runCatching { fetchTrips(vehicleId, cacheControl) }
             }
             val fillupsDeferred = async {
                 runCatching { api.getFillups(vehicleId, limit = 30, cacheControl = cacheControl) }
@@ -645,9 +764,11 @@ fun groupAndSortTrips(
     trips: List<com.pitstop.http.TripDto>,
     sort: TripSortOrder,
     filter: TripSourceFilter,
+    towingOnly: Boolean = false,
+    hidden: Set<String> = emptySet(),
 ): List<Pair<TripGroupKey, List<com.pitstop.http.TripDto>>> {
     val filtered = trips.filter { t ->
-        when (filter) {
+        t.id !in hidden && (!towingOnly || t.isTowing) && when (filter) {
             TripSourceFilter.All -> true
             TripSourceFilter.Phone -> t.source == "phone_batch"
             TripSourceFilter.ManualMerge -> t.source == "manual_merge"
@@ -659,6 +780,8 @@ fun groupAndSortTrips(
         TripSortOrder.FurthestFirst -> compareByDescending { it.distanceKm ?: 0.0 }
         TripSortOrder.FastestFirst -> compareByDescending { it.maxSpeedKph ?: 0.0 }
         TripSortOrder.LongestFirst -> compareByDescending { it.durationS ?: 0 }
+        TripSortOrder.HighestRpm -> compareByDescending { it.maxRpm ?: 0.0 }
+        TripSortOrder.MostFuel -> compareByDescending { it.fuelUsedL ?: 0.0 }
     }
     val byBucket = filtered.groupBy { bucketFor(it.startedAt) }
     return TripGroupKey.entries

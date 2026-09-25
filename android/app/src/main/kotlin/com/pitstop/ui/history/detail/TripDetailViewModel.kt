@@ -33,6 +33,14 @@ data class TripDetailUi(
     val error: String? = null,
     val trip: TripDetailDto? = null,
     val route: List<RoutePointDto> = emptyList(),
+    /** Same-distance-bucket averages; null until loaded or when the bucket
+     *  has too few trips to compare against (the card hides then). */
+    val baseline: com.pitstop.http.TripBaselineDto? = null,
+    /** Set once DELETE /trips/{id} succeeded — the screen pops back. */
+    val deleted: Boolean = false,
+    val deleting: Boolean = false,
+    /** A user-facing failure for the snackbar (save / delete). */
+    val message: String? = null,
 )
 
 @HiltViewModel
@@ -76,44 +84,56 @@ class TripDetailViewModel @Inject constructor(
         )
 
     /**
-     * Flag or unflag this trip as towing.
-     *
-     * Optimistic: the switch moves immediately and reverts if the server
-     * rejects it. A toggle that waits on a round trip reads as broken on a
-     * phone that may be on cellular, and the cost of being wrong here is one
-     * boolean the user can flip again.
+     * Save the Edit sheet — towing, category and notes in ONE PATCH, only
+     * the fields that changed. Optimistic like the toggles above. A cleared
+     * text field is sent as JSON null (the backend PATCH honours explicit
+     * nulls via exclude_unset); the shared Json omits nulls from data
+     * classes, so this goes out as a raw object.
      */
-    fun setTowing(value: Boolean) {
+    fun saveDetails(isTowing: Boolean, category: String?, notes: String?) {
         val current = _ui.value.trip ?: return
-        _ui.update { it.copy(trip = current.copy(isTowing = value)) }
-        viewModelScope.launch {
-            runCatching { api.updateTrip(current.id, com.pitstop.http.TripUpdateRequest(isTowing = value)) }
-                .onFailure { e ->
-                    _ui.update { it.copy(trip = current) }
-                    logBuffer.warn(
-                        "trip-detail: towing toggle failed",
-                        mapOf("trip_id" to current.id, "err" to (e.message ?: e::class.java.simpleName)),
-                    )
-                }
+        val cat = category?.trim()?.ifBlank { null }
+        val note = notes?.trim()?.ifBlank { null }
+        val body = kotlinx.serialization.json.buildJsonObject {
+            if (isTowing != current.isTowing) put("is_towing", kotlinx.serialization.json.JsonPrimitive(isTowing))
+            if (cat != current.category?.ifBlank { null }) put("category", kotlinx.serialization.json.JsonPrimitive(cat))
+            if (note != current.notes?.ifBlank { null }) put("notes", kotlinx.serialization.json.JsonPrimitive(note))
         }
-    }
-
-    /** Set or clear the purpose tag. Same optimistic contract as towing. */
-    fun setCategory(value: String?) {
-        val current = _ui.value.trip ?: return
-        _ui.update { it.copy(trip = current.copy(category = value)) }
+        if (body.isEmpty()) return
+        _ui.update { it.copy(trip = current.copy(isTowing = isTowing, category = cat, notes = note)) }
         viewModelScope.launch {
-            runCatching {
-                api.updateTrip(current.id, com.pitstop.http.TripUpdateRequest(category = value))
-            }.onFailure { e ->
-                _ui.update { it.copy(trip = current) }
+            runCatching { api.patchTrip(current.id, body) }.onFailure { e ->
+                _ui.update { it.copy(trip = current, message = "Couldn't save the trip details") }
                 logBuffer.warn(
-                    "trip-detail: category save failed",
+                    "trip-detail: details save failed",
                     mapOf("trip_id" to current.id, "err" to (e.message ?: e::class.java.simpleName)),
                 )
             }
         }
     }
+
+    /** DELETE the trip (after the screen's confirm dialog). */
+    fun delete() {
+        val current = _ui.value.trip ?: return
+        if (_ui.value.deleting) return
+        _ui.update { it.copy(deleting = true) }
+        viewModelScope.launch {
+            runCatching { api.deleteTrip(current.id) }
+                .onSuccess {
+                    logBuffer.info("trip-detail: deleted", mapOf("trip_id" to current.id))
+                    _ui.update { it.copy(deleting = false, deleted = true) }
+                }
+                .onFailure { e ->
+                    logBuffer.warn(
+                        "trip-detail: delete failed",
+                        mapOf("trip_id" to current.id, "err" to (e.message ?: e::class.java.simpleName)),
+                    )
+                    _ui.update { it.copy(deleting = false, message = "Couldn't delete this trip") }
+                }
+        }
+    }
+
+    fun messageShown() = _ui.update { it.copy(message = null) }
 
     /** Persist an explicit user toggle. Never called for a fallback. */
     fun setSeries(metrics: Set<String>) {
@@ -165,6 +185,13 @@ class TripDetailViewModel @Inject constructor(
                     trip = trip,
                     route = route?.points ?: emptyList(),
                 )
+            }
+            // Baseline is decoration: fetched after the trip renders, and a
+            // failure (or an older backend) just leaves the card hidden.
+            val km = trip.distanceKm
+            if (km != null && km > 0.0) {
+                val baseline = runCatching { api.getTripBaseline(trip.vehicleId, km) }.getOrNull()
+                if (baseline?.sufficient == true) _ui.update { it.copy(baseline = baseline) }
             }
         }
     }

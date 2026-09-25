@@ -21,27 +21,28 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.pitstop.http.TripDto
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.util.UnitFormat
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
-
-private val ACCENT = Color(0xFFF97316)
-private val BAR_IDLE = Color(0xFF3A3F47)
 
 /** Days in the bar chart, and in the headline totals window. */
 private const val CHART_DAYS = 14
 private const val WEEK_DAYS = 7
 
-private const val MI_PER_KM = 0.621371
 
 /**
  * Stat strip above the Trips list: distance, drive time and average
  * speed for the last 7 days, over a 14-day per-day distance chart.
  *
- * Distance/speed are rendered in miles/mph to match the trip cards
- * below, which hardcode imperial (the app's UnitFormat helper covers
- * speed/temp but has no distance case).
+ * Aggregation runs in miles (the unit-tested [computeTripStats]); the
+ * render converts through [UnitFormat] so the strip follows the
+ * imperial/metric toggle like every other number on the tab. The bar
+ * chart labels its tallest day so a bar's height means something.
  */
 @Composable
 fun TripStatsHeader(
@@ -52,11 +53,16 @@ fun TripStatsHeader(
 ) {
     val stats = remember(trips, today, zone) { computeTripStats(trips, today, zone) }
     if (stats.isEmpty) return
+    val system = LocalUnitSystem.current
+    val dist = UnitFormat.Quantity.DistanceMi
+    // mph → display speed: mph is miles-per-hour, so the distance
+    // conversion applies unchanged.
+    val speedDisplay = stats.weekAvgMph?.let { dist.convert(it, system) }
+    val speedUnit = UnitFormat.Quantity.SpeedKph.unit(system)
+    val maxDay = stats.days.maxOfOrNull { it.distanceMi } ?: 0.0
 
     Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -67,26 +73,46 @@ fun TripStatsHeader(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                StatCell(fmt0(stats.weekDistanceMi), "mi", "this week")
+                StatCell(fmt0(dist.convert(stats.weekDistanceMi, system)), dist.unit(system), "this week")
                 StatCell(formatDuration(stats.weekDurationS), "", "drive time")
                 StatCell(
-                    stats.weekAvgMph?.let { fmt0(it) } ?: "—",
-                    if (stats.weekAvgMph != null) "mph" else "",
+                    speedDisplay?.let { fmt0(it) } ?: "—",
+                    if (speedDisplay != null) speedUnit else "",
                     "avg",
                 )
             }
 
-            Text(
-                "Distance, last $CHART_DAYS days",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-            )
-            DayBars(
-                days = stats.days,
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp),
+                    .padding(top = 12.dp, bottom = 4.dp),
+            ) {
+                Text(
+                    "Distance, last $CHART_DAYS days",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (maxDay > 0.0) {
+                    Text(
+                        "max ${UnitFormat.Quantity.DistanceMi.format(maxDay, system, 0)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            DayBars(
+                days = stats.days,
+                active = MaterialTheme.colorScheme.primary,
+                idle = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .semantics {
+                        val driven = stats.days.count { it.distanceMi > 0.0 }
+                        contentDescription = "Daily distance, last $CHART_DAYS days: driven on " +
+                            "$driven days, longest ${dist.format(maxDay, system, 0)}"
+                    },
             )
             Row(
                 modifier = Modifier
@@ -140,7 +166,12 @@ private fun AxisLabel(text: String) {
 /** One bar per day. Zero-distance days still draw a faint stub so the
  *  gaps read as "no driving" rather than as missing data. */
 @Composable
-private fun DayBars(days: List<DayDistance>, modifier: Modifier = Modifier) {
+private fun DayBars(
+    days: List<DayDistance>,
+    active: Color,
+    idle: Color,
+    modifier: Modifier = Modifier,
+) {
     Canvas(modifier = modifier) {
         if (days.isEmpty()) return@Canvas
         val maxV = days.maxOf { it.distanceMi }
@@ -152,7 +183,7 @@ private fun DayBars(days: List<DayDistance>, modifier: Modifier = Modifier) {
             // Floor of 2 px so an empty day is still visibly a day.
             val h = (frac * size.height).coerceAtLeast(2f)
             drawRect(
-                color = if (d.distanceMi > 0.0) ACCENT else BAR_IDLE,
+                color = if (d.distanceMi > 0.0) active else idle,
                 topLeft = Offset(slot * i + gap, size.height - h),
                 size = Size(barW, h),
             )
@@ -198,7 +229,7 @@ fun computeTripStats(
 
     for (t in trips) {
         val date = localDateOf(t.startedAt, zone) ?: continue
-        val mi = (t.distanceKm ?: 0.0) * MI_PER_KM
+        val mi = UnitFormat.Quantity.DistanceKm.convert(t.distanceKm ?: 0.0, "imperial")
         if (!date.isBefore(chartStart) && !date.isAfter(today)) {
             perDay[date] = (perDay[date] ?: 0.0) + mi
         }

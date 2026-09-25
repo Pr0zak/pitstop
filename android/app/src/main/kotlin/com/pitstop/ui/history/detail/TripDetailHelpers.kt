@@ -2,6 +2,7 @@ package com.pitstop.ui.history.detail
 
 import androidx.compose.ui.graphics.Color
 import com.pitstop.http.TripDetailDto
+import com.pitstop.util.UnitFormat
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -181,7 +182,7 @@ internal fun localHourOf(iso: String): Int? = runCatching {
  * skipped when its inputs are missing — so a stub trip with just a
  * duration still produces a sane line.
  */
-internal fun tripNarrative(trip: TripDetailDto): String {
+internal fun tripNarrative(trip: TripDetailDto, system: String = "imperial"): String {
     val parts = mutableListOf<String>()
 
     // 1) "13-min morning drive" / "Brief drive"
@@ -199,32 +200,27 @@ internal fun tripNarrative(trip: TripDetailDto): String {
         else parts += "${minutes}-min ${todLabel?.let { "$it " } ?: ""}drive"
     }
 
-    // 2) Weather. "in 67°F clear conditions"
+    // 2) Weather. "in 67°F clear conditions" — unit per the toggle.
     if (trip.weatherTempC != null) {
-        val f = cToF(trip.weatherTempC).roundToInt()
+        val t = UnitFormat.Quantity.TempC.format(trip.weatherTempC, system, 0).replace(" ", "")
         val wmo = wmoLabel(trip.weatherCode)
-        parts += "in ${f}°F${wmo?.let { " $it" } ?: ""} conditions"
+        parts += "in $t${wmo?.let { " $it" } ?: ""} conditions"
     }
 
     // 3) Distance.
     if (trip.distanceKm != null && trip.distanceKm > 0) {
-        val mi = kmToMi(trip.distanceKm)
-        parts += "%.1f mi covered".format(mi)
+        parts += "${UnitFormat.distanceKm(trip.distanceKm, system)} covered"
     }
 
-    // 4) MPG (only when fuel reading is meaningful).
-    if (trip.distanceKm != null && trip.fuelUsedL != null && trip.fuelUsedL > 0.4) {
-        val mi = kmToMi(trip.distanceKm)
-        val gal = lToGal(trip.fuelUsedL)
-        if (gal > 0) {
-            val mpg = mi / gal
-            if (mpg in 1.0..100.0) parts += "averaged %.1f mpg".format(mpg)
-        }
+    // 4) Economy (only when the fuel reading is meaningful).
+    val mpg = UnitFormat.mpgFrom(trip.distanceKm, trip.fuelUsedL?.takeIf { it > 0.4 })
+    if (mpg != null && mpg in 1.0..100.0) {
+        parts += "averaged ${UnitFormat.economy(mpg, system)}"
     }
 
     // 5) Top speed.
     if (trip.maxSpeedKph != null && trip.maxSpeedKph > 0) {
-        parts += "peaked at ${kphToMph(trip.maxSpeedKph).roundToInt()} mph"
+        parts += "peaked at ${UnitFormat.Quantity.SpeedKph.format(trip.maxSpeedKph, system, 0)}"
     }
 
     // 6) DTCs.

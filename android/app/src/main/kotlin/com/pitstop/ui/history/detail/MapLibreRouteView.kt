@@ -61,6 +61,10 @@ private const val TAG = "PitstopMap"
 fun MapLibreRouteView(
     points: List<RoutePointDto>,
     modifier: Modifier = Modifier,
+    /** False for the embedded trip-detail preview: every gesture off, so
+     *  the map can't swallow the column's scroll. The full-screen route
+     *  (trip/{id}/map) passes true. */
+    interactive: Boolean = true,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -123,7 +127,10 @@ fun MapLibreRouteView(
             update = { view ->
                 runCatching {
                     view.getMapAsync { map ->
-                        runCatching { setupMap(map, points) }
+                        runCatching {
+                            map.uiSettings.setAllGesturesEnabled(interactive)
+                            setupMap(map, points)
+                        }
                             .onFailure { Log.w(TAG, "setupMap failed", it) }
                     }
                 }.onFailure { Log.w(TAG, "getMapAsync failed", it) }

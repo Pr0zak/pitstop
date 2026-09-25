@@ -1,91 +1,150 @@
 package com.pitstop.ui.history.detail
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.http.FillupDto
+import com.pitstop.ui.components.DetailTopAppBar
+import com.pitstop.ui.components.LoadErrorState
+import com.pitstop.ui.components.OverflowAction
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.util.UnitFormat
 import java.time.OffsetDateTime
 
 @Composable
 fun FillupDetailScreen(
+    onBack: () -> Unit,
+    onEdit: () -> Unit,
+    onDeleted: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: FillupDetailViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
-    when {
-        ui.loading && ui.fillup == null -> Box(
-            modifier = modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) { CircularProgressIndicator() }
-        ui.error != null && ui.fillup == null -> Box(
-            modifier = modifier.fillMaxSize().padding(32.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                ui.error ?: "Couldn't load fillup",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(ui.deleted) { if (ui.deleted) onDeleted() }
+    LaunchedEffect(ui.message) {
+        ui.message?.let {
+            snackbar.showSnackbar(it)
+            viewModel.messageShown()
         }
-        ui.fillup == null -> Unit
-        else -> Loaded(
-            fillup = ui.fillup!!,
-            context = ui.context,
-            modifier = modifier,
+    }
+    val fillup = ui.fillup
+    Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            DetailTopAppBar(
+                title = fillup?.let { fmtDateTimeLocal(it.fillupDate) } ?: "Fillup",
+                onBack = onBack,
+                overflow = if (fillup == null) emptyList() else listOf(
+                    OverflowAction("Edit fillup", Icons.Filled.Edit, onClick = onEdit),
+                    OverflowAction("Delete fillup", Icons.Filled.Delete, destructive = true) {
+                        confirmDelete = true
+                    },
+                ),
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+        modifier = modifier,
+    ) { padding ->
+        val inner = Modifier.padding(padding)
+        when {
+            ui.loading && fillup == null -> Box(inner.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            fillup == null -> LoadErrorState(what = "this fillup", onRetry = viewModel::refresh, modifier = inner)
+            else -> FillupDetailContent(fillup = fillup, context = ui.context, modifier = inner)
+        }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this fillup?") },
+            text = { Text("Economy for this tank and the next is recalculated. This can't be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        viewModel.delete()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
     }
 }
 
+/** Stateless body of [FillupDetailScreen], rendered by screenshot tests. */
 @Composable
-private fun Loaded(
+internal fun FillupDetailContent(
     fillup: FillupDto,
     context: List<FillupDto>,
-    modifier: Modifier,
+    modifier: Modifier = Modifier,
 ) {
+    val system = LocalUnitSystem.current
+    val ctx = LocalContext.current
     val gallons = fillup.fuelVolume
     val total = fillup.priceTotal
     val ppg = fillup.pricePerUnit
         ?: if (gallons != null && total != null && gallons > 0) total / gallons else null
-    // Recompute MPG client-side too as a fallback; the backend's
-    // recomputed value comes back as `mpg` for list endpoints but
-    // /fillups/{id} returns the row shape used by the recompute
-    // attachment which may or may not include mpg depending on
-    // whether there's a chain to compute from. Trust the server
-    // value when present.
+    // Trust the server's recomputed mpg; fall back to Fuelio's reported one.
     val mpg = fillup.mpg ?: fillup.mpgReported
 
     // Cost per mile since the previous fillup, computed from the
-    // context list (sorted newest-first). The previous fill is the
-    // one immediately after this one in chronological list order.
+    // context list (sorted newest-first).
     val costPerMile = remember(fillup, context) {
         computeCostPerMile(fillup, context)
     }
@@ -97,13 +156,7 @@ private fun Loaded(
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            fmtDateTimeLocal(fillup.fillupDate),
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
-
-        // Hero card — total + key per-fill numbers.
+        // Hero: one big total, then the four per-fill figures on one row.
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -114,41 +167,46 @@ private fun Loaded(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    HeroCell(
-                        label = "Total",
-                        value = total?.let { "$%.2f".format(it) } ?: "—",
-                        modifier = Modifier.weight(1f),
+                Column(Modifier.semantics(mergeDescendants = true) {}) {
+                    Text(
+                        "Total",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                     )
-                    HeroCell(
-                        label = "Gallons",
-                        value = gallons?.let { "%.2f".format(it) } ?: "—",
-                        modifier = Modifier.weight(1f),
+                    Text(
+                        UnitFormat.money(total),
+                        style = MaterialTheme.typography.displayMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     HeroCell(
-                        label = "$/gal",
-                        value = ppg?.let { "$%.3f".format(it) } ?: "—",
+                        label = if (system == "imperial") "Gallons" else "Litres",
+                        value = UnitFormat.Quantity.VolumeGal.number(gallons, system, 2),
                         modifier = Modifier.weight(1f),
                     )
                     HeroCell(
-                        label = "MPG",
-                        value = mpg?.let { "%.1f".format(it) } ?: "—",
+                        label = "Price${UnitFormat.perVolumeUnit(system)}",
+                        value = UnitFormat.money(UnitFormat.pricePerVolumeValue(ppg, system), 3),
                         modifier = Modifier.weight(1f),
                     )
                     HeroCell(
-                        label = "$/mi",
-                        value = costPerMile?.let { "$%.3f".format(it) } ?: "—",
+                        label = if (system == "imperial") "MPG" else "L/100km",
+                        value = UnitFormat.economyNumber(mpg, system),
+                        modifier = Modifier.weight(1f),
+                    )
+                    HeroCell(
+                        label = "Cost${UnitFormat.perDistanceUnit(system)}",
+                        value = UnitFormat.money(UnitFormat.costPerDistanceValue(costPerMile, system), 3),
                         modifier = Modifier.weight(1f),
                     )
                 }
             }
         }
 
-        // Secondary card — facts that don't fit the hero.
+        // Facts that don't fit the hero.
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -161,26 +219,18 @@ private fun Loaded(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
                 val rows = buildList<Pair<String, String>> {
-                    add("Odometer" to "%,.0f mi".format(fillup.odo))
+                    add("Odometer" to UnitFormat.odometerMi(fillup.odo, system))
                     add("Tank" to if (fillup.isFull) "Full" else "Partial")
                     if (fillup.isMissed) add("Note" to "Marked as missed previous fillup")
-                    fillup.city?.takeIf { it.isNotBlank() }?.let {
-                        add("Location" to it)
-                    }
-                    if (fillup.lat != null && fillup.lon != null) {
-                        add("GPS" to "%.4f, %.4f".format(fillup.lat, fillup.lon))
-                    }
                     fillup.fuelType?.let {
                         add("Fuel type" to (FUEL_TYPE_LABELS[it] ?: "Type $it"))
                     }
                     if (fillup.weatherTempC != null) {
-                        val f = (fillup.weatherTempC * 9 / 5 + 32).toInt()
+                        val t = UnitFormat.Quantity.TempC.format(fillup.weatherTempC, system, 0)
                         val wmo = wmoLabel(fillup.weatherCode)
-                        add("Weather" to "${f}°F${wmo?.let { ", $it" } ?: ""}")
+                        add("Weather" to "$t${wmo?.let { ", $it" } ?: ""}")
                     }
-                    fillup.notes?.takeIf { it.isNotBlank() }?.let {
-                        add("Notes" to it)
-                    }
+                    fillup.notes?.takeIf { it.isNotBlank() }?.let { add("Notes" to it) }
                 }
                 for ((i, kv) in rows.withIndex()) {
                     if (i > 0) {
@@ -206,15 +256,67 @@ private fun Loaded(
                         )
                     }
                 }
+                // Location opens the maps app at the pump. A row, not raw
+                // coordinates: "Columbus · 40.0, -83.0" is for machines.
+                if (fillup.lat != null && fillup.lon != null) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                    val label = fillup.city?.takeIf { it.isNotBlank() } ?: "Fillup location"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clickable(onClickLabel = "Open in maps") {
+                                val uri = android.net.Uri.parse(
+                                    "geo:${fillup.lat},${fillup.lon}?q=${fillup.lat},${fillup.lon}(" +
+                                        android.net.Uri.encode(label) + ")",
+                                )
+                                runCatching {
+                                    ctx.startActivity(
+                                        android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                }
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Place,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    fillup.city?.takeIf { it.isNotBlank() }?.let {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 6.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        Text(it, style = MaterialTheme.typography.titleSmall)
+                    }
+                }
             }
         }
 
-        // MPG trend chart. Only render when at least 3 fills have a
+        // Economy trend chart. Only render when at least 3 fills have a
         // valid mpg value — fewer than that makes for a noisy line.
-        val mpgSeries = remember(context) {
+        val mpgSeries = remember(context, system) {
             context
                 .mapNotNull { f ->
-                    val m = f.mpg ?: return@mapNotNull null
+                    val m = UnitFormat.economyValue(f.mpg, system) ?: return@mapNotNull null
                     val tMs = runCatching { OffsetDateTime.parse(f.fillupDate).toInstant().toEpochMilli() }
                         .getOrNull() ?: return@mapNotNull null
                     TimedPoint(tMs, m)
@@ -238,14 +340,18 @@ private fun Loaded(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        "MPG trend (last ${mpgSeries.size} fills)",
+                        "${if (system == "imperial") "MPG" else "L/100 km"} trend (last ${mpgSeries.size} fills)",
                         style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.semantics { heading() },
                     )
                     MpgTrendChart(
                         series = mpgSeries,
                         highlightMillis = currentMs,
                         accent = MaterialTheme.colorScheme.primary,
                         grid = MaterialTheme.colorScheme.outlineVariant,
+                        description = "Economy over the last ${mpgSeries.size} fills, from " +
+                            "${"%.1f".format(mpgSeries.minOf { it.value })} to " +
+                            "${"%.1f".format(mpgSeries.maxOf { it.value })} ${UnitFormat.economyUnit(system)}",
                     )
                 }
             }
@@ -274,7 +380,7 @@ private fun computeCostPerMile(
 
 @Composable
 private fun HeroCell(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
+    Column(modifier = modifier.semantics(mergeDescendants = true) {}) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -283,9 +389,10 @@ private fun HeroCell(label: String, value: String, modifier: Modifier = Modifier
         Spacer(Modifier.height(2.dp))
         Text(
             value,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
             fontWeight = FontWeight.Bold,
+            maxLines = 1,
         )
     }
 }
@@ -301,11 +408,13 @@ private fun MpgTrendChart(
     highlightMillis: Long?,
     accent: Color,
     grid: Color,
+    description: String,
 ) {
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(160.dp),
+            .height(160.dp)
+            .semantics { contentDescription = description },
     ) {
         val w = size.width
         val h = size.height

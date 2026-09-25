@@ -33,6 +33,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
+import com.pitstop.util.UnitFormat
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -77,6 +82,7 @@ fun FuelHeroCards(
     data: HeroCardData,
     modifier: Modifier = Modifier,
 ) {
+    val system = LocalUnitSystem.current
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -85,15 +91,15 @@ fun FuelHeroCards(
             HeroCard(
                 modifier = Modifier.weight(1f),
                 title = "Avg consumption",
-                value = data.avgConsumptionMpg?.let { "%.1f".format(it) } ?: "—",
-                unit = "mpg",
+                value = UnitFormat.economyNumber(data.avgConsumptionMpg, system),
+                unit = UnitFormat.economyUnit(system),
                 sub = "90-day rolling",
             )
             HeroCard(
                 modifier = Modifier.weight(1f),
                 title = "Gas price",
-                value = data.latestPpg?.let { "$%.3f".format(it) } ?: "—",
-                unit = "/gal",
+                value = UnitFormat.money(UnitFormat.pricePerVolumeValue(data.latestPpg, system), 3),
+                unit = UnitFormat.perVolumeUnit(system),
                 sub = data.ppgDeltaPct?.let { delta ->
                     val arrow = when {
                         delta > 0.5 -> "▲"
@@ -104,8 +110,8 @@ fun FuelHeroCards(
                 } ?: "—",
                 subColor = data.ppgDeltaPct?.let { delta ->
                     when {
-                        delta > 0.5 -> Color(0xFFFF3A2E)
-                        delta < -0.5 -> Color(0xFF4ADE80)
+                        delta > 0.5 -> MaterialTheme.ext.bad
+                        delta < -0.5 -> MaterialTheme.ext.good
                         else -> null
                     }
                 },
@@ -118,7 +124,7 @@ fun FuelHeroCards(
             HeroCard(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 title = "This month",
-                value = "$%.2f".format(data.monthCost),
+                value = UnitFormat.money(data.monthCost),
                 unit = "",
                 sub = "${data.monthCount} fillup${if (data.monthCount == 1) "" else "s"}",
             )
@@ -189,11 +195,12 @@ private fun FuelGaugeCard(
 ) {
     val pct = data.fuelLevelPct
     val pctF = (pct ?: 0.0).coerceIn(0.0, 100.0).toFloat()
+    val system = LocalUnitSystem.current
     val fillColor = when {
         pct == null -> MaterialTheme.colorScheme.outline
-        pct < 15 -> Color(0xFFFF3A2E)
-        pct < 35 -> Color(0xFFFFB020)
-        else -> Color(0xFF4ADE80)
+        pct < 15 -> MaterialTheme.ext.bad
+        pct < 35 -> MaterialTheme.ext.warn
+        else -> MaterialTheme.ext.good
     }
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -225,7 +232,7 @@ private fun FuelGaugeCard(
                         modifier = Modifier
                             .border(
                                 width = 1.dp,
-                                color = Color(0xFFFFB020),
+                                color = MaterialTheme.ext.warn,
                                 shape = RoundedCornerShape(4.dp),
                             )
                             .padding(horizontal = 4.dp, vertical = 1.dp),
@@ -235,7 +242,7 @@ private fun FuelGaugeCard(
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                             ),
-                            color = Color(0xFFFFB020),
+                            color = MaterialTheme.ext.warn,
                         )
                     }
                 }
@@ -270,7 +277,7 @@ private fun FuelGaugeCard(
 
             Text(
                 run {
-                    val gal = data.fuelGallons?.let { "%.1f gal".format(it) }
+                    val gal = data.fuelGallons?.let { UnitFormat.volumeGal(it, system, 1) }
                     val age = data.fuelLevelAge
                     when {
                         gal != null && age != null -> "$gal · $age"
@@ -289,7 +296,11 @@ private fun FuelGaugeCard(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(26.dp),
+                    .height(26.dp)
+                    .semantics {
+                        contentDescription = pct?.let { "Fuel gauge, ${it.roundToInt()} percent" }
+                            ?: "Fuel gauge, no reading"
+                    },
             ) {
                 val barH = 14.dp.toPx()
                 val r = barH / 2f

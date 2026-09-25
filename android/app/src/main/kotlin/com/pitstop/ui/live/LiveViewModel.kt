@@ -20,7 +20,17 @@ class LiveViewModel @Inject constructor(
     stateBus: BridgeStateBus,
     private val mqttPublisher: MqttPublisher,
     settingsRepository: com.pitstop.data.SettingsRepository,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) : ViewModel() {
+
+    /** Live's empty-state "Start bridge": the same foreground-service start
+     *  Home's bridge card issues, so the user needn't leave the tab. */
+    fun startBridge() {
+        androidx.core.content.ContextCompat.startForegroundService(
+            appContext,
+            com.pitstop.service.PitstopBridgeService.startIntent(appContext),
+        )
+    }
 
     val latestByMetric: StateFlow<Map<String, MetricSample>> = stateBus.latestByMetric
 

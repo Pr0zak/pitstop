@@ -32,7 +32,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.pitstop.http.MpgPointDto
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.util.UnitFormat
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
@@ -65,7 +69,17 @@ fun MpgYearChart(
     val cleaned = remember(points) {
         points.filter { (it.mpg ?: 0.0) > 0 }.takeLast(12)
     }
-    val smoothed = remember(cleaned) { rollingMedian(cleaned, window = 3) }
+    val system = LocalUnitSystem.current
+    // Smooth in mpg (the server's unit), THEN convert: the median of the
+    // inverted values is not the inversion of the median once a window
+    // spans a skewed month. `mpg` below holds the DISPLAY value from here
+    // on — mpg or L/100km — so the canvas stays unit-agnostic.
+    val smoothed = remember(cleaned, system) {
+        rollingMedian(cleaned, window = 3).map {
+            it.copy(mpg = UnitFormat.economyValue(it.mpg, system))
+        }
+    }
+    val unit = UnitFormat.economyUnit(system)
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -75,7 +89,7 @@ fun MpgYearChart(
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                "MPG  ·  last 12 months",
+                "${if (system == "imperial") "MPG" else "L/100 km"}  ·  last 12 months",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -95,7 +109,14 @@ fun MpgYearChart(
                 points = smoothed,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(120.dp)
+                    .semantics {
+                        contentDescription = "Fuel economy by month, " +
+                            "${formatPeriodShort(smoothed.first().period)} to " +
+                            "${formatPeriodShort(smoothed.last().period)}: " +
+                            "low ${"%.1f".format(minMpg)}, high ${"%.1f".format(maxMpg)}, " +
+                            "latest ${"%.1f".format(smoothed.last().mpg ?: 0.0)} $unit"
+                    },
                 color = MaterialTheme.colorScheme.primary,
                 gridColor = MaterialTheme.colorScheme.outlineVariant,
                 onSurfaceColor = MaterialTheme.colorScheme.onSurface,
@@ -120,7 +141,7 @@ fun MpgYearChart(
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                "3-mo rolling median  ·  ${"%.1f".format(minMpg)}–${"%.1f".format(maxMpg)} mpg",
+                "3-mo rolling median  ·  ${"%.1f".format(minMpg)}–${"%.1f".format(maxMpg)} $unit",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

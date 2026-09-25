@@ -9,7 +9,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import com.pitstop.http.TripDetailDto
 import com.pitstop.http.TripSampleDto
-import com.pitstop.ui.history.detail.Loaded
+import com.pitstop.ui.history.detail.TripDetailContent
 import com.pitstop.ui.history.detail.StoredSeries
 import com.pitstop.ui.theme.PitstopTheme
 import kotlin.math.PI
@@ -44,17 +44,18 @@ class TimelineGalleryActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    Loaded(
+                    TripDetailContent(
                         trip = syntheticTrip(),
                         route = emptyList(),
+                        baseline = null,
                         unitSystem = "imperial",
                         // Simulates a first run: nothing persisted, so the
                         // screen falls back to the defaultVisible metrics.
                         storedSeries = StoredSeries(loaded = true, metrics = null),
                         onPersistSeries = {},
-                        onTowingChange = {},
-                        onCategoryChange = {},
                         onOpenDtc = { _, _ -> },
+                        onOpenMap = {},
+                        onEdit = {},
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

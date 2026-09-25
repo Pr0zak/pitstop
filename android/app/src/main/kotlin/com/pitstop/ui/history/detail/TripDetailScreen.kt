@@ -1,106 +1,217 @@
 package com.pitstop.ui.history.detail
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pitstop.http.RoutePointDto
+import com.pitstop.http.TripBaselineDto
 import com.pitstop.http.TripDetailDto
 import com.pitstop.http.TripDtcDto
+import com.pitstop.ui.components.DetailTopAppBar
+import com.pitstop.ui.components.LoadErrorState
+import com.pitstop.ui.components.OverflowAction
+import com.pitstop.ui.theme.ChartPalette
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
 import com.pitstop.util.UnitFormat
 import kotlin.math.roundToInt
 
 /**
- * Trip detail surface. Mirrors the depth of the web TripDetailView
- * but tailored to a single-column phone layout. Renders, top to
- * bottom:
+ * Trip detail. Mirrors the depth of the web TripDetailView but tailored to
+ * a single-column phone layout, ordered by what a driver asks first:
  *
- *   1. Auto-generated narrative sentence (skipped when empty)
- *   2. Hero stats card (duration / distance / MPG / max speed / max RPM)
- *   3. Secondary stats card (avg speed / idle / DTC count / odo Δ /
- *      avg coolant / weather snapshot)
- *   4. Series toggle chips + line chart
- *   5. Route map (when GPS points are present)
- *   6. DTC list (tap → DTCDetailScreen via the supplied callback)
+ *   1. Narrative sentence (skipped when empty)
+ *   2. Hero stats (duration / distance / economy / speeds / RPM)
+ *   3. Baseline — "this trip vs your usual" (only with enough history)
+ *   4. Route map — non-interactive preview; Expand opens trip/{id}/map
+ *   5. Timeline chart + series controls
+ *   6. DTCs during the trip (tap → DTC detail)
+ *   7. Secondary stats (idle, odometer, fuel level, weather, …)
+ *   8. Details — category / towing / notes, edited in a bottom sheet
+ *
+ * The date is the top-bar title; Edit and Delete live in its overflow.
  */
 @Composable
 fun TripDetailScreen(
+    onBack: () -> Unit,
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
+    onOpenMap: () -> Unit,
+    onDeleted: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: TripDetailViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
-    val unitSystem by viewModel.unitSystem.collectAsStateWithLifecycle()
     val storedSeries by viewModel.storedSeries.collectAsStateWithLifecycle()
-    when {
-        ui.loading && ui.trip == null -> CenteredSpinner(modifier)
-        ui.error != null && ui.trip == null -> CenteredError(ui.error ?: "Unknown error", modifier)
-        ui.trip == null -> CenteredError("Trip not found", modifier)
-        else -> Loaded(
-            trip = ui.trip!!,
-            route = ui.route,
-            unitSystem = unitSystem,
-            storedSeries = storedSeries,
-            onPersistSeries = viewModel::setSeries,
-            onTowingChange = viewModel::setTowing,
-            onCategoryChange = viewModel::setCategory,
-            onOpenDtc = onOpenDtc,
-            modifier = modifier,
+    val unitSystem = LocalUnitSystem.current
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var editing by rememberSaveable { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(ui.deleted) { if (ui.deleted) onDeleted() }
+    LaunchedEffect(ui.message) {
+        ui.message?.let {
+            snackbar.showSnackbar(it)
+            viewModel.messageShown()
+        }
+    }
+
+    val trip = ui.trip
+    Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            DetailTopAppBar(
+                title = trip?.let { fmtDateTimeLocal(it.startedAt) } ?: "Trip",
+                onBack = onBack,
+                overflow = if (trip == null) {
+                    emptyList()
+                } else {
+                    listOf(
+                        OverflowAction("Edit details", Icons.Filled.Edit) { editing = true },
+                        OverflowAction("Delete trip", Icons.Filled.Delete, destructive = true) {
+                            confirmDelete = true
+                        },
+                    )
+                },
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+        modifier = modifier,
+    ) { padding ->
+        val inner = Modifier.padding(padding)
+        when {
+            ui.loading && trip == null -> Box(inner.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            trip == null -> LoadErrorState(what = "this trip", onRetry = viewModel::refresh, modifier = inner)
+            else -> TripDetailContent(
+                trip = trip,
+                route = ui.route,
+                baseline = ui.baseline,
+                unitSystem = unitSystem,
+                storedSeries = storedSeries,
+                onPersistSeries = viewModel::setSeries,
+                onOpenDtc = onOpenDtc,
+                onOpenMap = onOpenMap,
+                onEdit = { editing = true },
+                modifier = inner,
+            )
+        }
+    }
+
+    if (confirmDelete && trip != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this trip?") },
+            text = {
+                Text("It's removed from History, analytics and the map. This can't be undone.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        viewModel.delete()
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
+    }
+    if (editing && trip != null) {
+        TripEditSheet(
+            trip = trip,
+            onSave = { towing, category, notes ->
+                viewModel.saveDetails(towing, category, notes)
+                editing = false
+            },
+            onDismiss = { editing = false },
         )
     }
 }
 
 /**
- * Visible to the debug design gallery (src/debug) so the REAL screen can
- * be rendered against synthetic data on an emulator — verifying the
- * shipping composable rather than a mock of it. `internal`, so this is
- * still module-private in a release build.
+ * Stateless body of [TripDetailScreen]. Visible to the debug design
+ * gallery (src/debug) and the screenshot tests so the REAL screen renders
+ * against synthetic data — verifying the shipping composable rather than
+ * a mock of it. `internal`, so still module-private in a release build.
  */
 @Composable
-internal fun Loaded(
+internal fun TripDetailContent(
     trip: TripDetailDto,
-    route: List<com.pitstop.http.RoutePointDto>,
+    route: List<RoutePointDto>,
+    baseline: TripBaselineDto?,
     unitSystem: String,
     storedSeries: StoredSeries,
     onPersistSeries: (Set<String>) -> Unit,
-    onTowingChange: (Boolean) -> Unit,
-    onCategoryChange: (String?) -> Unit,
     onOpenDtc: (code: String, vehicleId: String) -> Unit,
-    modifier: Modifier,
+    onOpenMap: () -> Unit,
+    onEdit: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     // Default the smoothing level once per trip: long captures
     // (> 300 samples in any series) get Medium out of the gate
@@ -169,13 +280,7 @@ internal fun Loaded(
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Headline timestamp.
-        Text(
-            text = fmtDateTimeLocal(trip.startedAt),
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
-        val narrative = remember(trip) { tripNarrative(trip) }
+        val narrative = remember(trip, unitSystem) { tripNarrative(trip, unitSystem) }
         if (narrative.isNotBlank()) {
             Text(
                 text = narrative,
@@ -186,11 +291,40 @@ internal fun Loaded(
 
         HeroStatsCard(trip, unitSystem)
 
-        TowingCard(trip.isTowing, onTowingChange)
+        baseline?.let { BaselineCard(trip, it, unitSystem) }
 
-        TagCard(trip.gpsOnly, trip.category, onCategoryChange)
-
-        SecondaryStatsCard(trip, unitSystem)
+        if (route.isNotEmpty()) {
+            SectionCard(title = "Route") {
+                // Non-interactive preview: inside a scrolling column a live
+                // map fights the scroll for every drag. The overlay takes the
+                // tap and Expand opens the full-screen interactive map.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            shape = RoundedCornerShape(8.dp),
+                        ),
+                ) {
+                    MapLibreRouteView(points = route, interactive = false)
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .clickable(onClickLabel = "Expand map", onClick = onOpenMap),
+                    )
+                    FilledTonalIconButton(
+                        onClick = onOpenMap,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp),
+                    ) {
+                        Icon(Icons.Filled.OpenInFull, contentDescription = "Expand map")
+                    }
+                }
+                SpeedLegendRow()
+            }
+        }
 
         // Timeline chart + chip row, only when we have at least one
         // series with data.
@@ -258,78 +392,57 @@ internal fun Loaded(
                                 }
                             }
                     }
-                    // Taller than the old 220 dp: variant B's single
-                    // legend row freed ~300 dp, and the chart is what the
-                    // card exists to show.
                     LineChart(series = display, height = 260.dp)
                 }
             }
         }
 
-        if (route.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Route",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                shape = RoundedCornerShape(8.dp),
-                            ),
-                    ) {
-                        MapLibreRouteView(points = route)
-                    }
-                    SpeedLegendRow()
+        if (trip.dtcs.isNotEmpty()) {
+            SectionCard(title = "DTCs during trip") {
+                for ((index, dtc) in trip.dtcs.withIndex()) {
+                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    DtcRow(dtc = dtc, onClick = { onOpenDtc(dtc.code, trip.vehicleId) })
                 }
             }
         }
 
-        if (trip.dtcs.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "DTCs during trip",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    for ((index, dtc) in trip.dtcs.withIndex()) {
-                        if (index > 0) HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                        )
-                        DtcRow(
-                            dtc = dtc,
-                            onClick = { onOpenDtc(dtc.code, trip.vehicleId) },
-                        )
-                    }
-                }
-            }
-        }
+        SecondaryStatsCard(trip, unitSystem)
+
+        DetailsCard(trip, onEdit)
 
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** Titled surface card used by every section below the hero. */
+@Composable
+private fun SectionCard(
+    title: String,
+    action: (@Composable () -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { heading() },
+                )
+                action?.invoke()
+            }
+            content()
+        }
     }
 }
 
@@ -338,7 +451,8 @@ private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .heightIn(min = 48.dp)
+            .clickable(onClickLabel = "Open ${dtc.code}", onClick = onClick)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -365,108 +479,203 @@ private fun DtcRow(dtc: TripDtcDto, onClick: () -> Unit) {
 }
 
 /**
- * Towing flag. Sits directly under the hero stats because that is where the
- * MPG number is — the flag exists to explain a figure that would otherwise
- * look like a bad tank.
+ * "This trip vs your usual": the same-distance-bucket averages from
+ * /analytics/trip-baseline, one line per figure — "Avg speed 34 vs 31 mph
+ * (+10%)". Only rendered when the server says the bucket is big enough.
  */
-/**
- * Purpose tag, plus the provenance note when there was no engine data.
- *
- * The two are separate on purpose: `gps_only` is DERIVED and not editable —
- * whether OBD samples existed is a fact, and letting a user assert otherwise
- * would only produce a wrong answer. What the user knows and the system does
- * not is what the journey WAS, which is what `category` carries.
- */
-@OptIn(
-    androidx.compose.material3.ExperimentalMaterial3Api::class,
-    ExperimentalLayoutApi::class,
-)
 @Composable
-private fun TagCard(
-    gpsOnly: Boolean,
-    category: String?,
-    onCategoryChange: (String?) -> Unit,
-) {
-    var draft by remember(category) { mutableStateOf(category.orEmpty()) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+private fun BaselineCard(trip: TripDetailDto, b: TripBaselineDto, system: String) {
+    val speed = UnitFormat.Quantity.SpeedKph
+    val tripMpg = UnitFormat.mpgFrom(trip.distanceKm, trip.fuelUsedL?.takeIf { it > 0.4 })
+    val rows = buildList {
+        comparison("Avg speed", trip.avgSpeedKph, b.avgSpeedKph, higherIsBetter = null) {
+            speed.number(it, system, 0) to speed.unit(system)
+        }?.let(::add)
+        comparison("Top speed", trip.maxSpeedKph, b.avgMaxSpeedKph, higherIsBetter = null) {
+            speed.number(it, system, 0) to speed.unit(system)
+        }?.let(::add)
+        comparison("Economy", tripMpg, b.avgMpg, higherIsBetter = true) {
+            UnitFormat.economyNumber(it, system) to UnitFormat.economyUnit(system)
+        }?.let(::add)
+        comparison("Duration", trip.durationS?.toDouble(), b.avgDurationS, higherIsBetter = null) {
+            fmtDuration(it.roundToInt()) to ""
+        }?.let(::add)
+    }
+    if (rows.isEmpty()) return
+    SectionCard(title = "vs your usual") {
+        Text(
+            "Compared with ${b.sampleSize} trips of similar length" +
+                (b.bucketLabel?.let { " ($it)" } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        for (r in rows) BaselineRow(r)
+    }
+}
+
+private data class Comparison(
+    val label: String,
+    val text: String,
+    val deltaPct: Double,
+    /** null = neutral (speed is not "better" when higher). */
+    val better: Boolean?,
+)
+
+private fun comparison(
+    label: String,
+    value: Double?,
+    usual: Double?,
+    higherIsBetter: Boolean?,
+    fmt: (Double) -> Pair<String, String>,
+): Comparison? {
+    if (value == null || usual == null || usual <= 0.0) return null
+    val (v, unit) = fmt(value)
+    val (u, _) = fmt(usual)
+    val pct = (value - usual) / usual * 100.0
+    val sign = if (pct >= 0) "+" else "−"
+    val text = "$v vs $u${if (unit.isBlank()) "" else " $unit"} ($sign${kotlin.math.abs(pct).roundToInt()}%)"
+    val better = higherIsBetter?.let { hib -> if (kotlin.math.abs(pct) < 2) null else (pct > 0) == hib }
+    return Comparison(label, text, pct, better)
+}
+
+@Composable
+private fun BaselineRow(c: Comparison) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            c.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            c.text,
+            style = MaterialTheme.typography.titleSmall,
+            color = when (c.better) {
+                true -> MaterialTheme.ext.good
+                false -> MaterialTheme.ext.bad
+                null -> MaterialTheme.colorScheme.onSurface
+            },
+        )
+    }
+}
+
+/**
+ * Category, towing and notes — what the USER knows about the trip that the
+ * system doesn't. Read-only here; the Edit button (and the overflow's
+ * "Edit details") open [TripEditSheet]. `gps_only` is shown but never
+ * editable: whether OBD samples existed is a fact.
+ */
+@Composable
+private fun DetailsCard(trip: TripDetailDto, onEdit: () -> Unit) {
+    SectionCard(
+        title = "Details",
+        action = { TextButton(onClick = onEdit) { Text("Edit") } },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text("Tag", style = MaterialTheme.typography.titleSmall)
-            if (gpsOnly) {
-                Text(
-                    "No engine data — the phone recorded this on its own, so " +
-                        "it may not have been this vehicle. Tag it so that's " +
-                        "obvious later.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            androidx.compose.material3.OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                singleLine = true,
-                label = { Text("Category") },
-                placeholder = { Text("Boat, Commute, Road trip, …") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                for (suggestion in listOf("Boat", "Commute", "Road trip", "Errands", "Work")) {
-                    AssistChip(
-                        onClick = { draft = suggestion; onCategoryChange(suggestion) },
-                        label = {
-                            Text(suggestion, style = MaterialTheme.typography.labelMedium)
-                        },
-                    )
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                androidx.compose.material3.TextButton(
-                    onClick = { onCategoryChange(draft.trim().ifBlank { null }) },
-                ) { Text("Save tag") }
-                if (!category.isNullOrBlank()) {
-                    androidx.compose.material3.TextButton(
-                        onClick = { draft = ""; onCategoryChange(null) },
-                    ) { Text("Clear") }
-                }
-            }
+        DetailRow("Category", trip.category?.takeIf { it.isNotBlank() } ?: "None")
+        DetailRow("Towing", if (trip.isTowing) "Yes — economy not comparable" else "No")
+        if (trip.gpsOnly) {
+            DetailRow("Source", "Phone GPS only — no engine data")
         }
+        Text(
+            trip.notes?.takeIf { it.isNotBlank() } ?: "No notes",
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (trip.notes.isNullOrBlank()) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+        )
     }
 }
 
 @Composable
-private fun TowingCard(isTowing: Boolean, onChange: (Boolean) -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+private fun DetailRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(value, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+/**
+ * Edit sheet for the user-owned fields. One Save → one PATCH with only the
+ * changed fields (TripDetailViewModel.saveDetails).
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun TripEditSheet(
+    trip: TripDetailDto,
+    onSave: (towing: Boolean, category: String?, notes: String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var towing by rememberSaveable { mutableStateOf(trip.isTowing) }
+    var category by rememberSaveable { mutableStateOf(trip.category.orEmpty()) }
+    var notes by rememberSaveable { mutableStateOf(trip.notes.orEmpty()) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Towing", style = MaterialTheme.typography.titleSmall)
+            Text("Trip details", style = MaterialTheme.typography.titleLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Towing", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Fuel economy under tow isn't comparable to a normal trip.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = towing, onCheckedChange = { towing = it })
+            }
+            if (trip.gpsOnly) {
                 Text(
-                    "Fuel economy under tow isn't comparable to a normal trip.",
+                    "No engine data — the phone recorded this on its own, so it may " +
+                        "not have been this vehicle. Tag it so that's obvious later.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            androidx.compose.material3.Switch(checked = isTowing, onCheckedChange = onChange)
+            OutlinedTextField(
+                value = category,
+                onValueChange = { category = it },
+                singleLine = true,
+                label = { Text("Category") },
+                placeholder = { Text("Commute, Road trip, …") },
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Next,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (suggestion in listOf("Boat", "Commute", "Road trip", "Errands", "Work")) {
+                    SuggestionChip(onClick = { category = suggestion }, label = { Text(suggestion) })
+                }
+            }
+            OutlinedTextField(
+                value = notes,
+                onValueChange = { notes = it },
+                label = { Text("Notes") },
+                minLines = 3,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.align(Alignment.End)) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+                Button(onClick = { onSave(towing, category, notes) }) { Text("Save") }
+            }
         }
     }
 }
@@ -475,15 +684,9 @@ private fun TowingCard(isTowing: Boolean, onChange: (Boolean) -> Unit) {
 private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
     val dist = UnitFormat.Quantity.DistanceKm
     val speed = UnitFormat.Quantity.SpeedKph
-    // MPG stays MPG in both unit systems, deliberately. Unlike the values
-    // around it, it is not a quantity in a convertible unit — it is a
-    // named figure of merit, and the metric equivalent (L/100km) inverts
-    // the scale, so "higher is better" would silently flip. Converting it
-    // needs its own label and its own decision; it is not a units bug.
-    val mpg = if (trip.distanceKm != null && trip.fuelUsedL != null && trip.fuelUsedL > 0.4) {
-        val gal = lToGal(trip.fuelUsedL)
-        if (gal > 0) kmToMi(trip.distanceKm) / gal else null
-    } else null
+    // Economy follows the unit toggle (mpg ↔ L/100 km). Below 0.4 L of
+    // estimated fuel the ratio is sensor noise, so the cell reads "—".
+    val mpg = UnitFormat.mpgFrom(trip.distanceKm, trip.fuelUsedL?.takeIf { it > 0.4 })
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -498,37 +701,20 @@ private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // 3-col × 2-row grid — keeps every cell the same width so the
-            // value column lines up vertically. Previously row 1 was 2
-            // wide cells and row 2 was 3 narrower ones, which looked off.
+            // value column lines up vertically.
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatCell("Duration", fmtDuration(trip.durationS), Modifier.weight(1f))
+                StatCell("Distance", dist.format(trip.distanceKm, unitSystem, 1), Modifier.weight(1f))
                 StatCell(
-                    "Distance",
-                    dist.format(trip.distanceKm, unitSystem, 1),
-                    Modifier.weight(1f),
-                )
-                StatCell(
-                    "MPG",
-                    mpg?.let { "%.1f".format(it) } ?: "—",
+                    if (unitSystem == "imperial") "MPG" else "L/100 km",
+                    UnitFormat.economyNumber(mpg, unitSystem),
                     Modifier.weight(1f),
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                StatCell(
-                    "Max speed",
-                    speed.format(trip.maxSpeedKph, unitSystem, 0),
-                    Modifier.weight(1f),
-                )
-                StatCell(
-                    "Max RPM",
-                    trip.maxRpm?.let { "${it.roundToInt()}" } ?: "—",
-                    Modifier.weight(1f),
-                )
-                StatCell(
-                    "Avg speed",
-                    speed.format(trip.avgSpeedKph, unitSystem, 0),
-                    Modifier.weight(1f),
-                )
+                StatCell("Max speed", speed.format(trip.maxSpeedKph, unitSystem, 0), Modifier.weight(1f))
+                StatCell("Max RPM", trip.maxRpm?.let { "${it.roundToInt()}" } ?: "—", Modifier.weight(1f))
+                StatCell("Avg speed", speed.format(trip.avgSpeedKph, unitSystem, 0), Modifier.weight(1f))
             }
         }
     }
@@ -538,26 +724,21 @@ private fun HeroStatsCard(trip: TripDetailDto, unitSystem: String) {
 private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
     val dist = UnitFormat.Quantity.DistanceKm
     val rows = buildList<Pair<String, String>> {
-        // Avg speed moved up into the 3×2 hero grid — don't duplicate.
         trip.idleS?.let {
             val m = it / 60
             val s = it % 60
             add("Idle time" to if (m > 0) "${m}m ${s}s" else "${s}s")
         }
         if (trip.dtcCount > 0) add("DTCs fired" to trip.dtcCount.toString())
-        // Odometer start → end on ONE row. This was three rows ("Odo
-        // start", "Odo end", "Distance (odo Δ)") for a single fact, and
-        // the delta duplicates the hero card's Distance.
-        //
-        // Server-side these are already offset-corrected against the
-        // vehicle's odometer_offset_km, so they read the same as the dash.
+        // Odometer start → end on ONE row. Server-side these are already
+        // offset-corrected against the vehicle's odometer_offset_km, so
+        // they read the same as the dash.
         if (trip.odoStartKm != null && trip.odoEndKm != null) {
-            val u = dist.unit(unitSystem)
             add(
                 "Odometer" to "%,.0f → %,.0f %s".format(
                     dist.convert(trip.odoStartKm, unitSystem),
                     dist.convert(trip.odoEndKm, unitSystem),
-                    u,
+                    dist.unit(unitSystem),
                 ),
             )
         }
@@ -565,11 +746,10 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
         if (trip.fuelLevelStartPct != null && trip.fuelLevelEndPct != null) {
             add("Fuel level" to "${trip.fuelLevelStartPct.roundToInt()}% → ${trip.fuelLevelEndPct.roundToInt()}%")
         }
-        // Gas-used estimate — computed by trip_stats from the ECU fuel
-        // rate (preferred) or a MAF integral. Flagged "(est.)" since both
-        // carry sensor noise; most useful on long trips.
+        // Gas-used estimate — from the ECU fuel rate (preferred) or a MAF
+        // integral. Flagged "(est.)" since both carry sensor noise.
         trip.fuelUsedL?.takeIf { it > 0.01 }?.let { lit ->
-            add("Gas used (est.)" to UnitFormat.Quantity.VolumeL.format(lit, unitSystem, 2))
+            add("Gas used (est.)" to UnitFormat.volumeL(lit, unitSystem))
         }
         trip.avgCoolantC?.let {
             add("Avg coolant" to UnitFormat.Quantity.TempC.format(it, unitSystem, 0))
@@ -579,9 +759,7 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
             val wmo = wmoLabel(trip.weatherCode)
             add("Weather" to "$t${wmo?.let { ", $it" } ?: ""}")
         }
-        trip.endedAt?.let {
-            add("Ended" to fmtClockLocal(it))
-        }
+        trip.endedAt?.let { add("Ended" to fmtClockLocal(it)) }
     }
     if (rows.isEmpty()) return
 
@@ -596,10 +774,8 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            // Spacing, not a rule between every pair. Eight hairlines in a
-            // nine-row list is what made this read as a dense table rather
-            // than a summary; the label/value contrast already separates
-            // the rows.
+            // Spacing, not a rule between every pair: the label/value
+            // contrast already separates the rows.
             for ((i, kv) in rows.withIndex()) {
                 if (i > 0) Spacer(Modifier.height(10.dp))
                 Row(
@@ -625,7 +801,7 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
 
 @Composable
 private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
+    Column(modifier = modifier.semantics(mergeDescendants = true) {}) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -864,21 +1040,21 @@ internal enum class SmoothLevel(val label: String, val windowSize: Int) {
 }
 
 @Composable
-private fun SpeedLegendRow() {
+internal fun SpeedLegendRow() {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         listOf(
-            "Stop" to 0xFFEF4444.toInt(),
-            "City" to 0xFFF59E0B.toInt(),
-            "Suburb" to 0xFF22C55E.toInt(),
-            "Hwy" to 0xFF2F81F7.toInt(),
+            "Stop" to ChartPalette.speedStop,
+            "City" to ChartPalette.speedCity,
+            "Suburb" to ChartPalette.speedSuburb,
+            "Hwy" to ChartPalette.speedHighway,
         ).forEach { (label, c) ->
             Box(
                 modifier = Modifier
                     .size(10.dp)
-                    .background(color = Color(c), shape = RoundedCornerShape(2.dp)),
+                    .background(color = c, shape = RoundedCornerShape(2.dp)),
             )
             Spacer(Modifier.width(4.dp))
             Text(
@@ -888,34 +1064,6 @@ private fun SpeedLegendRow() {
             )
             Spacer(Modifier.width(10.dp))
         }
-    }
-}
-
-@Composable
-private fun CenteredSpinner(modifier: Modifier) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(48.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        CircularProgressIndicator()
-    }
-}
-
-@Composable
-private fun CenteredError(message: String, modifier: Modifier) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(32.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -983,69 +1131,69 @@ internal data class TripMetricDef(
 internal val TRIP_METRICS: List<TripMetricDef> = listOf(
     // ── Core drive trace ──────────────────────────────────────────
     TripMetricDef(
-        "vehicle_speed", "Speed", Color(0xFF2F81F7),
+        "vehicle_speed", "Speed", ChartPalette.speed,
         UnitFormat.Quantity.SpeedKph, digits = 0, defaultVisible = true,
     ),
     TripMetricDef(
-        "engine_rpm", "RPM", Color(0xFFF59E0B),
+        "engine_rpm", "RPM", ChartPalette.rpm,
         UnitFormat.Quantity.None, digits = 0, defaultVisible = true,
     ),
-    TripMetricDef("engine_load", "Load", Color(0xFFEAB308), UnitFormat.Quantity.Percent, 0),
-    TripMetricDef("coolant_temp", "Coolant", Color(0xFFEF4444), UnitFormat.Quantity.TempC, 0),
-    TripMetricDef("fuel_level", "Fuel", Color(0xFF22C55E), UnitFormat.Quantity.Percent, 0),
+    TripMetricDef("engine_load", "Load", ChartPalette.load, UnitFormat.Quantity.Percent, 0),
+    TripMetricDef("coolant_temp", "Coolant", ChartPalette.coolant, UnitFormat.Quantity.TempC, 0),
+    TripMetricDef("fuel_level", "Fuel", ChartPalette.fuel, UnitFormat.Quantity.Percent, 0),
     TripMetricDef(
-        "throttle_position", "Throttle", Color(0xFF14B8A6),
+        "throttle_position", "Throttle", ChartPalette.throttle,
         UnitFormat.Quantity.Percent, 0,
     ),
-    TripMetricDef("intake_air_temp", "Intake", Color(0xFF94A3B8), UnitFormat.Quantity.TempC, 0),
+    TripMetricDef("intake_air_temp", "Intake", ChartPalette.intake, UnitFormat.Quantity.TempC, 0),
     TripMetricDef(
-        "maf_air_flow", "MAF", Color(0xFF06B6D4),
+        "maf_air_flow", "MAF", ChartPalette.maf,
         UnitFormat.Quantity.MassFlowGramsPerSec, 1,
     ),
     TripMetricDef(
-        "manifold_pressure", "MAP", Color(0xFFA78BFA),
+        "manifold_pressure", "MAP", ChartPalette.map,
         UnitFormat.Quantity.PressureKpa, 0,
     ),
     TripMetricDef(
-        "control_module_voltage", "Battery", Color(0xFFF472B6),
+        "control_module_voltage", "Battery", ChartPalette.battery,
         UnitFormat.Quantity.Volt, 1,
     ),
     // ── Fuel + exhaust ────────────────────────────────────────────
     // g/s on the wire → L/h or gph depending on the toggle, matching
     // the Live tile and the web's fmtFuelRateLh().
     TripMetricDef(
-        "engine_fuel_rate", "Fuel rate", Color(0xFFF97316),
+        "engine_fuel_rate", "Fuel rate", ChartPalette.fuelRate,
         UnitFormat.Quantity.FuelRateGramsPerSec, 2, group = MetricGroup.FuelExhaust,
     ),
     // kg/h in both unit systems on purpose — see the Quantity docs.
     TripMetricDef(
-        "engine_exhaust_flow", "Exhaust", Color(0xFFA3E635),
+        "engine_exhaust_flow", "Exhaust", ChartPalette.exhaust,
         UnitFormat.Quantity.MassFlowKgPerHour, 1, group = MetricGroup.FuelExhaust,
     ),
     // ── Emissions ─────────────────────────────────────────────────
     // Both cat banks: they normally track within a degree or two, so
     // the divergence is the diagnostic. Same hue family for that reason.
     TripMetricDef(
-        "catalyst_temp_b1", "Cat B1", Color(0xFFFB7185),
+        "catalyst_temp_b1", "Cat B1", ChartPalette.catB1,
         UnitFormat.Quantity.TempC, 0, group = MetricGroup.Emissions,
     ),
     TripMetricDef(
-        "catalyst_temp_b2", "Cat B2", Color(0xFFE879F9),
+        "catalyst_temp_b2", "Cat B2", ChartPalette.catB2,
         UnitFormat.Quantity.TempC, 0, group = MetricGroup.Emissions,
     ),
     // Commanded vs measured equivalence ratio — the PAIR is the signal
     // (fuel-control error); either alone is a flat line near 1.000,
     // hence 3 decimals on the ticks.
     TripMetricDef(
-        "commanded_afr_ratio", "Cmd AFR", Color(0xFF38BDF8),
+        "commanded_afr_ratio", "Cmd AFR", ChartPalette.cmdAfr,
         UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Emissions,
     ),
     TripMetricDef(
-        "o2_s1_lambda", "O2 S1", Color(0xFF818CF8),
+        "o2_s1_lambda", "O2 S1", ChartPalette.o2,
         UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Emissions,
     ),
     TripMetricDef(
-        "fuel_rail_pressure", "Fuel rail", Color(0xFF34D399),
+        "fuel_rail_pressure", "Fuel rail", ChartPalette.fuelRail,
         UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Emissions,
     ),
     // ── Distance ──────────────────────────────────────────────────
@@ -1058,7 +1206,7 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
     // all: on a shared axis it would flatten every other series.
     // WiCAN-only metric, so it is simply absent on a cellular trip.
     TripMetricDef(
-        "odometer", "Odometer", Color(0xFF8B949E),
+        "odometer", "Odometer", ChartPalette.odometer,
         UnitFormat.Quantity.DistanceKm, 0, group = MetricGroup.Distance,
     ),
 )

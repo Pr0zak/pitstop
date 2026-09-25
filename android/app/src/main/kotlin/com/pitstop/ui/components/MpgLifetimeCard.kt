@@ -30,7 +30,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.pitstop.http.MpgPointDto
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
+import com.pitstop.util.UnitFormat
 import kotlin.math.abs
 
 /**
@@ -77,6 +82,20 @@ fun MpgLifetimeCard(
         ((recentMpg - baseline) / baseline) * 100.0
     } else null
 
+    // Everything above is in mpg, the server's unit. Display values are
+    // converted once here. The trend chip's COLOUR follows the mpg delta
+    // (better economy is green in either system) while its ARROW and % are
+    // taken from the displayed numbers, so a metric user sees L/100km fall
+    // with a ▼ that is still green.
+    val system = LocalUnitSystem.current
+    val lifetimeDisplay = UnitFormat.economyValue(lifetime, system)
+    val recentDisplay = UnitFormat.economyValue(recentMpg, system)
+    val baselineDisplay = UnitFormat.economyValue(baseline, system)
+    val displayDeltaPct = if (recentDisplay != null && baselineDisplay != null && baselineDisplay > 0) {
+        ((recentDisplay - baselineDisplay) / baselineDisplay) * 100.0
+    } else null
+    val displayYearly = valid.map { it.copy(mpg = UnitFormat.economyValue(it.mpg, system)) }
+
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -86,14 +105,14 @@ fun MpgLifetimeCard(
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                "Lifetime MPG",
+                if (system == "imperial") "Lifetime MPG" else "Lifetime L/100 km",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
-                    text = "%.1f".format(lifetime),
+                    text = lifetimeDisplay?.let { "%.1f".format(it) } ?: "—",
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.headlineMedium.copy(
                         letterSpacing = (-1.2).sp,
@@ -101,22 +120,27 @@ fun MpgLifetimeCard(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "mpg",
+                    UnitFormat.economyUnit(system),
                     modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.weight(1f))
-                if (deltaPct != null) {
-                    val isUp = deltaPct > 0.5
-                    val isDown = deltaPct < -0.5
-                    val (arrow, tint) = when {
-                        isUp -> "▲" to Color(0xFF4ADE80)
-                        isDown -> "▼" to Color(0xFFFF3A2E)
-                        else -> "·" to MaterialTheme.colorScheme.onSurfaceVariant
+                if (deltaPct != null && displayDeltaPct != null) {
+                    val improved = deltaPct > 0.5
+                    val worse = deltaPct < -0.5
+                    val arrow = when {
+                        displayDeltaPct > 0.5 -> "▲"
+                        displayDeltaPct < -0.5 -> "▼"
+                        else -> "·"
+                    }
+                    val tint = when {
+                        improved -> MaterialTheme.ext.good
+                        worse -> MaterialTheme.ext.bad
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
                     Text(
-                        text = "$arrow ${"%.1f".format(abs(deltaPct))}%",
+                        text = "$arrow ${"%.1f".format(abs(displayDeltaPct))}%",
                         color = tint,
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
@@ -124,7 +148,7 @@ fun MpgLifetimeCard(
                 }
             }
             Text(
-                "${"%,d".format(totalFills)} fillups",
+                "${UnitFormat.count(totalFills)} fillups",
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -132,10 +156,16 @@ fun MpgLifetimeCard(
 
             Spacer(Modifier.height(10.dp))
             YearlyBarChart(
-                yearly = valid,
+                yearly = displayYearly,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(110.dp),
+                    .height(110.dp)
+                    .semantics {
+                        contentDescription = "Yearly fuel economy: " +
+                            displayYearly.joinToString(", ") {
+                                "${it.period} ${"%.1f".format(it.mpg ?: 0.0)}"
+                            } + " ${UnitFormat.economyUnit(system)}"
+                    },
                 accent = MaterialTheme.colorScheme.primary,
                 surfaceVariant = MaterialTheme.colorScheme.surfaceVariant,
                 onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant,

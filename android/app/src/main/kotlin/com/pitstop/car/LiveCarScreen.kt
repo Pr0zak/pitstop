@@ -11,7 +11,9 @@ import androidx.car.app.model.ItemList
 import androidx.car.app.model.Tab
 import androidx.car.app.model.TabContents
 import androidx.car.app.model.TabTemplate
+import com.pitstop.service.BridgePhase
 import com.pitstop.service.BridgeStatus
+import com.pitstop.service.EngineState
 import androidx.car.app.model.Template
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -30,32 +32,36 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Top-level Pitstop screen for the head unit. The user's car cluster
- * already shows speed natively, so we drop our duplicate and use the
- * freed grid slot for telemetry the head unit DOESN'T show:
+ * Top-level Pitstop screen for the head unit: a TabTemplate of up to four
+ * tabs (CarScreenKind). Metric tabs are a GridTemplate of up to six tiles;
+ * the Status tab is a PaneTemplate. The car's own cluster already shows
+ * speed, so the default Drive grid spends that slot elsewhere:
  *
  *   ┌──────────┬──────────┬──────────┐
- *   │ Coolant  │ Fuel     │ RPM      │
- *   │ 86 °C ·  │ 64 % ▼   │ 1850 ▲   │
+ *   │ RPM      │ Fuel     │ Coolant  │
+ *   │ 1850     │ 64 % ▼   │ 86 °C    │
  *   ├──────────┼──────────┼──────────┤
- *   │ Eng load │ Battery  │ Intake   │
- *   │ 24 % ·   │ 14.1 V · │ 28 °C ·  │
+ *   │ Intake   │ Eng load │ Battery  │
+ *   │ 28 °C    │ 24 %     │ 14.1 V   │
  *   └──────────┴──────────┴──────────┘
  *
  * Units follow the phone's imperial/metric toggle — the grid above is
  * drawn in metric; an imperial user sees °F / mph / psi in the same
  * slots. Each tile's unit comes from its CarTileSpec.quantity.
  *
- * Trend arrows on each tile come from a rolling 30-second history
- * (TrendTracker) — slope-based classification: ▲ rising, ▼ falling,
- * "·" steady. Useful while driving: the user sees "fuel ▼" without
- * having to read the number.
+ * Tile text comes from [renderCarTile]: trend arrows (30 s TrendTracker
+ * window) on slow metrics only, a warning word + RED/YELLOW tint past a
+ * bound, the sample's age after 10 s and "stale" after a minute, and — when
+ * the whole grid is empty — the reason ("Engine off" / "Connecting…").
  *
- * "Diagnostics" tile in the action strip pushes a second screen with
- * deeper telemetry (ATF temp, fuel trims, run time, IMU magnitude).
+ * STRUCTURE IS FIXED so every update is an in-place refresh: tab count and
+ * titles never change, grid item count and titles never change, pane row
+ * count and titles never change, and the pane's one action is permanent.
+ * Only item TEXT, icon tint and badges move — all outside the host's
+ * refresh diff, so the five-templates-per-task quota is never spent.
  *
  * Day/night handling is automatic: every colour we pass is a CarColor
- * enum (PRIMARY / GREEN / RED / SECONDARY) and the host (Android Auto
+ * enum (PRIMARY / RED / YELLOW / SECONDARY) and the host (Android Auto
  * or AAOS) translates it for the active palette. We never hard-code
  * pixel colours so the screen adapts when the car turns night-mode
  * on at sunset.
@@ -115,28 +121,81 @@ class LiveCarScreen(
      * Everything that affects what the grid draws, flattened to a string.
      * Compared against the last painted frame so an unchanged screen is
      * never re-sent. Deliberately built from the SAME helper the template
-     * uses (`carTileText`), so a value that rounds to the same display text
+     * uses (`renderCarTile`), so a value that rounds to the same display text
      * counts as unchanged — e.g. RPM drifting 722 -> 723 with 0 decimals.
      */
     private fun renderSignature(): String {
         val metrics = stateBus.latestByMetric.value
         val status = stateBus.status.value
         val settings = cachedSettings ?: return ""
+        val now = System.currentTimeMillis()
         return buildString {
-            append(activeTab?.id)
-            append(status.brokerConnected)
-            for (spec in tilesFor(activeTab ?: return@buildString, settings)) {
+            val tab = activeTab ?: return@buildString
+            append(tab.id)
+            append(obdDown(status, now))
+            if (!tab.isMetricGrid) {
+                for ((_, v) in sessionRows(status, settings, now)) append('|').append(v)
+                return@buildString
+            }
+            val specs = tilesFor(tab, settings)
+            val reason = emptyGridReason(specs, metrics, status)
+            for (spec in specs) {
                 append('|')
-                append(
-                    carTileText(
-                        metrics[spec.key]?.value,
-                        spec,
-                        settings.unitSystem,
-                        trends.classify(spec.key),
-                    ),
-                )
+                // Includes the 5 s age bucket, so a quiet tile's "· 25s"
+                // advances without every tick counting as a change.
+                append(tileRender(spec, metrics, settings.unitSystem, now, reason))
             }
         }
+    }
+
+    private fun tileRender(
+        spec: CarTileSpec,
+        metrics: Map<String, MetricSample>,
+        system: String,
+        now: Long,
+        emptyReason: String?,
+    ): CarTileRender {
+        val sample = metrics[spec.key]
+        return renderCarTile(
+            value = sample?.value,
+            spec = spec,
+            system = system,
+            trend = trends.classify(spec.key),
+            ageS = sample?.let { ((now - it.tsMs) / 1000L).coerceAtLeast(0L) },
+            emptyReason = emptyReason,
+        )
+    }
+
+    /**
+     * Why an ENTIRELY empty grid is empty, shown as each tile's text so the
+     * screen explains itself instead of reading as six dashes. Null when
+     * any tile has a value (a single missing PID keeps its "—").
+     */
+    private fun emptyGridReason(
+        specs: List<CarTileSpec>,
+        metrics: Map<String, MetricSample>,
+        status: BridgeStatus,
+    ): String? {
+        if (specs.any { metrics[it.key] != null }) return null
+        return when {
+            status.engineState == EngineState.Off -> "Engine off"
+            status.phase == BridgePhase.Idle -> "Bridge off"
+            status.phase == BridgePhase.Error -> "Bridge error"
+            status.phase == BridgePhase.Connected -> "Waiting for data"
+            else -> "Connecting…"
+        }
+    }
+
+    /**
+     * The red-dot condition: the OBD link is down or has gone quiet for
+     * more than 10 s. Deliberately NOT the MQTT broker — the broker only
+     * affects upload, which the Status pane's Upload row reports; the dot
+     * means "these numbers aren't live".
+     */
+    private fun obdDown(status: BridgeStatus, now: Long): Boolean {
+        if (status.phase != BridgePhase.Connected) return true
+        val last = status.lastObdFrameAtMs ?: return true
+        return now - last > TILE_AGE_AFTER_S * 1000L
     }
 
     override fun onStop(owner: LifecycleOwner) {
@@ -236,13 +295,11 @@ class LiveCarScreen(
      * Tab titles are STRUCTURAL and must never change.
      *
      * TabTemplate's refresh predicate requires the same number of tabs with
-     * the same title and icon, so flipping "Diag" to "Diag !" on a broker
-     * flap was an unconditional template replacement. MQTT reconnects are
-     * routine on this stack and the render signature includes the broker
-     * flag, so every flap fired one — five in a task and the host closes the
-     * app.
+     * the same title and icon, so flipping "Diag" to "Diag !" on a state
+     * flap was an unconditional template replacement — five in a task and
+     * the host closes the app.
      *
-     * Broker state now shows as a dot Badge on the affected tile plus a text
+     * Link state instead shows as a dot Badge on the first tile plus a text
      * row in the Status pane. Both, not either: a red dot alone fails
      * WCAG 1.4.1 and is invisible to roughly one man in twelve. The dot is
      * the fast cue, the row carries the meaning.
@@ -271,17 +328,27 @@ class LiveCarScreen(
                 androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_GRID,
                 CarTileCatalog.MAX_TILES,
             )
+            val now = System.currentTimeMillis()
+            val specs = tilesFor(kind, settings).take(limit)
+            val reason = emptyGridReason(specs, metrics, status)
+            val down = obdDown(status, now)
             GridTemplate.Builder()
                 .setSingleList(
                     ItemList.Builder().apply {
-                        tilesFor(kind, settings).take(limit).forEach { spec ->
-                            addItem(buildTile(spec, metrics, settings.unitSystem, status))
+                        specs.forEachIndexed { i, spec ->
+                            addItem(
+                                buildTile(
+                                    spec,
+                                    tileRender(spec, metrics, settings.unitSystem, now, reason),
+                                    badged = i == 0 && down,
+                                ),
+                            )
                         }
                     }.build(),
                 )
                 .build()
         }
-        else -> paneOf(sessionRows(status, metrics))
+        else -> paneOf(sessionRows(status, settings, System.currentTimeMillis()))
     }
 
     private fun contentLimit(type: Int, fallback: Int): Int = runCatching {
@@ -308,23 +375,81 @@ class LiveCarScreen(
                     .build(),
             )
         }
+        // PERMANENT action — present in every state, even when connected,
+        // because adding it only when the link is down would change the
+        // pane's structure and cost a template. Idle/errored bridge: start
+        // it; otherwise: cut the reconnect backoff short (wakeUp).
+        pane.addAction(
+            Action.Builder()
+                .setTitle("Reconnect")
+                .setOnClickListener { reconnect() }
+                .build(),
+        )
         return androidx.car.app.model.PaneTemplate.Builder(pane.build()).build()
+    }
+
+    private fun reconnect() {
+        val phase = stateBus.status.value.phase
+        if (phase == BridgePhase.Idle || phase == BridgePhase.Error) {
+            runCatching {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    carContext,
+                    com.pitstop.service.PitstopBridgeService.startIntent(carContext),
+                )
+            }
+        } else {
+            stateBus.wakeUp()
+        }
+        androidx.car.app.CarToast.makeText(carContext, "Reconnecting…", androidx.car.app.CarToast.LENGTH_SHORT).show()
     }
 
     /**
      * Fixed row COUNT and fixed row TITLES — only the values move. Adding or
      * removing a row on a state change would be a structural change and cost
-     * a template.
+     * a template. Four rows = the pane's usual content limit.
      */
     private fun sessionRows(
         status: BridgeStatus,
-        metrics: Map<String, MetricSample>,
-    ): List<Pair<String, String>> = listOf(
-        "Bridge" to status.phase.name,
-        "Engine" to status.engineState.name,
-        "Broker" to if (status.brokerConnected) "connected" else "offline",
-        "Live metrics" to metrics.size.toString(),
-    )
+        settings: com.pitstop.data.Settings,
+        now: Long,
+    ): List<Pair<String, String>> {
+        val obdAge = status.lastObdFrameAtMs?.let { ageBucketS(((now - it) / 1000L).coerceAtLeast(0L)) }
+        val link = when (status.phase) {
+            BridgePhase.Connected -> "Connected" + (obdAge?.let { " · ${agoText(it)}" } ?: " · no data yet")
+            BridgePhase.Scanning -> "Searching for the WiCAN"
+            BridgePhase.Connecting -> "Connecting…"
+            BridgePhase.Disconnected -> "Reconnecting" + (obdAge?.let { " · last data ${agoText(it)}" } ?: "")
+            BridgePhase.Idle -> "Bridge off"
+            BridgePhase.Error -> "Error — tap Reconnect"
+        }
+        val engine = when (status.engineState) {
+            EngineState.On -> "Running"
+            EngineState.Off -> "Off"
+            EngineState.Unknown -> "Unknown"
+        }
+        val queued = status.offlineBufferBytes.takeIf { it > 0 }?.let { " · ${humanBytes(it)} queued" }.orEmpty()
+        val upload = when {
+            settings.manualSyncOnly -> "Local-only (manual sync)$queued"
+            status.brokerConnected -> "Live$queued"
+            else -> "Offline$queued"
+        }
+        val device = (status.deviceName ?: status.deviceMac ?: "Not paired") +
+            (status.rssi?.let { " · $it dBm" } ?: "")
+        return listOf(
+            "OBD link" to link,
+            "Engine" to engine,
+            "Upload" to upload,
+            "Device" to device,
+        )
+    }
+
+    private fun agoText(s: Long): String = if (s < 60) "${s}s ago" else "${s / 60}m ago"
+
+    private fun humanBytes(b: Long): String = when {
+        b < 1024 -> "$b B"
+        b < 1024 * 1024 -> "%.0f KB".format(b / 1024.0)
+        else -> "%.1f MB".format(b / 1024.0 / 1024.0)
+    }
 
     private fun tilesFor(
         tab: CarTileCatalog.CarScreenKind,
@@ -344,12 +469,9 @@ class LiveCarScreen(
 
     private fun buildTile(
         spec: CarTileSpec,
-        metrics: Map<String, MetricSample>,
-        system: String,
-        status: BridgeStatus,
+        render: CarTileRender,
+        badged: Boolean,
     ): GridItem {
-        val trend = trends.classify(spec.key)
-        val displayValue = carTileText(metrics[spec.key]?.value, spec, system, trend)
         // EVERY GridItem must carry an image. androidx.car.app enforces
         // "when a grid item is loading, the image must not be set and vice
         // versa" in GridItem.Builder.build() — a tile with neither an image
@@ -357,44 +479,29 @@ class LiveCarScreen(
         // whole car app down with "Pitstop has encountered an unexpected
         // error". There is no text-only grid item in the template model.
         //
-        // This previously set an image only for accent tiles, so the very
-        // first render on a head unit crashed. Accent is now expressed by
-        // the icon TINT rather than by the icon's presence.
         // Label in the TITLE, value in the TEXT — never the reverse.
-        //
         // GridTemplate's refresh predicate is "the number of grid items and
-        // the TITLE of each grid item have not changed". Item text and image
-        // are excluded from that diff; the title is not. With the value in
-        // the title, every tick was a template REPLACEMENT rather than a
-        // refresh, and the host allows five templates per task before it
-        // shows an error and CLOSES THE APP. At a 2 s repaint that is roughly
-        // ten seconds of driving.
-        //
-        // paneOf() below has always done this correctly and says why in its
-        // own comment. This was a one-place inconsistency, not a design
-        // position — and the scroll-reset that drove the move to three tiles
-        // per tab was the same bug seen from the other side.
+        // the TITLE of each grid item have not changed". Item text, image
+        // tint and badge are excluded from that diff; the title is not. With
+        // the value in the title, every tick was a template REPLACEMENT, and
+        // the host allows five per task before it CLOSES THE APP.
+        val tint = when {
+            render.warn == TileWarn.Severe -> CarColor.RED
+            render.warn == TileWarn.Caution -> CarColor.YELLOW
+            render.stale -> CarColor.SECONDARY
+            spec.accent -> CarColor.PRIMARY
+            else -> CarColor.DEFAULT
+        }
         return GridItem.Builder()
             .setTitle(spec.label)
-            .setText(displayValue)
+            .setText(render.text)
             .apply {
-                val icon = metricIcon(
-                    spec,
-                    if (spec.accent) CarColor.PRIMARY else CarColor.DEFAULT,
-                )
-                // A dot on the accent tile when the broker is down. Badges sit
-                // OUTSIDE the refresh diff (only item count and title are
-                // compared), so this conveys state without costing a template
-                // — which the old "Diag !" tab title did not. Paired with the
-                // Status pane's "Broker" row, because colour alone is not an
-                // accessible signal.
-                //
+                val icon = metricIcon(spec, tint)
                 // The badge is attached ONLY when it has a dot to show.
                 // Badge.Builder().build() throws "A badge must have a dot or
                 // an icon set" for an empty badge, and because CarAppService
                 // shares the app's process that exception crash-looped the
                 // phone UI as well as the car screen.
-                val badged = spec.accent && !status.brokerConnected
                 if (badged) {
                     setImage(
                         icon,
@@ -430,38 +537,17 @@ class LiveCarScreen(
  * push consumed. Its tile list survives as CarTab.Diagnostics.
  */
 
-/**
- * Tile text shared by every car tab: the value converted into the
- * user's unit system, its unit label, then the trend arrow. Centralised
- * so no two tabs can drift on units.
- */
-internal fun carTileText(
-    v: Double?,
-    spec: CarTileSpec,
-    system: String,
-    trend: TrendDir,
-): String {
-    val num = spec.quantity.number(v, system, spec.digits)
-    if (num == "—") return "—"
-    val unit = spec.unit(system)
-    val arrow = when (trend) {
-        TrendDir.Up -> " ▲"
-        TrendDir.Down -> " ▼"
-        TrendDir.Steady -> ""
-    }
-    return (if (unit.isBlank()) num else "$num $unit") + arrow
-}
-
 // ── Trend tracking ────────────────────────────────────────────────────
 
 enum class TrendDir { Up, Down, Steady }
 
 /**
  * Per-metric rolling history. Classifies the slope over a window into
- * Up / Down / Steady. Threshold is intentionally permissive (5% of
- * the value's running range) so noise doesn't flip the arrow on every
- * tick. We only keep two samples (oldest in window + latest) per
- * metric — cheap memory + cheap math.
+ * Up / Down / Steady. Threshold is 2 % of the value's mean magnitude
+ * (floor 0.05) — see [classify] — so noise doesn't flip the arrow on
+ * every tick. We only keep two samples (oldest in window + latest) per
+ * metric — cheap memory + cheap math. Only CarTileSpec.trend tiles show
+ * the result.
  */
 class TrendTracker(private val windowMs: Long) {
     private data class Window(val firstTs: Long, val firstVal: Double, val lastTs: Long, val lastVal: Double)

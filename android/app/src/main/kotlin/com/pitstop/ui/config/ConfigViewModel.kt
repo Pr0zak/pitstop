@@ -101,7 +101,13 @@ sealed interface ConfigToast {
     data class SetupImported(val fields: List<String>) : ConfigToast
     object SetupLinkInvalid : ConfigToast
     object SetupLinkEmpty : ConfigToast
+    /** Auto-save couldn't write (DataStore / keystore fault). */
+    object SaveFailed : ConfigToast
 }
+
+/** Where the debounced auto-save is — the pinned strip's "Saving… / All
+ *  changes saved" line. Failures also raise [ConfigToast.SaveFailed]. */
+enum class SaveStatus { Idle, Saving, Saved, Failed }
 
 /** Result of the inline "Test connection" probe (GET /api/vehicles). One
  *  shared type reused by the Connection status chip, the vehicle picker, and
@@ -248,6 +254,9 @@ class ConfigViewModel @Inject constructor(
     private val _toast = MutableSharedFlow<ConfigToast>(extraBufferCapacity = 4)
     val toast = _toast.asSharedFlow()
 
+    private val _saveStatus = MutableStateFlow(SaveStatus.Idle)
+    val saveStatus: StateFlow<SaveStatus> = _saveStatus.asStateFlow()
+
     private val _form = MutableStateFlow(ConfigFormState())
     val form: StateFlow<ConfigFormState> = _form.asStateFlow()
 
@@ -392,6 +401,7 @@ class ConfigViewModel @Inject constructor(
                                 "auto-save failed",
                                 mapOf("err" to (it.message ?: it::class.java.simpleName)),
                             )
+                            _toast.tryEmit(ConfigToast.SaveFailed)
                         }
                     }
                 }
@@ -731,6 +741,17 @@ class ConfigViewModel @Inject constructor(
     /** Persist the current form to disk. Extracted so [testConnection] can flush
      *  before probing (the auth interceptor reads persisted values). */
     private suspend fun persistForm() {
+        _saveStatus.value = SaveStatus.Saving
+        try {
+            persistFormInner()
+            _saveStatus.value = SaveStatus.Saved
+        } catch (e: Exception) {
+            _saveStatus.value = SaveStatus.Failed
+            throw e
+        }
+    }
+
+    private suspend fun persistFormInner() {
         val f = _form.value
         // Store the broker URL EXACTLY as entered (blank stays blank). The
         // "derive tcp://<api-host>:1883 when blank" rule lives in
@@ -781,7 +802,12 @@ class ConfigViewModel @Inject constructor(
             logBuffer.warn("config save blocked: form not yet loaded")
             return
         }
-        viewModelScope.launch { persistForm() }
+        viewModelScope.launch {
+            runCatching { persistForm() }.onFailure {
+                logBuffer.warn("save failed", mapOf("err" to (it.message ?: it::class.java.simpleName)))
+                _toast.tryEmit(ConfigToast.SaveFailed)
+            }
+        }
     }
 
     /**

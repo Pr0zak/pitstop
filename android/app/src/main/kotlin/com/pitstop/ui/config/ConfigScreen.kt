@@ -75,33 +75,55 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import com.pitstop.ble.ScannedDevice
 import com.pitstop.http.VehicleDto
-import com.pitstop.ui.components.PillState
+import com.pitstop.ui.components.PillTone
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.SettingsSection
 import com.pitstop.ui.components.StatusPill
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.pitstop.ui.components.DetailTopAppBar
+import com.pitstop.car.CarTileCatalog.CarScreenKind
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
- * Settings — a single scrollable page of three collapsible accordion
- * groups, no drill-in navigation. The brand top bar stays put; tapping
- * Settings in the bottom nav lands here and system-back behaves like any
- * other top-level tab (no nested stack to pop).
+ * Settings, in the standard Android settings pattern: a root list of
+ * top-level rows — each with its live status as trailing content — that
+ * push sub-screens. Back pops a sub-screen like any other stack.
  *
- *   Connection  → server URL, vehicle slug, MQTT broker creds
- *   Capture     → bridge collectors, auto-start, OBD device, WiCAN pairing
- *   App         → display units, logs, version + updates
+ *   Connection        → server URL + tokens, vehicle, MQTT broker
+ *   Auto-start        → in-car triggers, companion pairing
+ *   Devices & capture → collectors, sync mode, OBD dongle
+ *   Android Auto      → head-unit tabs and tiles
+ *   App               → units, notifications, logs, version
  *
- * Accordion behaviour: exactly one group is open at a time, held in a
- * single [rememberSaveable] key so it survives rotation. Connection is
- * open on entry. Tapping a collapsed header opens it and folds the rest;
- * tapping the open header collapses it.
+ * The auto-start strip stays pinned on the root: it is the #1 "why didn't
+ * my drive log?" answer and must be zero taps away. It also carries the
+ * auto-save state — there is no Save button: edits persist on a debounce
+ * (and on leaving the screen), failures surface in the snackbar.
  *
- * Live bridge status (status pill, active metrics, last frame, OBD
- * freshness, offline buffer) and the Start/Stop bridge controls live on
- * Home — this view is purely configuration. All sections share the single
- * [ConfigViewModel] so the DataStore writes, secret-field rules, BLE scan
- * flow, and CDM association flow are unchanged. The Save bar sits once at
- * the bottom of the page.
+ * All routes share the single Activity-scoped [ConfigViewModel] (hoisted
+ * here, passed down — a NavHost destination would otherwise mint its own),
+ * so DataStore writes, secret-field rules, the BLE scan and the CDM
+ * pairing flow are unchanged. Live bridge status + Start/Stop live on Home.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -133,8 +155,10 @@ fun ConfigScreen(
     val connTest by viewModel.connTest.collectAsStateWithLifecycle()
     val brokerTest by viewModel.brokerTest.collectAsStateWithLifecycle()
     val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
+    val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+    val nav = rememberNavController()
 
     // Persist any unsaved edits when the user leaves Settings (tab switch /
     // back). Without this, the form lives in viewModelScope and swiping away
@@ -147,22 +171,12 @@ fun ConfigScreen(
         }
     }
 
-    // Which accordion group is expanded — exactly one (or none, if the
-    // open one is tapped shut). Saved so rotation/process-death restores
-    // the user's place. Default: all collapsed — the SetupWizard now owns
-    // first-run, and each collapsed header self-reports its status, so the
-    // landing view is the pinned auto-start strip + four status-bearing headers.
-    var expandedGroup by rememberSaveable { mutableStateOf("") }
-    val toggle: (String) -> Unit = { key ->
-        expandedGroup = if (expandedGroup == key) "" else key
-    }
-
     // CDM association consent dialog launcher — hosted at the screen level
-    // so the IntentSender flow survives recomposition while the Capture
-    // group is expanded. The OS hands the manager an IntentSender; we
-    // launch it here. The result carries the resolved AssociationInfo
-    // (API 33+) / BluetoothDevice (API 31–32) — extract the association id
-    // + MAC and hand back to the VM.
+    // so the IntentSender flow survives navigation between sub-screens.
+    // The OS hands the manager an IntentSender; we launch it here. The
+    // result carries the resolved AssociationInfo (API 33+) /
+    // BluetoothDevice (API 31–32) — extract the association id + MAC and
+    // hand back to the VM.
     val companionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult(),
     ) { result ->
@@ -183,33 +197,12 @@ fun ConfigScreen(
         }
     }
 
-    // Snackbar host lives at the screen level so toasts raised from any
-    // group still show.
+    // One snackbar host, shared by every route's Scaffold, so toasts
+    // raised anywhere show wherever the user is.
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
         viewModel.toast.collect { t ->
-            val msg = when (t) {
-                is ConfigToast.FlushedOk -> "Sent ${t.count} log${if (t.count == 1) "" else "s"}"
-                ConfigToast.FlushedEmpty -> "Buffer empty"
-                is ConfigToast.FlushedError -> "Flush failed: ${t.message}"
-                is ConfigToast.UpdateUpToDate -> "You're on the latest (v${t.current})"
-                is ConfigToast.UpdateAvailable ->
-                    "v${t.latest} available — tap Download to install"
-                is ConfigToast.UpdateCheckError -> "Update check failed: ${t.message}"
-                ConfigToast.CompanionPaired -> "WiCAN paired for reliable auto-start"
-                ConfigToast.BridgePausedForPairing ->
-                    "Stopping bridge so the WiCAN can be discovered…"
-                ConfigToast.CompanionUnpaired -> "WiCAN unpaired"
-                is ConfigToast.CompanionError -> "Pairing failed: ${t.message}"
-                is ConfigToast.SetupImported ->
-                    if (t.fields.isEmpty()) "Setup link imported"
-                    else "Imported ${t.fields.joinToString(", ")}"
-                ConfigToast.SetupLinkInvalid ->
-                    "Clipboard isn't a pitstop setup link"
-                ConfigToast.SetupLinkEmpty ->
-                    "That setup link had nothing to import"
-            }
-            snackbarHostState.showSnackbar(msg)
+            snackbarHostState.showSnackbar(toastMessage(t))
         }
     }
 
@@ -221,94 +214,46 @@ fun ConfigScreen(
         )
     }
 
-    // Status subtitles rendered on each collapsed group header (IA move #2) —
-    // every folded group self-reports so the accordion reads as a health
-    // dashboard without opening anything.
-    val (connState, connLabel) = when (val c = connTest) {
-        is ConnTest.Ok -> PillState.Healthy to form.vehicleSlug.ifBlank { "Connected" }
-        ConnTest.InProgress -> PillState.Connecting to "Testing…"
-        ConnTest.BadUrl -> PillState.Offline to "Check URL"
-        ConnTest.BadToken -> PillState.Offline to "Check token"
-        is ConnTest.Unreachable -> PillState.Offline to "Unreachable"
-        is ConnTest.ServerError -> PillState.Degraded to "Server ${c.code}"
-        ConnTest.Idle ->
-            if (form.apiBaseUrl.isBlank()) PillState.Neutral to "Not set"
-            else PillState.Neutral to "Not tested"
-    }
-    val (autoState, autoLabel) = when (autoStartStatus.verdict) {
-        AutoStartVerdict.Armed -> PillState.Healthy to "Armed"
-        AutoStartVerdict.NeedsPairing -> PillState.Degraded to "Needs pairing"
-        AutoStartVerdict.Off -> PillState.Neutral to "Off"
-    }
-    val capturingNothing = !form.bridgeBleEnabled && !form.bridgeGpsEnabled
-    val captureLabel = when {
-        form.bridgeBleEnabled && form.bridgeGpsEnabled -> "OBD + GPS"
-        form.bridgeBleEnabled -> "OBD only"
-        form.bridgeGpsEnabled -> "GPS only"
-        else -> "Nothing"
-    }
-    val captureState = if (capturingNothing) PillState.Offline else PillState.Healthy
-    val (appState, appLabel) =
-        if (latestUpdate?.isNewer == true) PillState.Degraded to "Update ready"
-        else PillState.Neutral to "Up to date"
-
     // Android Auto only ever lists apps that Play installed. A sideloaded
     // build declares an identical CarAppService and is filtered out silently
     // — no error, no entry, nothing to debug — which cost this project weeks
     // before it was identified. Surfacing the installer here turns that into
     // a one-glance answer instead of a mystery.
-    val ctxForInstaller = androidx.compose.ui.platform.LocalContext.current
+    val ctxForInstaller = LocalContext.current
     val installedByPlay = remember {
         runCatching {
             ctxForInstaller.packageManager.getInstallSourceInfo(ctxForInstaller.packageName)
                 .installingPackageName == "com.android.vending"
         }.getOrDefault(false)
     }
-    val tileCount = form.aaTilesHome.size + form.aaTilesEngine.size +
-        form.aaTilesFuel.size + form.aaTilesDiag.size
-    val (aaState, aaLabel) = when {
-        !installedByPlay -> PillState.Degraded to "Not installed from Play"
-        tileCount == 0 -> PillState.Neutral to "Defaults"
-        else -> PillState.Neutral to "$tileCount tiles"
+    val rows = settingsRows(
+        form = form,
+        connTest = connTest,
+        autoStartStatus = autoStartStatus,
+        latestIsNewer = latestUpdate?.isNewer == true,
+        installedByPlay = installedByPlay,
+    )
+    val saveLabel = saveStatusLabel(saveStatus, form.saved)
+    val copyDiagnostics: () -> Unit = {
+        clipboard.setText(AnnotatedString(viewModel.buildDiagnostics()))
+        scope.launch { snackbarHostState.showSnackbar("Diagnostics copied") }
     }
 
-    // No brand bar — the bottom nav already labels this screen, and
-    // Settings is a long scroll that wants the vertical room.
-    Scaffold(
-        // Outer Scaffold (MainActivity) already consumed the system-bar
-        // insets; re-applying them here leaves an empty status-bar-tall
-        // band above the first setting.
-        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(vertical = 4.dp),
-        ) {
-            // Pinned auto-start status strip (IA move #1) — always visible
-            // above the accordion so the #1 "why didn't my drive log?" answer
-            // is zero-tap.
-            AutoStartStrip(
-                status = autoStartStatus,
+    NavHost(navController = nav, startDestination = ROUTE_ROOT) {
+        composable(ROUTE_ROOT) {
+            ConfigRootContent(
+                rows = rows,
+                autoStartStatus = autoStartStatus,
                 pairing = pairingInProgress,
+                saveLabel = saveLabel,
+                snackbarHostState = snackbarHostState,
                 onPair = { viewModel.pairCompanion() },
-                onCopyDiagnostics = {
-                    clipboard.setText(AnnotatedString(viewModel.buildDiagnostics()))
-                    scope.launch { snackbarHostState.showSnackbar("Diagnostics copied") }
-                },
+                onCopyDiagnostics = copyDiagnostics,
+                onOpen = { route -> nav.navigate(route) },
             )
-
-            // ── Connection ──────────────────────────────────────────
-            CollapsibleGroup(
-                title = "Connection",
-                expanded = expandedGroup == GROUP_CONNECTION,
-                onToggle = { toggle(GROUP_CONNECTION) },
-                subtitle = connLabel,
-                subtitleState = connState,
-            ) {
+        }
+        composable(ROUTE_CONNECTION) {
+            SettingsSubScreen("Connection", saveLabel, snackbarHostState, onBack = { nav.popBackStack() }) {
                 PitstopServerSection(
                     form = form,
                     connTest = connTest,
@@ -317,9 +262,7 @@ fun ConfigScreen(
                     onImportLink = {
                         val pasted = clipboard.getText()?.text
                         if (pasted.isNullOrBlank()) {
-                            scope.launch {
-                                snackbarHostState.showSnackbar("Clipboard is empty")
-                            }
+                            scope.launch { snackbarHostState.showSnackbar("Clipboard is empty") }
                         } else {
                             viewModel.importSetupLink(pasted)
                         }
@@ -341,15 +284,9 @@ fun ConfigScreen(
                     update = { transform -> viewModel.update(transform) },
                 )
             }
-
-            // ── Auto-start ──────────────────────────────────────────
-            CollapsibleGroup(
-                title = "Auto-start",
-                expanded = expandedGroup == GROUP_AUTOSTART,
-                onToggle = { toggle(GROUP_AUTOSTART) },
-                subtitle = autoLabel,
-                subtitleState = autoState,
-            ) {
+        }
+        composable(ROUTE_AUTOSTART) {
+            SettingsSubScreen("Auto-start", saveLabel, snackbarHostState, onBack = { nav.popBackStack() }) {
                 AutoStartSection(
                     autoTrigger = form.bridgeAutoTrigger,
                     autoTriggerSsids = form.bridgeAutoTriggerSsids,
@@ -367,19 +304,14 @@ fun ConfigScreen(
                     CompanionPairingSection(
                         associated = companionAssociated,
                         pairing = pairingInProgress,
+                        onPair = { viewModel.pairCompanion() },
                         onUnpair = { viewModel.unpairCompanion() },
                     )
                 }
             }
-
-            // ── Devices & capture ───────────────────────────────────
-            CollapsibleGroup(
-                title = "Devices & capture",
-                expanded = expandedGroup == GROUP_DEVICES,
-                onToggle = { toggle(GROUP_DEVICES) },
-                subtitle = captureLabel,
-                subtitleState = captureState,
-            ) {
+        }
+        composable(ROUTE_DEVICES) {
+            SettingsSubScreen("Devices & capture", saveLabel, snackbarHostState, onBack = { nav.popBackStack() }) {
                 CaptureCollectorsSection(
                     bleEnabled = form.bridgeBleEnabled,
                     gpsEnabled = form.bridgeGpsEnabled,
@@ -405,15 +337,9 @@ fun ConfigScreen(
                     onPick = { viewModel.pickDevice(it) },
                 )
             }
-
-            // ── Android Auto ────────────────────────────────────────
-            CollapsibleGroup(
-                title = "Android Auto",
-                expanded = expandedGroup == GROUP_ANDROID_AUTO,
-                onToggle = { toggle(GROUP_ANDROID_AUTO) },
-                subtitle = aaLabel,
-                subtitleState = aaState,
-            ) {
+        }
+        composable(ROUTE_ANDROID_AUTO) {
+            SettingsSubScreen("Android Auto", saveLabel, snackbarHostState, onBack = { nav.popBackStack() }) {
                 CarTilesSection(
                     tabs = form.aaTabs,
                     onTabsChange = { v -> viewModel.update { it.copy(aaTabs = v) } },
@@ -427,15 +353,9 @@ fun ConfigScreen(
                     onDiagChange = { v -> viewModel.update { it.copy(aaTilesDiag = v) } },
                 )
             }
-
-            // ── App ─────────────────────────────────────────────────
-            CollapsibleGroup(
-                title = "App",
-                expanded = expandedGroup == GROUP_APP,
-                onToggle = { toggle(GROUP_APP) },
-                subtitle = appLabel,
-                subtitleState = appState,
-            ) {
+        }
+        composable(ROUTE_APP) {
+            SettingsSubScreen("App", saveLabel, snackbarHostState, onBack = { nav.popBackStack() }) {
                 DisplaySection(
                     unitSystem = form.unitSystem,
                     onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
@@ -452,9 +372,7 @@ fun ConfigScreen(
                     lastFlushMs = lastFlushAt,
                     onVerboseChange = { v -> viewModel.update { it.copy(verboseLogging = v) } },
                     onFlush = { viewModel.flushLogsNow() },
-                    onCopyDiagnostics = {
-                        clipboard.setText(AnnotatedString(viewModel.buildDiagnostics()))
-                    },
+                    onCopyDiagnostics = copyDiagnostics,
                 )
                 AppSection(
                     checking = checkingUpdate,
@@ -463,95 +381,215 @@ fun ConfigScreen(
                     onCheck = { viewModel.checkForUpdates() },
                 )
             }
-
-            // Single Save bar for the whole page.
-            SaveBar(saved = form.saved, onSave = { viewModel.save() })
         }
     }
 }
 
-private const val GROUP_CONNECTION = "connection"
-private const val GROUP_AUTOSTART = "autostart"
-private const val GROUP_DEVICES = "devices"
-private const val GROUP_ANDROID_AUTO = "android_auto"
-private const val GROUP_APP = "app"
+private const val ROUTE_ROOT = "root"
+private const val ROUTE_CONNECTION = "connection"
+private const val ROUTE_AUTOSTART = "autostart"
+private const val ROUTE_DEVICES = "devices"
+private const val ROUTE_ANDROID_AUTO = "android_auto"
+private const val ROUTE_APP = "app"
 
-// ── Accordion group ─────────────────────────────────────────────────
+private fun toastMessage(t: ConfigToast): String = when (t) {
+    is ConfigToast.FlushedOk -> "Sent ${t.count} log${if (t.count == 1) "" else "s"}"
+    ConfigToast.FlushedEmpty -> "Buffer empty"
+    is ConfigToast.FlushedError -> "Couldn't send logs — try again later"
+    is ConfigToast.UpdateUpToDate -> "You're on the latest (v${t.current})"
+    is ConfigToast.UpdateAvailable -> "v${t.latest} available — update from Google Play"
+    is ConfigToast.UpdateCheckError -> "Couldn't check for updates"
+    ConfigToast.CompanionPaired -> "WiCAN paired for reliable auto-start"
+    ConfigToast.BridgePausedForPairing -> "Stopping bridge so the WiCAN can be discovered…"
+    ConfigToast.CompanionUnpaired -> "WiCAN unpaired"
+    is ConfigToast.CompanionError -> "Pairing failed: ${t.message}"
+    is ConfigToast.SetupImported ->
+        if (t.fields.isEmpty()) "Setup link imported" else "Imported ${t.fields.joinToString(", ")}"
+    ConfigToast.SetupLinkInvalid -> "Clipboard isn't a pitstop setup link"
+    ConfigToast.SetupLinkEmpty -> "That setup link had nothing to import"
+    ConfigToast.SaveFailed -> "Couldn't save settings — your last change may be lost"
+}
+
+/** "Saving…" while a write is pending or running; "All changes saved" once
+ *  disk matches the form. Never blank — the line doubles as reassurance
+ *  that there is nothing to press. */
+internal fun saveStatusLabel(status: SaveStatus, formSaved: Boolean): String = when {
+    status == SaveStatus.Failed -> "Couldn't save — will retry on the next change"
+    status == SaveStatus.Saving || !formSaved -> "Saving…"
+    else -> "All changes saved"
+}
+
+/** One top-level Settings row: title, one-line summary, live status. */
+internal data class SettingsRow(
+    val route: String,
+    val title: String,
+    val summary: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val tone: PillTone,
+    val status: String,
+)
 
 /**
- * One collapsible accordion group. The header reads as a section divider
- * (caps title + a chevron that rotates 90° from pointing-right to
- * pointing-down when [expanded]); the body — a stack of [SettingsSection]s
- * supplied by the caller — is wrapped in [AnimatedVisibility]. State is
- * fully hoisted: the parent owns the single open-group key.
+ * The root list's rows with their status pills — every row self-reports,
+ * so the root reads as a health dashboard without opening anything.
  */
+internal fun settingsRows(
+    form: ConfigFormState,
+    connTest: ConnTest,
+    autoStartStatus: AutoStartStatus,
+    latestIsNewer: Boolean,
+    installedByPlay: Boolean,
+): List<SettingsRow> {
+    val (connState, connLabel) = when (val c = connTest) {
+        is ConnTest.Ok -> PillTone.Healthy to form.vehicleSlug.ifBlank { "Connected" }
+        ConnTest.InProgress -> PillTone.Connecting to "Testing…"
+        ConnTest.BadUrl -> PillTone.Offline to "Check URL"
+        ConnTest.BadToken -> PillTone.Offline to "Check token"
+        is ConnTest.Unreachable -> PillTone.Offline to "Unreachable"
+        is ConnTest.ServerError -> PillTone.Degraded to "Server ${c.code}"
+        ConnTest.Idle ->
+            if (form.apiBaseUrl.isBlank()) PillTone.Neutral to "Not set"
+            else PillTone.Neutral to "Not tested"
+    }
+    val (autoState, autoLabel) = when (autoStartStatus.verdict) {
+        AutoStartVerdict.Armed -> PillTone.Healthy to "Armed"
+        AutoStartVerdict.NeedsPairing -> PillTone.Degraded to "Needs pairing"
+        AutoStartVerdict.Off -> PillTone.Neutral to "Off"
+    }
+    val captureLabel = when {
+        form.bridgeBleEnabled && form.bridgeGpsEnabled -> "OBD + GPS"
+        form.bridgeBleEnabled -> "OBD only"
+        form.bridgeGpsEnabled -> "GPS only"
+        else -> "Nothing"
+    }
+    val captureState =
+        if (!form.bridgeBleEnabled && !form.bridgeGpsEnabled) PillTone.Offline else PillTone.Healthy
+    val tileCount = form.aaTilesHome.size + form.aaTilesEngine.size +
+        form.aaTilesFuel.size + form.aaTilesDiag.size
+    val (aaState, aaLabel) = when {
+        !installedByPlay -> PillTone.Degraded to "Not from Play"
+        tileCount == 0 -> PillTone.Neutral to "Defaults"
+        else -> PillTone.Neutral to "$tileCount tiles"
+    }
+    val (appState, appLabel) =
+        if (latestIsNewer) PillTone.Degraded to "Update ready" else PillTone.Neutral to "Up to date"
+    return listOf(
+        SettingsRow(ROUTE_CONNECTION, "Connection", "Server, vehicle and MQTT broker",
+            Icons.Outlined.Cloud, connState, connLabel),
+        SettingsRow(ROUTE_AUTOSTART, "Auto-start", "Start logging when you get in the car",
+            Icons.Outlined.DirectionsCar, autoState, autoLabel),
+        SettingsRow(ROUTE_DEVICES, "Devices & capture", "OBD dongle, GPS and uploads",
+            Icons.Outlined.Bluetooth, captureState, captureLabel),
+        SettingsRow(ROUTE_ANDROID_AUTO, "Android Auto", "Car-screen tabs and tiles",
+            Icons.Outlined.Dashboard, aaState, aaLabel),
+        SettingsRow(ROUTE_APP, "App", "Units, notifications, logs and version",
+            Icons.Outlined.Tune, appState, appLabel),
+    )
+}
+
+/**
+ * Stateless Settings root: the pinned auto-start strip, then one ListItem
+ * per group. Split out so screenshot tests can render it from fixtures.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CollapsibleGroup(
+internal fun ConfigRootContent(
+    rows: List<SettingsRow>,
+    autoStartStatus: AutoStartStatus,
+    pairing: Boolean,
+    saveLabel: String,
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
+    onPair: () -> Unit = {},
+    onCopyDiagnostics: () -> Unit = {},
+    onOpen: (String) -> Unit = {},
+) {
+    Scaffold(
+        // Outer Scaffold (MainActivity) already consumed the system-bar
+        // insets; re-applying them here leaves an empty status-bar-tall
+        // band above the first setting.
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        topBar = { PitstopTopAppBar() },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 4.dp),
+        ) {
+            AutoStartStrip(
+                status = autoStartStatus,
+                pairing = pairing,
+                saveLabel = saveLabel,
+                onPair = onPair,
+                onCopyDiagnostics = onCopyDiagnostics,
+            )
+            for (row in rows) {
+                ListItem(
+                    headlineContent = { Text(row.title) },
+                    supportingContent = { Text(row.summary) },
+                    leadingContent = {
+                        Icon(row.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            StatusPill(tone = row.tone, label = row.status, compact = true, subject = row.title)
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.background),
+                    modifier = Modifier.clickable(onClickLabel = "Open ${row.title}") { onOpen(row.route) },
+                )
+            }
+            Spacer(Modifier.size(24.dp))
+        }
+    }
+}
+
+/** A pushed Settings page: back-arrow bar, the save line, then sections. */
+@Composable
+private fun SettingsSubScreen(
     title: String,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    subtitle: String? = null,
-    subtitleState: PillState = PillState.Neutral,
+    saveLabel: String,
+    snackbarHostState: SnackbarHostState,
+    onBack: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val chevronRotation by animateFloatAsState(
-        targetValue = if (expanded) 0f else -90f,
-        label = "chevron-$title",
-    )
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
+    Scaffold(
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        topBar = { DetailTopAppBar(title = title, onBack = onBack) },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+    ) { padding ->
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onToggle)
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 28.dp),
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
-                ),
-                color = if (expanded) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f),
-            )
-            // While collapsed, the header self-reports its status so the folded
-            // accordion reads as a health dashboard — no tap needed to see
-            // "reachable" / "OBD+GPS" / "up to date". Hidden when expanded (the
-            // body shows the real detail).
-            if (!expanded && subtitle != null) {
-                StatusPill(state = subtitleState, label = subtitle, compact = true)
-                Spacer(Modifier.size(10.dp))
-            }
-            Icon(
-                imageVector = Icons.Filled.ExpandMore,
-                contentDescription = if (expanded) "Collapse $title" else "Expand $title",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.rotate(chevronRotation),
-            )
+            SaveStatusLine(saveLabel, Modifier.padding(horizontal = 20.dp))
+            content()
         }
-        AnimatedVisibility(visible = expanded) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                content()
-                Spacer(Modifier.size(8.dp))
-            }
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 
 @Composable
-private fun SaveBar(saved: Boolean, onSave: () -> Unit) {
-    Spacer(Modifier.size(20.dp))
-    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-        Button(
-            onClick = onSave,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (saved) "Saved" else "Save settings")
-        }
-    }
-    Spacer(Modifier.size(28.dp))
+private fun SaveStatusLine(label: String, modifier: Modifier = Modifier) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (label.startsWith("Couldn't")) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = modifier.semantics { liveRegion = LiveRegionMode.Polite },
+    )
 }
 
 // ── Capture: collectors + manual-sync ───────────────────────────────
@@ -856,18 +894,17 @@ private fun AutoStartSection(
 private fun CompanionPairingSection(
     associated: Boolean,
     pairing: Boolean,
+    onPair: () -> Unit,
     onUnpair: () -> Unit,
 ) {
     SettingsSection(
         title = "Reliable background auto-start",
         description = "Pairing the WiCAN as a companion device lets pitstop start " +
             "logging automatically the moment the dongle is in range — even from " +
-            "the background. This is what makes auto-start reliable. Pair it from " +
-            "the status strip at the top when auto-start needs it.",
+            "the background. This is what makes auto-start reliable.",
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusPill(
-                state = if (associated) PillState.Healthy else PillState.Neutral,
+            StatusPill(tone = if (associated) PillTone.Healthy else PillTone.Neutral,
                 label = if (associated) "Associated" else "Not paired",
             )
             Spacer(Modifier.width(8.dp))
@@ -877,10 +914,10 @@ private fun CompanionPairingSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.weight(1f))
-            // The strip owns the Pair CTA (it only matters when auto-start needs
-            // it); the group keeps Unpair for removing an existing association.
-            OutlinedButton(onClick = onUnpair, enabled = associated && !pairing) {
-                Text("Unpair")
+            if (associated) {
+                OutlinedButton(onClick = onUnpair, enabled = !pairing) { Text("Unpair") }
+            } else {
+                Button(onClick = onPair, enabled = !pairing) { Text("Pair") }
             }
         }
         if (pairing) {
@@ -909,13 +946,14 @@ private fun CompanionPairingSection(
 private fun AutoStartStrip(
     status: AutoStartStatus,
     pairing: Boolean,
+    saveLabel: String,
     onPair: () -> Unit,
     onCopyDiagnostics: () -> Unit,
 ) {
     val (verdictState, verdictLabel) = when (status.verdict) {
-        AutoStartVerdict.Armed -> PillState.Healthy to "Armed"
-        AutoStartVerdict.NeedsPairing -> PillState.Degraded to "Needs pairing"
-        AutoStartVerdict.Off -> PillState.Neutral to "Off"
+        AutoStartVerdict.Armed -> PillTone.Healthy to "Armed"
+        AutoStartVerdict.NeedsPairing -> PillTone.Degraded to "Needs pairing"
+        AutoStartVerdict.Off -> PillTone.Neutral to "Off"
     }
     val needsPairing = status.verdict == AutoStartVerdict.NeedsPairing
     Card(
@@ -931,7 +969,7 @@ private fun AutoStartStrip(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                StatusPill(state = verdictState, label = verdictLabel)
+                StatusPill(tone = verdictState, label = verdictLabel, subject = "Auto-start")
                 Text(
                     text = when (status.verdict) {
                         AutoStartVerdict.Armed ->
@@ -991,12 +1029,14 @@ private fun AutoStartStrip(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    lastAutoStartLabel(status.lastAutoStartAtMs),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        lastAutoStartLabel(status.lastAutoStartAtMs),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SaveStatusLine(saveLabel)
+                }
                 TextButton(onClick = onCopyDiagnostics) { Text("Copy diagnostics") }
             }
         }
@@ -1013,9 +1053,9 @@ private fun SignalRow(
     disabled: String,
 ) {
     val (pill, text) = when (state) {
-        SignalState.Active -> PillState.Healthy to active
-        SignalState.Idle -> PillState.Neutral to idle
-        SignalState.Disabled -> PillState.Neutral to disabled
+        SignalState.Active -> PillTone.Healthy to active
+        SignalState.Idle -> PillTone.Neutral to idle
+        SignalState.Disabled -> PillTone.Neutral to disabled
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1031,7 +1071,7 @@ private fun SignalRow(
             },
             modifier = Modifier.weight(1f),
         )
-        StatusPill(state = pill, label = text, compact = true)
+        StatusPill(tone = pill, label = text, compact = true)
     }
 }
 
@@ -1058,7 +1098,7 @@ private fun lastAutoStartLabel(atMs: Long): String {
  * Returns null on cancel / unrecognised payload — the caller just refreshes
  * the association list in that case.
  */
-private fun extractCompanionResult(
+internal fun extractCompanionResult(
     resultCode: Int,
     data: android.content.Intent?,
 ): Pair<Int, String?>? {
@@ -1163,8 +1203,7 @@ private fun MqttBrokerSection(
         // Compact connection-state hint only — the live "published N"
         // metrics readout moved to Home (this is config, not status).
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusPill(
-                state = if (brokerConnected) PillState.Healthy else PillState.Offline,
+            StatusPill(tone = if (brokerConnected) PillTone.Healthy else PillTone.Offline,
                 label = if (brokerConnected) "Connected" else "Offline",
             )
             Spacer(Modifier.weight(1f))
@@ -1210,18 +1249,18 @@ private fun MqttBrokerSection(
 @Composable
 private fun BrokerStatusRow(brokerTest: BrokerTest, onTest: () -> Unit) {
     val (state, label) = when (val b = brokerTest) {
-        BrokerTest.Idle -> PillState.Neutral to "Not tested"
-        BrokerTest.InProgress -> PillState.Connecting to "Testing…"
-        BrokerTest.Ok -> PillState.Healthy to "Broker reachable"
-        BrokerTest.BadUrl -> PillState.Offline to "Check the broker URL"
-        BrokerTest.BadAuth -> PillState.Offline to "Rejected — check user / password"
-        is BrokerTest.Unreachable -> PillState.Offline to "Can't reach the broker"
+        BrokerTest.Idle -> PillTone.Neutral to "Not tested"
+        BrokerTest.InProgress -> PillTone.Connecting to "Testing…"
+        BrokerTest.Ok -> PillTone.Healthy to "Broker reachable"
+        BrokerTest.BadUrl -> PillTone.Offline to "Check the broker URL"
+        BrokerTest.BadAuth -> PillTone.Offline to "Rejected — check user / password"
+        is BrokerTest.Unreachable -> PillTone.Offline to "Can't reach the broker"
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        StatusPill(state = state, label = label, compact = true)
+        StatusPill(tone = state, label = label, compact = true)
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = onTest, enabled = brokerTest != BrokerTest.InProgress) {
             if (brokerTest == BrokerTest.InProgress) {
@@ -1301,20 +1340,20 @@ private fun vehicleLabel(v: VehicleDto): String {
 @Composable
 private fun ConnStatusRow(connTest: ConnTest, onTest: () -> Unit) {
     val (state, label) = when (val c = connTest) {
-        ConnTest.Idle -> PillState.Neutral to "Not tested"
-        ConnTest.InProgress -> PillState.Connecting to "Testing…"
-        is ConnTest.Ok -> PillState.Healthy to
+        ConnTest.Idle -> PillTone.Neutral to "Not tested"
+        ConnTest.InProgress -> PillTone.Connecting to "Testing…"
+        is ConnTest.Ok -> PillTone.Healthy to
             "Connected · ${c.vehicles.size} vehicle${if (c.vehicles.size == 1) "" else "s"}"
-        ConnTest.BadUrl -> PillState.Offline to "Check the URL"
-        ConnTest.BadToken -> PillState.Offline to "401 — check the Query token"
-        is ConnTest.Unreachable -> PillState.Offline to "Can't reach the server"
-        is ConnTest.ServerError -> PillState.Degraded to "Server error ${c.code}"
+        ConnTest.BadUrl -> PillTone.Offline to "Check the URL"
+        ConnTest.BadToken -> PillTone.Offline to "401 — check the Query token"
+        is ConnTest.Unreachable -> PillTone.Offline to "Can't reach the server"
+        is ConnTest.ServerError -> PillTone.Degraded to "Server error ${c.code}"
     }
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        StatusPill(state = state, label = label, compact = true)
+        StatusPill(tone = state, label = label, compact = true)
         Spacer(Modifier.weight(1f))
         OutlinedButton(onClick = onTest, enabled = connTest != ConnTest.InProgress) {
             if (connTest == ConnTest.InProgress) {
@@ -1469,42 +1508,44 @@ private fun LogsSection(
 // ── Display ────────────────────────────────────────────────────────
 
 /**
- * Display units toggle. Imperial / Metric segment row matching the web's
- * Settings → Display affordance. Mirrors the value into SettingsRepository
- * and the LiveScreen formatters re-render on next frame because they
- * read the same settings flow.
+ * Display units. One segmented Imperial | Metric choice that applies
+ * EVERYWHERE — Live tiles, History, trip and fillup detail, the Fuel form,
+ * charts and the Android Auto grid all read it through LocalUnitSystem.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DisplaySection(
     unitSystem: String,
     onChange: (String) -> Unit,
 ) {
     SettingsSection(
-        title = "Display",
-        description = "Applies to the Live tiles, the trip timeline chart and the " +
-            "Android Auto grid. Imperial: °F, mph, psi, lb/min, ft, gal/h. " +
-            "Metric: °C, km/h, kPa, g/s, m, L/h.",
+        title = "Units",
+        description = "Applies everywhere in the app and on the car screen. " +
+            "Imperial: mi, mph, gal, mpg, °F, psi. Metric: km, km/h, L, L/100km, °C, kPa.",
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            UnitChip(label = "Imperial", selected = unitSystem == "imperial", onClick = { onChange("imperial") })
-            UnitChip(label = "Metric", selected = unitSystem == "metric", onClick = { onChange("metric") })
+        val options = listOf("imperial" to "Imperial", "metric" to "Metric")
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            options.forEachIndexed { i, (value, label) ->
+                SegmentedButton(
+                    selected = unitSystem == value,
+                    onClick = { onChange(value) },
+                    shape = SegmentedButtonDefaults.itemShape(index = i, count = options.size),
+                    label = { Text(label) },
+                )
+            }
         }
     }
 }
 
 /**
- * Which metrics appear on the two Android Auto grids.
+ * Which tabs the head unit shows, and which metrics fill each one.
  *
- * Exists because the tile lists were stored in DataStore and read by the car
- * screens but never surfaced anywhere — so the only way to change them was to
- * edit the source. The count matters more than it looks: the car host resets
- * a grid's scroll position every time the template is replaced, and a changing
- * value always counts as a replacement, so any grid tall enough to scroll
- * throws the user back to the top every couple of seconds. Three fits one row
- * on the head units we have measured; more is offered because a wider screen
- * shows two rows and only the owner of that car knows which it is.
+ * Updates are in-place refreshes (value in GridItem text, not title), so a
+ * tab can hold the full grid without the host resetting scroll or burning
+ * its template quota — see CarTileCatalog.DEFAULT_HOME. Pickers are shown
+ * only for tabs that are actually enabled: configuring a hidden tab was
+ * the most common "why didn't my change show up?".
  */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CarTilesSection(
     tabs: List<String>,
@@ -1518,47 +1559,35 @@ private fun CarTilesSection(
     onFuelChange: (List<String>) -> Unit,
     onDiagChange: (List<String>) -> Unit,
 ) {
+    val effectiveTabs = tabs.ifEmpty { CarScreenKind.DEFAULT_TABS }
     SettingsSection(
         title = "Android Auto tabs",
-        description = "Four tabs on the head unit, up to " +
-            "${com.pitstop.car.CarTileCatalog.MAX_TILES} tiles each. Three fits one " +
-            "row on most screens — the car scrolls a grid back to the top whenever " +
-            "a value updates, so a tab that scrolls is hard to read while moving.",
+        description = "Up to ${com.pitstop.car.CarTileCatalog.MAX_TILES} tiles per tab; " +
+            "values update in place about every 2 s.",
     ) {
         // Which screens occupy the four tabs. There are more screens than
         // tabs on purpose — the head unit takes at most four, so the SET is
         // the user's choice rather than a fixed layout.
         CarTabPicker(selected = tabs, onChange = onTabsChange)
-        Spacer(Modifier.size(16.dp))
-        androidx.compose.material3.HorizontalDivider(
-            color = MaterialTheme.colorScheme.outlineVariant,
-        )
-        Spacer(Modifier.size(16.dp))
-
-        // One picker per metric screen, in the order they appear in the car.
-        CarTilePicker(
-            label = "Drive tab",
-            selected = home.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_HOME },
-            onChange = onHomeChange,
-        )
-        Spacer(Modifier.size(12.dp))
-        CarTilePicker(
-            label = "Engine tab",
-            selected = engine.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_ENGINE },
-            onChange = onEngineChange,
-        )
-        Spacer(Modifier.size(12.dp))
-        CarTilePicker(
-            label = "Fuel tab",
-            selected = fuel.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_FUEL },
-            onChange = onFuelChange,
-        )
-        Spacer(Modifier.size(12.dp))
-        CarTilePicker(
-            label = "Diag tab",
-            selected = diag.ifEmpty { com.pitstop.car.CarTileCatalog.DEFAULT_DIAG },
-            onChange = onDiagChange,
-        )
+    }
+    data class TabTiles(
+        val kind: com.pitstop.car.CarTileCatalog.CarScreenKind,
+        val stored: List<String>,
+        val onChange: (List<String>) -> Unit,
+    )
+    val pickers = listOf(
+        TabTiles(CarScreenKind.Drive, home, onHomeChange),
+        TabTiles(CarScreenKind.Engine, engine, onEngineChange),
+        TabTiles(CarScreenKind.Fuel, fuel, onFuelChange),
+        TabTiles(CarScreenKind.Diagnostics, diag, onDiagChange),
+    ).filter { it.kind.id in effectiveTabs }
+    for (p in pickers) {
+        SettingsSection(title = "${p.kind.title} tab") {
+            CarTilePicker(
+                selected = p.stored.ifEmpty { p.kind.defaults.orEmpty() },
+                onChange = p.onChange,
+            )
+        }
     }
 }
 
@@ -1608,65 +1637,81 @@ private fun CarTabPicker(
     }
 }
 
+/**
+ * One tab's tiles: the chosen ones as a numbered list in car order (with
+ * move up / down and remove), then the rest as chips to add. The order
+ * here IS the grid order on the head unit, which a set of toggled chips
+ * could never express.
+ */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CarTilePicker(
-    label: String,
     selected: List<String>,
     onChange: (List<String>) -> Unit,
 ) {
     val max = com.pitstop.car.CarTileCatalog.MAX_TILES
-    Column {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                label,
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                "${selected.size} / $max",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected.size > max) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-        Spacer(Modifier.size(6.dp))
-        androidx.compose.foundation.layout.FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            for (spec in com.pitstop.car.CarTileCatalog.ALL) {
-                val on = spec.key in selected
-                androidx.compose.material3.FilterChip(
-                    selected = on,
-                    // Selecting is capped; DEselecting is always allowed, so
-                    // the user can never get stuck at the limit.
-                    enabled = on || selected.size < max,
-                    onClick = {
-                        onChange(
-                            if (on) selected - spec.key else selected + spec.key,
-                        )
-                    },
-                    label = {
-                        Text(spec.label, style = MaterialTheme.typography.labelMedium)
-                    },
+    val catalog = com.pitstop.car.CarTileCatalog
+    val chosen = selected.mapNotNull { catalog.byKey(it) }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            "${chosen.size} / $max tiles",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (chosen.size > max) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        chosen.forEachIndexed { i, spec ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "${i + 1}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.width(24.dp),
                 )
+                Text(spec.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                val keys = chosen.map { it.key }
+                IconButton(
+                    onClick = { onChange(keys.toMutableList().apply { add(i - 1, removeAt(i)) }) },
+                    enabled = i > 0,
+                ) { Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move ${spec.label} up") }
+                IconButton(
+                    onClick = { onChange(keys.toMutableList().apply { add(i + 1, removeAt(i)) }) },
+                    enabled = i < chosen.lastIndex,
+                ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move ${spec.label} down") }
+                IconButton(onClick = { onChange(keys - spec.key) }) {
+                    Icon(Icons.Filled.Close, contentDescription = "Remove ${spec.label}")
+                }
+            }
+        }
+        val rest = catalog.ALL.filter { spec -> chosen.none { it.key == spec.key } }
+        if (rest.isNotEmpty()) {
+            Text(
+                if (chosen.size >= max) "Remove a tile to add another" else "Add a tile",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+            )
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (spec in rest) {
+                    androidx.compose.material3.AssistChip(
+                        // Selecting is capped; removing (above) always works,
+                        // so the user can never get stuck at the limit.
+                        enabled = chosen.size < max,
+                        onClick = { onChange(chosen.map { it.key } + spec.key) },
+                        leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        label = { Text(spec.label, style = MaterialTheme.typography.labelMedium) },
+                    )
+                }
             }
         }
     }
-}
-
-@Composable
-private fun UnitChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    androidx.compose.material3.FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label) },
-    )
 }
 
 // ── App / version ──────────────────────────────────────────────────
@@ -1772,7 +1817,7 @@ private fun humanBytes(b: Long): String = when {
 }
 
 @Composable
-private fun SecretField(
+internal fun SecretField(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,

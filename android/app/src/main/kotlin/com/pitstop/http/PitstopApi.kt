@@ -101,6 +101,13 @@ data class VehicleDto(
      *  than migration 0020 would blow up deserialisation of the whole
      *  vehicle list. */
     @SerialName("odometer_offset_km") val odometerOffsetKm: Double? = null,
+    /** Tachometer redline (backend migration 0023). Null = not set; the
+     *  Live RPM gauge then draws no redline band. */
+    @SerialName("redline_rpm") val redlineRpm: Int? = null,
+    /** Fuelio storage units: dist 0=km 1=mi; fuel 0=L 1=US gal 2=UK gal.
+     *  Needed to PATCH a fillup in the units it is stored in. */
+    @SerialName("dist_unit") val distUnit: Int? = null,
+    @SerialName("fuel_unit") val fuelUnit: Int? = null,
 )
 
 @Serializable
@@ -289,11 +296,22 @@ interface PitstopApi {
         @Header("Cache-Control") cacheControl: String? = null,
     ): MonthlySpendResponse
 
+    /**
+     * [sort] / [source] / [towing] are server-side list controls shared with
+     * the web Trips view (sort: recent|distance|duration|top_speed|max_rpm|
+     * fuel; source: phone_batch|manual_merge|other; towing=true → towing
+     * trips only). Null omits the param, so an older backend that predates
+     * them just returns its default recent-first page — the client-side
+     * group/sort in HistoryViewModel then still gives the right order.
+     */
     @GET("api/trips")
     suspend fun getTrips(
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 5,
         @Header("Cache-Control") cacheControl: String? = null,
+        @Query("sort") sort: String? = null,
+        @Query("source") source: String? = null,
+        @Query("towing") towing: Boolean? = null,
     ): List<TripDto>
 
     @GET("api/dtcs")
@@ -330,6 +348,15 @@ interface PitstopApi {
         @Body body: TripUpdateRequest,
     ): TripDetailDto
 
+    /** Raw-object variant of [updateTrip] for edits that must send an
+     *  explicit JSON null (clearing a category / notes): the app's Json
+     *  has encodeDefaults=false, so a null data-class field is omitted. */
+    @retrofit2.http.PATCH("api/trips/{id}")
+    suspend fun patchTrip(
+        @retrofit2.http.Path("id") id: String,
+        @Body body: kotlinx.serialization.json.JsonObject,
+    ): TripDetailDto
+
     @POST("api/trips/{id}/merge")
     suspend fun mergeTrips(
         @Path("id") id: String,
@@ -357,6 +384,29 @@ interface PitstopApi {
 
     @GET("api/fillups/{id}")
     suspend fun getFillupDetail(@Path("id") id: String): FillupDto
+
+    /** Partial fillup edit — same endpoint the web FillupModal uses. Every
+     *  field is omitted when null (see [FillupUpdateRequest]). */
+    @retrofit2.http.PATCH("api/fillups/{id}")
+    suspend fun updateFillup(
+        @Path("id") id: String,
+        @Body body: FillupUpdateRequest,
+    ): FillupDto
+
+    /** Delete a fillup (web FuelView parity). 204 on success. */
+    @DELETE("api/fillups/{id}")
+    suspend fun deleteFillup(@Path("id") id: String)
+
+    /**
+     * "This trip vs your usual" — averages over trips in the same distance
+     * bucket. `sufficient` is false (and the averages null) under five
+     * samples; the phone hides the card then, like the web does.
+     */
+    @GET("api/analytics/trip-baseline")
+    suspend fun getTripBaseline(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("distance_km") distanceKm: Double,
+    ): TripBaselineDto
 
     /**
      * DTC timeline groups all events by code over `days` for the given
@@ -527,4 +577,42 @@ data class DtcTimelineCode(
 data class DtcTimelineEvent(
     val id: String,
     @kotlinx.serialization.SerialName("seen_at") val seenAt: String,
+    /** The trip whose window contains [seenAt], resolved server-side by
+     *  time. Null for a code seen while parked — and on backends that
+     *  predate the field, hence the default. */
+    @kotlinx.serialization.SerialName("trip_id") val tripId: String? = null,
+    @kotlinx.serialization.SerialName("trip_distance_km") val tripDistanceKm: Double? = null,
+)
+
+/** Response of /analytics/trip-baseline. Averages are null below the
+ *  sample floor; [sufficient] says which. */
+@kotlinx.serialization.Serializable
+data class TripBaselineDto(
+    @kotlinx.serialization.SerialName("bucket_label") val bucketLabel: String? = null,
+    @kotlinx.serialization.SerialName("sample_size") val sampleSize: Int = 0,
+    val sufficient: Boolean = false,
+    @kotlinx.serialization.SerialName("avg_distance_km") val avgDistanceKm: Double? = null,
+    @kotlinx.serialization.SerialName("avg_duration_s") val avgDurationS: Double? = null,
+    @kotlinx.serialization.SerialName("avg_speed_kph") val avgSpeedKph: Double? = null,
+    @kotlinx.serialization.SerialName("avg_max_speed_kph") val avgMaxSpeedKph: Double? = null,
+    @kotlinx.serialization.SerialName("avg_mpg") val avgMpg: Double? = null,
+)
+
+/**
+ * PATCH /fillups/{id}. Backend-canonical names and STORED units
+ * (fuel_volume in the vehicle's fuel_unit, odo in its dist_unit) — unlike
+ * the phone-shaped POST alias, there is no gal/mi conversion server-side,
+ * so FuelAddViewModel converts before sending. Nulls are omitted.
+ */
+@kotlinx.serialization.Serializable
+data class FillupUpdateRequest(
+    @kotlinx.serialization.SerialName("fillup_date") val fillupDate: String? = null,
+    val odo: Double? = null,
+    @kotlinx.serialization.SerialName("fuel_volume") val fuelVolume: Double? = null,
+    @kotlinx.serialization.SerialName("is_full") val isFull: Boolean? = null,
+    @kotlinx.serialization.SerialName("is_missed") val isMissed: Boolean? = null,
+    @kotlinx.serialization.SerialName("price_total") val priceTotal: Double? = null,
+    @kotlinx.serialization.SerialName("price_per_unit") val pricePerUnit: Double? = null,
+    @kotlinx.serialization.SerialName("fuel_type") val fuelType: Int? = null,
+    val notes: String? = null,
 )

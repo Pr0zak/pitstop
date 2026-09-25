@@ -30,7 +30,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.pitstop.http.CostPerMilePointDto
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.util.UnitFormat
 
 /**
  * $/mi card. Lifetime number on the left, last-12-month bar chart on
@@ -53,7 +57,10 @@ fun CostPerMileCard(
     val totalMiles = points.sumOf { it.miles }
     val lifetime = if (totalMiles > 0) totalCost / totalMiles else null
     val last12 = points.takeLast(12)
+    val system = LocalUnitSystem.current
+    // `costPerMi` holds the DISPLAY value ($/mi or $/km) from here down.
     val barable = last12.filter { (it.costPerMi ?: 0.0) > 0 }
+        .map { it.copy(costPerMi = UnitFormat.costPerDistanceValue(it.costPerMi, system)) }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -64,7 +71,7 @@ fun CostPerMileCard(
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                "Cost per mile",
+                if (system == "imperial") "Cost per mile" else "Cost per km",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -73,7 +80,10 @@ fun CostPerMileCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
-                            text = lifetime?.let { "$%.3f".format(it) } ?: "—",
+                            text = UnitFormat.money(
+                                UnitFormat.costPerDistanceValue(lifetime, system),
+                                digits = 3,
+                            ),
                             fontFamily = FontFamily.Monospace,
                             style = MaterialTheme.typography.headlineMedium.copy(
                                 letterSpacing = (-1.2).sp,
@@ -81,7 +91,7 @@ fun CostPerMileCard(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            "/mi",
+                            UnitFormat.perDistanceUnit(system),
                             modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -98,7 +108,13 @@ fun CostPerMileCard(
                     Box(
                         modifier = Modifier
                             .weight(1.2f)
-                            .height(60.dp),
+                            .height(60.dp)
+                            .semantics {
+                                contentDescription = "Monthly cost per distance, last " +
+                                    "${barable.size} months, latest " +
+                                    UnitFormat.money(barable.last().costPerMi, 3) +
+                                    UnitFormat.perDistanceUnit(system)
+                            },
                     ) {
                         CostBars(
                             points = barable,
@@ -176,7 +192,7 @@ private fun CostBars(
                         this.typeface = android.graphics.Typeface.MONOSPACE
                     }
                     drawContext.canvas.nativeCanvas.drawText(
-                        "$%.3f".format(v),
+                        UnitFormat.money(v, 3),
                         x,
                         y,
                         paint,

@@ -1,26 +1,34 @@
 package com.pitstop.ui.history.detail
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,55 +38,84 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.http.DtcTimelineCode
 import com.pitstop.http.DtcTimelineEvent
+import com.pitstop.ui.components.DetailTopAppBar
+import com.pitstop.ui.components.EmptyState
+import com.pitstop.ui.components.LoadErrorState
+import com.pitstop.ui.components.OverflowAction
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
+import com.pitstop.util.UnitFormat
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
 
+/**
+ * One trouble code's history: status + counts, a 90-day occurrence chart,
+ * and the recent occurrences — each linked to the trip it fired during
+ * when the server could attribute one. The code is the top-bar title.
+ */
 @Composable
 fun DtcDetailScreen(
+    onBack: () -> Unit,
+    onOpenTrip: (String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: DtcDetailViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
-    when {
-        ui.loading -> Box(
-            modifier = modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) { CircularProgressIndicator() }
-        ui.error != null -> Box(
-            modifier = modifier.fillMaxSize().padding(32.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                ui.error ?: "—",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val clipboard = LocalClipboardManager.current
+    Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            DetailTopAppBar(
+                title = ui.code,
+                onBack = onBack,
+                overflow = listOf(
+                    OverflowAction("Copy code", Icons.Filled.ContentCopy) {
+                        clipboard.setText(AnnotatedString(ui.code))
+                    },
+                ),
             )
-        }
-        ui.entry == null -> Box(
-            modifier = modifier.fillMaxSize().padding(32.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                "No history for ${ui.code} in the last year",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        },
+        modifier = modifier,
+    ) { padding ->
+        val inner = Modifier.padding(padding)
+        when {
+            ui.loading -> Box(inner.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            ui.error != null -> LoadErrorState(what = "this code's history", onRetry = viewModel::refresh, modifier = inner)
+            ui.entry == null -> EmptyState(
+                icon = Icons.Outlined.History,
+                title = "No history for ${ui.code}",
+                body = "It hasn't been seen in the last year.",
+                modifier = inner,
             )
+            else -> DtcDetailContent(entry = ui.entry!!, onOpenTrip = onOpenTrip, modifier = inner)
         }
-        else -> Loaded(entry = ui.entry!!, modifier = modifier)
     }
 }
 
+/** Stateless body of [DtcDetailScreen], rendered by screenshot tests. */
 @Composable
-private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
+internal fun DtcDetailContent(
+    entry: DtcTimelineCode,
+    onOpenTrip: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val system = LocalUnitSystem.current
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -86,27 +123,15 @@ private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Headline + active/cleared chip.
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    entry.code,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f),
-                )
-                StatusChip(active = entry.active)
-            }
-            entry.description?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        // Description + status badge (the code itself is the bar title).
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                entry.description?.takeIf { it.isNotBlank() } ?: "No description on file",
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            StatusBadge(active = entry.active)
         }
 
         // Stats card.
@@ -122,10 +147,9 @@ private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
                 val rows = listOf(
-                    "Count" to entry.count.toString(),
+                    "Count" to UnitFormat.count(entry.count.toLong()),
                     "First seen" to fmtShortDateTimeLocal(entry.firstSeen),
                     "Last seen" to fmtShortDateTimeLocal(entry.lastSeen),
-                    "Status" to if (entry.active) "Active" else "Cleared",
                 )
                 for ((i, kv) in rows.withIndex()) {
                     if (i > 0) {
@@ -171,8 +195,9 @@ private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        "Occurrences (last 90 days)",
+                        "Occurrences (last $OCCURRENCE_WINDOW_DAYS days)",
                         style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.semantics { heading() },
                     )
                     OccurrenceBars(
                         events = entry.events,
@@ -183,7 +208,8 @@ private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
             }
         }
 
-        // Recent event list — last 20 events, most-recent first.
+        // Recent event list — last 20 events, most-recent first. A row
+        // whose event falls inside a trip opens that trip.
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -194,30 +220,56 @@ private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
                     "Recent occurrences",
                     style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { heading() },
                 )
                 val recent = entry.events.sortedByDescending { it.seenAt }.take(20)
                 for ((i, ev) in recent.withIndex()) {
                     if (i > 0) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
+                    val tripId = ev.tripId
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .then(
+                                if (tripId != null) {
+                                    Modifier.clickable(onClickLabel = "Open trip") { onOpenTrip(tripId) }
+                                } else {
+                                    Modifier
+                                },
+                            )
                             .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            fmtShortDateTimeLocal(ev.seenAt),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                fmtShortDateTimeLocal(ev.seenAt),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                when {
+                                    tripId == null -> "Not during a recorded trip"
+                                    ev.tripDistanceKm != null ->
+                                        "During a ${UnitFormat.distanceKm(ev.tripDistanceKm, system)} trip"
+                                    else -> "During a trip"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (tripId != null) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -227,19 +279,30 @@ private fun Loaded(entry: DtcTimelineCode, modifier: Modifier) {
     }
 }
 
+/**
+ * Active / Cleared as a read-only badge. It was an AssistChip with an empty
+ * onClick — which looked tappable, announced itself as a button, and did
+ * nothing.
+ */
 @Composable
-private fun StatusChip(active: Boolean) {
-    AssistChip(
-        onClick = {},
-        label = { Text(if (active) "Active" else "Cleared") },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = if (active) MaterialTheme.colorScheme.errorContainer
-            else MaterialTheme.colorScheme.secondaryContainer,
-            labelColor = if (active) MaterialTheme.colorScheme.onErrorContainer
-            else MaterialTheme.colorScheme.onSecondaryContainer,
-        ),
+private fun StatusBadge(active: Boolean) {
+    val (bg, fg) = if (active) {
+        MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.ext.goodContainer to MaterialTheme.ext.good
+    }
+    Text(
+        if (active) "Active" else "Cleared",
+        style = MaterialTheme.typography.labelLarge,
+        color = fg,
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .semantics { contentDescription = "Status: ${if (active) "active" else "cleared"}" },
     )
 }
+
+private const val OCCURRENCE_WINDOW_DAYS = 90
 
 @Composable
 private fun OccurrenceBars(
@@ -249,7 +312,7 @@ private fun OccurrenceBars(
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val today = remember { LocalDate.now(zone) }
-    val windowDays = 90
+    val windowDays = OCCURRENCE_WINDOW_DAYS
     val countByDate: Map<LocalDate, Int> = remember(events) {
         events
             .mapNotNull { ev ->
@@ -261,11 +324,26 @@ private fun OccurrenceBars(
             .eachCount()
     }
     val maxCount = (countByDate.values.maxOrNull() ?: 1).coerceAtLeast(1)
+    val start = today.minusDays((windowDays - 1).toLong())
+    val mid = today.minusDays((windowDays / 2).toLong())
+    val inWindow = countByDate.filterKeys { !it.isBefore(start) }.values.sum()
+    val dayFmt = remember { DateTimeFormatter.ofPattern("MMM d") }
 
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            "max $maxCount / day",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(120.dp),
+            .height(120.dp)
+            .semantics {
+                contentDescription = "$inWindow occurrences between ${start.format(dayFmt)} " +
+                    "and ${today.format(dayFmt)}, at most $maxCount in one day"
+            },
     ) {
         val w = size.width
         val h = size.height
@@ -306,6 +384,21 @@ private fun OccurrenceBars(
                     size = Size((barW * 0.7f).coerceAtLeast(1.5f), barH),
                 )
             }
+        }
+    }
+    Row(Modifier.fillMaxWidth()) {
+        for ((i, d) in listOf(start, mid, today).withIndex()) {
+            Text(
+                d.format(dayFmt),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = when (i) {
+                    0 -> TextAlign.Start
+                    1 -> TextAlign.Center
+                    else -> TextAlign.End
+                },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }

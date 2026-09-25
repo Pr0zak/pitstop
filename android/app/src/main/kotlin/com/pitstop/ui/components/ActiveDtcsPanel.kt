@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +25,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,11 +41,10 @@ import java.time.temporal.ChronoUnit
  * is non-empty — we don't show a "no active codes" placeholder, the
  * user explicitly asked to hide.
  *
- * Each row is tap-to-open. Because the History tab owns its own
- * NavHost we can't deep-link directly into a specific DTC code from
- * here without a much larger plumbing change; we fall back to a
- * coarser "open History" callback that the host (StatusScreen) wires
- * to a tab switch.
+ * Each row is tap-to-open and lands on THAT code's detail screen: the
+ * host hands [onOpen] to MainActivity, which sets History's hoisted
+ * sub-tab + pending DTC route and switches tabs (see HistoryViewModel
+ * .openDtc). Rows are at least 48 dp tall — they are the tap target.
  */
 @Composable
 fun ActiveDtcsPanel(
@@ -51,7 +53,7 @@ fun ActiveDtcsPanel(
     modifier: Modifier = Modifier,
 ) {
     if (dtcs.isEmpty()) return
-    val accent = Color(0xFFFF3A2E)
+    val accent = MaterialTheme.colorScheme.error
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -84,6 +86,7 @@ fun ActiveDtcsPanel(
                     style = MaterialTheme.typography.titleMedium,
                     color = accent,
                     fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.semantics { heading() },
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -122,7 +125,8 @@ private fun DtcRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .heightIn(min = 48.dp)
+            .clickable(onClickLabel = "Open ${dtc.code}", onClick = onClick)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),

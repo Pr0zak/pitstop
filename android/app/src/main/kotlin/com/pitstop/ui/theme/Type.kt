@@ -11,18 +11,23 @@ import androidx.compose.ui.unit.sp
  * Compose typography matching the web design tokens. Geist isn't bundled
  * in the APK — we lean on system sans-serif (Roboto on Android) which is
  * close enough for cluster-style readability. Mono goes through the
- * platform mono family (default Roboto Mono / Noto Mono). Tabular
- * numerals are left to per-call-site `FontFeature("tnum")` opt-in
- * because Compose's TextStyle doesn't yet expose font-variant-numeric
- * uniformly across versions.
+ * platform mono family (default Roboto Mono / Noto Mono). Every display*
+ * and title* style sets `fontFeatureSettings = "tnum"` (tabular figures):
+ * those are the styles numbers are drawn in, and proportional digits make
+ * a ticking value (speed, a count-up age) jitter sideways as its width
+ * changes. Body/label styles keep proportional figures for prose.
  *
  * Weights stay in the 400..600 band; we never go heavier (the design
  * leans on letter-spacing + line-height for visual heft, not bold).
  */
 private val UiSans = FontFamily.SansSerif
 
+/** OpenType tabular figures — see the class comment. */
+private const val TNUM = "tnum"
+
 val PitstopTypography = Typography(
     displayLarge = TextStyle(
+        fontFeatureSettings = TNUM,
         fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Medium,
         fontSize = 56.sp,
@@ -30,6 +35,7 @@ val PitstopTypography = Typography(
         letterSpacing = (-1.4).sp,
     ),
     displayMedium = TextStyle(
+        fontFeatureSettings = TNUM,
         fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Medium,
         fontSize = 40.sp,
@@ -37,6 +43,7 @@ val PitstopTypography = Typography(
         letterSpacing = (-1.0).sp,
     ),
     displaySmall = TextStyle(
+        fontFeatureSettings = TNUM,
         fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Medium,
         fontSize = 28.sp,
@@ -66,18 +73,21 @@ val PitstopTypography = Typography(
     ),
 
     titleLarge = TextStyle(
+        fontFeatureSettings = TNUM,
         fontFamily = UiSans,
         fontWeight = FontWeight.SemiBold,
         fontSize = 18.sp,
         lineHeight = 22.sp,
     ),
     titleMedium = TextStyle(
+        fontFeatureSettings = TNUM,
         fontFamily = UiSans,
         fontWeight = FontWeight.SemiBold,
         fontSize = 16.sp,
         lineHeight = 20.sp,
     ),
     titleSmall = TextStyle(
+        fontFeatureSettings = TNUM,
         fontFamily = UiSans,
         fontWeight = FontWeight.Medium,
         fontSize = 14.sp,

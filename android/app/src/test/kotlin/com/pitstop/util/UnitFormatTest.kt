@@ -122,4 +122,47 @@ class UnitFormatTest {
         assertEquals(560.0, Quantity.TempC.convert(560.0, ""), eps)
         assertEquals("°C", Quantity.TempC.unit("nonsense"))
     }
+
+    @Test
+    fun `distance and odometer follow the unit system`() {
+        assertEquals("12.4 mi", UnitFormat.distanceKm(20.0, "imperial"))
+        assertEquals("20.0 km", UnitFormat.distanceKm(20.0, "metric"))
+        assertEquals("1,000 mi", UnitFormat.odometerMi(1000.0, "imperial"))
+        assertEquals("1,609 km", UnitFormat.odometerMi(1000.0, "metric"))
+    }
+
+    @Test
+    fun `fillup volume converts US gallons to litres for metric`() {
+        assertEquals("10.00 gal", UnitFormat.volumeGal(10.0, "imperial"))
+        assertEquals("37.85 L", UnitFormat.volumeGal(10.0, "metric"))
+    }
+
+    @Test
+    fun `economy inverts to L per 100 km and flips the better direction`() {
+        assertEquals("23.5 mpg", UnitFormat.economy(23.5, "imperial"))
+        // 235.215 / 23.5 = 10.01
+        assertEquals("10.0 L/100km", UnitFormat.economy(23.5, "metric"))
+        assertEquals(true, UnitFormat.economyHigherIsBetter("imperial"))
+        assertEquals(false, UnitFormat.economyHigherIsBetter("metric"))
+        assertEquals("—", UnitFormat.economy(0.0, "metric"))
+    }
+
+    @Test
+    fun `instant economy needs motion and a fuel rate`() {
+        // 2 g/s at 100 km/h: 9.6 L/h -> 10.42 km/L -> 24.5 mpg
+        assertEquals(24.51, UnitFormat.instantMpg(2.0, 100.0)!!, 0.05)
+        assertEquals(null, UnitFormat.instantMpg(2.0, 1.0))
+        assertEquals(null, UnitFormat.instantMpg(null, 80.0))
+    }
+
+    @Test
+    fun `prices convert per volume and per distance`() {
+        val us = java.util.Locale.US
+        assertEquals("$3.785/gal", UnitFormat.pricePerVolume(3.785, "imperial", 3, us))
+        assertEquals("$1.000/L", UnitFormat.pricePerVolume(3.785411784, "metric", 3, us))
+        assertEquals("$0.161/mi", UnitFormat.costPerDistance(0.161, "imperial", 3, us))
+        assertEquals("$0.100/km", UnitFormat.costPerDistance(0.1609344, "metric", 3, us))
+        assertEquals("$1,234.50", UnitFormat.money(1234.5, 2, us))
+        assertEquals("18,402", UnitFormat.count(18_402, us))
+    }
 }

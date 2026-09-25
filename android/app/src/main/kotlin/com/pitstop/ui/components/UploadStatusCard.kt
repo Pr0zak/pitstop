@@ -7,11 +7,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -22,6 +21,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pitstop.drive.UploadOutcome
@@ -52,6 +54,10 @@ fun UploadStatusCard(
     onSync: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    /** History passes true: there the card is an interruption, so it only
+     *  appears while a pass runs or after one failed. The idle "N queued"
+     *  and "Uploaded 3 drives" states stay on Home. */
+    onlyActiveOrFailed: Boolean = false,
 ) {
     val running = progress as? UploadProgress.Running
     val finished = progress as? UploadProgress.Finished
@@ -73,9 +79,19 @@ fun UploadStatusCard(
         (nowMs - it.finishedAtMs) < FINISHED_VISIBLE_MS
     }
     if (running == null && recentFinish == null && pendingCount == 0) return
+    if (onlyActiveOrFailed && running == null) {
+        val failed = recentFinish?.outcome == UploadOutcome.NetworkStopped ||
+            recentFinish?.outcome == UploadOutcome.Stalled
+        if (!failed) return
+    }
 
+    // Polite live region: TalkBack announces "Uploaded 3 drives" / "Couldn't
+    // reach the server" when the pass ends, without the user having to find
+    // the card. Polite, not Assertive — progress ticks must not interrupt.
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
         ),
@@ -249,15 +265,11 @@ private fun QueuedBody(pendingCount: Int, onSync: () -> Unit) {
     }
 }
 
+/** The card's one action. A tonal button, not a chip: it does something
+ *  (starts an upload), and M3 chips are for filtering / suggestions. */
 @Composable
 private fun SyncChip(label: String, onClick: () -> Unit) {
-    AssistChip(
-        onClick = onClick,
-        label = { Text(label) },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-        ),
-    )
+    FilledTonalButton(onClick = onClick) { Text(label) }
 }
 
 /**
@@ -290,10 +302,9 @@ private fun clockRange(startMs: Long, endMs: Long): String =
 private fun plural(n: Int, noun: String): String =
     "$n $noun${if (n == 1) "" else "s"}"
 
-/** Thousands separators without pulling in a locale-aware formatter for
- *  a single label. */
-internal fun formatCount(n: Int): String =
-    n.toString().reversed().chunked(3).joinToString(",").reversed()
+/** Locale-grouped sample count ("18,402" / "18.402"). */
+internal fun formatCount(n: Int, locale: java.util.Locale = java.util.Locale.getDefault()): String =
+    com.pitstop.util.UnitFormat.count(n.toLong(), locale)
 
 /** Binary units, one decimal above a megabyte — payloads here run from
  *  tens of kilobytes to a handful of megabytes. */

@@ -1,23 +1,36 @@
 package com.pitstop.ui.fuel
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.data.SettingsRepository
 import com.pitstop.http.FillupRequest
+import com.pitstop.http.FillupUpdateRequest
 import com.pitstop.http.PitstopApi
+import com.pitstop.util.UnitFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.util.Locale
 import javax.inject.Inject
 
+/**
+ * The fillup form. Every numeric field holds text in the user's DISPLAY
+ * units — litres / km / price-per-litre for a metric user — and is only
+ * converted at the edges: prefill converts stored values in, submit
+ * converts back out to what each endpoint wants (the phone POST alias
+ * takes US gal + mi; the PATCH takes the vehicle's stored units).
+ */
 data class FuelFormState(
-    val gallons: String = "",
-    val pricePerGallon: String = "",
+    val volume: String = "",
+    val pricePerVolume: String = "",
     val totalPrice: String = "",
     val odometer: String = "",
     val odometerAutoFilled: Boolean = false,
@@ -31,9 +44,19 @@ data class FuelFormState(
     val stationSuggestions: List<String> = emptyList(),
     val submitting: Boolean = false,
     val submittedId: String? = null,
+    /** Server / network failure on submit — the snackbar. Field problems
+     *  are NOT here; they are [FuelFormErrors], shown on the field. */
     val errorMessage: String? = null,
     val nearestPriorStation: String? = null,
+    /** Last recorded fillup odometer, in DISPLAY units. */
     val lastOdometer: Double? = null,
+    /** Local date-time of the fillup; null = "now" (resolved at submit). */
+    val dateTime: LocalDateTime? = null,
+    /** Show field errors on untouched fields too — set by a Save attempt. */
+    val showAllErrors: Boolean = false,
+    /** Non-null in edit mode: the fillup being corrected. */
+    val editingId: String? = null,
+    val loadingEdit: Boolean = false,
 
     // Vehicle selection
     val vehicles: List<VehicleOption> = emptyList(),
@@ -44,6 +67,46 @@ data class FuelFormState(
     //   200 = Diesel, 300 = E85, 400 = LPG / propane
     val fuelType: Int = 100,
 )
+
+/** Field-level problems; null = fine. Pure so it is unit-testable. */
+data class FuelFormErrors(
+    val volume: String? = null,
+    val total: String? = null,
+    val odometer: String? = null,
+) {
+    val any: Boolean get() = volume != null || total != null || odometer != null
+}
+
+/**
+ * Validate the form. [volumeUnit] / [distanceUnit] are the display unit
+ * labels, used in the messages. The odometer may be blank (the server
+ * falls back to the last reading) but, when given, must not go backwards.
+ */
+fun validateFuelForm(f: FuelFormState, distanceUnit: String, volumeUnit: String): FuelFormErrors {
+    val vol = f.volume.toDoubleOrNull()
+    val total = f.totalPrice.toDoubleOrNull()
+    val odo = f.odometer.toDoubleOrNull()
+    val last = f.lastOdometer
+    return FuelFormErrors(
+        volume = when {
+            f.volume.isBlank() -> "Enter the amount in $volumeUnit"
+            vol == null || vol <= 0.0 -> "Must be a number above 0"
+            else -> null
+        },
+        total = when {
+            f.totalPrice.isBlank() -> "Enter the total cost"
+            total == null || total < 0.0 -> "Must be a number"
+            else -> null
+        },
+        odometer = when {
+            f.odometer.isBlank() -> null
+            odo == null -> "Must be a number"
+            last != null && odo < last - 0.5 ->
+                "Below the last fillup (${"%,.0f".format(last)} $distanceUnit)"
+            else -> null
+        },
+    )
+}
 
 /** Lightweight vehicle row for the picker dropdown. */
 data class VehicleOption(
@@ -56,6 +119,9 @@ data class VehicleOption(
      *  odometer prefill can correct itself when the picker changes
      *  vehicles. See [FuelAddViewModel.autoFillOdometer]. */
     val odometerOffsetKm: Double? = null,
+    /** Fuelio storage units (dist 0=km 1=mi, fuel 0=L 1=US gal), for PATCH. */
+    val distUnit: Int? = null,
+    val fuelUnit: Int? = null,
 )
 
 /** Fuelio's fuel-type enum + display label. */
@@ -70,6 +136,9 @@ val FUEL_TYPES: List<FuelTypeOption> = listOf(
     FuelTypeOption(400, "LPG"),
 )
 
+private const val MI_TO_KM = 1.609344
+private const val GAL_TO_L = 3.785411784
+
 @HiltViewModel
 class FuelAddViewModel @Inject constructor(
     private val locationProvider: LocationProvider,
@@ -78,28 +147,45 @@ class FuelAddViewModel @Inject constructor(
     private val api: PitstopApi,
     private val stateBus: com.pitstop.service.BridgeStateBus,
     private val logBuffer: com.pitstop.log.LogBuffer,
+    savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
-    private val _form = MutableStateFlow(FuelFormState())
+    /** Set when opened from Fillup detail's Edit (History route
+     *  fillup/{editId}/edit); null on the Fuel tab. */
+    private val editId: String? = savedStateHandle.get<String>("editId")
+
+    private val _form = MutableStateFlow(FuelFormState(editingId = editId, loadingEdit = editId != null))
     val form: StateFlow<FuelFormState> = _form.asStateFlow()
 
     private var allHistory: List<HistoricFillup> = emptyList()
 
+    /** Unit system at open time. The form's text is in these units; a
+     *  toggle mid-entry would silently re-mean the typed numbers, so it is
+     *  deliberately read once rather than observed. */
+    private var system: String = "imperial"
+    private val metric: Boolean get() = system != "imperial"
+
     init {
         viewModelScope.launch {
+            system = settingsRepository.settings.first().unitSystem
             allHistory = historyStore.all()
-            // Surface the most recent odometer reading from history so the
-            // "Last value: 76,304 mi" hint matches the design's reference.
-            val lastOdo = allHistory.firstOrNull()?.let { null } // history doesn't carry odo today
-            _form.value = _form.value.copy(lastOdometer = lastOdo)
-            // Pre-load vehicle list + default selected slug.
             loadVehicles()
-            // Auto-prefill odometer from the live OBD bridge if a reading is
-            // available. The user can override by editing the field.
-            autoFillOdometer()
-            refreshGps()
+            if (editId != null) {
+                loadForEdit(editId)
+            } else {
+                // Auto-prefill odometer from the live OBD bridge if a reading
+                // is available. The user can override by editing the field.
+                autoFillOdometer()
+                refreshGps()
+            }
         }
     }
+
+    // ── Unit edges ──────────────────────────────────────────────────
+    private fun miToDisplay(mi: Double) = if (metric) mi * MI_TO_KM else mi
+    private fun displayToMi(v: Double) = if (metric) v / MI_TO_KM else v
+    private fun galToDisplay(gal: Double) = if (metric) gal * GAL_TO_L else gal
+    private fun displayToGal(v: Double) = if (metric) v / GAL_TO_L else v
 
     private suspend fun loadVehicles() {
         val current = settingsRepository.current()
@@ -136,14 +222,16 @@ class FuelAddViewModel @Inject constructor(
                     name = it.name,
                     active = it.active ?: true,
                     odometerOffsetKm = it.odometerOffsetKm,
+                    distUnit = it.distUnit,
+                    fuelUnit = it.fuelUnit,
                 )
             },
             selectedVehicleSlug = resolvedSlug,
         )
+        if (editId != null) return
         // Once the vehicle list is known, fetch the latest fillup for the
-        // active selection so the "Last value: X mi" hint and odometer
-        // auto-prefill reflect the per-vehicle history (not just the
-        // bridge's live OBD reading).
+        // active selection so the "Last value" hint and odometer prefill
+        // reflect the per-vehicle history (not just the live OBD reading).
         if (resolvedSlug.isNotBlank()) loadLatestOdoForSlug(resolvedSlug)
         // Retry the autoFill now that we have the vehicle's
         // backend-persisted latest_odo as a fallback for an empty
@@ -151,6 +239,40 @@ class FuelAddViewModel @Inject constructor(
         val selected = vs.firstOrNull { it.slug == resolvedSlug }
         val latestOdoKm = selected?.latest?.get("odometer")?.valueNum
         autoFillOdometer(vehicleLatestOdoKm = latestOdoKm)
+    }
+
+    /**
+     * Edit mode: prefill from the stored row. Stored values are in the
+     * vehicle's units; the form shows display units, so both conversions
+     * run here (stored → US → display).
+     */
+    private suspend fun loadForEdit(id: String) {
+        val f = runCatching { api.getFillupDetail(id) }.getOrElse { e ->
+            logBuffer.warn("fuel: edit load failed", mapOf("id" to id, "err" to (e.message ?: "")))
+            _form.value = _form.value.copy(loadingEdit = false, errorMessage = "Couldn't load that fillup")
+            return
+        }
+        val vehicle = _form.value.vehicles.firstOrNull { it.id == f.vehicleId }
+        val odoMi = if (vehicle?.distUnit == 0) f.odo / MI_TO_KM else f.odo
+        val gal = f.fuelVolume?.let { if (vehicle?.fuelUnit == 0) it / GAL_TO_L else it }
+        val vol = gal?.let { galToDisplay(it) }
+        val local = runCatching {
+            OffsetDateTime.parse(f.fillupDate).atZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime()
+        }.getOrNull()
+        _form.value = _form.value.copy(
+            loadingEdit = false,
+            selectedVehicleSlug = vehicle?.slug ?: _form.value.selectedVehicleSlug,
+            odometer = String.format(Locale.US, "%.0f", miToDisplay(odoMi)),
+            volume = vol?.let { String.format(Locale.US, "%.3f", it).trimEnd('0').trimEnd('.') }.orEmpty(),
+            totalPrice = f.priceTotal?.let { String.format(Locale.US, "%.2f", it) }.orEmpty(),
+            pricePerVolume = if (vol != null && vol > 0 && f.priceTotal != null) {
+                String.format(Locale.US, "%.3f", f.priceTotal / vol)
+            } else "",
+            partial = !f.isFull,
+            isMissed = f.isMissed,
+            notes = f.notes.orEmpty(),
+            dateTime = local,
+        )
     }
 
     /**
@@ -166,15 +288,14 @@ class FuelAddViewModel @Inject constructor(
             .getOrNull()
             ?.firstOrNull()
             ?: return
-        val odoMi = latest.odo
+        val odo = miToDisplay(latest.odo)
         val current = _form.value
         _form.value = current.copy(
-            lastOdometer = odoMi,
+            lastOdometer = odo,
             // Prefill if the field is empty or carries an auto-filled
-            // value from a previous vehicle's bridge — fresh fillup
-            // wins.
+            // value from a previous vehicle's bridge — fresh fillup wins.
             odometer = if (current.odometer.isBlank() || current.odometerAutoFilled) {
-                String.format(Locale.US, "%.0f", odoMi)
+                String.format(Locale.US, "%.0f", odo)
             } else current.odometer,
             odometerAutoFilled = current.odometer.isBlank() || current.odometerAutoFilled,
         )
@@ -212,9 +333,8 @@ class FuelAddViewModel @Inject constructor(
             ?.odometerOffsetKm
             ?: 0.0
         val km = pcmKm - offsetKm
-        // OBD reports km; convert to miles for the form (matches the
-        // "Odometer (mi)" label). User can override.
-        val mi = km * 0.621371
+        // OBD reports km; the form is in display units.
+        val value0 = UnitFormat.Quantity.DistanceKm.convert(km, system)
         // Sanity-guard the live reading: an odometer only ever increases,
         // so a value below the last recorded fillup — or implausibly far
         // above it — is a corrupt OBD frame or a stale/glitched bus entry,
@@ -222,17 +342,16 @@ class FuelAddViewModel @Inject constructor(
         // report). Don't prefill garbage: fall back to the last fillup odo
         // as a safe floor the user can nudge up from, and log it so a
         // recurrence is one query away.
-        val lastMi = _form.value.lastOdometer
-        val value = if (
-            lastMi == null || (mi >= lastMi - 1.0 && mi <= lastMi + MAX_MI_SINCE_LAST)
-        ) {
-            mi
+        val last = _form.value.lastOdometer
+        val maxJump = miToDisplay(MAX_MI_SINCE_LAST)
+        val value = if (last == null || (value0 >= last - 1.0 && value0 <= last + maxJump)) {
+            value0
         } else {
             logBuffer.warn(
                 "fuel: implausible auto-fill odometer rejected",
-                mapOf("computed_mi" to mi, "last_fillup_mi" to lastMi),
+                mapOf("computed" to value0, "last_fillup" to last, "system" to system),
             )
-            lastMi
+            last
         }
         _form.value = _form.value.copy(
             odometer = String.format(Locale.US, "%.0f", value),
@@ -251,6 +370,11 @@ class FuelAddViewModel @Inject constructor(
         _form.value = _form.value.copy(fuelType = code)
     }
 
+    /** Date / time pickers. Null resets to "now". */
+    fun setDateTime(value: LocalDateTime?) {
+        update { it.copy(dateTime = value) }
+    }
+
     fun update(transform: (FuelFormState) -> FuelFormState) {
         val next = transform(_form.value).copy(
             errorMessage = null,
@@ -265,39 +389,39 @@ class FuelAddViewModel @Inject constructor(
     }
 
     /**
-     * Update gallons and propagate the totalPrice = gallons × pricePerGallon
-     * relationship — whichever two fields the user has filled, the third
-     * derives. Mirrors the auto-fill behaviour Fuelio's refuelling screen
-     * has where editing any of {gal, price/gal, total} updates the others.
+     * Update the volume and propagate total = volume × price — whichever
+     * two fields the user has filled, the third derives. Mirrors Fuelio's
+     * refuelling screen where editing any of {volume, price, total}
+     * updates the others. Unit-free: all three are in display units.
      */
-    fun setGallons(value: String) {
-        val gal = value.toDoubleOrNull()
-        val ppg = _form.value.pricePerGallon.toDoubleOrNull()
+    fun setVolume(value: String) {
+        val vol = value.toDoubleOrNull()
+        val ppv = _form.value.pricePerVolume.toDoubleOrNull()
         val derivedTotal =
-            if (gal != null && gal > 0 && ppg != null && ppg > 0)
-                String.format(Locale.US, "%.2f", gal * ppg)
+            if (vol != null && vol > 0 && ppv != null && ppv > 0)
+                String.format(Locale.US, "%.2f", vol * ppv)
             else _form.value.totalPrice
-        update { it.copy(gallons = value, totalPrice = derivedTotal) }
+        update { it.copy(volume = value, totalPrice = derivedTotal) }
     }
 
-    fun setPricePerGallon(value: String) {
-        val ppg = value.toDoubleOrNull()
-        val gal = _form.value.gallons.toDoubleOrNull()
+    fun setPricePerVolume(value: String) {
+        val ppv = value.toDoubleOrNull()
+        val vol = _form.value.volume.toDoubleOrNull()
         val derivedTotal =
-            if (gal != null && gal > 0 && ppg != null && ppg > 0)
-                String.format(Locale.US, "%.2f", gal * ppg)
+            if (vol != null && vol > 0 && ppv != null && ppv > 0)
+                String.format(Locale.US, "%.2f", vol * ppv)
             else _form.value.totalPrice
-        update { it.copy(pricePerGallon = value, totalPrice = derivedTotal) }
+        update { it.copy(pricePerVolume = value, totalPrice = derivedTotal) }
     }
 
     fun setTotalPrice(value: String) {
         val total = value.toDoubleOrNull()
-        val gal = _form.value.gallons.toDoubleOrNull()
-        val derivedPpg =
-            if (total != null && total > 0 && gal != null && gal > 0)
-                String.format(Locale.US, "%.3f", total / gal)
-            else _form.value.pricePerGallon
-        update { it.copy(totalPrice = value, pricePerGallon = derivedPpg) }
+        val vol = _form.value.volume.toDoubleOrNull()
+        val derivedPpv =
+            if (total != null && total > 0 && vol != null && vol > 0)
+                String.format(Locale.US, "%.3f", total / vol)
+            else _form.value.pricePerVolume
+        update { it.copy(totalPrice = value, pricePerVolume = derivedPpv) }
     }
 
     fun refreshGps() {
@@ -313,32 +437,34 @@ class FuelAddViewModel @Inject constructor(
         }
     }
 
-    fun applyNearestStation() {
-        val current = _form.value
-        val name = current.nearestPriorStation ?: return
-        _form.value = current.copy(stationName = name)
-    }
-
     fun submit() {
         // Synchronous re-entry guard. Without this, three rapid taps fire
         // three viewModelScope.launch{} coroutines before any of them can
-        // flip the submitting flag — and we just shipped 3 duplicate
+        // flip the submitting flag — and we once shipped 3 duplicate
         // fillups to the user's drive in production. Set the flag on the
         // calling thread so a second tap inside the same frame sees it
         // already true and bails.
         if (_form.value.submitting) return
+        val volUnit = UnitFormat.Quantity.VolumeGal.unit(system)
+        val distUnit = UnitFormat.Quantity.DistanceMi.unit(system)
+        if (validateFuelForm(_form.value, distUnit, volUnit).any) {
+            _form.value = _form.value.copy(showAllErrors = true)
+            return
+        }
         _form.value = _form.value.copy(submitting = true, errorMessage = null)
 
         viewModelScope.launch {
             val f = _form.value
-            val gallons = f.gallons.toDoubleOrNull()
-            val totalPrice = f.totalPrice.toDoubleOrNull()
-            if (gallons == null || gallons <= 0) {
-                _form.value = f.copy(submitting = false, errorMessage = "Enter gallons")
-                return@launch
-            }
-            if (totalPrice == null || totalPrice < 0) {
-                _form.value = f.copy(submitting = false, errorMessage = "Enter total price")
+            val volume = f.volume.toDouble()
+            val totalPrice = f.totalPrice.toDouble()
+            val gallons = displayToGal(volume)
+            val odoMi = f.odometer.toDoubleOrNull()?.let { displayToMi(it) }
+            val whenIso = (f.dateTime ?: LocalDateTime.now())
+                .atZone(ZoneId.systemDefault())
+                .toOffsetDateTime()
+                .toString()
+            if (f.editingId != null) {
+                submitEdit(f, f.editingId, gallons, totalPrice, odoMi, whenIso)
                 return@launch
             }
             val settings = settingsRepository.current().settings
@@ -348,7 +474,7 @@ class FuelAddViewModel @Inject constructor(
             if (targetSlug.isBlank() || settings.apiBaseUrl.isBlank()) {
                 _form.value = f.copy(
                     submitting = false,
-                    errorMessage = "Pick a vehicle and configure API URL first",
+                    errorMessage = "Pick a vehicle and set up the server in Settings first",
                 )
                 return@launch
             }
@@ -361,29 +487,17 @@ class FuelAddViewModel @Inject constructor(
             val freshGps = withTimeoutOrNull(4_000) { locationProvider.fix() }
             val gpsForRequest = freshGps ?: f.gps
 
-            // Compose the notes field with structured suffixes (gas type,
-            // missed flag) appended so the backend captures the extras
-            // even though the FillupRequest schema doesn't carry them
-            // directly. The /api/fillups alias passes notes through verbatim.
-            val notesParts = mutableListOf<String>()
-            if (f.notes.isNotBlank()) notesParts.add(f.notes.trim())
-            FUEL_TYPES.firstOrNull { it.code == f.fuelType }?.let {
-                if (f.fuelType != 100) notesParts.add("[fuel:${it.label}]")
-            }
-            if (f.isMissed) notesParts.add("[missed-fillup]")
-            val notesPayload = notesParts.joinToString("\n").ifBlank { null }
-
             val request = FillupRequest(
                 vehicleSlug = targetSlug,
-                timestampIso = Instant.now().toString(),
+                timestampIso = whenIso,
                 gallons = gallons,
                 totalPrice = totalPrice,
-                odometerMi = f.odometer.toDoubleOrNull(),
+                odometerMi = odoMi,
                 partial = f.partial,
                 lat = gpsForRequest?.lat,
                 lon = gpsForRequest?.lon,
                 stationName = f.stationName.ifBlank { null },
-                notes = notesPayload,
+                notes = composeNotes(f),
             )
             // Reflect the fresh fix back into the form so the user sees
             // the coords that landed on the server.
@@ -416,12 +530,57 @@ class FuelAddViewModel @Inject constructor(
                     gps = f.gps,
                 )
             } catch (e: Exception) {
+                logBuffer.warn("fuel: submit failed", mapOf("err" to (e.message ?: e::class.java.simpleName)))
                 _form.value = f.copy(
                     submitting = false,
-                    errorMessage = e.message ?: "Submit failed",
+                    errorMessage = "Couldn't save — check the connection and try again",
                 )
             }
         }
+    }
+
+    /** PATCH in the vehicle's STORED units (the PATCH does no conversion). */
+    private suspend fun submitEdit(
+        f: FuelFormState,
+        id: String,
+        gallons: Double,
+        totalPrice: Double,
+        odoMi: Double?,
+        whenIso: String,
+    ) {
+        val vehicle = f.vehicles.firstOrNull { it.slug == f.selectedVehicleSlug }
+        val storedVolume = if (vehicle?.fuelUnit == 0) gallons * GAL_TO_L else gallons
+        val storedOdo = odoMi?.let { if (vehicle?.distUnit == 0) it * MI_TO_KM else it }
+        val body = FillupUpdateRequest(
+            fillupDate = whenIso,
+            odo = storedOdo,
+            fuelVolume = storedVolume,
+            isFull = !f.partial,
+            isMissed = f.isMissed,
+            priceTotal = totalPrice,
+            pricePerUnit = if (storedVolume > 0) totalPrice / storedVolume else null,
+            notes = f.notes.trim().ifBlank { null },
+        )
+        runCatching { api.updateFillup(id, body) }
+            .onSuccess { _form.value = f.copy(submitting = false, submittedId = it.id) }
+            .onFailure { e ->
+                logBuffer.warn("fuel: edit failed", mapOf("id" to id, "err" to (e.message ?: "")))
+                _form.value = f.copy(submitting = false, errorMessage = "Couldn't save the changes")
+            }
+    }
+
+    // Compose the notes field with structured suffixes (gas type, missed
+    // flag) appended so the backend captures the extras even though the
+    // FillupRequest schema doesn't carry them directly. The alias passes
+    // notes through verbatim.
+    private fun composeNotes(f: FuelFormState): String? {
+        val notesParts = mutableListOf<String>()
+        if (f.notes.isNotBlank()) notesParts.add(f.notes.trim())
+        FUEL_TYPES.firstOrNull { it.code == f.fuelType }?.let {
+            if (f.fuelType != 100) notesParts.add("[fuel:${it.label}]")
+        }
+        if (f.isMissed) notesParts.add("[missed-fillup]")
+        return notesParts.joinToString("\n").ifBlank { null }
     }
 
     private companion object {

@@ -25,11 +25,12 @@ import androidx.compose.ui.unit.dp
 import com.pitstop.http.CostPerMilePointDto
 import com.pitstop.http.FillupDto
 import com.pitstop.http.MonthlySpendPointDto
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
+import com.pitstop.util.UnitFormat
 import kotlin.math.abs
-
-private val ACCENT = Color(0xFFF97316)
-private val UP = Color(0xFF22C55E)
-private val DOWN = Color(0xFFEF4444)
 
 /** How many recent fillups the sparkline plots. */
 private const val SPARK_TANKS = 12
@@ -55,11 +56,19 @@ fun FillupStatsHeader(
         computeFillupStats(fillups, costPerMile, monthlySpend)
     }
     if (stats.isEmpty) return
+    val system = LocalUnitSystem.current
+    val good = MaterialTheme.ext.good
+    val bad = MaterialTheme.ext.bad
+    // Economy delta shown in DISPLAY units (L/100km falls when things get
+    // better) but coloured by the mpg delta, which is "better" either way.
+    val econDelta = stats.mpgDelta?.let { d ->
+        val last = UnitFormat.economyValue(stats.lastMpg, system)
+        val avg = UnitFormat.economyValue(stats.lastMpg?.minus(d), system)
+        if (last != null && avg != null) last - avg else null
+    }
 
     Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -71,38 +80,47 @@ fun FillupStatsHeader(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 StatTile(
-                    value = stats.lastMpg?.let { fmt1(it) } ?: "—",
-                    unit = "MPG",
-                    caption = stats.mpgDelta?.let { deltaText(it, "vs avg", 1) },
-                    captionColor = stats.mpgDelta?.let { if (it >= 0) UP else DOWN },
+                    value = UnitFormat.economyNumber(stats.lastMpg, system),
+                    unit = UnitFormat.economyUnit(system),
+                    caption = econDelta?.let { deltaText(it, "vs avg", 1) },
+                    captionColor = stats.mpgDelta?.let { if (it >= 0) good else bad },
                 )
                 StatTile(
-                    value = stats.costPerMi?.let { "$" + fmt2(it) } ?: "—",
-                    unit = "/mi",
-                    caption = stats.costPerMiDelta?.let { deltaText(it, "", 2, "$") },
+                    value = UnitFormat.money(UnitFormat.costPerDistanceValue(stats.costPerMi, system)),
+                    unit = UnitFormat.perDistanceUnit(system),
+                    caption = stats.costPerMiDelta?.let {
+                        moneyDeltaText(UnitFormat.costPerDistanceValue(it, system) ?: it, 2)
+                    },
                     // Cheaper is better, so the colour logic inverts.
-                    captionColor = stats.costPerMiDelta?.let { if (it <= 0) UP else DOWN },
+                    captionColor = stats.costPerMiDelta?.let { if (it <= 0) good else bad },
                 )
                 StatTile(
-                    value = stats.monthSpend?.let { "$" + fmt0(it) } ?: "—",
+                    value = UnitFormat.money(stats.monthSpend, 0),
                     unit = stats.monthLabel ?: "",
-                    caption = stats.monthSpendDelta?.let { deltaText(it, "", 0, "$") },
-                    captionColor = stats.monthSpendDelta?.let { if (it <= 0) UP else DOWN },
+                    caption = stats.monthSpendDelta?.let { moneyDeltaText(it, 0) },
+                    captionColor = stats.monthSpendDelta?.let { if (it <= 0) good else bad },
                 )
             }
 
             if (stats.spark.size >= 2) {
                 Text(
-                    "MPG last ${stats.spark.size} tanks",
+                    "${if (system == "imperial") "MPG" else "L/100 km"} last ${stats.spark.size} tanks",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                 )
+                val sparkDisplay = stats.spark.mapNotNull { UnitFormat.economyValue(it, system) }
                 Sparkline(
-                    values = stats.spark,
+                    values = sparkDisplay,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp),
+                        .height(44.dp)
+                        .semantics {
+                            contentDescription = "Economy over the last ${sparkDisplay.size} tanks, " +
+                                "latest ${"%.1f".format(sparkDisplay.lastOrNull() ?: 0.0)} " +
+                                UnitFormat.economyUnit(system)
+                        },
                 )
             }
         }
@@ -144,7 +162,7 @@ private fun StatTile(
 /** Minimal line sparkline — no axes, no grid. Flat series (max == min)
  *  render as a centred line rather than dividing by zero. */
 @Composable
-private fun Sparkline(values: List<Double>, modifier: Modifier = Modifier) {
+private fun Sparkline(values: List<Double>, color: Color, modifier: Modifier = Modifier) {
     Canvas(modifier = modifier) {
         if (values.size < 2) return@Canvas
         val maxV = values.max()
@@ -159,11 +177,11 @@ private fun Sparkline(values: List<Double>, modifier: Modifier = Modifier) {
             val y = size.height - 3f - norm * (size.height - 6f)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        drawPath(path = path, color = ACCENT, style = Stroke(width = 3f))
+        drawPath(path = path, color = color, style = Stroke(width = 3f))
         // Emphasise the latest tank.
         val lastNorm = if (span == null) 0.5f else ((values.last() - minV) / span).toFloat()
         drawCircle(
-            color = ACCENT,
+            color = color,
             radius = 5f,
             center = Offset(size.width, size.height - 3f - lastNorm * (size.height - 6f)),
         )
@@ -247,6 +265,12 @@ private fun deltaText(delta: Double, suffix: String, decimals: Int, prefix: Stri
         else -> fmt1(mag)
     }
     return listOf("$arrow $prefix$num", suffix).filter { it.isNotEmpty() }.joinToString(" ")
+}
+
+/** "▲ $4.20" — currency via the locale-aware formatter. */
+private fun moneyDeltaText(delta: Double, decimals: Int): String {
+    val arrow = if (delta >= 0) "▲" else "▼"
+    return "$arrow ${UnitFormat.money(abs(delta), decimals)}"
 }
 
 private fun fmt0(v: Double): String = String.format("%.0f", v)

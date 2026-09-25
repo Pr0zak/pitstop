@@ -33,7 +33,16 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.service.MetricSample
-import com.pitstop.ui.components.PillState
+import android.content.res.Configuration
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import com.pitstop.ui.components.EmptyState
+import com.pitstop.ui.components.PillTone
+import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.StatusPill
 import com.pitstop.util.UnitFormat
 import kotlin.math.max
@@ -58,6 +67,7 @@ private data class TileSpec(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveScreen(
+    onOpenHome: () -> Unit = {},
     viewModel: LiveViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
@@ -80,12 +90,11 @@ fun LiveScreen(
     // every 33 ms and recomposed the entire column even when converged /
     // engine-off — replaced to cut idle CPU + recomposition churn.
 
-    // No brand bar — the bottom nav already labels this screen, and the
-    // 48 dp it cost is better spent on live tiles. contentWindowInsets
-    // is zeroed because MainActivity's outer Scaffold already consumed
-    // the system bars; without it this page re-applies the status-bar
-    // inset and leaves an empty band on top.
-    LiveContent(metrics, bridgeStatus, brokerConnected, unitSystem, obdAgeS)
+    LiveContent(
+        metrics, bridgeStatus, brokerConnected, unitSystem, obdAgeS,
+        onStartBridge = viewModel::startBridge,
+        onOpenHome = onOpenHome,
+    )
 }
 
 /** Stateless body of [LiveScreen], split out so screenshot tests can render it from fixtures. */
@@ -97,10 +106,35 @@ internal fun LiveContent(
     brokerConnected: Boolean,
     unitSystem: String,
     obdAgeS: Long?,
+    onStartBridge: () -> Unit = {},
+    onOpenHome: () -> Unit = {},
+    /** Landscape "drive mode": two big gauges + four tiles, no scroll. */
+    driveMode: Boolean =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
 ) {
+    // Stale guard: once OBD has been quiet >10 s the numbers are the last
+    // reading, not the current one — say so and dim them.
+    val stale = metrics.isNotEmpty() && (obdAgeS == null || obdAgeS > 10)
+    if (driveMode) {
+        DriveModeContent(metrics, unitSystem, obdAgeS, stale)
+        return
+    }
+    // contentWindowInsets is zeroed because MainActivity's outer Scaffold
+    // already consumed the system bars; without it this page re-applies
+    // the status-bar inset and leaves an empty band on top.
     Scaffold(
+        topBar = { PitstopTopAppBar() },
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
+        if (metrics.isEmpty()) {
+            LiveEmptyState(
+                phase = bridgeStatus.phase,
+                onStartBridge = onStartBridge,
+                onOpenHome = onOpenHome,
+                modifier = Modifier.padding(padding),
+            )
+            return@Scaffold
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -117,47 +151,41 @@ internal fun LiveContent(
                 modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
             ) {
                 val (bleLabel, blePill) = bleStatusOf(bridgeStatus.phase)
-                StatusPill(state = blePill, label = bleLabel, compact = true)
+                StatusPill(tone = blePill, label = bleLabel, compact = true, subject = "Bluetooth")
                 StatusPill(
-                    state = if (brokerConnected) PillState.Healthy else PillState.Offline,
+                    tone = if (brokerConnected) PillTone.Healthy else PillTone.Offline,
                     label = if (brokerConnected) "Broker live" else "Broker off",
                     compact = true,
+                    subject = "MQTT",
                 )
                 val (engineLabel, enginePill) = when (bridgeStatus.engineState) {
                     com.pitstop.service.EngineState.On ->
-                        "Engine on" to PillState.Healthy
+                        "Engine on" to PillTone.Healthy
                     com.pitstop.service.EngineState.Off ->
-                        "Engine off" to PillState.Offline
+                        "Engine off" to PillTone.Offline
                     com.pitstop.service.EngineState.Unknown ->
-                        "Engine ?" to PillState.Neutral
+                        "Engine ?" to PillTone.Neutral
                 }
-                StatusPill(state = enginePill, label = engineLabel, compact = true)
+                StatusPill(tone = enginePill, label = engineLabel, compact = true, subject = "Engine")
                 // OBD freshness pill (BLE-3): age of the last BLE OBD frame.
                 // Healthy <10s / Degraded <60s / Offline otherwise.
                 val (obdLabel, obdPill) = when (val age = obdAgeS) {
-                    null -> "OBD —" to PillState.Neutral
+                    null -> "OBD —" to PillTone.Neutral
                     else -> {
-                        val state = when {
-                            age < 10 -> PillState.Healthy
-                            age < 60 -> PillState.Degraded
-                            else -> PillState.Offline
+                        val tone = when {
+                            age < 10 -> PillTone.Healthy
+                            age < 60 -> PillTone.Degraded
+                            else -> PillTone.Offline
                         }
-                        "OBD ${age}s" to state
+                        "OBD ${age}s" to tone
                     }
                 }
-                StatusPill(state = obdPill, label = obdLabel, compact = true)
+                StatusPill(tone = obdPill, label = obdLabel, compact = true, subject = "OBD data age")
                 if (bridgeStatus.inCar) {
-                    StatusPill(
-                        state = PillState.Healthy,
-                        label = "In car",
-                        compact = true,
-                    )
+                    StatusPill(tone = PillTone.Healthy, label = "In car", compact = true)
                 }
             }
 
-            // Stale guard: once OBD has been quiet >10 s the numbers below are
-            // the last reading, not the current one — say so and dim them.
-            val stale = metrics.isNotEmpty() && (obdAgeS == null || obdAgeS > 10)
             if (stale) StaleBanner(obdAgeS)
             Column(
                 modifier = Modifier.alpha(if (stale) 0.45f else 1f),
@@ -197,6 +225,7 @@ internal fun LiveContent(
                     modifier = Modifier.weight(1f),
                 )
             }
+            InstantEconomyTile(metrics, unitSystem, modifier = Modifier.padding(top = 8.dp))
 
             // ── Engine ────────────────────────────────────────────────
             // Every tile names a UnitFormat.Quantity; the °C/°F, kPa/psi
@@ -327,15 +356,6 @@ internal fun LiveContent(
             }
 
 
-            if (metrics.isEmpty()) {
-                Text(
-                    "No live data yet — start the bridge from Home.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp, start = 4.dp),
-                )
-            }
-
             Box(modifier = Modifier.padding(bottom = 24.dp))
         }
     }
@@ -358,7 +378,9 @@ private fun LiveSection(
         text = title.uppercase(),
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 6.dp),
+        modifier = Modifier
+            .padding(start = 4.dp, top = 12.dp, bottom = 6.dp)
+            .semantics { heading() },
     )
     if (tiles.isNotEmpty()) {
         // 3-up grid for tighter density on a phone screen.
@@ -398,11 +420,14 @@ private fun BigGauge(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
+        // fillMaxSize is a no-op in the portrait scroll (unbounded height)
+        // and centres the number in landscape drive mode's full-height card.
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .padding(vertical = 18.dp, horizontal = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
             Text(
                 label.uppercase(),
@@ -483,12 +508,156 @@ private fun StaleBanner(obdAgeS: Long?) {
     }
 }
 
-private fun bleStatusOf(phase: com.pitstop.service.BridgePhase): Pair<String, PillState> =
+private fun bleStatusOf(phase: com.pitstop.service.BridgePhase): Pair<String, PillTone> =
     when (phase) {
-        com.pitstop.service.BridgePhase.Idle -> "BLE idle" to PillState.Neutral
-        com.pitstop.service.BridgePhase.Scanning -> "BLE scan" to PillState.Connecting
-        com.pitstop.service.BridgePhase.Connecting -> "BLE…" to PillState.Connecting
-        com.pitstop.service.BridgePhase.Connected -> "BLE live" to PillState.Healthy
-        com.pitstop.service.BridgePhase.Disconnected -> "BLE down" to PillState.Degraded
-        com.pitstop.service.BridgePhase.Error -> "BLE error" to PillState.Offline
+        com.pitstop.service.BridgePhase.Idle -> "BLE idle" to PillTone.Neutral
+        com.pitstop.service.BridgePhase.Scanning -> "BLE scan" to PillTone.Connecting
+        com.pitstop.service.BridgePhase.Connecting -> "BLE…" to PillTone.Connecting
+        com.pitstop.service.BridgePhase.Connected -> "BLE live" to PillTone.Healthy
+        com.pitstop.service.BridgePhase.Disconnected -> "BLE down" to PillTone.Degraded
+        com.pitstop.service.BridgePhase.Error -> "BLE error" to PillTone.Offline
     }
+
+/**
+ * Nothing has arrived yet. Explains why and offers the fix in place: a
+ * Start button while the bridge is idle / errored, otherwise a pointer to
+ * Home where the connection detail lives.
+ */
+@Composable
+private fun LiveEmptyState(
+    phase: com.pitstop.service.BridgePhase,
+    onStartBridge: () -> Unit,
+    onOpenHome: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val idle = phase == com.pitstop.service.BridgePhase.Idle ||
+        phase == com.pitstop.service.BridgePhase.Error
+    EmptyState(
+        icon = Icons.Outlined.Speed,
+        title = if (idle) "Bridge isn't running" else "Waiting for the WiCAN",
+        body = if (idle) {
+            "Start the bridge to stream live engine data from the dongle."
+        } else {
+            "The bridge is running but no engine data has arrived yet. " +
+                "Turn the ignition on, or check the connection on Home."
+        },
+        actionLabel = if (idle) "Start bridge" else "Open Home",
+        onAction = if (idle) onStartBridge else onOpenHome,
+        modifier = modifier.fillMaxSize(),
+    )
+}
+
+/**
+ * Instantaneous economy from the ECU fuel rate and road speed — mpg or
+ * L/100 km per the unit toggle. Idle / standstill shows the burn rate
+ * instead, because "0.2 mpg" at a light is true and useless.
+ */
+@Composable
+private fun InstantEconomyTile(
+    metrics: Map<String, MetricSample>,
+    system: String,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val rate = metrics["engine_fuel_rate"]?.value
+    val speed = metrics["vehicle_speed"]?.value
+    val mpg = UnitFormat.instantMpg(rate, speed)
+    val (value, unit) = when {
+        mpg != null -> UnitFormat.economyNumber(mpg, system) to UnitFormat.economyUnit(system)
+        rate != null -> UnitFormat.Quantity.FuelRateGramsPerSec.number(rate, system, 2) to
+            "${UnitFormat.Quantity.FuelRateGramsPerSec.unit(system)} · idle"
+        else -> "—" to UnitFormat.economyUnit(system)
+    }
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {},
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = if (compact) 8.dp else 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "INSTANT",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                value,
+                style = if (compact) MaterialTheme.typography.displaySmall else MaterialTheme.typography.displayMedium,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                " $unit",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Landscape "drive mode": what a dash-mounted phone should show. Speed and
+ * RPM as two big gauges on the left, four glanceable tiles on the right,
+ * nothing that scrolls. Same stale dim as portrait.
+ */
+@Composable
+private fun DriveModeContent(
+    metrics: Map<String, MetricSample>,
+    system: String,
+    obdAgeS: Long?,
+    stale: Boolean,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (stale) StaleBanner(obdAgeS)
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(if (stale) 0.45f else 1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            BigGauge(
+                label = "Speed",
+                value = metrics["vehicle_speed"]?.value?.let {
+                    UnitFormat.Quantity.SpeedKph.convert(it, system)
+                },
+                unit = UnitFormat.Quantity.SpeedKph.unit(system),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+            )
+            BigGauge(
+                label = "RPM",
+                value = metrics["engine_rpm"]?.value,
+                unit = "",
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+            )
+            Column(
+                modifier = Modifier.weight(1.1f).fillMaxHeight(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                InstantEconomyTile(metrics, system, compact = true, modifier = Modifier.weight(1f))
+                val tiles = listOf(
+                    TileSpec("Coolant", "coolant_temp", UnitFormat.Quantity.TempC, 0),
+                    TileSpec("Fuel level", "fuel_level", UnitFormat.Quantity.Percent, 0),
+                    TileSpec("Battery", "control_module_voltage", UnitFormat.Quantity.Volt, 1),
+                )
+                for (spec in tiles) {
+                    SmallTile(
+                        label = spec.label,
+                        value = metrics[spec.key]?.value,
+                        quantity = spec.quantity,
+                        digits = spec.digits,
+                        system = system,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
