@@ -230,6 +230,15 @@ class ReadingOut(BaseModel):
     source: str
 
 
+class LatestReadingOut(BaseModel):
+    """One metric's newest reading (GET /readings/latest)."""
+
+    metric: str
+    value: float | str | None
+    time: datetime
+    source: str
+
+
 class AggregateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
