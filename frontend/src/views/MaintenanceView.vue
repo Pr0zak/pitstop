@@ -10,9 +10,12 @@ import type { Expense, Reminder } from "@/api/types";
 import { Wrench, Check, AlertTriangle, Clock, Plus, History, X } from "lucide-vue-next";
 import {
   fmtDate,
+  fmtWhen,
+  fmtMonthYear,
   fmtOdo,
   fmtDistance,
   fmtMoney,
+  parseApiDate,
   vehicleDistUnit,
 } from "@/composables/useFormat";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
@@ -47,12 +50,152 @@ const expenseById = computed(() => {
   return m;
 });
 
+/** Notes marker on the $0 anchor row a reminder preset creates, so it can be
+ *  told apart from a real logged service (it isn't one — it only starts the
+ *  interval at today's odometer). */
+const PRESET_NOTE = "Reminder preset — interval starts at this odometer";
+function isPresetAnchor(e: Expense): boolean {
+  return e.notes === PRESET_NOTE;
+}
+
 /** Past services, newest first (templates and income excluded). */
 const completed = computed<Expense[]>(() =>
   (expensesQ.data.value ?? [])
     .filter((e) => !e.is_template && !e.is_income)
     .sort((a, b) => (b.expense_date ?? "").localeCompare(a.expense_date ?? "")),
 );
+
+/** A row carries a live reminder — same predicate the backend's
+ *  /maintenance/reminders uses (Fuelio's placeholder remind_date of
+ *  2011-01-01 on old receipts does not count). */
+function hasReminder(e: Expense): boolean {
+  if (e.is_template) return false;
+  if (e.remind_odo != null && e.remind_odo > 0) return true;
+  return !!e.remind_date && !!e.expense_date && e.remind_date >= e.expense_date.slice(0, 10);
+}
+
+/** Reminders that exist but are not yet overdue / within the backend's
+ *  "upcoming" window (500 mi / 30 days) — the endpoint omits those, so a
+ *  freshly created 5,000 mi reminder would otherwise vanish. */
+const scheduled = computed<Expense[]>(() => {
+  const listed = new Set([
+    ...(data.value?.overdue ?? []).map((r) => r.expense_id),
+    ...(data.value?.upcoming ?? []).map((r) => r.expense_id),
+  ]);
+  return (expensesQ.data.value ?? []).filter((e) => hasReminder(e) && !listed.has(e.id));
+});
+
+// ── Current odometer (vehicle units) ──────────────────────────────────
+// Same basis the Add-service form pre-fills from.
+const currentOdo = computed<number | null>(() => {
+  const km = vehicles.selectedVehicle?.latest_odo_km;
+  if (km == null) return null;
+  return Math.round(distSrc.value === "mi" ? km * 0.621371 : km);
+});
+
+/** "Last service logged 68,384 mi ago (Jan 2020)" when the newest real
+ *  service record is over a year or 10,000 mi behind the current odometer. */
+const staleService = computed<{ behind: number | null; when: string } | null>(() => {
+  const last = completed.value.find((e) => !isPresetAnchor(e));
+  if (!last) return null;
+  const d = parseApiDate(last.expense_date);
+  const ageDays = d ? (Date.now() - d.getTime()) / 86_400_000 : 0;
+  const cur = currentOdo.value;
+  const behind = cur != null && last.odo != null ? cur - last.odo : null;
+  const limit = distSrc.value === "mi" ? 10_000 : 16_000;
+  if (ageDays > 365 || (behind != null && behind > limit)) {
+    return { behind: behind != null && behind > 0 ? behind : null, when: fmtMonthYear(last.expense_date) };
+  }
+  return null;
+});
+
+// ── One-tap reminder presets ──────────────────────────────────────────
+// Shown when the vehicle has no reminder at all. A preset logs a $0 anchor
+// row at today's odometer with the repeat interval, which the backend then
+// surfaces as a reminder due at odometer + interval (and/or date + months).
+interface Preset {
+  key: string;
+  title: string;
+  mi: number;
+  km: number;
+  months?: number;
+}
+const PRESETS: Preset[] = [
+  { key: "oil", title: "Oil change", mi: 5_000, km: 8_000, months: 6 },
+  { key: "rotation", title: "Tire rotation", mi: 7_500, km: 12_000 },
+  { key: "air", title: "Engine air filter", mi: 30_000, km: 48_000 },
+  { key: "atf", title: "ATF", mi: 30_000, km: 48_000 },
+];
+const showPresets = computed(
+  () =>
+    !!vehicleId.value &&
+    !!data.value &&
+    data.value.overdue.length === 0 &&
+    data.value.upcoming.length === 0 &&
+    scheduled.value.length === 0 &&
+    !expensesQ.loading.value,
+);
+function presetInterval(p: Preset): number {
+  return distSrc.value === "mi" ? p.mi : p.km;
+}
+function presetLabel(p: Preset): string {
+  const every = fmtDistance(presetInterval(p), distSrc.value, 0);
+  return p.months ? `${every} / ${p.months} mo` : every;
+}
+const pendingPreset = ref<Preset | null>(null);
+const presetBusy = ref(false);
+const presetError = ref<string | null>(null);
+function askPreset(p: Preset) {
+  pendingPreset.value = p;
+  presetError.value = null;
+}
+async function confirmPreset() {
+  const p = pendingPreset.value;
+  if (!p || !vehicleId.value) return;
+  const odo = currentOdo.value;
+  presetBusy.value = true;
+  presetError.value = null;
+  const today = new Date();
+  const ymd = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  let remindDate: string | null = null;
+  if (p.months) {
+    const d = new Date(today);
+    d.setMonth(d.getMonth() + p.months);
+    remindDate = ymd(d);
+  }
+  const interval = presetInterval(p);
+  try {
+    await api.createExpense({
+      vehicle_id: vehicleId.value,
+      title: p.title,
+      expense_date: ymd(today),
+      odo,
+      cost: 0,
+      notes: PRESET_NOTE,
+      repeat_odo: interval,
+      repeat_months: p.months ?? null,
+      remind_odo: odo != null ? odo + interval : null,
+      remind_date: remindDate,
+    });
+    toast.success(`Reminder set: ${p.title}`);
+    pendingPreset.value = null;
+    await Promise.all([reload(), expensesQ.reload()]);
+  } catch (e: unknown) {
+    presetError.value = errMessage(e, "Couldn't create the reminder");
+  } finally {
+    presetBusy.value = false;
+  }
+}
+
+function remindText(e: Expense): string {
+  const parts: string[] = [];
+  if (e.remind_odo != null && e.remind_odo > 0) parts.push(`due at ${fmtOdo(e.remind_odo, distSrc.value)}`);
+  if (e.remind_date && e.expense_date && e.remind_date >= e.expense_date.slice(0, 10)) {
+    parts.push(fmtWhen(e.remind_date));
+  }
+  return parts.join(" · ");
+}
 const showAllCompleted = ref(false);
 const completedVisible = computed(() =>
   showAllCompleted.value ? completed.value : completed.value.slice(0, 10),
@@ -205,15 +348,77 @@ async function saveService() {
     <StateCard v-if="loading && !data" state="loading" title="Loading reminders…" />
     <StateCard v-else-if="error" state="error" :message="error" @retry="reload()" />
     <template v-else-if="data">
-      <div v-if="data.overdue.length === 0 && data.upcoming.length === 0" class="card empty">
+      <div v-if="staleService" class="stale-service" role="status">
+        <AlertTriangle :size="14" aria-hidden="true" />
+        <span>
+          Last service logged
+          <template v-if="staleService.behind != null">{{ fmtDistance(staleService.behind, distSrc, 0) }} ago</template>
+          <template v-else>a while ago</template>
+          ({{ staleService.when }})
+        </span>
+      </div>
+
+      <div v-if="data.overdue.length === 0 && data.upcoming.length === 0 && scheduled.length === 0" class="card empty">
         <Wrench :size="22" aria-hidden="true" />
         <h3>No active reminders</h3>
-        <p class="muted">
+        <template v-if="showPresets">
+          <p class="muted">Start one from today's odometer<template v-if="currentOdo != null"> ({{ fmtOdo(currentOdo, distSrc) }})</template>:</p>
+          <div class="presets" role="group" aria-label="Reminder presets">
+            <button
+              v-for="p in PRESETS"
+              :key="p.key"
+              type="button"
+              class="chip preset"
+              :aria-pressed="pendingPreset?.key === p.key"
+              :disabled="presetBusy"
+              @click="askPreset(p)"
+            >
+              <Plus :size="12" aria-hidden="true" />
+              {{ p.title }} <span class="preset-int">{{ presetLabel(p) }}</span>
+            </button>
+          </div>
+          <div v-if="pendingPreset" class="preset-confirm" role="group" aria-label="Confirm reminder">
+            <span>
+              Remind <strong>{{ pendingPreset.title }}</strong> every {{ presetLabel(pendingPreset) }}
+              <template v-if="currentOdo != null">
+                — first due at {{ fmtOdo(currentOdo + presetInterval(pendingPreset), distSrc) }}
+              </template>
+            </span>
+            <span class="preset-actions">
+              <button type="button" class="ghost" :disabled="presetBusy" @click="pendingPreset = null">Cancel</button>
+              <button type="button" class="primary" :disabled="presetBusy" @click="confirmPreset">
+                {{ presetBusy ? "Creating…" : "Create reminder" }}
+              </button>
+            </span>
+            <p v-if="presetError" class="error" role="alert">{{ presetError }}</p>
+          </div>
+          <p class="muted small">
+            Or use <strong>Add service</strong> above, or
+            <RouterLink to="/fuel/import">import your Fuelio Costs</RouterLink>.
+          </p>
+        </template>
+        <p v-else class="muted">
           A reminder appears when a service has a repeat interval or a remind odometer / date.
           Use <strong>Add service</strong> above, or
           <RouterLink to="/fuel/import">import your Fuelio Costs</RouterLink>.
         </p>
       </div>
+
+      <section v-if="scheduled.length > 0" class="group">
+        <header><Clock :size="14" aria-hidden="true" /> Scheduled ({{ scheduled.length }})</header>
+        <ul class="list">
+          <li v-for="e in scheduled" :key="e.id" class="item ok">
+            <div class="meta">
+              <strong>{{ e.title }}</strong>
+              <span class="muted small">every {{ e.repeat_odo ? fmtDistance(e.repeat_odo, distSrc, 0) : "" }}<template v-if="e.repeat_odo && e.repeat_months"> / </template><template v-if="e.repeat_months">{{ e.repeat_months }} mo</template></span>
+            </div>
+            <div class="numbers">
+              <span class="muted small num">{{ remindText(e) }}</span>
+            </div>
+            <span></span>
+          </li>
+        </ul>
+      </section>
 
       <section v-if="data.overdue.length > 0" class="group">
         <header>
@@ -232,7 +437,7 @@ async function saveService() {
               <span class="muted small num">
                 {{ r.current_odo != null ? fmtOdo(r.current_odo, distSrc) : "—" }}
                 <span v-if="r.remind_odo != null"> / due {{ fmtOdo(r.remind_odo, distSrc) }}</span>
-                <span v-if="r.remind_date"> · {{ fmtDate(r.remind_date) }}</span>
+                <span v-if="r.remind_date"> · {{ fmtWhen(r.remind_date) }}</span>
               </span>
               <span class="badge danger">{{ describeDelta(r) || "overdue" }}</span>
             </div>
@@ -268,7 +473,7 @@ async function saveService() {
               <span class="muted small num">
                 {{ r.current_odo != null ? fmtOdo(r.current_odo, distSrc) : "—" }}
                 <span v-if="r.remind_odo != null"> / due {{ fmtOdo(r.remind_odo, distSrc) }}</span>
-                <span v-if="r.remind_date"> · {{ fmtDate(r.remind_date) }}</span>
+                <span v-if="r.remind_date"> · {{ fmtWhen(r.remind_date) }}</span>
               </span>
               <span class="badge" :class="severity(r) === 'warn' ? 'warn' : ''">
                 {{ describeDelta(r) || "scheduled" }}
@@ -301,10 +506,13 @@ async function saveService() {
             </thead>
             <tbody>
               <tr v-for="e in completedVisible" :key="e.id">
-                <td>{{ fmtDate(e.expense_date) }}</td>
-                <td>{{ e.title }}</td>
+                <td class="nowrap" :title="fmtDate(e.expense_date)">{{ fmtWhen(e.expense_date) }}</td>
+                <td>
+                  {{ e.title }}
+                  <span v-if="isPresetAnchor(e)" class="badge" title="Created by a reminder preset — not a logged service">reminder start</span>
+                </td>
                 <td class="muted">{{ categoryName(e.cost_type_id) }}</td>
-                <td class="num">{{ fmtOdo(e.odo, distSrc) }}</td>
+                <td class="num nowrap">{{ fmtOdo(e.odo, distSrc) }}</td>
                 <td class="num">{{ fmtMoney(e.cost) }}</td>
               </tr>
             </tbody>
@@ -417,6 +625,62 @@ async function saveService() {
 }
 .empty h3 {
   margin: 0.5rem 0 0.3rem 0;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0.4rem;
+}
+.chip.preset {
+  padding: 0.35rem 0.75rem;
+  color: var(--c-ink1);
+}
+.preset-int {
+  color: var(--c-ink3);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+}
+.preset-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 1rem;
+  margin: 0.6rem auto;
+  padding: 0.6rem 0.8rem;
+  max-width: 640px;
+  border: 1px solid var(--c-line1);
+  border-radius: var(--r-md);
+  background: var(--c-bg3);
+  font-size: 0.88rem;
+}
+.preset-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+.preset-confirm .error {
+  flex-basis: 100%;
+  margin: 0;
+}
+.stale-service {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  background: var(--c-warn-soft);
+  color: var(--c-ink1);
+  font-size: 0.88rem;
+}
+.stale-service svg {
+  color: var(--c-warn);
+  flex: none;
 }
 .group {
   display: flex;

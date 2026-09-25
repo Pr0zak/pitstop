@@ -165,6 +165,10 @@ const needle = computed(() => {
   return { tipX, tipY, bx, by };
 });
 
+// Hub disc extent (radius W*0.024) plus clearance, for the text blocks.
+const hubTop = computed(() => cy.value - W.value * 0.024 - W.value * 0.035);
+const hubBottom = computed(() => cy.value + W.value * 0.024 + W.value * 0.03);
+
 const display = computed(() => {
   if (props.value == null) return "—";
   if (props.formatter) return props.formatter(props.value);
@@ -263,9 +267,13 @@ const fillColor = computed(() => {
       </g>
     </svg>
 
-    <!-- centre value -->
-    <div class="centre" :class="{ danger: isDanger }">
+    <!-- Centre value sits ABOVE the needle hub; the unit caption and any
+         sub-value sit BELOW it. They used to be one centred stack, which put
+         the "RPM" / "MPH" caption right on top of the hub disc. -->
+    <div class="centre" :class="{ danger: isDanger }" :style="{ height: hubTop + 'px' }">
       <div class="value">{{ display }}</div>
+    </div>
+    <div v-if="unit || subValue" class="below" :style="{ top: hubBottom + 'px' }">
       <div v-if="unit" class="unit">{{ unit }}</div>
       <div v-if="subValue" class="sub">{{ subValue }}</div>
     </div>
@@ -310,15 +318,24 @@ const fillColor = computed(() => {
 
 .centre {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   pointer-events: none;
-  /* Lift the centre group up just enough to clear the bottom label
-     and balance the lower 90° of the arc geometry. */
-  padding-bottom: calc(var(--gauge-bottom-pad, 6%));
+  text-align: center;
+}
+.below {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
   text-align: center;
 }
 .centre .value {
@@ -333,15 +350,14 @@ const fillColor = computed(() => {
 .centre.danger .value {
   color: var(--c-danger);
 }
-.centre .unit {
-  margin-top: 6px;
+.below .unit {
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--c-ink2);
 }
-.centre .sub {
+.below .sub {
   margin-top: 4px;
   font-family: 'Geist Mono', ui-monospace, monospace;
   font-size: 11px;

@@ -16,7 +16,21 @@ import {
   fmtSpeedKph,
   fmtRpm,
   fmtVolumeL,
+  fmtMpg,
+  fmtWhen,
+  nf,
+  convDistance,
+  convVolume,
+  distUnitLabel,
+  volUnitLabel,
+  economyUnitLabel,
+  dateGroupFor,
+  DATE_GROUP_LABEL,
+  DATE_GROUP_ORDER,
+  type DateGroupKey,
 } from "@/composables/useFormat";
+import { foldShortHops, groupTotals, tripMpg, type TripRow } from "@/lib/tripList";
+import { ChevronRight } from "lucide-vue-next";
 
 const vehicles = useVehiclesStore();
 const router = useRouter();
@@ -124,36 +138,6 @@ const SRC_LABEL: Record<SrcFilter, string> = {
   manual_merge: "Merged",
   other: "Other",
 };
-
-// Relative-date bucket for group headers.
-type GroupKey =
-  | "today" | "yesterday" | "past7" | "past30" | "thisYear" | "older";
-const GROUP_LABEL: Record<GroupKey, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  past7: "Past 7 days",
-  past30: "Past 30 days",
-  thisYear: "This year",
-  older: "Older",
-};
-function bucketFor(iso: string): GroupKey {
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return "older";
-  const now = new Date();
-  const msPerDay = 24 * 3600 * 1000;
-  const dayStart = (d: Date) => {
-    const x = new Date(d);
-    x.setHours(0, 0, 0, 0);
-    return x.getTime();
-  };
-  const daysAgo = Math.floor((dayStart(now) - dayStart(t)) / msPerDay);
-  if (daysAgo <= 0) return "today";
-  if (daysAgo === 1) return "yesterday";
-  if (daysAgo <= 7) return "past7";
-  if (daysAgo <= 30) return "past30";
-  if (t.getFullYear() === now.getFullYear()) return "thisYear";
-  return "older";
-}
 
 const { data, loading, error, reload } = useAsync(
   () =>
@@ -338,15 +322,38 @@ const visibleTrips = computed<Trip[]>(() => (data.value?.items ?? []).filter(mat
  *  the ranking across headers. */
 const ranked = computed(() => sort.value !== "recent");
 
-const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: Trip[] }>>(() => {
+interface TripGroup {
+  key: DateGroupKey | "ranked";
+  label: string;
+  items: Trip[];
+  /** What the group renders: short-hop runs folded (most-recent sort only). */
+  rows: TripRow[];
+  totals: ReturnType<typeof groupTotals>;
+}
+function makeGroup(key: TripGroup["key"], label: string, items: Trip[]): TripGroup {
+  return {
+    key,
+    label,
+    items,
+    // Folding is off for ranked sorts and while selecting (every trip must
+    // be individually tappable to select it).
+    rows:
+      ranked.value || selectMode.value
+        ? items.map((trip) => ({ kind: "trip" as const, trip }))
+        : foldShortHops(items),
+    totals: groupTotals(items),
+  };
+}
+
+const groupedTrips = computed<TripGroup[]>(() => {
   if (ranked.value) {
     return visibleTrips.value.length
-      ? [{ key: "older" as GroupKey, label: SORT_LABEL[sort.value], items: visibleTrips.value }]
+      ? [makeGroup("ranked", SORT_LABEL[sort.value], visibleTrips.value)]
       : [];
   }
-  const byKey = new Map<GroupKey, Trip[]>();
+  const byKey = new Map<DateGroupKey, Trip[]>();
   for (const t of visibleTrips.value) {
-    const k = bucketFor(t.started_at);
+    const k = dateGroupFor(t.started_at);
     let list = byKey.get(k);
     if (!list) {
       list = [];
@@ -354,11 +361,63 @@ const groupedTrips = computed<Array<{ key: GroupKey; label: string; items: Trip[
     }
     list.push(t);
   }
-  const order: GroupKey[] = ["today", "yesterday", "past7", "past30", "thisYear", "older"];
-  return order
-    .map((k) => ({ key: k, label: GROUP_LABEL[k], items: byKey.get(k) ?? [] }))
-    .filter((g) => g.items.length > 0);
+  return DATE_GROUP_ORDER.filter((k) => (byKey.get(k)?.length ?? 0) > 0).map((k) =>
+    makeGroup(k, DATE_GROUP_LABEL[k], byKey.get(k)!),
+  );
 });
+
+/** Rank of a trip in the ranked list (only meaningful when `ranked`). */
+function rankOf(t: Trip): number {
+  return offset.value + visibleTrips.value.indexOf(t) + 1;
+}
+
+/** Row date: inside a Today / Yesterday group only the time is shown. */
+function rowWhen(t: Trip): string {
+  return fmtWhen(t.started_at, { withTime: true, grouped: !ranked.value });
+}
+
+// Expanded "short hops" rows, keyed by TripRow.key.
+const openHops = ref<Set<string>>(new Set());
+function toggleHops(key: string) {
+  const next = new Set(openHops.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  openHops.value = next;
+}
+/** Rows actually rendered: an expanded hops row is followed by its trips. */
+function renderRows(g: TripGroup): Array<TripRow | { kind: "hop"; trip: Trip }> {
+  const out: Array<TripRow | { kind: "hop"; trip: Trip }> = [];
+  for (const r of g.rows) {
+    out.push(r);
+    if (r.kind === "hops" && openHops.value.has(r.key)) {
+      for (const trip of r.trips) out.push({ kind: "hop", trip });
+    }
+  }
+  return out;
+}
+function rowKey(r: TripRow | { kind: "hop"; trip: Trip }): string {
+  return r.kind === "hops" ? r.key : r.trip.id;
+}
+
+function fmtTotals(g: TripGroup): string {
+  const parts = [
+    `${g.totals.count} trip${g.totals.count === 1 ? "" : "s"}`,
+    `${nf(1).format(convDistance(g.totals.distanceKm, "km"))} ${distUnitLabel()}`,
+  ];
+  if (g.totals.fuelL != null) {
+    parts.push(`${nf(1).format(convVolume(g.totals.fuelL, "L"))} ${volUnitLabel()}`);
+  }
+  return parts.join(" · ");
+}
+/** Trip economy cell: "— mpg" when it can't honestly be computed (matches
+ *  the Android row). */
+function tripEcon(t: Trip): string {
+  const v = tripMpg(t);
+  return v == null ? `— ${economyUnitLabel()}` : fmtMpg(v);
+}
+function hopsLabel(r: Extract<TripRow, { kind: "hops" }>): string {
+  return `${r.trips.length} short hops · ${nf(1).format(convDistance(r.distanceKm, "km"))} ${distUnitLabel()}`;
+}
 
 function onStartedClick(e: MouseEvent, id: string) {
   if (selectMode.value) {
@@ -509,7 +568,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
       <div v-for="group in groupedTrips" :key="group.key" class="card no-pad">
         <header class="group-head">
           <span class="group-label">{{ group.label }}</span>
-          <span class="muted small">{{ group.items.length }}</span>
+          <span class="muted small num group-totals">{{ fmtTotals(group) }}</span>
         </header>
 
         <!-- Desktop / tablet: table -->
@@ -518,76 +577,101 @@ const purposeRollup = computed<PurposeRow[]>(() => {
             <tr>
               <th v-if="selectMode" class="sel-cell"><span class="sr-only">Selected</span></th>
               <th v-if="ranked" class="num">#</th>
-              <th>Started</th>
+              <th class="started-h">Started</th>
               <th class="num">Duration</th>
               <th class="num">Distance</th>
+              <th class="num" title="Distance ÷ fuel used for this trip">{{ economyUnitLabel() === 'mpg' ? 'MPG' : economyUnitLabel() }}</th>
               <th class="num">Max speed</th>
               <th class="num">Max RPM</th>
               <th class="num">Fuel</th>
-              <th>Purpose</th>
-              <th class="num">DTCs</th>
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="(t, i) in group.items"
-              :key="t.id"
-              class="clickable"
-              :class="{ selected: selectedIds.has(t.id) }"
-              @click="open(t.id)"
-            >
-              <td v-if="selectMode" class="sel-cell">
-                <span class="checkbox" :class="{ on: selectedIds.has(t.id) }" aria-hidden="true">
-                  <span v-if="selectedIds.has(t.id)">✓</span>
-                </span>
-              </td>
-              <td v-if="ranked" class="num muted">{{ offset + i + 1 }}</td>
-              <td>
-                <RouterLink
-                  :to="`/trips/${t.id}`"
-                  class="started-link"
-                  :aria-pressed="selectMode ? selectedIds.has(t.id) : undefined"
-                  @click.stop="onStartedClick($event, t.id)"
-                >{{ fmtDateTime(t.started_at) }}</RouterLink>
-                <span v-if="t.gps_only" class="gps-badge" title="No engine data — recorded by the phone alone, so this may not be this vehicle">GPS ONLY</span>
-                <span v-if="t.is_towing" class="tow-badge" title="Towing — fuel economy on this trip is not comparable">TOW</span>
-              </td>
-              <td class="num">{{ fmtDuration(t.duration_s) }}</td>
-              <td class="num">{{ fmtDistanceKm(t.distance_km ?? null) }}</td>
-              <td class="num">{{ fmtSpeedKph(t.max_speed_kph ?? null) }}</td>
-              <td class="num">{{ fmtRpm(t.max_rpm) }}</td>
-              <td class="num">{{ fmtVolumeL(t.fuel_used_l ?? null) }}</td>
-              <td>
-                <span v-if="t.category" class="tag">{{ t.category }}</span>
-                <span v-else class="muted">—</span>
-              </td>
-              <td class="num">
-                <span v-if="(t.dtc_count ?? 0) > 0" class="badge danger">{{ t.dtc_count }}</span>
-              </td>
-            </tr>
+            <template v-for="r in renderRows(group)" :key="rowKey(r)">
+              <tr
+                v-if="r.kind === 'hops'"
+                class="clickable hops-row"
+                :aria-expanded="openHops.has(r.key)"
+                @click="toggleHops(r.key)"
+              >
+                <td v-if="selectMode" class="sel-cell"></td>
+                <td :colspan="ranked ? 9 : 8">
+                  <button type="button" class="hops-btn" :aria-expanded="openHops.has(r.key)" @click.stop="toggleHops(r.key)">
+                    <ChevronRight :size="14" class="hops-chev" :class="{ open: openHops.has(r.key) }" aria-hidden="true" />
+                    {{ hopsLabel(r) }}
+                  </button>
+                </td>
+              </tr>
+              <tr
+                v-else
+                class="clickable"
+                :class="{ selected: selectedIds.has(r.trip.id), 'hop-child': r.kind === 'hop' }"
+                @click="open(r.trip.id)"
+              >
+                <td v-if="selectMode" class="sel-cell">
+                  <span class="checkbox" :class="{ on: selectedIds.has(r.trip.id) }" aria-hidden="true">
+                    <span v-if="selectedIds.has(r.trip.id)">✓</span>
+                  </span>
+                </td>
+                <td v-if="ranked" class="num muted">{{ rankOf(r.trip) }}</td>
+                <td class="started-cell">
+                  <RouterLink
+                    :to="`/trips/${r.trip.id}`"
+                    class="started-link"
+                    :title="fmtDateTime(r.trip.started_at)"
+                    :aria-pressed="selectMode ? selectedIds.has(r.trip.id) : undefined"
+                    @click.stop="onStartedClick($event, r.trip.id)"
+                  >{{ rowWhen(r.trip) }}</RouterLink>
+                  <span v-if="r.trip.category" class="row-chip">{{ r.trip.category }}</span>
+                  <span v-if="r.trip.is_towing" class="row-chip warn" title="Towing — fuel economy on this trip is not comparable">Tow</span>
+                  <span v-if="r.trip.gps_only" class="row-chip" title="No engine data — recorded by the phone alone, so this may not be this vehicle">GPS only</span>
+                  <span v-if="(r.trip.dtc_count ?? 0) > 0" class="row-chip danger">{{ r.trip.dtc_count }} DTC</span>
+                </td>
+                <td class="num">{{ fmtDuration(r.trip.duration_s) }}</td>
+                <td class="num">{{ fmtDistanceKm(r.trip.distance_km ?? null) }}</td>
+                <td class="num mpg-cell">{{ tripEcon(r.trip) }}</td>
+                <td class="num">{{ fmtSpeedKph(r.trip.max_speed_kph ?? null) }}</td>
+                <td class="num">{{ fmtRpm(r.trip.max_rpm) }}</td>
+                <td class="num">{{ fmtVolumeL(r.trip.fuel_used_l ?? null) }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
 
         <!-- Phone: cards -->
         <ul class="trip-cards">
-          <li v-for="(t, i) in group.items" :key="t.id" :class="{ selected: selectedIds.has(t.id) }">
-            <RouterLink :to="`/trips/${t.id}`" class="trip-card" @click="onStartedClick($event, t.id)">
-              <div class="tc-top">
-                <span v-if="ranked" class="rank num">#{{ offset + i + 1 }}</span>
-                <span class="tc-date">{{ fmtDateTime(t.started_at) }}</span>
-                <span v-if="(t.dtc_count ?? 0) > 0" class="badge danger">{{ t.dtc_count }} DTC</span>
-                <span v-if="t.is_towing" class="tow-badge">TOW</span>
-                <span v-if="t.gps_only" class="gps-badge">GPS ONLY</span>
-              </div>
-              <div class="tc-stats num">
-                <span>{{ fmtDistanceKm(t.distance_km ?? null) }}</span>
-                <span>{{ fmtDuration(t.duration_s) }}</span>
-                <span>{{ fmtSpeedKph(t.max_speed_kph ?? null) }} max</span>
-                <span>{{ fmtVolumeL(t.fuel_used_l ?? null) }}</span>
-              </div>
-              <div v-if="t.category" class="tc-tag"><span class="tag">{{ t.category }}</span></div>
-            </RouterLink>
-          </li>
+          <template v-for="r in renderRows(group)" :key="rowKey(r)">
+            <li v-if="r.kind === 'hops'" class="hops-card">
+              <button type="button" class="hops-btn" :aria-expanded="openHops.has(r.key)" @click="toggleHops(r.key)">
+                <ChevronRight :size="14" class="hops-chev" :class="{ open: openHops.has(r.key) }" aria-hidden="true" />
+                {{ hopsLabel(r) }}
+              </button>
+            </li>
+            <li v-else :class="{ selected: selectedIds.has(r.trip.id), 'hop-child': r.kind === 'hop' }">
+              <RouterLink :to="`/trips/${r.trip.id}`" class="trip-card" @click="onStartedClick($event, r.trip.id)">
+                <div class="tc-top">
+                  <span v-if="ranked" class="rank num">#{{ rankOf(r.trip) }}</span>
+                  <span class="tc-date">{{ rowWhen(r.trip) }}</span>
+                  <span class="tc-mpg num">{{ tripEcon(r.trip) }}</span>
+                </div>
+                <div class="tc-stats num">
+                  <span>{{ fmtDistanceKm(r.trip.distance_km ?? null) }}</span>
+                  <span>{{ fmtDuration(r.trip.duration_s) }}</span>
+                  <span>{{ fmtSpeedKph(r.trip.max_speed_kph ?? null) }} max</span>
+                  <span>{{ fmtVolumeL(r.trip.fuel_used_l ?? null) }}</span>
+                </div>
+                <div
+                  v-if="r.trip.category || r.trip.is_towing || r.trip.gps_only || (r.trip.dtc_count ?? 0) > 0"
+                  class="tc-chips"
+                >
+                  <span v-if="r.trip.category" class="row-chip">{{ r.trip.category }}</span>
+                  <span v-if="r.trip.is_towing" class="row-chip warn">Tow</span>
+                  <span v-if="r.trip.gps_only" class="row-chip">GPS only</span>
+                  <span v-if="(r.trip.dtc_count ?? 0) > 0" class="row-chip danger">{{ r.trip.dtc_count }} DTC</span>
+                </div>
+              </RouterLink>
+            </li>
+          </template>
         </ul>
       </div>
       <footer class="pager">
@@ -617,7 +701,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   height: 2px;
   border-radius: 1px;
   overflow: hidden;
-  background: var(--c-accent-soft);
+  background: var(--c-line0);
   z-index: 20;
 }
 .revalidate-bar::after {
@@ -626,7 +710,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   top: 0;
   bottom: 0;
   width: 40%;
-  background: var(--c-accent);
+  background: var(--c-ink3);
   border-radius: 1px;
   animation: revalidate-slide 1s ease-in-out infinite;
 }
@@ -809,7 +893,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--c-line1);
-  border-top-color: var(--c-accent);
+  border-top-color: var(--c-ink1);
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin {
@@ -857,6 +941,101 @@ tr.selected {
 }
 .started-link:hover {
   color: var(--c-ink0);
+}
+.group-totals {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+.started-cell {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Fixed layout so every group's table lines its columns up the same way. */
+.trip-table {
+  table-layout: fixed;
+}
+.trip-table th.started-h {
+  width: 30%;
+}
+.trip-table th.sel-cell {
+  width: 40px;
+}
+.trip-table th:nth-child(1).num {
+  width: 3rem;
+}
+.row-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--c-line1);
+  background: var(--c-bg3);
+  color: var(--c-ink2);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.5;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.row-chip.warn {
+  color: var(--c-warn);
+  border-color: rgba(255, 176, 32, 0.35);
+  background: var(--c-warn-soft);
+}
+.row-chip.danger {
+  color: var(--c-danger);
+  border-color: rgba(255, 58, 46, 0.35);
+  background: var(--c-danger-soft);
+}
+.mpg-cell {
+  color: var(--c-ink0);
+}
+.hops-row td {
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+}
+.hops-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 0.82rem;
+  font-weight: 400;
+  color: var(--c-ink2);
+}
+.hops-btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--c-ink0);
+}
+.hops-chev {
+  transition: transform 120ms;
+}
+.hops-chev.open {
+  transform: rotate(90deg);
+}
+tr.hop-child td:first-child,
+.trip-cards li.hop-child .trip-card {
+  padding-left: 1.8rem;
+}
+tr.hop-child {
+  background: var(--c-bg1);
+}
+.hops-card {
+  padding: 0.5rem 0.9rem;
+}
+.tc-mpg {
+  color: var(--c-ink0);
+  font-size: 0.85rem;
+}
+.tc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.tc-chips .row-chip {
+  margin-left: 0;
 }
 .trip-cards {
   display: none;

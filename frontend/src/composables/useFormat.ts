@@ -354,3 +354,141 @@ export function fmtRelative(iso: string | null | undefined): string {
     return iso;
   }
 }
+
+// ─── Group-aware dates ────────────────────────────────────────────────────
+// One formatter for every dated list (Trips, Fuel, Maintenance, Overview) so
+// a row never repeats what its group header already says. Rules:
+//   • today / yesterday → time only inside a "Today"/"Yesterday" group
+//     ("6:33 AM"); outside a group it names the day ("Today 6:33 AM").
+//   • 2–6 days ago       → weekday (+ time)          "Tue 6:32 PM"
+//     (exactly 7 days back shares today's weekday, so it takes the date form)
+//   • same calendar year → month + day (+ time)      "Sep 18, 6:33 AM"
+//   • older              → month + day + year        "Sep 7, 2025"
+// 12h vs 24h follows the Intl locale default (no hard-coded pattern).
+// These strings match the Android app's DateLabel exactly (parity rule).
+
+export type DateGroupKey = "today" | "yesterday" | "past7" | "past30" | "thisYear" | "older";
+
+export const DATE_GROUP_LABEL: Record<DateGroupKey, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  past7: "Past 7 days",
+  past30: "Past 30 days",
+  thisYear: "This year",
+  older: "Older",
+};
+export const DATE_GROUP_ORDER: DateGroupKey[] = [
+  "today",
+  "yesterday",
+  "past7",
+  "past30",
+  "thisYear",
+  "older",
+];
+
+/** Parse an API date. A bare "yyyy-MM-dd" is a LOCAL calendar day —
+ *  `new Date("2026-09-18")` would read it as UTC midnight, which is the
+ *  previous evening in every US timezone. */
+export function parseApiDate(v: string | Date | null | undefined): Date | null {
+  if (v == null || v === "") return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Whole calendar days between `d` and `now` in local time (0 = today). */
+export function calendarDaysAgo(d: Date, now: Date = new Date()): number {
+  const a = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const b = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return Math.round((b - a) / 86_400_000);
+}
+
+/** Relative-date bucket for list group headers. */
+export function dateGroupFor(v: string | Date | null | undefined, now: Date = new Date()): DateGroupKey {
+  const d = parseApiDate(v);
+  if (!d) return "older";
+  const days = calendarDaysAgo(d, now);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days <= 7) return "past7";
+  if (days <= 30) return "past30";
+  if (d.getFullYear() === now.getFullYear()) return "thisYear";
+  return "older";
+}
+
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+function dtf(locale: string | undefined, opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${locale ?? ""}|${JSON.stringify(opts)}`;
+  let f = dtfCache.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, opts);
+    dtfCache.set(key, f);
+  }
+  return f;
+}
+
+export interface WhenOptions {
+  /** Include the time of day where the rules allow it (trips: yes; fillups
+   *  and service records carry a calendar day only: no). */
+  withTime?: boolean;
+  /** The row sits under a "Today"/"Yesterday" group header, so the day name
+   *  is redundant and only the time is shown. */
+  grouped?: boolean;
+  now?: Date;
+  /** Tests pin this; the app uses the browser default. */
+  locale?: string;
+}
+
+/** Clock time in the locale's own hour cycle ("6:33 AM" / "06:33"). */
+export function fmtClockTime(v: string | Date | null | undefined, locale?: string): string {
+  const d = parseApiDate(v);
+  if (!d) return "—";
+  return dtf(locale, { hour: "numeric", minute: "2-digit" }).format(d);
+}
+
+/** Group-aware list date — see the rules above. */
+export function fmtWhen(v: string | Date | null | undefined, opts: WhenOptions = {}): string {
+  const d = parseApiDate(v);
+  if (!d) return "—";
+  const { withTime = false, grouped = false, locale } = opts;
+  const now = opts.now ?? new Date();
+  const days = calendarDaysAgo(d, now);
+  const time = withTime ? fmtClockTime(d, locale) : "";
+  if (days === 0 || days === 1) {
+    const day = days === 0 ? "Today" : "Yesterday";
+    if (grouped) return withTime ? time : day;
+    return withTime ? `${day} ${time}` : day;
+  }
+  if (days > 1 && days < 7) {
+    const wd = dtf(locale, { weekday: "short" }).format(d);
+    return withTime ? `${wd} ${time}` : wd;
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    const md = dtf(locale, { month: "short", day: "numeric" }).format(d);
+    return withTime ? `${md}, ${time}` : md;
+  }
+  return dtf(locale, { month: "short", day: "numeric", year: "numeric" }).format(d);
+}
+
+/** Trip-detail title: "Thu, Sep 25 · 6:33 AM" (year added when not this year). */
+export function fmtTripTitle(v: string | Date | null | undefined, opts: { now?: Date; locale?: string } = {}): string {
+  const d = parseApiDate(v);
+  if (!d) return "Trip";
+  const now = opts.now ?? new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const date = dtf(opts.locale, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  }).format(d);
+  return `${date} · ${fmtClockTime(d, opts.locale)}`;
+}
+
+/** Month + year ("Jan 2020") — for "last service … (Jan 2020)". */
+export function fmtMonthYear(v: string | Date | null | undefined, locale?: string): string {
+  const d = parseApiDate(v);
+  if (!d) return "—";
+  return dtf(locale, { month: "short", year: "numeric" }).format(d);
+}

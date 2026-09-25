@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
 import FillupModal from "@/components/FillupModal.vue";
 import StateCard from "@/components/StateCard.vue";
+import Sparkline from "@/components/charts/Sparkline.vue";
 import type { Fillup } from "@/api/types";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
@@ -13,6 +14,7 @@ import {
   fmtMpg,
   fmtMoney,
   fmtDate,
+  fmtWhen,
   fmtDistanceKm,
   fmtVolume,
   fmtPricePerVolume,
@@ -62,12 +64,40 @@ const recentFillups = computed(() =>
   (heroFillupsQ.data.value?.items ?? []).slice(0, 5),
 );
 
-// Rolling-90d MPG trend feeds the consumption tile.
+// Monthly MPG trend feeds the economy tile (90-day value + 12-month
+// sparkline). NOTE: /analytics/mpg does not filter by `window` — every
+// non-"all" window returns every month since the first fillup — so the
+// 3- and 12-month slices are cut client-side from the period keys.
 const mpgTrendQ = useAsync(
   () =>
     vehicleId.value
-      ? api.mpgTrend(vehicleId.value, "3m")
+      ? api.mpgTrend(vehicleId.value, "year")
       : Promise.resolve({ points: [] }),
+  [vehicleId],
+);
+
+/** "YYYY-MM" of the month `back` months before the current one. */
+function monthKey(back: number): string {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - back);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+/** Monthly MPG points in the trailing `months` calendar months (incl. this one). */
+function recentMpgPoints(months: number) {
+  const from = monthKey(months - 1);
+  return (mpgTrendQ.data.value?.points ?? []).filter(
+    (p) => p.period >= from && p.mpg != null && p.mpg > 0,
+  );
+}
+
+// Thirteen months of spend for the "This month" bars (same endpoint the
+// Android Home uses): 12 bars plus the month before them for the average.
+const monthlyQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.monthlySpend(vehicleId.value, 13)
+      : Promise.resolve({ months: [] as { month: string; fuel: number; service: number; total: number }[] }),
   [vehicleId],
 );
 
@@ -141,11 +171,13 @@ function formatReadingAge(isoTime: string): string | null {
 
 const heroData = computed(() => {
   const fillups = (heroFillupsQ.data.value?.items ?? []) as HeroFillup[];
-  const mpgPoints = mpgTrendQ.data.value?.points ?? [];
+  // Last three calendar months of monthly MPG averages.
+  const mpgPoints = recentMpgPoints(3);
 
-  // 90-day rolling MPG — average of the points in the trend window.
-  const mpg90 = mpgPoints.length > 0
-    ? mpgPoints.reduce((s, p) => s + (p.mpg ?? 0), 0) / mpgPoints.length
+  // 90-day MPG — fillup-weighted mean of the monthly averages in the window.
+  const w = mpgPoints.reduce((s, p) => s + (p.fillup_count ?? 1), 0);
+  const mpg90 = mpgPoints.length > 0 && w > 0
+    ? mpgPoints.reduce((s, p) => s + (p.mpg ?? 0) * (p.fillup_count ?? 1), 0) / w
     : null;
 
   // Latest fillup price/gal + 30-day average for delta.
@@ -284,6 +316,45 @@ const heroData = computed(() => {
     worstMpg,
   };
 });
+// ── KPI sparklines ───────────────────────────────────────────────────
+// One slot per calendar month, so a month without fillups is a gap in the
+// line rather than a fake dip. No data → no sparkline (never a row of zeros).
+const econSpark = computed<{ values: (number | null)[]; min: number; max: number } | null>(() => {
+  const byMonth = new Map(recentMpgPoints(12).map((p) => [p.period, p.mpg as number]));
+  const values = Array.from({ length: 12 }, (_, i) => {
+    const v = byMonth.get(monthKey(11 - i));
+    return v != null ? convEconomyMpg(v) : null;
+  });
+  const finite = values.filter((v): v is number => v != null);
+  if (finite.length < 2) return null;
+  return { values, min: Math.min(...finite), max: Math.max(...finite) };
+});
+
+// $/volume of the recent fillups, oldest → newest.
+const priceSpark = computed<{ values: number[]; n: number } | null>(() => {
+  const vals = [...(heroFillupsQ.data.value?.items ?? [])]
+    .sort((a, b) => (a.fillup_date ?? "").localeCompare(b.fillup_date ?? ""))
+    .map((f) => toNum(f.price_per_unit))
+    .filter((v): v is number => v != null && v > 0)
+    .slice(-12)
+    .map((v) => convPricePerVolume(v, volSrc.value));
+  return vals.length >= 2 ? { values: vals, n: vals.length } : null;
+});
+
+// Monthly fuel spend, last 12 calendar months with the current one
+// highlighted; the average is over the 12 complete months before it.
+const spendBars = computed<{ values: number[]; avg: number | null } | null>(() => {
+  const months = monthlyQ.data.value?.months ?? [];
+  if (months.length === 0) return null;
+  const byMonth = new Map(months.map((m) => [m.month.slice(0, 7), m.fuel ?? 0]));
+  const values = Array.from({ length: 12 }, (_, i) => byMonth.get(monthKey(11 - i)) ?? 0);
+  const prior = Array.from({ length: 12 }, (_, i) => byMonth.get(monthKey(12 - i)))
+    .filter((v): v is number => v != null);
+  const avg = prior.length ? prior.reduce((a, b) => a + b, 0) / prior.length : null;
+  if (!values.some((v) => v > 0)) return null;
+  return { values, avg };
+});
+
 const gaugeColor = computed(() => {
   const p = heroData.value.fuelLevelPct;
   if (p == null) return 'var(--c-line0)';
@@ -621,6 +692,15 @@ function onFillupSaved() {
             <span class="unit">{{ economyUnitLabel() }}</span>
           </div>
           <div class="hero-sub muted">last 90 days · fillup-based</div>
+          <div v-if="econSpark" class="hero-trend">
+            <Sparkline
+              :values="econSpark.values"
+              kind="area"
+              color="var(--chart-1)"
+              :label="`Monthly economy, last 12 months, ${econ(econSpark.min)} to ${econ(econSpark.max)}`"
+            />
+            <span class="trend-cap">12 mo · {{ nf(1).format(econSpark.min) }}–{{ nf(1).format(econSpark.max) }}</span>
+          </div>
         </div>
 
         <div class="card hero">
@@ -629,7 +709,7 @@ function onFillupSaved() {
             <span class="big">{{ ppv(heroData.latestPpg) }}</span>
             <span class="unit">/{{ volUnitLabel() }}</span>
           </div>
-          <div class="hero-sub muted" v-if="recentFillups[0]">latest fillup · {{ fmtDate(recentFillups[0].fillup_date, "MMM d") }}</div>
+          <div class="hero-sub muted" v-if="recentFillups[0]">latest fillup · {{ fmtWhen(recentFillups[0].fillup_date) }}</div>
           <div
             v-if="heroData.ppgDelta != null"
             class="hero-sub"
@@ -647,6 +727,15 @@ function onFillupSaved() {
             {{ Math.abs(heroData.ppgVsRegion).toFixed(1) }}% vs {{ heroData.eiaRegionLabel }}
             <span class="muted small"> · {{ fmtPricePerVolume(heroData.eiaLatest, "gal") }} this week</span>
           </div>
+          <div v-if="priceSpark" class="hero-trend">
+            <Sparkline
+              :values="priceSpark.values"
+              kind="line"
+              color="var(--chart-3)"
+              :label="`Price per ${volUnitLabel()} over the last ${priceSpark.n} fillups`"
+            />
+            <span class="trend-cap">last {{ priceSpark.n }} fillups</span>
+          </div>
         </div>
 
         <div class="card hero">
@@ -656,6 +745,14 @@ function onFillupSaved() {
           </div>
           <div class="hero-sub muted">
             calendar month · {{ heroData.monthCount }} fillup{{ heroData.monthCount === 1 ? '' : 's' }}
+          </div>
+          <div v-if="spendBars" class="hero-trend">
+            <Sparkline
+              :values="spendBars.values"
+              kind="bars"
+              :label="`Monthly fuel spend, last 12 months`"
+            />
+            <span v-if="spendBars.avg != null" class="trend-cap">12-mo avg {{ fmtMoney(spendBars.avg, 0) }}</span>
           </div>
         </div>
       </section>
@@ -821,7 +918,7 @@ function onFillupSaved() {
           <ul v-else class="recent">
             <li v-for="t in tripsQ.data.value.items" :key="t.id">
               <RouterLink :to="`/trips/${t.id}`">
-                <span>{{ fmtDate(t.started_at, "MMM d, HH:mm") }}</span>
+                <span>{{ fmtWhen(t.started_at, { withTime: true }) }}</span>
                 <span class="muted">{{ fmtDistanceKm(t.distance_km ?? null) }}</span>
               </RouterLink>
             </li>
@@ -839,7 +936,7 @@ function onFillupSaved() {
           <ul v-else class="recent">
             <li v-for="f in recentFillups" :key="f.id">
               <button type="button" class="row-btn" :aria-label="`Edit fillup from ${fmtDate(f.fillup_date)}`" @click="editing = f">
-                <span>{{ fmtDate(f.fillup_date, "MMM d") }}</span>
+                <span>{{ fmtWhen(f.fillup_date) }}</span>
                 <span class="muted">
                   {{ fmtVolume(f.fuel_volume, volSrc, 1) }} · {{ fmtMpg(f.mpg) }} · {{ fmtMoney(f.price_total) }}
                 </span>
@@ -996,6 +1093,19 @@ function onFillupSaved() {
 .hero-sub.down {
   color: var(--c-success);
 }
+.hero-trend {
+  margin-top: auto;
+  padding-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.trend-cap {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--c-ink3);
+  font-variant-numeric: tabular-nums;
+}
 .hero-spark {
   display: block;
   width: 100%;
@@ -1099,6 +1209,10 @@ function onFillupSaved() {
   display: flex;
   justify-content: space-between;
   width: 100%;
+  color: var(--c-ink1);
+}
+.recent a:hover {
+  color: var(--c-ink0);
 }
 .card h3 {
   display: flex;
@@ -1107,6 +1221,7 @@ function onFillupSaved() {
 }
 .more {
   margin-left: auto;
+  color: var(--c-ink2);
   font-size: 0.75rem;
   text-transform: none;
   letter-spacing: 0;

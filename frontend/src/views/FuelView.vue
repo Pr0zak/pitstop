@@ -9,6 +9,11 @@ import type { Fillup } from "@/api/types";
 import type uPlot from "uplot";
 import {
   fmtDate,
+  fmtWhen,
+  dateGroupFor,
+  DATE_GROUP_LABEL,
+  DATE_GROUP_ORDER,
+  type DateGroupKey,
   fmtMpg,
   fmtMoney,
   fmtOdo,
@@ -69,7 +74,11 @@ const vehicleId = computed(() => vehicles.selectedVehicleId);
 // chart colours come from lib/chartTheme (tokens read via getComputedStyle).
 const C = chartColors();
 const PAL = chartPalette();
-const ACCENT = C.accent;
+// Chart series colours come from the categorical palette — the coral accent
+// is reserved for primary actions / selection state.
+const PRICE_COLOR = PAL[2];
+const HIST_COLOR = PAL[5];
+void C;
 // Tab lives in ?tab= so a link / reload lands on the same view.
 const tab = useQueryParam<"fillups" | "map" | "stats">("tab", "fillups", ["fillups", "map", "stats"]);
 
@@ -371,44 +380,15 @@ function changeSort(k: SortKey) {
 type FillupFilter = "all" | "full" | "partial";
 const fillupFilter = ref<FillupFilter>("all");
 
-type GroupKey = "today" | "yesterday" | "past7" | "past30" | "thisYear" | "older";
-const GROUP_LABEL: Record<GroupKey, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  past7: "Past 7 days",
-  past30: "Past 30 days",
-  thisYear: "This year",
-  older: "Older",
-};
-function fillupBucket(iso: string | null | undefined): GroupKey {
-  if (!iso) return "older";
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return "older";
-  const now = new Date();
-  const msPerDay = 24 * 3600 * 1000;
-  const dayStart = (d: Date) => {
-    const x = new Date(d);
-    x.setHours(0, 0, 0, 0);
-    return x.getTime();
-  };
-  const daysAgo = Math.floor((dayStart(now) - dayStart(t)) / msPerDay);
-  if (daysAgo <= 0) return "today";
-  if (daysAgo === 1) return "yesterday";
-  if (daysAgo <= 7) return "past7";
-  if (daysAgo <= 30) return "past30";
-  if (t.getFullYear() === now.getFullYear()) return "thisYear";
-  return "older";
-}
-
-const groupedFillups = computed<Array<{ key: GroupKey; label: string; items: Fillup[] }>>(() => {
+const groupedFillups = computed<Array<{ key: DateGroupKey; label: string; items: Fillup[] }>>(() => {
   const items = sortedFillups.value.filter((f) => {
     if (fillupFilter.value === "all") return true;
     if (fillupFilter.value === "full") return f.is_full !== false;
     return f.is_full === false;
   });
-  const byKey = new Map<GroupKey, Fillup[]>();
+  const byKey = new Map<DateGroupKey, Fillup[]>();
   for (const f of items) {
-    const k = fillupBucket(f.fillup_date as string | null | undefined);
+    const k = dateGroupFor(f.fillup_date);
     let list = byKey.get(k);
     if (!list) {
       list = [];
@@ -416,11 +396,27 @@ const groupedFillups = computed<Array<{ key: GroupKey; label: string; items: Fil
     }
     list.push(f);
   }
-  const order: GroupKey[] = ["today", "yesterday", "past7", "past30", "thisYear", "older"];
-  return order
-    .map((k) => ({ key: k, label: GROUP_LABEL[k], items: byKey.get(k) ?? [] }))
+  return DATE_GROUP_ORDER
+    .map((k) => ({ key: k, label: DATE_GROUP_LABEL[k], items: byKey.get(k) ?? [] }))
     .filter((g) => g.items.length > 0);
 });
+
+/** Row date, group-aware: a fillup under "Today" doesn't repeat "Today". */
+function rowDate(f: Fillup): string {
+  return fmtWhen(f.fillup_date, { grouped: true });
+}
+
+/**
+ * Fuelio's own MPG differs from the recomputed chain value (≥ 0.1 in the
+ * display unit) — only then is the parenthetical worth showing, and it is
+ * styled as a flagged mismatch. Equal values used to render "19.4 mpg (19.4)".
+ */
+function reportedMismatch(f: Fillup): string | null {
+  if (f.mpg == null || f.mpg_reported == null || f.mpg_reported <= 0) return null;
+  const a = convEconomyMpg(f.mpg);
+  const b = convEconomyMpg(f.mpg_reported);
+  return Math.abs(a - b) >= 0.1 ? nf(1).format(b) : null;
+}
 
 // Modal
 const showModal = ref(false);
@@ -705,7 +701,7 @@ const ppgChart = computed(() => {
     height: 200,
     scales: { x: { time: true } },
     axes: [{}, { label: `$/${volUnitLabel()}` }],
-    series: [{}, { label: `$/${volUnitLabel()}`, stroke: ACCENT, width: 1.5 }],
+    series: [{}, { label: `$/${volUnitLabel()}`, stroke: PRICE_COLOR, width: 1.5 }],
   };
   return { aligned, opts };
 });
@@ -749,9 +745,9 @@ const frequencyChart = computed(() => {
       {},
       {
         label: "Fillups",
-        stroke: ACCENT,
+        stroke: HIST_COLOR,
         width: 0,
-        fill: withAlpha(ACCENT, 0.55),
+        fill: withAlpha(HIST_COLOR, 0.55),
         paths: (_u, _seriesIdx, idx0, idx1) => {
           const path = new Path2D();
           // We render the bar shape ourselves via uPlot's clip; this
@@ -805,9 +801,9 @@ const volumeDistChart = computed(() => {
       {},
       {
         label: "Fillups",
-        stroke: ACCENT,
+        stroke: HIST_COLOR,
         width: 0,
-        fill: withAlpha(ACCENT, 0.55),
+        fill: withAlpha(HIST_COLOR, 0.55),
         paths: (_u, _seriesIdx, idx0, idx1) => {
           const path = new Path2D();
           for (let i = idx0; i <= idx1; i++) {
@@ -978,7 +974,7 @@ const mpgVsTempChart = computed(() => {
             <span class="group-label">{{ group.label }}</span>
             <span class="muted small">{{ group.items.length }}</span>
           </header>
-          <div class="table-scroll">
+          <div class="table-scroll fill-table">
           <table class="data">
             <thead>
               <tr>
@@ -1004,7 +1000,7 @@ const mpgVsTempChart = computed(() => {
                   <button
                     type="button"
                     class="sort-btn"
-                    :title="`Recomputed from odometer deltas (full-to-full, partials rolled up). The value in parentheses is what Fuelio recorded.`"
+                    :title="`Recomputed from odometer deltas (full-to-full, partials rolled up). A flagged value in parentheses is what Fuelio recorded, shown only when it differs.`"
                     @click="changeSort('mpg_recomputed')"
                   >
                     {{ economyUnitLabel() === 'mpg' ? 'MPG' : economyUnitLabel() }}<span class="arrow" aria-hidden="true">{{ sortArrow('mpg_recomputed') }}</span>
@@ -1015,13 +1011,13 @@ const mpgVsTempChart = computed(() => {
             </thead>
             <tbody>
               <tr v-for="f in group.items" :key="f.id">
-                <td>{{ fmtDate(f.fillup_date) }}</td>
-                <td class="num">{{ fmtOdo(f.odo, distSrc) }}</td>
-                <td class="num">
-                  {{ fmtVolume(f.fuel_volume, volSrc) }}
+                <td class="date-cell">
+                  <span :title="fmtDate(f.fillup_date)">{{ rowDate(f) }}</span>
                   <span v-if="f.is_missed" class="badge warn" title="A fillup before this one wasn't logged; MPG skipped">Missed</span>
                   <span v-if="f.is_full === false" class="badge" title="Partial fill — MPG rolls into the next full tank">Partial</span>
                 </td>
+                <td class="num">{{ fmtOdo(f.odo, distSrc) }}</td>
+                <td class="num">{{ fmtVolume(f.fuel_volume, volSrc) }}</td>
                 <td class="num">{{ fmtMoney(fillupTotal(f)) }}</td>
                 <td class="num">{{ fmtPricePerVolume(fillupPpu(f), volSrc) }}</td>
                 <td>{{ f.city ?? f.station_id ?? "—" }}</td>
@@ -1043,11 +1039,10 @@ const mpgVsTempChart = computed(() => {
                   </span>
                   <span v-else class="muted">—</span>
                   <span
-                    v-if="f.mpg != null && f.mpg_reported != null && f.mpg_reported > 0"
-                    class="muted small"
-                  >
-                    ({{ nf(1).format(convEconomyMpg(f.mpg_reported)) }})
-                  </span>
+                    v-if="reportedMismatch(f)"
+                    class="mpg-mismatch"
+                    :title="`Fuelio recorded ${reportedMismatch(f)} — differs from the recomputed value`"
+                  >({{ reportedMismatch(f) }})</span>
                 </td>
                 <td class="row-actions">
                   <button class="ghost" type="button" @click="openEdit(f)" :aria-label="`Edit fillup from ${fmtDate(f.fillup_date)}`" title="Edit">
@@ -1061,6 +1056,43 @@ const mpgVsTempChart = computed(() => {
             </tbody>
           </table>
           </div>
+
+          <!-- Phone: two-line cards (matches the Android fillup list). Tap a
+               card to edit; the trailing button deletes. -->
+          <ul class="fill-cards">
+            <li v-for="f in group.items" :key="f.id">
+              <button
+                type="button"
+                class="fc"
+                :aria-label="`Edit fillup from ${fmtDate(f.fillup_date)}`"
+                @click="openEdit(f)"
+              >
+                <span class="fc-top">
+                  <span class="fc-date">{{ rowDate(f) }}</span>
+                  <span v-if="f.is_missed" class="badge warn">Missed</span>
+                  <span v-if="f.is_full === false" class="badge">Partial</span>
+                  <span class="fc-total num">{{ fmtMoney(fillupTotal(f)) }}</span>
+                </span>
+                <span class="fc-sub num">
+                  <span>{{ fmtVolume(f.fuel_volume, volSrc) }}</span>
+                  <span>{{ fmtPricePerVolume(fillupPpu(f), volSrc) }}</span>
+                  <span v-if="f.mpg != null">{{ fmtMpg(f.mpg) }}<span v-if="reportedMismatch(f)" class="mpg-mismatch"> ({{ reportedMismatch(f) }})</span></span>
+                  <span v-else-if="f.mpg_reported != null && f.mpg_reported > 0" class="mpg-fallback">{{ fmtMpg(f.mpg_reported) }}</span>
+                  <span>{{ fmtOdo(f.odo, distSrc) }}</span>
+                  <span v-if="f.city || f.station_id" class="fc-station">{{ f.city ?? f.station_id }}</span>
+                </span>
+              </button>
+              <button
+                class="ghost fc-del"
+                type="button"
+                :aria-label="`Delete fillup from ${fmtDate(f.fillup_date)}`"
+                title="Delete"
+                @click="requestRemove(f)"
+              >
+                <X :size="14" />
+              </button>
+            </li>
+          </ul>
         </div>
         <footer v-if="fillupsQ.data.value" class="pager">
           <span class="muted">
@@ -1179,7 +1211,7 @@ const mpgVsTempChart = computed(() => {
                 </td>
                 <td class="num">{{ fmtPricePerVolume(s.avg_price, volSrc) }}</td>
                 <td class="num">{{ s.fillup_count }}</td>
-                <td>{{ fmtDate(s.latest_date) }}</td>
+                <td>{{ fmtWhen(s.latest_date) }}</td>
               </tr>
             </tbody>
           </table>
@@ -1513,7 +1545,7 @@ const mpgVsTempChart = computed(() => {
 .sort-btn .arrow {
   margin-left: 0.25rem;
   font-size: 0.7em;
-  color: var(--c-accent);
+  color: var(--c-ink2);
 }
 th[aria-sort="ascending"],
 th[aria-sort="descending"] {
@@ -1523,6 +1555,99 @@ td .badge {
   margin-left: 0.3rem;
   font-family: 'Geist', sans-serif;
   font-size: 0.68rem;
+}
+.date-cell {
+  white-space: nowrap;
+}
+/* Fuelio's value disagrees with the recomputed chain value. */
+.mpg-mismatch {
+  margin-left: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--c-warn);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+.fill-cards {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fill-cards li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--c-line0);
+}
+.fill-cards li:last-child {
+  border-bottom: none;
+}
+.fc {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+  padding: 0.65rem 0.4rem 0.65rem 0.9rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  font-weight: 400;
+  color: var(--c-ink1);
+}
+.fc:hover:not(:disabled) {
+  background: var(--c-bg3);
+  border-color: transparent;
+}
+.fc-top {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.fc-top .badge {
+  font-size: 0.68rem;
+}
+.fc-date {
+  font-weight: 500;
+  color: var(--c-ink0);
+}
+.fc-total {
+  margin-left: auto;
+  color: var(--c-ink0);
+  font-weight: 500;
+}
+.fc-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0;
+  font-size: 0.8rem;
+  color: var(--c-ink2);
+}
+.fc-sub > span:not(:last-child)::after {
+  content: "·";
+  margin: 0 0.4rem;
+  color: var(--c-ink4);
+}
+.fc-station {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.fc-del {
+  flex: none;
+  margin-right: 0.4rem;
+  color: var(--c-ink3);
+}
+@media (max-width: 640px) {
+  .fill-table {
+    display: none;
+  }
+  .fill-cards {
+    display: block;
+  }
 }
 .control-row > .muted {
   min-width: 4rem;

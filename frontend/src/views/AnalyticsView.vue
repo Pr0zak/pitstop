@@ -129,8 +129,18 @@ const mpgOpts = computed<uPlot.Options>(() => {
     series,
   };
 });
-const mpgData = computed<uPlot.AlignedData | null>(() => {
+/** /analytics/mpg ignores `window` beyond choosing month vs year buckets —
+ *  every month since the first fillup comes back — so trim to the selected
+ *  window here. "all" (yearly buckets) is left as is. */
+const mpgPointsInWindow = computed(() => {
   const points = mpgQ.data.value?.points ?? [];
+  const from = fromIso.value;
+  if (!from || window.value === "all") return points;
+  const fromMonth = from.slice(0, 7);
+  return points.filter((p) => p.period >= fromMonth);
+});
+const mpgData = computed<uPlot.AlignedData | null>(() => {
+  const points = mpgPointsInWindow.value;
   if (points.length === 0) return null;
   const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
   const y = points.map((p) => (p.mpg != null ? convEconomyMpg(p.mpg) : null));
@@ -349,6 +359,19 @@ const mpgClassQ = useAsync(
       : Promise.resolve({ classes: [] as api.MpgBySpeedClassRow[] }),
   [vehicleId],
 );
+/** Display names for the backend's class keys. These classes are by TRIP
+ *  AVERAGE speed (35 / 55 mph cutoffs), which is not the same thing as the
+ *  per-second speed buckets on trip detail (City = 2–22 mph etc.) — hence
+ *  "Mostly …" rather than reusing the bucket names. Display mapping only; the
+ *  endpoint contract is unchanged. */
+const SPEED_CLASS_LABEL: Record<string, string> = {
+  Highway: "Mostly highway",
+  Mixed: "Mixed",
+  City: "Mostly city",
+};
+function speedClassLabel(key: string): string {
+  return SPEED_CLASS_LABEL[key] ?? key;
+}
 function speedClassColor(label: string): string {
   return label === "Highway" ? "var(--c-info)"
     : label === "Mixed" ? "var(--c-success)"
@@ -358,7 +381,7 @@ function speedClassColor(label: string): string {
 const speedClassText = computed(() => {
   const u = speedUnitLabel();
   const [lo, hi] = u === "mph" ? [35, 55] : [56, 89];
-  return `Highway ≥ ${hi} ${u}, Mixed ${lo}–${hi} ${u}, City < ${lo} ${u}`;
+  return `mostly highway ≥ ${hi} ${u}, mixed ${lo}–${hi} ${u}, mostly city < ${lo} ${u}`;
 });
 const breakdownTotal = computed(() =>
   Object.values(breakdownQ.data.value?.summary ?? {}).reduce((a, b) => a + b, 0),
@@ -445,8 +468,8 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
           <StateCard v-else-if="mpgQ.error.value" state="error" bare :message="mpgQ.error.value" @retry="mpgQ.reload()" />
           <StateCard v-else-if="!mpgData" state="empty" bare title="No fillups in window." />
           <UPlotChart v-else :data="mpgData" :options="mpgOpts" />
-          <p class="muted small" v-if="mpgQ.data.value?.points.length">
-            Latest: {{ fmtMpg(mpgQ.data.value.points[mpgQ.data.value.points.length - 1].mpg) }}
+          <p class="muted small" v-if="mpgPointsInWindow.length">
+            Latest: {{ fmtMpg(mpgPointsInWindow[mpgPointsInWindow.length - 1].mpg) }}
           </p>
         </section>
 
@@ -549,13 +572,15 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
               :key="c.class"
             >
               <span class="dot" :style="{ background: speedClassColor(c.class) }"></span>
-              <span class="speed-class-label">{{ c.class }}</span>
+              <span class="speed-class-label">{{ speedClassLabel(c.class) }}</span>
               <span class="num speed-class-mpg">{{ fmtMpg(c.avg_mpg) }}</span>
               <span class="muted small">{{ c.trip_count }} trip{{ c.trip_count === 1 ? "" : "s" }}</span>
             </li>
           </ul>
           <p class="muted small">
-            Trips classified by average speed: {{ speedClassText }}. OBD-derived economy averaged per class.
+            Each trip is classed by its <strong>average speed</strong> over the whole trip
+            ({{ speedClassText }}) — not by time spent at each speed, so these differ from the
+            speed breakdown on a trip's detail page. OBD-derived economy averaged per class.
           </p>
         </section>
 
@@ -707,7 +732,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 }
 .speed-class-rows li {
   display: grid;
-  grid-template-columns: 12px 5rem 1fr auto;
+  grid-template-columns: 12px 8rem 1fr auto;
   gap: 0.6rem;
   align-items: baseline;
   font-size: 0.9rem;

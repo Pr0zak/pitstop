@@ -2,14 +2,14 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
 import StateCard from "@/components/StateCard.vue";
-import { chartColors } from "@/lib/chartTheme";
 import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
-import UPlotChart from "@/components/charts/UPlotChart.vue";
+import TripLanes, { type Lane } from "@/components/charts/TripLanes.vue";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
 import {
-  fmtDateTime,
+  fmtTripTitle,
+  fmtClockTime,
   fmtDuration,
   fmtDistanceKm,
   fmtSpeedKph,
@@ -195,7 +195,7 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
   return [
     { metric: "vehicle_speed",          label: imp ? "Speed (mph)" : "Speed (km/h)", stroke: "#2f81f7", scale: "speed",   axisLabel: imp ? "mph" : "km/h",   transform: (v) => (imp ? v * 0.621371 : v), defaultVisible: true },
     { metric: "engine_rpm",             label: "RPM",                                stroke: "#3fb950", scale: "rpm",     axisLabel: "rpm",                  transform: (v) => v,                       defaultVisible: true },
-    { metric: "coolant_temp",           label: `Coolant (${degUnit})`,               stroke: "#d29922", scale: "temp",    axisLabel: degUnit,                transform: cToDisp,                        defaultVisible: true },
+    { metric: "coolant_temp",           label: `Coolant (${degUnit})`,               stroke: "#d29922", scale: "temp",    axisLabel: degUnit,                transform: cToDisp,                        defaultVisible: false },
     { metric: "throttle_position",      label: "Throttle (%)",                       stroke: "#a78bfa", scale: "pct",     axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false },
     { metric: "engine_load",            label: "Load (%)",                           stroke: "#ec4899", scale: "pct",     axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false },
     { metric: "manifold_pressure",      label: `MAP (${presUnit})`,                  stroke: "#06b6d4", scale: "kpa",     axisLabel: presUnit,               transform: kpaToDisp,                      defaultVisible: false },
@@ -251,6 +251,46 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
   ];
 });
 
+// Chip groups for the metric picker. Lane order follows TRIP_SERIES within
+// the group order below, so Speed and RPM always sit on top.
+type SeriesGroup = "Drive" | "Engine" | "Fuel" | "Air" | "Emissions";
+const SERIES_GROUPS: SeriesGroup[] = ["Drive", "Engine", "Fuel", "Air", "Emissions"];
+const GROUP_OF: Record<string, SeriesGroup> = {
+  vehicle_speed: "Drive",
+  engine_rpm: "Drive",
+  throttle_position: "Drive",
+  engine_load: "Drive",
+  acceleration: "Drive",
+  odometer: "Drive",
+  coolant_temp: "Engine",
+  control_module_voltage: "Engine",
+  fuel_rail_pressure: "Engine",
+  fuel_level: "Fuel",
+  engine_fuel_rate: "Fuel",
+  commanded_afr_ratio: "Fuel",
+  o2_s1_lambda: "Fuel",
+  intake_air_temp: "Air",
+  manifold_pressure: "Air",
+  maf_air_flow: "Air",
+  catalyst_temp_b1: "Emissions",
+  catalyst_temp_b2: "Emissions",
+  engine_exhaust_flow: "Emissions",
+};
+function groupOf(metric: string): SeriesGroup {
+  return GROUP_OF[metric] ?? "Engine";
+}
+const seriesByGroup = computed(() =>
+  SERIES_GROUPS.map((g) => ({
+    group: g,
+    series: TRIP_SERIES.value.filter((s) => groupOf(s.metric) === g),
+  })).filter((g) => g.series.length > 0),
+);
+/** "Speed (mph)" → { name: "Speed", unit: "mph" }. */
+function splitLabel(label: string): { name: string; unit: string } {
+  const m = /^(.*?)\s*\((.*)\)$/.exec(label);
+  return m ? { name: m[1], unit: m[2] } : { name: label, unit: "" };
+}
+
 // Metrics in TRIP_SERIES that are computed in the frontend rather
 // than fetched from pid_readings.
 const DERIVED_METRICS = new Set(["acceleration"]);
@@ -270,8 +310,10 @@ const metricsWithData = computed<Set<string>>(() => {
   return out;
 });
 
-// Persisted visibility selection — survives reload + revisit.
-const SERIES_VIS_KEY = "pitstop_trip_series_visible";
+// Persisted visibility selection — survives reload + revisit. The key was
+// bumped when the timeline became stacked lanes (each visible metric now
+// costs a lane of height, and the default dropped Coolant to Speed + RPM).
+const SERIES_VIS_KEY = "pitstop_trip_lanes_visible";
 /** Resolve the persisted visibility map, merged OVER the current defaults.
  *
  *  The stored blob is a snapshot of whatever series existed the last time the
@@ -439,7 +481,11 @@ function medianFilter(arr: (number | null)[], windowSize: number): (number | nul
 // toggle. Neither depends on smoothLevel, so a Smooth-chip toggle only
 // re-derives chartData — chartOpts identity stays stable and UPlotChart takes
 // the cheap setData() path instead of a full destroy()+rebuild.
-const visibleSeries = computed(() => TRIP_SERIES.value.filter((s) => seriesVisible.value[s.metric]));
+const visibleSeries = computed(() =>
+  SERIES_GROUPS.flatMap((g) =>
+    TRIP_SERIES.value.filter((s) => groupOf(s.metric) === g && seriesVisible.value[s.metric]),
+  ),
+);
 
 // Aligned data: pivots + smooths + forward-fills the trip samples into the
 // column layout implied by visibleSeries. Recomputes on trip load, series
@@ -616,150 +662,62 @@ const chartData = computed<uPlot.AlignedData | null>(() => {
   return [t, ...arrays] as uPlot.AlignedData;
 });
 
-// Chart options: scales / axes / series / plugins, derived purely from the
-// visible-series set + the trip's DTC markers. Deliberately independent of
-// smoothLevel so the opts object identity is stable across Smooth-chip
-// toggles (the whole point of the split). Returns null when nothing is
-// visible / no trip so the template can gate on it in parallel with chartData.
-const chartOpts = computed<uPlot.Options | null>(() => {
-  if (!trip.value) return null;
-  const visible = visibleSeries.value;
-  if (visible.length === 0) return null;
-  // Build the scales object: every distinct scale used by visible series.
-  const scales: Record<string, { time?: boolean }> = { x: { time: true } };
-  for (const s of visible) scales[s.scale] = {};
-  // Axes — first is x; then one per *unique* scale, alternating sides.
-  const axisScalesSeen = new Set<string>();
-  const axes: uPlot.Axis[] = [{}];
-  let side = 0; // 0 = left (3 for top, but we want bottom-default), 1 = right
-  for (const s of visible) {
-    if (axisScalesSeen.has(s.scale)) continue;
-    axisScalesSeen.add(s.scale);
-    // Capture into a local so the closure below doesn't have to re-narrow
-    // `s.decimals` (TS drops property narrowing across a function boundary).
-    const dp = s.decimals;
-    axes.push({
-      scale: s.scale,
-      label: s.axisLabel,
-      side: side === 0 ? 3 : 1,
-      grid: { show: side === 0 },
-      // Fixed precision for the ratio scales. uPlot's automatic tick
-      // formatting derives decimals from the tick increment, which on a
-      // 0.98–1.02 range rounds every split to "1".
-      ...(dp != null ? { values: (_u: uPlot, splits: number[]) => splits.map((v) => v.toFixed(dp)) } : {}),
-    });
-    side = 1 - side;
-  }
-  // Vertical rules for DTC fire events (#110).
-  const dtcMarkers: { ts: number; code: string }[] = (trip.value.dtcs ?? [])
-    .map((d) => ({ ts: Math.round(Date.parse(d.seen_at) / 1000), code: d.code }))
-    .filter((d) => Number.isFinite(d.ts));
-  const hasMarkers = dtcMarkers.length > 0;
-  const dtcColor = chartColors().danger;
-  const markerPlugin: uPlot.Plugin | null = hasMarkers
-    ? {
-        hooks: {
-          draw: (u) => {
-            const ctx = u.ctx;
-            ctx.save();
-            ctx.font = "11px ui-sans-serif";
-            // DTC rules — solid red, code label above
-            ctx.strokeStyle = dtcColor;
-            ctx.fillStyle = dtcColor;
-            ctx.lineWidth = 1;
-            for (const m of dtcMarkers) {
-              const x = u.valToPos(m.ts, "x", true);
-              if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
-              ctx.setLineDash([]);
-              ctx.beginPath();
-              ctx.moveTo(x, u.bbox.top);
-              ctx.lineTo(x, u.bbox.top + u.bbox.height);
-              ctx.stroke();
-              ctx.fillText(m.code, x + 4, u.bbox.top + 12);
-            }
-            ctx.setLineDash([]);
-            ctx.restore();
-          },
-        },
-      }
-    : null;
-  return {
-    width: 800,
-    height: 320,
-    cursor: { drag: { x: true, y: false, setScale: true } },
-    scales,
-    series: [
-      {},
-      ...visible.map((s) => {
-        const dp = s.decimals;
-        return {
-          label: s.label,
-          stroke: s.stroke,
-          scale: s.scale,
-          width: 1.4,
-          // Same reason as the axis `values` above — without this the
-          // legend readout for a λ series shows a flat "1" under the cursor.
-          ...(dp != null
-            ? { value: (_u: uPlot, v: number | null) => (v == null ? "--" : v.toFixed(dp)) }
-            : {}),
-        };
-      }),
-    ],
-    axes,
-    ...(markerPlugin || cursorMapSyncPlugin ? {
-      plugins: [
-        ...(markerPlugin ? [markerPlugin] : []),
-        cursorMapSyncPlugin,
-      ],
-    } : {}),
-  };
+// Stacked lanes: one per visible metric, all sharing the pivoted x column.
+const lanes = computed<Lane[]>(() => {
+  const data = chartData.value;
+  if (!data) return [];
+  return visibleSeries.value.map((sr, i) => {
+    const { name, unit } = splitLabel(sr.label);
+    return {
+      key: sr.metric,
+      label: name,
+      unit,
+      color: sr.stroke,
+      values: data[i + 1] as (number | null)[],
+      decimals: sr.decimals,
+    };
+  });
 });
+const laneX = computed<number[]>(() => (chartData.value?.[0] as number[] | undefined) ?? []);
 
-// Hover marker for chart ↔ map sync. The cursor plugin below
-// updates this on every uPlot setCursor; MapLibreMap watches it
-// and renders a distinct marker at the matching GPS position.
+// Vertical rules for DTC fire events (#110).
+const dtcMarkers = computed<{ ts: number; code: string }[]>(() =>
+  (trip.value?.dtcs ?? [])
+    .map((d) => ({ ts: Math.round(Date.parse(d.seen_at) / 1000), code: d.code }))
+    .filter((d) => Number.isFinite(d.ts)),
+);
+
+// Hover marker for chart ↔ map sync. The lanes emit the cursor's timestamp;
+// the nearest GPS fix within ±15 s becomes the map's hover marker.
 const hoverGps = ref<{ lat: number; lon: number } | null>(null);
+const routeTs = computed<number[]>(() =>
+  (routeData.value?.points ?? []).map((p) => Math.round((Date.parse(p.t) || 0) / 1000)),
+);
+function onLaneCursor(ts: number | null) {
+  const points = routeData.value?.points;
+  if (ts == null || !points || points.length === 0) {
+    hoverGps.value = null;
+    return;
+  }
+  // Binary search on the (sorted) fix timestamps.
+  const xs = routeTs.value;
+  let lo = 0;
+  let hi = xs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] < ts) lo = mid + 1;
+    else hi = mid;
+  }
+  let best = lo;
+  if (lo > 0 && Math.abs(xs[lo - 1] - ts) < Math.abs(xs[lo] - ts)) best = lo - 1;
+  hoverGps.value = Math.abs(xs[best] - ts) < 15 ? { lat: points[best].lat, lon: points[best].lon } : null;
+}
 
-// uPlot plugin: on every cursor move, find the nearest GPS point
-// by time and update hoverGps. The map's prop watcher then moves
-// the marker. Throttled by uPlot's natural mousemove rate.
-const cursorMapSyncPlugin: uPlot.Plugin = {
-  hooks: {
-    setCursor: (u) => {
-      const idx = u.cursor.idx;
-      if (idx == null) {
-        hoverGps.value = null;
-        return;
-      }
-      const ts = (u.data[0] as number[] | undefined)?.[idx];
-      if (ts == null) {
-        hoverGps.value = null;
-        return;
-      }
-      const points = routeData.value?.points;
-      if (!points || points.length === 0) {
-        hoverGps.value = null;
-        return;
-      }
-      // Binary search would be O(log n) but points are sorted and
-      // capped at a few thousand — linear scan is fast enough and
-      // simpler. Tolerance: within ±15s counts as "on the route".
-      let best: typeof points[number] | null = null;
-      let bestDelta = Infinity;
-      for (const p of points) {
-        const ptTs = Math.round((Date.parse(p.t) || 0) / 1000);
-        const d = Math.abs(ptTs - ts);
-        if (d < bestDelta) {
-          bestDelta = d;
-          best = p;
-        }
-      }
-      hoverGps.value = best && bestDelta < 15
-        ? { lat: best.lat, lon: best.lon }
-        : null;
-    },
-  },
-};
+// Mobile: the chip groups collapse into a compact picker.
+const pickerOpen = ref(false);
+const visibleNames = computed(() =>
+  visibleSeries.value.map((s) => splitLabel(s.label).name).join(", ") || "None",
+);
 
 const odoDelta = computed<number | null>(() => {
   const t = trip.value;
@@ -985,9 +943,7 @@ function todBadge(startedAt?: string | null): { label: string; tone: string } | 
 const tripBadge = computed(() => (trip.value ? todBadge(trip.value.started_at) : null));
 
 function fmtClock(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return iso ? fmtClockTime(iso) : "—";
 }
 
 // Auto-generated narrative sentence (Task #103). Synthesises headline
@@ -1063,15 +1019,9 @@ const summarySentence = computed<string>(() => {
   return tail ? `${head}, ${tail}.` : `${head}.`;
 });
 
-let chartRef: uPlot | null = null;
-function onChartReady(c: uPlot) {
-  chartRef = c;
-}
+const lanesRef = ref<InstanceType<typeof TripLanes> | null>(null);
 function resetZoom() {
-  if (!chartRef) return;
-  const [t] = chartRef.data;
-  if (!t || t.length === 0) return;
-  chartRef.setScale("x", { min: t[0] as number, max: t[t.length - 1] as number });
+  lanesRef.value?.resetZoom();
 }
 
 /** Peak coolant (°C) across long-form and legacy wide-form samples. */
@@ -1194,7 +1144,7 @@ async function saveMeta() {
     <header class="head">
       <div class="left">
         <RouterLink to="/trips" class="back"><ChevronLeft :size="14" aria-hidden="true" /> Trips</RouterLink>
-        <h1 v-if="trip">{{ fmtDateTime(trip.started_at) }}</h1>
+        <h1 v-if="trip">{{ fmtTripTitle(trip.started_at) }}</h1>
         <h1 v-else>Trip</h1>
         <span v-if="tripBadge" class="tod-badge" :class="tripBadge.tone">
           {{ tripBadge.label }}
@@ -1302,29 +1252,51 @@ async function saveMeta() {
                 <button class="ghost" type="button" @click="resetZoom">Reset zoom</button>
               </div>
             </header>
-            <div class="series-chips">
-              <button
-                v-for="s in TRIP_SERIES"
-                :key="s.metric"
-                class="chip"
-                :class="{
-                  active: seriesVisible[s.metric],
-                  empty: !metricsWithData.has(s.metric),
-                }"
-                :style="seriesVisible[s.metric] ? { borderColor: s.stroke, color: s.stroke } : {}"
-                :title="metricsWithData.has(s.metric) ? '' : 'No data for this trip'"
-                :aria-pressed="!!seriesVisible[s.metric]"
-                type="button"
-                @click="seriesVisible[s.metric] = !seriesVisible[s.metric]"
-              >{{ s.label.replace(/ \(.*\)/, '') }}</button>
+            <!-- Metric picker: grouped chips on desktop; on a phone the groups
+                 collapse behind one compact toggle so they don't dominate. -->
+            <button
+              type="button"
+              class="picker-toggle"
+              :aria-expanded="pickerOpen"
+              aria-controls="trip-metric-picker"
+              @click="pickerOpen = !pickerOpen"
+            >
+              <span class="t-label">Metrics</span>
+              <span class="picker-summary">{{ visibleNames }}</span>
+              <ChevronRight :size="14" class="picker-chev" :class="{ open: pickerOpen }" aria-hidden="true" />
+            </button>
+            <div id="trip-metric-picker" class="series-groups" :class="{ open: pickerOpen }">
+              <div v-for="g in seriesByGroup" :key="g.group" class="series-group">
+                <span class="group-name">{{ g.group }}</span>
+                <div class="series-chips">
+                  <button
+                    v-for="s in g.series"
+                    :key="s.metric"
+                    class="chip"
+                    :class="{
+                      active: seriesVisible[s.metric],
+                      empty: !metricsWithData.has(s.metric),
+                    }"
+                    :style="seriesVisible[s.metric] ? { borderColor: s.stroke, color: s.stroke } : {}"
+                    :title="metricsWithData.has(s.metric) ? '' : 'No data for this trip'"
+                    :aria-pressed="!!seriesVisible[s.metric]"
+                    type="button"
+                    @click="seriesVisible[s.metric] = !seriesVisible[s.metric]"
+                  >{{ splitLabel(s.label).name }}</button>
+                </div>
+              </div>
             </div>
-            <StateCard v-if="!chartData || !chartOpts" state="empty" bare title="No metrics selected (or no samples in this trip)." />
-            <UPlotChart
+            <StateCard v-if="!chartData || lanes.length === 0" state="empty" bare title="No metrics selected (or no samples in this trip)." />
+            <TripLanes
               v-else
-              :data="chartData"
-              :options="chartOpts"
-              @ready="onChartReady"
+              ref="lanesRef"
+              class="trip-lanes"
+              :x="laneX"
+              :lanes="lanes"
+              :markers="dtcMarkers"
+              @cursor="onLaneCursor"
             />
+            <p class="muted small lanes-hint">Drag across any lane to zoom all lanes · double-click to reset.</p>
           </div>
 
           <div v-if="stops.length" class="card">
@@ -1860,12 +1832,40 @@ async function saveMeta() {
   }
 }
 @media (max-width: 700px) {
+  /* Prev / next / refresh stay in the title row: the title block shrinks
+     (and wraps internally) instead of pushing the arrows onto a new line. */
   .head {
-    flex-wrap: wrap;
     gap: 0.4rem;
+    align-items: flex-start;
+  }
+  .head .left {
+    flex-wrap: wrap;
+    gap: 0.2rem 0.6rem;
+    min-width: 0;
+    flex: 1;
+  }
+  .head .back {
+    flex-basis: 100%;
   }
   .head h1 {
-    font-size: 1.3rem;
+    font-size: 1.2rem;
+    margin: 0;
+  }
+  .tod-badge {
+    margin-left: 0;
+  }
+  .head-nav {
+    flex: none;
+  }
+  /* (Higher specificity than the base rules further down the sheet.) */
+  button.picker-toggle {
+    display: flex;
+  }
+  .series-groups:not(.open) {
+    display: none;
+  }
+  button.picker-toggle[aria-expanded="true"] {
+    margin-bottom: 0.5rem;
   }
   .summary-strip {
     display: grid;
@@ -1952,11 +1952,58 @@ async function saveMeta() {
   width: 100%;
   height: 80px;
 }
+.series-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.4rem;
+  margin: 0.4rem 0 1.8rem 0;
+}
+.series-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.group-name {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-ink3);
+}
 .series-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0.4rem 0 0.6rem 0;
+  gap: 0.3rem;
+}
+.picker-toggle {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0.4rem 0 1.8rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--c-bg3);
+  text-align: left;
+  font-weight: 400;
+}
+.picker-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  color: var(--c-ink1);
+}
+.picker-chev {
+  transition: transform 120ms;
+}
+.picker-chev.open {
+  transform: rotate(90deg);
+}
+.lanes-hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
 }
 .series-chips .chip.empty {
   opacity: 0.35;
@@ -1966,7 +2013,7 @@ async function saveMeta() {
   opacity: 0.45;
 }
 .series-chips .chip {
-  padding: 0.28rem 0.6rem;
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
   border: 1px solid var(--c-border-soft);
   background: var(--c-surface);

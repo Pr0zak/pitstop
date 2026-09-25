@@ -155,4 +155,14 @@ onBeforeUnmount(() => {
 .uplot .u-axis-tick {
   color: var(--c-muted);
 }
+/* Legends read "Time: --  MPG: --" under every chart at rest. Until the
+   cursor is over the chart show only the series swatches + names; the x row
+   and the values appear on hover. */
+.uplot:not(:hover) .u-legend .u-series:first-child,
+.uplot:not(:hover) .u-legend .u-value {
+  display: none;
+}
+.uplot:not(:hover) .u-legend th::after {
+  content: "" !important;
+}
 </style>

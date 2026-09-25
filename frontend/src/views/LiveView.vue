@@ -6,7 +6,7 @@ import { useLive } from "@/composables/useLive";
 import ArcGauge from "@/components/charts/ArcGauge.vue";
 import Pill from "@/components/Pill.vue";
 import QtyValue from "@/components/QtyValue.vue";
-import { agoLabel } from "@/composables/useNow";
+import * as api from "@/api/endpoints";
 import {
   fmtPct,
   fmtTempC,
@@ -46,6 +46,34 @@ onUnmounted(() => {
   if (tickInterval) window.clearInterval(tickInterval);
 });
 
+// ── Last-known seed (parked) ───────────────────────────────────────────
+// The WebSocket only carries frames that arrive after the page opens, so a
+// parked car used to show a wall of "—". /readings/latest gives the newest
+// value per metric (30-day window); those seed the tiles, dimmed, until a
+// live frame arrives. A backend without the endpoint (404) resolves null and
+// the view behaves exactly as before.
+type MetricMap = Record<string, { value: number | string | null; time: number }>;
+const seed = ref<MetricMap>({});
+let seedFor: string | null = null;
+async function loadSeed(id: string | null) {
+  seedFor = id;
+  seed.value = {};
+  if (!id || !auth.hasQueryToken) return;
+  try {
+    const rows = await api.latestReadings(id);
+    if (seedFor !== id || !rows) return;
+    const m: MetricMap = {};
+    for (const r of rows) {
+      const t = Date.parse(r.time);
+      if (Number.isFinite(t)) m[r.metric] = { value: r.value, time: t };
+    }
+    seed.value = m;
+  } catch {
+    /* seed is best-effort; live frames still work */
+  }
+}
+watch(vehicleIdRef, (id) => void loadSeed(id), { immediate: true });
+
 /** Most recent frame timestamp across all metrics in this session. */
 const lastFrameMs = computed<number | null>(() => {
   const m = metrics.value ?? {};
@@ -57,8 +85,46 @@ const lastFrameMs = computed<number | null>(() => {
   return max > 0 ? max : null;
 });
 
+/** Stream older than 60 s → tiles dim and a banner names the reading age. */
+const STALE_MS = 60_000;
+const streamStale = computed(
+  () => lastFrameMs.value != null && tick.value - lastFrameMs.value > STALE_MS,
+);
+/** A fresh live frame is on screen — seeded values step aside. */
+const liveNow = computed(() => lastFrameMs.value != null && !streamStale.value);
+
+/** What the tiles read: live frames while streaming; otherwise the newest of
+ *  seed vs whatever this session's (now stale) frames left behind. */
+const shown = computed<MetricMap>(() => {
+  const live = (metrics.value ?? {}) as MetricMap;
+  if (liveNow.value) return live;
+  const out: MetricMap = { ...seed.value };
+  for (const k of Object.keys(live)) {
+    const l = live[k];
+    if (l && (!out[k] || l.time >= out[k].time)) out[k] = l;
+  }
+  return out;
+});
+/** Newest reading behind the (parked) tiles, epoch ms. */
+const newestShownMs = computed<number | null>(() => {
+  let best = 0;
+  for (const v of Object.values(shown.value)) if (v.time > best) best = v.time;
+  return best > 0 ? best : null;
+});
+const parked = computed(() => !liveNow.value && newestShownMs.value != null);
+
+/** "just now" / "7 min ago" / "3 hr ago" / "2 days ago". */
+function ageText(thenMs: number, nowMs: number): string {
+  const s = Math.max(0, Math.floor((nowMs - thenMs) / 1000));
+  if (s < 45) return "just now";
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86_400) return `${Math.floor(s / 3600)} hr ago`;
+  const d = Math.floor(s / 86_400);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
 function num(key: string): number | null {
-  const v = metrics.value?.[key]?.value;
+  const v = shown.value?.[key]?.value;
   if (typeof v === "number") return v;
   if (typeof v === "string") {
     const n = Number(v);
@@ -100,12 +166,6 @@ const streamLabel = computed<{ text: string; state: PillState }>(() => {
   if (age < 60) return { text: `Stream ${age.toFixed(0)}s`, state: "degraded" };
   return { text: "Stream off", state: "offline" };
 });
-
-/** Stream older than 60 s → tiles dim and a banner names the frame age. */
-const STALE_MS = 60_000;
-const streamStale = computed(
-  () => lastFrameMs.value != null && tick.value - lastFrameMs.value > STALE_MS,
-);
 
 // RPM gauge scale from the vehicle's redline (null → the old constants).
 const rpmScale = computed(() => {
@@ -266,15 +326,6 @@ function fmtNum(v: number | null, digits = 1): string {
 function fmtInt(v: number | null): string {
   return v == null ? "—" : Math.round(v).toLocaleString();
 }
-function fmtSpeedAlt(kph: number | null): string {
-  // Always show the *other* unit from what the gauge displays, so the
-  // user gets both at a glance. The hero gauge label is whatever the
-  // current resolved system shows.
-  if (kph == null) return "—";
-  return useImperial.value
-    ? kph.toFixed(0) // gauge is mph → tile shows kph
-    : (kph * 0.62137).toFixed(0); // gauge is kph → tile shows mph
-}
 function fmtRunTime(seconds: number | null): string {
   if (seconds == null) return "—";
   const s = Math.round(seconds);
@@ -314,15 +365,16 @@ function trimClass(v: number | null): string {
       <p class="muted">Select a vehicle from the picker above.</p>
     </div>
     <template v-else>
-      <div v-if="streamStale" class="stale-banner" role="status">
+      <div v-if="parked" class="stale-banner" role="status">
         <span class="dot" aria-hidden="true" />
-        Last frame {{ agoLabel(lastFrameMs, tick) }} — values below are the last reading, not live.
+        <span><strong>Parked</strong> · last reading {{ ageText(newestShownMs!, tick) }}</span>
+        <span class="banner-note">values below are the last known, not live</span>
       </div>
       <div v-else-if="lastFrameMs == null && status !== 'connecting'" class="stale-banner idle" role="status">
         <span class="dot" aria-hidden="true" />
         Waiting for the first frame — the vehicle is probably parked.
       </div>
-      <div class="live-body" :class="{ dimmed: streamStale }">
+      <div class="live-body" :class="{ dimmed: parked }">
       <!-- Hero: RPM + speed -->
       <section class="hero">
         <ArcGauge
@@ -387,8 +439,8 @@ function trimClass(v: number | null): string {
             </div>
           </div>
           <div class="card tile">
-            <h3>{{ useImperial ? "Speed (km/h)" : "Speed (mph)" }}</h3>
-            <div class="big"><QtyValue :text="fmtSpeedAlt(speed)" :unit="useImperial ? 'km/h' : 'mph'" /></div>
+            <h3>Speed</h3>
+            <div class="big"><QtyValue :text="fmtSpeedKph(speed)" /></div>
           </div>
         </div>
       </section>
@@ -570,7 +622,7 @@ function trimClass(v: number | null): string {
   transition: opacity 200ms;
 }
 .live-body.dimmed {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 .stale-banner {
   display: flex;
@@ -582,6 +634,20 @@ function trimClass(v: number | null): string {
   background: var(--c-warn-soft);
   color: var(--c-ink1);
   font-size: 0.88rem;
+}
+.banner-note {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--c-ink2);
+}
+@media (max-width: 700px) {
+  .stale-banner {
+    flex-wrap: wrap;
+  }
+  .banner-note {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
 }
 .stale-banner .dot {
   width: 8px;

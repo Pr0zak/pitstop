@@ -1,6 +1,6 @@
 import {
   LayoutDashboard,
-  LayoutGrid,
+  Warehouse,
   Activity,
   Route,
   BarChart3,
@@ -24,7 +24,7 @@ export interface NavItem {
 /** Operational pages — top of the sidebar. */
 export const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
-  { to: "/fleet", label: "Fleet", icon: LayoutGrid },
+  { to: "/fleet", label: "Fleet", icon: Warehouse },
   { to: "/live", label: "Live", icon: Activity },
   { to: "/trips", label: "Trips", icon: Route },
   { to: "/heatmap", label: "Map", icon: MapIcon },

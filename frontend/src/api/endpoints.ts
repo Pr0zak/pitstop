@@ -11,6 +11,7 @@ import type {
   Fillup,
   Expense,
   Category,
+  Reminder,
   ReminderGroup,
   MpgPoint,
   CostPerMiPoint,
@@ -88,6 +89,28 @@ export interface AggregateParams extends ReadingsParams {
 export async function aggregateReadings(p: AggregateParams): Promise<AggregateBucket[]> {
   const r = await apiQuery.get<AggregateBucket[]>("/readings/aggregate", { params: p });
   return r.data;
+}
+
+export interface LatestReading {
+  metric: string;
+  value: number | string | null;
+  time: string;
+  source: string;
+}
+/** Newest reading per metric in the last 30 days (GET /readings/latest).
+ *  Resolves null when the backend predates the endpoint (404) so callers can
+ *  fall back to their old behaviour instead of surfacing an error. */
+export async function latestReadings(vehicleId: string): Promise<LatestReading[] | null> {
+  try {
+    const r = await apiQuery.get<LatestReading[]>("/readings/latest", {
+      params: { vehicle_id: vehicleId },
+    });
+    return r.data;
+  } catch (e: unknown) {
+    const status = (e as { response?: { status?: number } })?.response?.status;
+    if (status === 404 || status === 405) return null;
+    throw e;
+  }
 }
 
 // ─── trips ────────────────────────────────────────────────────────────
@@ -707,11 +730,37 @@ export async function getTripBaseline(
 
 // ─── maintenance ──────────────────────────────────────────────────────
 
+// The backend sends `category`, `miles_over`/`days_over` (overdue) and
+// `miles_until`/`days_until` (upcoming) with no `status`; the view reads a
+// signed `miles_remaining`/`days_remaining`, `category_name` and `status`.
+// Map here so the "N mi left / over" badges and overdue styling render.
+type RawReminder = Omit<Reminder, "status" | "category_name" | "miles_remaining" | "days_remaining"> & {
+  category?: string | null;
+  miles_over?: number | null;
+  days_over?: number | null;
+  miles_until?: number | null;
+  days_until?: number | null;
+};
+function normalizeReminder(r: RawReminder, status: Reminder["status"]): Reminder {
+  const neg = (v: number | null | undefined) => (v == null ? null : -v);
+  return {
+    ...r,
+    status,
+    category_name: r.category ?? null,
+    miles_remaining: status === "overdue" ? neg(r.miles_over) : (r.miles_until ?? null),
+    days_remaining: status === "overdue" ? neg(r.days_over) : (r.days_until ?? null),
+  };
+}
+
 export async function listReminders(vehicleId?: string): Promise<ReminderGroup> {
-  const r = await apiQuery.get<ReminderGroup>("/maintenance/reminders", {
-    params: vehicleId ? { vehicle_id: vehicleId } : {},
-  });
-  return r.data;
+  const r = await apiQuery.get<{ overdue: RawReminder[]; upcoming: RawReminder[] }>(
+    "/maintenance/reminders",
+    { params: vehicleId ? { vehicle_id: vehicleId } : {} },
+  );
+  return {
+    overdue: (r.data.overdue ?? []).map((x) => normalizeReminder(x, "overdue")),
+    upcoming: (r.data.upcoming ?? []).map((x) => normalizeReminder(x, "upcoming")),
+  };
 }
 export async function markReminderDone(expenseId: string): Promise<void> {
   await apiIngest.post(`/maintenance/reminders/${expenseId}/done`);

@@ -232,9 +232,18 @@ function sparklinePath(series: number[], width = 80, height = 22): string {
     .join(" ");
 }
 
+/** Active vehicles first, archived after; original order within each. */
+const sortedRows = computed<FleetRow[]>(() => [
+  ...rows.value.filter((r) => r.vehicle.active !== false),
+  ...rows.value.filter((r) => r.vehicle.active === false),
+]);
+
 const overall = computed(() => {
-  if (rows.value.length === 0) return null;
-  const scores = rows.value.map((r) => healthFor(r).score);
+  // Archived vehicles are intentionally offline — keep them out of the
+  // fleet health summary, as they are out of the per-tile score pill.
+  const active = rows.value.filter((r) => r.vehicle.active !== false);
+  if (active.length === 0) return null;
+  const scores = active.map((r) => healthFor(r).score);
   const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
   const worst = Math.min(...scores);
   return { avg: Math.round(avg), worst };
@@ -267,7 +276,7 @@ const overall = computed(() => {
 
     <div v-else class="grid">
       <article
-        v-for="row in rows"
+        v-for="row in sortedRows"
         :key="row.vehicle.id"
         class="card tile"
         :class="[
@@ -287,7 +296,10 @@ const overall = computed(() => {
               {{ row.vehicle.model ?? row.vehicle.slug }}
             </span>
           </RouterLink>
-          <span :title="scoreTitle(row)" :aria-label="scoreTitle(row)">
+          <span v-if="row.vehicle.active === false" title="Archived — not scored">
+            <Pill state="neutral" label="Archived" />
+          </span>
+          <span v-else :title="scoreTitle(row)" :aria-label="scoreTitle(row)">
             <Pill
               :state="pillStateFor(healthFor(row).score)"
               :label="`${healthFor(row).score}/100`"
@@ -321,7 +333,7 @@ const overall = computed(() => {
               <path
                 :d="sparklinePath(row.mpgSeries)"
                 fill="none"
-                stroke="var(--c-accent)"
+                stroke="var(--chart-1)"
                 stroke-width="1.5"
                 stroke-linejoin="round"
                 stroke-linecap="round"

@@ -136,12 +136,27 @@ body,
   font-family: inherit;
 }
 
+/* Accent discipline: the coral accent is for primary actions, the active
+   nav item and selected chips/tabs only. Links are ink — brighter than the
+   surrounding muted text, underlined on hover — and links inside running
+   prose carry a faint underline so they read as links at rest. */
 a {
-  color: var(--c-accent);
+  color: var(--c-ink1);
   text-decoration: none;
+  text-underline-offset: 2px;
 }
 a:hover {
+  color: var(--c-ink0);
   text-decoration: underline;
+}
+p a,
+.prose a {
+  text-decoration: underline;
+  text-decoration-color: var(--c-line2);
+}
+p a:hover,
+.prose a:hover {
+  text-decoration-color: currentColor;
 }
 
 h1,

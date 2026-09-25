@@ -10,6 +10,9 @@ import {
   fmtPricePerVolume,
   fmtTempC,
   fmtVolume,
+  fmtWhen,
+  fmtTripTitle,
+  dateGroupFor,
 } from "./useFormat";
 
 /**
@@ -100,5 +103,70 @@ describe("Intl quantity formatters", () => {
   it("renders economy per system", () => {
     expect(fmtMpg(23.5, "imperial")).toBe("23.5 mpg");
     expect(fmtMpg(23.5, "metric")).toBe("10.0 L/100km");
+  });
+});
+
+/**
+ * Group-aware list dates. `now` is pinned to Fri 2026-09-25 14:00 local and
+ * the locale to en-US so the expectations don't depend on the machine.
+ * Intl puts a narrow no-break space before "AM"/"PM"; normalise it so the
+ * expectations stay readable.
+ */
+describe("fmtWhen / fmtTripTitle", () => {
+  const now = new Date(2026, 8, 25, 14, 0);
+  const at = (y: number, mo: number, d: number, h = 6, mi = 33) =>
+    new Date(y, mo - 1, d, h, mi).toISOString();
+  const norm = (s: string) => s.replace(/[\u202f\u00a0]/g, " ");
+  const opts = { now, locale: "en-US" };
+
+  it("shows only the time inside a Today / Yesterday group", () => {
+    expect(norm(fmtWhen(at(2026, 9, 25), { ...opts, withTime: true, grouped: true }))).toBe("6:33 AM");
+    expect(norm(fmtWhen(at(2026, 9, 24, 18, 5), { ...opts, withTime: true, grouped: true }))).toBe("6:05 PM");
+  });
+
+  it("names the day outside a group", () => {
+    expect(norm(fmtWhen(at(2026, 9, 25), { ...opts, withTime: true }))).toBe("Today 6:33 AM");
+    expect(fmtWhen(at(2026, 9, 24), opts)).toBe("Yesterday");
+  });
+
+  it("uses weekday + time within the past week", () => {
+    // Tue Sep 22 2026
+    expect(norm(fmtWhen(at(2026, 9, 22, 18, 32), { ...opts, withTime: true, grouped: true }))).toBe("Tue 6:32 PM");
+    expect(fmtWhen(at(2026, 9, 22), { ...opts, grouped: true })).toBe("Tue");
+  });
+
+  it("does not use a weekday for exactly 7 days back (it would read as today's)", () => {
+    expect(fmtWhen(at(2026, 9, 18), { ...opts, grouped: true })).toBe("Sep 18");
+  });
+
+  it("uses month + day for the same year, adding the year when older", () => {
+    expect(fmtWhen(at(2026, 9, 18), opts)).toBe("Sep 18");
+    expect(norm(fmtWhen(at(2026, 9, 18), { ...opts, withTime: true }))).toBe("Sep 18, 6:33 AM");
+    expect(fmtWhen(at(2025, 9, 7), { ...opts, withTime: true })).toBe("Sep 7, 2025");
+  });
+
+  it("reads a bare yyyy-MM-dd as a local calendar day, not UTC midnight", () => {
+    expect(fmtWhen("2026-09-18", opts)).toBe("Sep 18");
+    expect(fmtWhen("2026-09-24", opts)).toBe("Yesterday");
+    expect(dateGroupFor("2026-09-25", now)).toBe("today");
+  });
+
+  it("buckets into the same groups the lists use", () => {
+    expect(dateGroupFor(at(2026, 9, 24), now)).toBe("yesterday");
+    expect(dateGroupFor(at(2026, 9, 20), now)).toBe("past7");
+    expect(dateGroupFor(at(2026, 9, 1), now)).toBe("past30");
+    expect(dateGroupFor(at(2026, 2, 1), now)).toBe("thisYear");
+    expect(dateGroupFor(at(2025, 12, 31), now)).toBe("older");
+    expect(dateGroupFor(null, now)).toBe("older");
+  });
+
+  it("formats the trip-detail title", () => {
+    expect(norm(fmtTripTitle(at(2026, 9, 25), opts))).toBe("Fri, Sep 25 · 6:33 AM");
+    expect(norm(fmtTripTitle(at(2025, 9, 25), opts))).toBe("Thu, Sep 25, 2025 · 6:33 AM");
+  });
+
+  it("renders an em dash for missing / unparseable input", () => {
+    expect(fmtWhen(null, opts)).toBe("—");
+    expect(fmtWhen("not a date", opts)).toBe("—");
   });
 });
