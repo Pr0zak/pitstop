@@ -37,6 +37,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/** Home's "Last drive" card. [route] is a downsampled lat/lon polyline. */
+data class LastDrive(
+    val trip: com.pitstop.http.TripDto,
+    val baseline: com.pitstop.http.TripBaselineDto? = null,
+    val route: List<Pair<Double, Double>> = emptyList(),
+)
+
 /**
  * Per-card state for the new Home dashboard. Each card loads
  * independently — one failed fetch shouldn't blank the others — so
@@ -77,6 +84,16 @@ data class StatusUiState(
      *  configured-but-still-loading one (show the shimmer skeleton). */
     val hasServer: Boolean = false,
     val hasVehicle: Boolean = false,
+    /** Range to empty (fuel × recent mpg), with the live BLE overlay applied. */
+    val range: com.pitstop.domain.RangeEstimate? = null,
+    /** The most recent trip, its route sketch and its same-distance baseline. */
+    val lastDrive: LastDrive? = null,
+    /** Where the car was left; null while driving or without GPS. */
+    val parked: com.pitstop.domain.ParkedSpot? = null,
+    /** Due-soon / overdue service reminders for the attention strip. */
+    val reminders: List<com.pitstop.domain.ReminderItem>? = null,
+    /** The vehicle's distance unit is miles (reminder distances are in it). */
+    val distInMiles: Boolean = true,
     /** Auto-start master toggle ([com.pitstop.data.Settings.bridgeAutoTrigger]). */
     val autoStartOn: Boolean = false,
     /** WiCAN is paired as a CompanionDeviceManager companion — read from the
@@ -117,8 +134,13 @@ class StatusViewModel @Inject constructor(
     private val driveUploader: DriveUploader,
     uploadProgressBus: UploadProgressBus,
     pendingDriveDao: PendingDriveDao,
-    private val bridgeStateBus: BridgeStateBus = stateBus,
+    private val activeVehicle: com.pitstop.data.ActiveVehicle,
+    private val directory: com.pitstop.data.VehicleDirectory,
+    private val rangeRepository: com.pitstop.data.RangeRepository,
+    private val alerts: com.pitstop.notif.VehicleAlerts,
 ) : AndroidViewModel(application) {
+
+    private val bridgeStateBus: BridgeStateBus = stateBus
 
     /**
      * Upload state + queue depth, mirrored from the same process-wide
@@ -150,6 +172,11 @@ class StatusViewModel @Inject constructor(
     private val costPerMile = MutableStateFlow<List<CostPerMilePointDto>?>(null)
     private val monthlySpend = MutableStateFlow<List<MonthlySpendPointDto>?>(null)
     private val activeDtcs = MutableStateFlow<List<DtcDto>?>(null)
+    private val vehicle = MutableStateFlow<com.pitstop.http.VehicleDto?>(null)
+    private val rangeBasis = MutableStateFlow<com.pitstop.domain.RangeBasis?>(null)
+    private val lastDrive = MutableStateFlow<LastDrive?>(null)
+    private val lastRoute = MutableStateFlow<List<com.pitstop.http.RoutePointDto>>(emptyList())
+    private val reminders = MutableStateFlow<List<com.pitstop.domain.ReminderItem>?>(null)
 
     init {
         viewModelScope.launch {
@@ -157,7 +184,22 @@ class StatusViewModel @Inject constructor(
             updateInfo.value = updateChecker.check()
             updateChecking.value = false
         }
-        viewModelScope.launch { refreshHomeDataInternal() }
+        // First emission = initial load; later ones = the top-bar switcher.
+        viewModelScope.launch {
+            var last: String? = null
+            activeVehicle.slug.collect { slug ->
+                val switched = last != null && last != slug
+                last = slug
+                if (switched) clearHomeData()
+                refreshHomeDataInternal(if (switched) "no-cache" else null)
+            }
+        }
+        // A freshly uploaded drive changes Last drive / Parked / range.
+        viewModelScope.launch {
+            uploadProgressBus.state.collect { p ->
+                if (p is UploadProgress.Finished && p.uploaded > 0) refreshHomeDataInternal("no-cache")
+            }
+        }
     }
 
     /**
@@ -166,20 +208,20 @@ class StatusViewModel @Inject constructor(
      * doesn't block the MPG card from updating. Per-card flows go to null
      * on failure → the corresponding component renders empty / skeleton.
      */
-    private suspend fun refreshHomeDataInternal() {
+    private suspend fun refreshHomeDataInternal(cacheControl: String? = null) {
         val secrets = runCatching { settingsRepository.current() }.getOrNull()
         if (secrets == null || secrets.queryToken.isBlank() || secrets.settings.apiBaseUrl.isBlank()) {
             logBuffer.warn("home refresh: QUERY_TOKEN / API base URL not configured; skipping")
             clearHomeData()
             return
         }
-        val slug = secrets.settings.vehicleSlug.trim().ifEmpty {
+        val slug = activeVehicle.current().ifEmpty {
             logBuffer.warn("home refresh: vehicle slug not set in Settings; skipping")
             clearHomeData()
             return
         }
         // Resolve slug → UUID once; every other endpoint takes vehicle_id.
-        val vehicles = runCatching { api.getVehicles() }.getOrElse { exc ->
+        val vehicles = runCatching { directory.refresh(cacheControl) }.getOrElse { exc ->
             logBuffer.warn(
                 "home refresh: /vehicles fetch failed",
                 mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
@@ -201,7 +243,7 @@ class StatusViewModel @Inject constructor(
         // data lands instead of waiting for the slowest endpoint.
         coroutineScope {
             val fillupsJob = async {
-                runCatching { api.getFillups(vehicleId, limit = 30) }.getOrNull()
+                runCatching { api.getFillups(vehicleId, limit = 30, cacheControl = cacheControl) }.getOrNull()
             }
             val mpgMonthlyJob = async {
                 runCatching { api.getMpgTrend(vehicleId, window = "month") }.getOrNull()
@@ -215,11 +257,15 @@ class StatusViewModel @Inject constructor(
             val spendJob = async {
                 runCatching { api.getMonthlySpend(vehicleId) }.getOrNull()
             }
+            // One trips fetch serves both Recent trips and the 30-day range basis.
             val tripsJob = async {
-                runCatching { api.getTrips(vehicleId, limit = 5) }.getOrNull()
+                runCatching { rangeRepository.fetchBasisTrips(vehicleId, cacheControl) }.getOrNull()
             }
             val dtcsJob = async {
-                runCatching { api.getDtcs(vehicleId, activeOnly = true) }.getOrNull()
+                runCatching { api.getDtcs(vehicleId, activeOnly = true, cacheControl = cacheControl) }.getOrNull()
+            }
+            val remindersJob = async {
+                runCatching { api.getReminders(vehicleId, cacheControl) }.getOrNull()
             }
 
             // Wait for each then publish; cards independently reactive.
@@ -228,15 +274,32 @@ class StatusViewModel @Inject constructor(
             val yearly = mpgYearlyJob.await()
             val cost = costJob.await()
             val spend = spendJob.await()
-            val trips = tripsJob.await()
+            val trips30 = tripsJob.await()
             val dtcs = dtcsJob.await()
+            val rem = remindersJob.await()?.let { com.pitstop.domain.Maintenance.normalize(it) }
+            // A quiet month still has older trips worth listing.
+            val trips = trips30?.takeIf { it.size >= 6 }
+                ?: runCatching { api.getTrips(vehicleId, limit = 6, cacheControl = cacheControl) }.getOrNull()
+                ?: trips30
 
             mpgMonthly.value = monthly?.points
             mpgYearly.value = yearly?.points
             costPerMile.value = cost?.points
             monthlySpend.value = spend?.months
-            recentTrips.value = trips ?: emptyList()
+            recentTrips.value = trips?.sortedByDescending { it.startedAt }?.take(6) ?: emptyList()
             activeDtcs.value = dtcs ?: emptyList()
+            reminders.value = rem ?: reminders.value
+
+            val v = vehicles.firstOrNull { it.id == vehicleId }
+            vehicle.value = v
+            val basis = rangeRepository.basisFrom(trips30, fillups)
+            rangeBasis.value = basis
+            if (v != null) {
+                runCatching { rangeRepository.publish(v, basis) }
+                dtcs?.let { runCatching { alerts.onActiveDtcs(v, it) } }
+                rem?.let { runCatching { alerts.onReminders(v, it) } }
+            }
+            loadLastDrive(vehicleId, trips?.maxByOrNull { it.startedAt })
 
             // Derive the 2×2 hero strip from the same data the cards
             // load (no separate fetches). MPG sparkline source flips
@@ -247,6 +310,42 @@ class StatusViewModel @Inject constructor(
                 heroData.value = buildHeroData(fillups, monthly.points, vehicle)
             }
         }
+    }
+
+    /** Route + baseline for the newest trip; only refetched when it changes. */
+    private suspend fun loadLastDrive(vehicleId: String, trip: com.pitstop.http.TripDto?) {
+        if (trip == null) {
+            lastDrive.value = null
+            lastRoute.value = emptyList()
+            return
+        }
+        val known = lastDrive.value
+        if (known?.trip?.id == trip.id && known.route.isNotEmpty()) {
+            lastDrive.value = known.copy(trip = trip)
+            return
+        }
+        lastDrive.value = LastDrive(trip = trip)
+        coroutineScope {
+            val routeJob = async { runCatching { api.getTripRoute(trip.id).points }.getOrNull() }
+            val baseJob = async {
+                trip.distanceKm?.takeIf { it > 0 }?.let { km ->
+                    runCatching { api.getTripBaseline(vehicleId, km) }.getOrNull()?.takeIf { it.sufficient }
+                }
+            }
+            val route = routeJob.await().orEmpty()
+            lastRoute.value = route
+            lastDrive.value = LastDrive(
+                trip = trip,
+                baseline = baseJob.await(),
+                route = downsample(route.map { it.lat to it.lon }, 160),
+            )
+        }
+    }
+
+    private fun downsample(pts: List<Pair<Double, Double>>, max: Int): List<Pair<Double, Double>> {
+        if (pts.size <= max) return pts
+        val step = pts.size.toDouble() / max
+        return (0 until max).map { pts[(it * step).toInt()] } + pts.last()
     }
 
     private fun buildHeroData(
@@ -368,6 +467,11 @@ class StatusViewModel @Inject constructor(
         costPerMile.value = null
         monthlySpend.value = null
         activeDtcs.value = null
+        vehicle.value = null
+        rangeBasis.value = null
+        lastDrive.value = null
+        lastRoute.value = emptyList()
+        reminders.value = null
     }
 
     /**
@@ -376,7 +480,7 @@ class StatusViewModel @Inject constructor(
      * now dismisses when the data truly lands.
      */
     fun refreshHomeData(): kotlinx.coroutines.Job =
-        viewModelScope.launch { refreshHomeDataInternal() }
+        viewModelScope.launch { refreshHomeDataInternal("no-cache") }
 
     fun checkForUpdates() {
         viewModelScope.launch {
@@ -414,6 +518,47 @@ class StatusViewModel @Inject constructor(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /**
+     * Range, Last drive and Parked, which depend on live bridge state: the
+     * BLE fuel_level overlays a sensor-path reading, and the car is not
+     * "parked" while a drive is in progress.
+     */
+    private data class DriveBundle(
+        val range: com.pitstop.domain.RangeEstimate?,
+        val lastDrive: LastDrive?,
+        val parked: com.pitstop.domain.ParkedSpot?,
+        val reminders: List<com.pitstop.domain.ReminderItem>?,
+        val distInMiles: Boolean,
+    )
+
+    private val driveBundle: StateFlow<DriveBundle> = combine(
+        combine(vehicle, rangeBasis, bridgeStateBus.latestByMetric.map { it["fuel_level"] }) { v, b, live ->
+            Triple(v, b, live)
+        },
+        lastDrive,
+        lastRoute,
+        bridgeStateBus.status,
+        reminders,
+    ) { (v, basis, live), ld, route, status, rem ->
+        val range = v?.let {
+            val snap = com.pitstop.domain.RangeMath.withLiveLevel(
+                com.pitstop.domain.RangeMath.fuelSnapshot(it),
+                live?.value,
+                live?.tsMs,
+            )
+            com.pitstop.domain.RangeMath.estimate(snap, basis)
+        }
+        val driving = status.phase == com.pitstop.service.BridgePhase.Connected &&
+            status.engineState == com.pitstop.service.EngineState.On
+        DriveBundle(
+            range = range,
+            lastDrive = ld,
+            parked = com.pitstop.domain.Parked.spot(ld?.trip, route, driveActive = driving),
+            reminders = rem,
+            distInMiles = com.pitstop.domain.Maintenance.distInMiles(v),
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DriveBundle(null, null, null, null, true))
+
     val uiState: StateFlow<StatusUiState> =
         combine(
             // First five — the bridge / settings / logs / update group.
@@ -435,6 +580,7 @@ class StatusViewModel @Inject constructor(
             costPerMile,
             monthlySpend,
             activeDtcs,
+            driveBundle,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val bridge = values[0] as BridgeBundle
@@ -453,6 +599,7 @@ class StatusViewModel @Inject constructor(
             val spend = values[8] as List<MonthlySpendPointDto>?
             @Suppress("UNCHECKED_CAST")
             val dtcs = values[9] as List<DtcDto>?
+            val drive = values[10] as DriveBundle
 
             StatusUiState(
                 status = bridge.status.copy(
@@ -482,6 +629,11 @@ class StatusViewModel @Inject constructor(
                 costPerMile = cost,
                 monthlySpend = spend,
                 activeDtcs = dtcs,
+                range = drive.range,
+                lastDrive = drive.lastDrive,
+                parked = drive.parked,
+                reminders = drive.reminders,
+                distInMiles = drive.distInMiles,
                 manualSyncOnly = bridge.settings.manualSyncOnly,
                 hasServer = bridge.settings.apiBaseUrl.isNotBlank(),
                 hasVehicle = bridge.settings.vehicleSlug.isNotBlank(),

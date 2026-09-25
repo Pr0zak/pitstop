@@ -16,18 +16,40 @@
         android:scaleType="fitCenter"
         android:contentDescription="@string/fuel_widget_gauge_desc" />
 
-    <TextView
-        android:id="@+id/widget_subtitle"
+    <!-- Range to empty over the gauge's open bottom, gauge detail under it.
+         Both hidden at 1x1 (see FuelWidgetProvider.buildRemoteViews). -->
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="4dp"
-        android:gravity="center"
-        android:textSize="10sp"
-        android:textColor="#9CA3AF"
-        android:singleLine="true"
-        android:ellipsize="end"
-        android:fontFamily="monospace"
-        android:text="—" />
+        android:layout_marginBottom="2dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_range"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:singleLine="true"
+            android:fontFamily="monospace"
+            android:visibility="gone"
+            android:text="" />
+
+        <TextView
+            android:id="@+id/widget_subtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="10sp"
+            android:textColor="#9CA3AF"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:fontFamily="monospace"
+            android:text="—" />
+    </LinearLayout>
 
 </FrameLayout>

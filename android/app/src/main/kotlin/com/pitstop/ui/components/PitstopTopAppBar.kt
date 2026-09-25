@@ -1,6 +1,29 @@
 package com.pitstop.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,6 +59,32 @@ import kotlin.math.sin
  *  bar holds no per-screen title — see the expandedHeight note below. */
 private val BRAND_BAR_HEIGHT = 48.dp
 
+/** One entry in the top-bar vehicle switcher. */
+data class AppBarVehicle(val slug: String, val name: String)
+
+/** What the shared top bar shows; produced by [com.pitstop.ui.AppBarViewModel]. */
+data class AppBarState(
+    val vehicleName: String? = null,
+    val vehicles: List<AppBarVehicle> = emptyList(),
+    val selectedSlug: String = "",
+    val loggingLabel: String = "Idle",
+    val loggingTone: PillTone = PillTone.Neutral,
+)
+
+/** [AppBarState] plus its three actions — provided once by MainActivity. */
+class AppBarHost(
+    val state: AppBarState,
+    val onSelectVehicle: (String) -> Unit = {},
+    val onOpenStatus: () -> Unit = {},
+    val onOpenSettings: () -> Unit = {},
+)
+
+/**
+ * Null outside the tab shell (Settings, the setup wizard, previews that
+ * don't provide one): the bar then falls back to the brand wordmark.
+ */
+val LocalAppBarHost = compositionLocalOf<AppBarHost?> { null }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PitstopTopAppBar(
@@ -43,19 +92,20 @@ fun PitstopTopAppBar(
     scrollBehavior: TopAppBarScrollBehavior? = null,
     actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
 ) {
+    val host = LocalAppBarHost.current
+    if (host != null) {
+        AppShellTopBar(host = host, scrollBehavior = scrollBehavior, actions = actions)
+        return
+    }
     // Per Material 3 guidance: when bottom NavigationBar already labels
     // the active destination, the TopAppBar's screen title is redundant.
-    // We drop the per-screen title entirely and show only the brand
-    // chrome (mark + "pitstop" wordmark). The `title` param is kept on
-    // the function signature for source-compat with existing call sites
-    // but ignored in the render — easier than touching every caller.
+    // Outside the tab shell the bar shows only the brand chrome.
     //
     // Also: windowInsets = WindowInsets(0) — the outer Scaffold (in
     // MainActivity) already absorbs the status-bar inset for the whole
     // pager. Without this override the per-screen inner Scaffold's
     // TopAppBar re-applies the same inset on top, ending up with
-    // double-padding (the brand mark sits ~80 dp lower than it should
-    // and there's a fat empty band above the title).
+    // double-padding.
     CenterAlignedTopAppBar(
         title = {
             androidx.compose.foundation.layout.Row(
@@ -78,11 +128,90 @@ fun PitstopTopAppBar(
         ),
         scrollBehavior = scrollBehavior,
         windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
-        // The bar carries only a wordmark (no per-screen title), so the
-        // 64 dp Material default is mostly dead space above content that
-        // wants the room — map, lists, charts. 48 dp still clears the
-        // minimum touch target for whatever the `actions` slot holds.
         expandedHeight = BRAND_BAR_HEIGHT,
+    )
+}
+
+/**
+ * The tab shell's bar: vehicle name ▾ (a switcher when there is more than
+ * one vehicle), the logging-status chip that opens the bridge sheet, and
+ * the Settings gear. Settings left the bottom bar for this gear.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppShellTopBar(
+    host: AppBarHost,
+    scrollBehavior: TopAppBarScrollBehavior?,
+    actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit,
+) {
+    val st = host.state
+    TopAppBar(
+        title = {
+            var open by remember { mutableStateOf(false) }
+            val canSwitch = st.vehicles.size > 1
+            Box {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(enabled = canSwitch, onClickLabel = "Switch vehicle") { open = true }
+                        .padding(vertical = 4.dp, horizontal = 2.dp),
+                ) {
+                    BrandMark(sizeDp = 20)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = st.vehicleName ?: "pitstop",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 180.dp),
+                    )
+                    if (canSwitch) {
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    for (v in st.vehicles) {
+                        DropdownMenuItem(
+                            text = { Text(v.name) },
+                            trailingIcon = {
+                                if (v.slug == st.selectedSlug) Icon(Icons.Filled.Check, contentDescription = "Selected")
+                            },
+                            onClick = {
+                                open = false
+                                if (v.slug != st.selectedSlug) host.onSelectVehicle(v.slug)
+                            },
+                        )
+                    }
+                }
+            }
+        },
+        actions = {
+            actions()
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(onClickLabel = "Logging status") { host.onOpenStatus() }
+                    .padding(horizontal = 2.dp, vertical = 6.dp),
+            ) {
+                StatusPill(tone = st.loggingTone, label = st.loggingLabel, compact = true, subject = "Logging")
+            }
+            IconButton(onClick = host.onOpenSettings) {
+                Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.background,
+            scrolledContainerColor = MaterialTheme.colorScheme.surface,
+        ),
+        scrollBehavior = scrollBehavior,
+        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        expandedHeight = BRAND_BAR_HEIGHT + 4.dp,
     )
 }
 

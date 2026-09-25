@@ -6,6 +6,30 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Route
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.Route
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import com.pitstop.ui.AppBarViewModel
+import com.pitstop.ui.components.AppBarHost
+import com.pitstop.ui.components.LocalAppBarHost
+import com.pitstop.ui.fuel.FuelScreen
+import com.pitstop.ui.history.CarSection
+import com.pitstop.ui.history.TripsScreen
+import com.pitstop.ui.status.BridgeSheetContent
+import com.pitstop.ui.vehicle.CarScreen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -16,16 +40,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocalGasStation
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LocalGasStation
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -48,11 +66,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.ui.RootViewModel
 import com.pitstop.ui.config.ConfigScreen
-import com.pitstop.ui.fuel.FuelAddScreen
-import com.pitstop.ui.history.HistoryScreen
 import com.pitstop.ui.history.HistorySubTab
 import com.pitstop.ui.history.HistoryViewModel
-import com.pitstop.ui.live.LiveScreen
 import com.pitstop.ui.onboarding.OnboardingGateViewModel
 import com.pitstop.ui.onboarding.SetupWizardScreen
 import com.pitstop.ui.status.StatusScreen
@@ -64,9 +79,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * The five primary destinations, in bottom-bar order. The pager index IS
+ * The four primary destinations, in bottom-bar order. The pager index IS
  * the ordinal — nothing else in the app hard-codes a page number, so
- * reordering the bar is an edit here and nowhere else.
+ * reordering the bar is an edit here and nowhere else. Settings is not a
+ * tab: it opens full-screen from the top-bar gear.
  */
 enum class Tab(
     val label: String,
@@ -74,10 +90,9 @@ enum class Tab(
     val iconInactive: ImageVector,
 ) {
     Home("Home", Icons.Filled.Home, Icons.Outlined.Home),
-    Live("Live", Icons.Filled.Speed, Icons.Outlined.Speed),
-    History("History", Icons.Filled.History, Icons.Outlined.History),
+    Trips("Trips", Icons.Filled.Route, Icons.Outlined.Route),
     Fuel("Fuel", Icons.Filled.LocalGasStation, Icons.Outlined.LocalGasStation),
-    Settings("Settings", Icons.Filled.Settings, Icons.Outlined.Settings),
+    Car("Car", Icons.Filled.DirectionsCar, Icons.Outlined.DirectionsCar),
 }
 
 @AndroidEntryPoint
@@ -91,6 +106,12 @@ class MainActivity : ComponentActivity() {
      *  by ConfigScreen (which imports it) then cleared. */
     private val pendingSetupLink = MutableStateFlow<String?>(null)
 
+    /** Open the Settings overlay (setup link). */
+    private val pendingSettings = MutableStateFlow(false)
+
+    /** The "Add fillup" shortcut: open the Fuel tab's quick-log sheet. */
+    private val pendingLogSheet = MutableStateFlow(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -100,21 +121,7 @@ class MainActivity : ComponentActivity() {
         // not ready, no network, etc.) and is now waiting for the next
         // 30-min OS tick, we unstick it here.
         com.pitstop.widget.FuelWidgetProvider.refreshWidgets(this)
-        // The Add-Fillup launcher shortcut (#121) — long-press the app
-        // icon or use a home-screen shortcut — fires this action so we
-        // land directly on the Fuel tab. Other launch paths (icon tap,
-        // recents) get the default Home tab.
-        //
-        // ACTION_SYNC_DRIVES is fired by the SyncReminderManager
-        // notification body tap — land on History → Trips so the user
-        // can see the queued drives + tap "Sync".
-        // A pitstop://setup?… VIEW intent lands on Settings and hands
-        // the link to ConfigScreen to import.
-        val setupLink = intent?.takeIf { it.action == Intent.ACTION_VIEW }
-            ?.data?.takeIf { it.scheme == "pitstop" }?.toString()
-        if (setupLink != null) pendingSetupLink.value = setupLink
-        val initialTab = tabForIntent(intent) ?: Tab.Home
-        if (intent?.action == ACTION_SYNC_DRIVES) openHistory(HistorySubTab.Trips)
+        val initialTab = routeIntent(intent) ?: Tab.Home
         setContent {
             PitstopTheme {
                 Surface(
@@ -125,40 +132,77 @@ class MainActivity : ComponentActivity() {
                         initialTab = initialTab,
                         pendingTabFlow = pendingTab,
                         pendingSetupLinkFlow = pendingSetupLink,
+                        pendingSettingsFlow = pendingSettings,
+                        pendingLogSheetFlow = pendingLogSheet,
                     )
                 }
             }
         }
     }
 
-    /** Single-task launchMode means a shortcut tap on an already-
-     *  running app reuses this instance — we get the new intent
+    /** Single-task launchMode means a shortcut / notification tap on an
+     *  already-running app reuses this instance — we get the new intent
      *  here. Surface it to the composable so the pager scrolls. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == Intent.ACTION_VIEW) {
-            val link = intent.data?.takeIf { it.scheme == "pitstop" }?.toString() ?: return
-            pendingSetupLink.value = link
+        routeIntent(intent)?.let { pendingTab.value = it }
+    }
+
+    /**
+     * Every external way into the app, in one place:
+     *   pitstop://setup?…      → Settings overlay, link handed to ConfigScreen
+     *   ACTION_ADD_FILLUP      → Fuel, quick-log sheet open (launcher shortcut)
+     *   ACTION_SYNC_DRIVES     → Trips (sync-reminder notification)
+     *   ACTION_OPEN_TRIP       → Trips → trip detail (drive summary; EXTRA_EDIT = tag sheet)
+     *   ACTION_OPEN_DTC        → Car → Codes → code detail (new-code alert)
+     *   ACTION_OPEN_SERVICE    → Car → Service (service reminder)
+     * Returns the tab to show, or null to stay put.
+     */
+    private fun routeIntent(intent: Intent?): Tab? {
+        intent ?: return null
+        if (intent.action == Intent.ACTION_VIEW && intent.data?.scheme == "pitstop") {
+            pendingSetupLink.value = intent.data.toString()
+            pendingSettings.value = true
+            return null
         }
-        if (intent.action == ACTION_SYNC_DRIVES) openHistory(HistorySubTab.Trips)
-        tabForIntent(intent)?.let { pendingTab.value = it }
-    }
-
-    private fun tabForIntent(intent: Intent?): Tab? = when {
-        intent?.action == Intent.ACTION_VIEW && intent.data?.scheme == "pitstop" -> Tab.Settings
-        intent?.action == ACTION_ADD_FILLUP -> Tab.Fuel
-        intent?.action == ACTION_SYNC_DRIVES -> Tab.History
-        else -> null
-    }
-
-    /** Pre-select History's sub-tab before the pager lands there. */
-    private fun openHistory(sub: HistorySubTab) {
-        ViewModelProvider(this)[HistoryViewModel::class.java].selectSubTab(sub)
+        val history = { ViewModelProvider(this)[HistoryViewModel::class.java] }
+        return when (intent.action) {
+            ACTION_ADD_FILLUP -> {
+                pendingLogSheet.value = true
+                Tab.Fuel
+            }
+            ACTION_SYNC_DRIVES -> {
+                history().selectSubTab(HistorySubTab.Trips)
+                Tab.Trips
+            }
+            ACTION_OPEN_TRIP -> {
+                intent.getStringExtra(EXTRA_TRIP_ID)?.let { history().openTrip(it, intent.getBooleanExtra(EXTRA_EDIT, false)) }
+                Tab.Trips
+            }
+            ACTION_OPEN_DTC -> {
+                val code = intent.getStringExtra(EXTRA_DTC_CODE)
+                val vid = intent.getStringExtra(EXTRA_VEHICLE_ID).orEmpty()
+                if (code != null) history().openDtc(code, vid) else history().selectCarSection(CarSection.Codes)
+                Tab.Car
+            }
+            ACTION_OPEN_SERVICE -> {
+                history().selectCarSection(CarSection.Service)
+                Tab.Car
+            }
+            else -> null
+        }
     }
 
     companion object {
         const val ACTION_ADD_FILLUP = "com.pitstop.action.ADD_FILLUP"
         const val ACTION_SYNC_DRIVES = "com.pitstop.action.SYNC_DRIVES"
+        const val ACTION_OPEN_TRIP = "com.pitstop.action.OPEN_TRIP"
+        const val ACTION_OPEN_DTC = "com.pitstop.action.OPEN_DTC"
+        const val ACTION_OPEN_SERVICE = "com.pitstop.action.OPEN_SERVICE"
+        const val EXTRA_TRIP_ID = "trip_id"
+        const val EXTRA_EDIT = "edit"
+        const val EXTRA_DTC_CODE = "dtc_code"
+        const val EXTRA_VEHICLE_ID = "vehicle_id"
     }
 }
 
@@ -168,21 +212,25 @@ private fun PitstopRoot(
     initialTab: Tab = Tab.Home,
     pendingTabFlow: MutableStateFlow<Tab?>? = null,
     pendingSetupLinkFlow: MutableStateFlow<String?>? = null,
+    pendingSettingsFlow: MutableStateFlow<Boolean>? = null,
+    pendingLogSheetFlow: MutableStateFlow<Boolean>? = null,
     gateViewModel: OnboardingGateViewModel = hiltViewModel(),
     rootViewModel: RootViewModel = hiltViewModel(),
 ) {
     val unitSystem by rootViewModel.unitSystem.collectAsStateWithLifecycle()
     CompositionLocalProvider(LocalUnitSystem provides unitSystem) {
-        PitstopRootBody(initialTab, pendingTabFlow, pendingSetupLinkFlow, gateViewModel)
+        PitstopRootBody(initialTab, pendingTabFlow, pendingSetupLinkFlow, pendingSettingsFlow, pendingLogSheetFlow, gateViewModel)
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PitstopRootBody(
     initialTab: Tab,
     pendingTabFlow: MutableStateFlow<Tab?>?,
     pendingSetupLinkFlow: MutableStateFlow<String?>?,
+    pendingSettingsFlow: MutableStateFlow<Boolean>?,
+    pendingLogSheetFlow: MutableStateFlow<Boolean>?,
     gateViewModel: OnboardingGateViewModel,
 ) {
     // First-run gate (#12): while un-onboarded + unconfigured, the setup wizard
@@ -207,27 +255,40 @@ private fun PitstopRootBody(
     val pagerState = rememberPagerState(initialPage = initialTab.ordinal) { Tab.entries.size }
     val scope = rememberCoroutineScope()
     val goTo: (Tab) -> Unit = { tab -> scope.launch { pagerState.scrollToPage(tab.ordinal) } }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    var bridgeSheetOpen by rememberSaveable { mutableStateOf(false) }
 
-    // Route an onNewIntent deep link (shortcut tap on already-running
-    // app) to the right pager page. Clears the pending value so a
-    // recompose doesn't repeat the scroll.
+    // Route an onNewIntent deep link (shortcut / notification tap on an
+    // already-running app) to the right pager page. Clears the pending value
+    // so a recompose doesn't repeat the scroll. A notification tap also
+    // closes Settings, or the destination would open hidden behind it.
     val pendingTab = pendingTabFlow?.collectAsStateWithLifecycle()
     LaunchedEffect(pendingTab?.value) {
         val target = pendingTab?.value
         if (target != null) {
+            settingsOpen = false
             pagerState.scrollToPage(target.ordinal)
             pendingTabFlow?.value = null
         }
     }
+    val pendingSettings = pendingSettingsFlow?.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingSettings?.value) {
+        if (pendingSettings?.value == true) {
+            settingsOpen = true
+            pendingSettingsFlow?.value = false
+        }
+    }
 
     val context = LocalContext.current
-    // History's ViewModel is Activity-scoped (see HistoryScreen); Home
-    // reaches it the same way to hand over a sub-tab + detail route before
-    // switching tabs. Resolved lazily in the callbacks, so an app that never
-    // taps a DTC or a trip on Home never builds it early.
+    // History's ViewModel is Activity-scoped (Trips, Fuel and Car all read
+    // it); Home reaches it the same way to hand over a detail route before
+    // switching tabs. Resolved lazily in the callbacks.
     val historyVm: () -> HistoryViewModel = {
         ViewModelProvider(context.requireActivity())[HistoryViewModel::class.java]
     }
+    val appBarVm: AppBarViewModel = hiltViewModel(context.requireActivity())
+    val appBar by appBarVm.state.collectAsStateWithLifecycle()
+    val bridge by appBarVm.bridge.collectAsStateWithLifecycle()
 
     // Up-front permission request (notifications + bluetooth + foreground
     // location). ACCESS_BACKGROUND_LOCATION is deliberately NOT in this batch —
@@ -285,82 +346,128 @@ private fun PitstopRootBody(
         launcher.launch(perms)
     }
 
-    Scaffold(
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-            ) {
-                for (tab in Tab.entries) {
-                    val selected = pagerState.currentPage == tab.ordinal
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = { goTo(tab) },
-                        icon = {
-                            // The label below already names the item; a
-                            // matching contentDescription made TalkBack read
-                            // "Home, Home".
-                            Icon(
-                                if (selected) tab.iconActive else tab.iconInactive,
-                                contentDescription = null,
+    val appBarHost = AppBarHost(
+        state = appBar,
+        onSelectVehicle = appBarVm::selectVehicle,
+        onOpenStatus = { bridgeSheetOpen = true },
+        onOpenSettings = { settingsOpen = true },
+    )
+
+    Box(Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalAppBarHost provides appBarHost) {
+            Scaffold(
+                bottomBar = {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        for (tab in Tab.entries) {
+                            val selected = pagerState.currentPage == tab.ordinal
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = { goTo(tab) },
+                                icon = {
+                                    // The label below already names the item; a
+                                    // matching contentDescription made TalkBack read
+                                    // "Home, Home".
+                                    Icon(
+                                        if (selected) tab.iconActive else tab.iconInactive,
+                                        contentDescription = null,
+                                    )
+                                },
+                                label = { Text(tab.label) },
+                                // M3 baseline: tonal indicator, not a filled primary
+                                // blob — the coral accent is for the one primary
+                                // action on a screen, not for "you are here".
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
                             )
-                        },
-                        label = { Text(tab.label) },
-                        // M3 baseline: tonal indicator, not a filled primary
-                        // blob — the coral accent is for the one primary
-                        // action on a screen, not for "you are here".
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                            indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                    )
+                        }
+                    }
+                },
+            ) { padding ->
+                HorizontalPager(
+                    state = pagerState,
+                    // The bottom bar switches tabs; swiping does not. Every tab
+                    // hosts something that wants horizontal drags for itself —
+                    // maps, the trip timeline scrub, chip rails, swipe-to-tag.
+                    userScrollEnabled = false,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    // beyondViewportPageCount stays 0: off-screen tabs are
+                    // DISPOSED, so nothing cancellable may live on a tab-scoped
+                    // ViewModel (Trips/Fuel/Car/Service use Activity scope).
+                ) { page ->
+                    // Each screen owns its own Scaffold + top bar; the shared
+                    // PitstopTopAppBar reads LocalAppBarHost for the vehicle
+                    // switcher, logging chip and gear.
+                    when (Tab.entries[page]) {
+                        Tab.Home -> StatusScreen(
+                            onOpenHistory = {
+                                historyVm().selectSubTab(HistorySubTab.Trips)
+                                goTo(Tab.Trips)
+                            },
+                            onOpenSettings = { settingsOpen = true },
+                            onOpenDtc = { code, vehicleId ->
+                                historyVm().openDtc(code, vehicleId)
+                                goTo(Tab.Car)
+                            },
+                            onOpenTrip = { id ->
+                                historyVm().openTrip(id)
+                                goTo(Tab.Trips)
+                            },
+                            onOpenService = {
+                                historyVm().selectCarSection(CarSection.Service)
+                                goTo(Tab.Car)
+                            },
+                        )
+                        Tab.Trips -> TripsScreen()
+                        Tab.Fuel -> FuelScreen(pendingLogSheet = pendingLogSheetFlow)
+                        Tab.Car -> CarScreen(onOpenBridgeStatus = { bridgeSheetOpen = true })
+                    }
                 }
             }
-        },
-    ) { padding ->
-        HorizontalPager(
-            state = pagerState,
-            // The bottom bar switches tabs; swiping does not. Every tab but
-            // Home hosts something that wants horizontal drags for itself —
-            // maps, the trip timeline scrub, chip rails — and a pager
-            // underneath stole them half-way through the gesture.
-            userScrollEnabled = false,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            // Compose by default lazily renders only the visible page; we keep
-            // beyondViewportPageCount = 0 so off-screen tabs don't pay the
-            // recompose cost while idle. Live + Fuel both attach to view-models
-            // that emit even when not visible (BridgeStateBus, etc.) so the
-            // numbers don't go stale on tab switch.
-        ) { page ->
-            // Each screen owns its own Scaffold + TopAppBar; the outer Scaffold
-            // here only contributes the bottomBar. Every tab wears the brand
-            // PitstopTopAppBar; pushed detail screens wear DetailTopAppBar.
-            when (Tab.entries[page]) {
-                Tab.Home -> StatusScreen(
-                    onOpenHistory = {
-                        historyVm().selectSubTab(HistorySubTab.Trips)
-                        goTo(Tab.History)
-                    },
-                    onOpenSettings = { goTo(Tab.Settings) },
-                    onOpenDtc = { code, vehicleId ->
-                        historyVm().openDtc(code, vehicleId)
-                        goTo(Tab.History)
-                    },
-                    onOpenTrip = { id ->
-                        historyVm().openTrip(id)
-                        goTo(Tab.History)
-                    },
+        }
+
+        // Settings: full-screen over the tabs (the pager stays composed
+        // underneath, so every tab's back stack survives a trip to the gear).
+        if (settingsOpen) {
+            BackHandler { settingsOpen = false }
+            Surface(
+                color = MaterialTheme.colorScheme.background,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.systemBars),
+            ) {
+                ConfigScreen(
+                    pendingSetupLinkFlow = pendingSetupLinkFlow,
+                    onClose = { settingsOpen = false },
                 )
-                Tab.Live -> LiveScreen(onOpenHome = { goTo(Tab.Home) })
-                Tab.History -> HistoryScreen()
-                Tab.Fuel -> FuelAddScreen()
-                Tab.Settings -> ConfigScreen(pendingSetupLinkFlow = pendingSetupLinkFlow)
             }
+        }
+    }
+
+    if (bridgeSheetOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { bridgeSheetOpen = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+            BridgeSheetContent(
+                state = bridge,
+                onStart = appBarVm::startBridge,
+                onStop = appBarVm::stopBridge,
+                onOpenSettings = {
+                    bridgeSheetOpen = false
+                    settingsOpen = true
+                },
+                modifier = Modifier.navigationBarsPadding(),
+            )
         }
     }
 }

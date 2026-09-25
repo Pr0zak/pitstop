@@ -130,6 +130,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 fun ConfigScreen(
     viewModel: ConfigViewModel = hiltViewModel(),
     pendingSetupLinkFlow: kotlinx.coroutines.flow.MutableStateFlow<String?>? = null,
+    /** Non-null when opened full-screen from the top-bar gear: the root
+     *  gets a back arrow that closes Settings. */
+    onClose: (() -> Unit)? = null,
 ) {
     // Consume a pitstop://setup?… deep link forwarded by MainActivity: import
     // it once, then clear so a recompose doesn't re-import.
@@ -250,6 +253,7 @@ fun ConfigScreen(
                 onPair = { viewModel.pairCompanion() },
                 onCopyDiagnostics = copyDiagnostics,
                 onOpen = { route -> nav.navigate(route) },
+                onClose = onClose,
             )
         }
         composable(ROUTE_CONNECTION) {
@@ -360,11 +364,20 @@ fun ConfigScreen(
                     unitSystem = form.unitSystem,
                     onChange = { v -> viewModel.update { it.copy(unitSystem = v) } },
                 )
+                val driveSummary by viewModel.driveSummaryNotif.collectAsStateWithLifecycle()
+                val serviceReminders by viewModel.serviceReminderNotif.collectAsStateWithLifecycle()
+                val vehicleAlerts by viewModel.vehicleAlertNotif.collectAsStateWithLifecycle()
                 NotificationsSection(
                     dongleAlert = form.dongleAlertEnabled,
                     onDongleAlertChange = { v ->
                         viewModel.update { it.copy(dongleAlertEnabled = v) }
                     },
+                    driveSummary = driveSummary,
+                    onDriveSummaryChange = viewModel::setDriveSummaryNotif,
+                    serviceReminders = serviceReminders,
+                    onServiceRemindersChange = viewModel::setServiceReminderNotif,
+                    vehicleAlerts = vehicleAlerts,
+                    onVehicleAlertsChange = viewModel::setVehicleAlertNotif,
                 )
                 LogsSection(
                     verbose = form.verboseLogging,
@@ -502,13 +515,16 @@ internal fun ConfigRootContent(
     onPair: () -> Unit = {},
     onCopyDiagnostics: () -> Unit = {},
     onOpen: (String) -> Unit = {},
+    onClose: (() -> Unit)? = null,
 ) {
     Scaffold(
         // Outer Scaffold (MainActivity) already consumed the system-bar
         // insets; re-applying them here leaves an empty status-bar-tall
         // band above the first setting.
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
-        topBar = { PitstopTopAppBar() },
+        topBar = {
+            if (onClose != null) DetailTopAppBar(title = "Settings", onBack = onClose) else PitstopTopAppBar()
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
@@ -1431,19 +1447,58 @@ private fun PitstopServerSection(
     }
 }
 
-// ── Logs ───────────────────────────────────────────────────────────
+// ── Notifications ──────────────────────────────────────────────────
+
+@Composable
+private fun NotifToggle(title: String, body: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(body, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
 
 @Composable
 private fun NotificationsSection(
     dongleAlert: Boolean,
     onDongleAlertChange: (Boolean) -> Unit,
+    driveSummary: Boolean = true,
+    onDriveSummaryChange: (Boolean) -> Unit = {},
+    serviceReminders: Boolean = true,
+    onServiceRemindersChange: (Boolean) -> Unit = {},
+    vehicleAlerts: Boolean = true,
+    onVehicleAlertsChange: (Boolean) -> Unit = {},
 ) {
     SettingsSection(
         title = "Notifications",
-        description = "Alerts about the capture hardware. The ongoing " +
+        description = "What pitstop may tell you about. The ongoing " +
             "recording notification is required by Android and can't be " +
             "turned off here.",
     ) {
+        NotifToggle(
+            title = "Drive summaries",
+            body = "After a drive uploads: distance, economy and how it compares with your usual. " +
+                "A backlog sync sends one summary instead of one per drive.",
+            checked = driveSummary,
+            onChange = onDriveSummaryChange,
+        )
+        Spacer(Modifier.size(12.dp))
+        NotifToggle(
+            title = "Service reminders",
+            body = "When maintenance comes within 300 mi (480 km) or 14 days, and when it's overdue. Checked daily.",
+            checked = serviceReminders,
+            onChange = onServiceRemindersChange,
+        )
+        Spacer(Modifier.size(12.dp))
+        NotifToggle(
+            title = "Vehicle alerts",
+            body = "A new check-engine code, with what it means and whether it's safe to keep driving.",
+            checked = vehicleAlerts,
+            onChange = onVehicleAlertsChange,
+        )
+        Spacer(Modifier.size(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Dongle stopped responding", style = MaterialTheme.typography.titleSmall)

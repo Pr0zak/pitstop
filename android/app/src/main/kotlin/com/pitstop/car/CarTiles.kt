@@ -84,6 +84,13 @@ object CarTileCatalog {
             "engine_fuel_rate", "Fuel rate", UnitFormat.Quantity.FuelRateGramsPerSec, 2,
             icon = R.drawable.ic_metric_fuel,
         ),
+        // Synthetic: live fuel_level × tank × the phone's cached mpg basis
+        // (RangeMath). Not a PID — see [withRangeTile]. Km on the wire like
+        // every other distance, so the Quantity renders mi or km.
+        CarTileSpec(
+            RANGE_TILE_KEY, "Range", UnitFormat.Quantity.DistanceKm, 0,
+            icon = R.drawable.ic_metric_fuel, trend = false, warnLow = 80.0, warnLowWord = "LOW",
+        ),
         // ── Emissions / fuel control ──────────────────────────────
         // Added when the phone learned to poll these directly (0.1.221).
         // They were pollable and visible on the Live screen but absent from
@@ -177,9 +184,11 @@ object CarTileCatalog {
         "throttle_position", "maf_air_flow", "manifold_pressure",
     )
 
+    /** Range replaced fuel-rail pressure: "how far can I go" is the one fuel
+     *  question a driver asks mid-trip. Fuel rail stays pickable. */
     val DEFAULT_FUEL: List<String> = listOf(
-        "fuel_level", "engine_fuel_rate", "engine_exhaust_flow",
-        "commanded_afr_ratio", "o2_s1_lambda", "fuel_rail_pressure",
+        "fuel_level", RANGE_TILE_KEY, "engine_fuel_rate",
+        "engine_exhaust_flow", "commanded_afr_ratio", "o2_s1_lambda",
     )
 
     /**
@@ -343,4 +352,23 @@ fun renderCarTile(
         }
     }
     return CarTileRender(text, level, stale)
+}
+
+/** Metric key of the synthetic range-to-empty tile. */
+const val RANGE_TILE_KEY = "range_km"
+
+/**
+ * Add the range tile's value to a live metric snapshot: the live fuel_level
+ * gauge reading × tank × the cached mpg basis, in km. Carries the fuel
+ * sample's timestamp so the tile ages exactly like the fuel tile. Nothing is
+ * added when any input is missing — the tile then shows "—".
+ */
+fun withRangeTile(
+    metrics: Map<String, com.pitstop.service.MetricSample>,
+    inputs: com.pitstop.data.RangeInputs?,
+): Map<String, com.pitstop.service.MetricSample> {
+    val fuel = metrics["fuel_level"] ?: return metrics
+    val miles = com.pitstop.domain.RangeMath.rangeFromPct(fuel.value, inputs?.tankUsGallons, inputs?.basis?.mpg)
+        ?: return metrics
+    return metrics + (RANGE_TILE_KEY to com.pitstop.service.MetricSample(RANGE_TILE_KEY, miles * 1.609344, fuel.tsMs))
 }

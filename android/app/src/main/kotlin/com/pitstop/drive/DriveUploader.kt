@@ -52,6 +52,7 @@ class DriveUploader @Inject constructor(
     private val logs: LogBuffer,
     private val progress: UploadProgressBus,
     @ApplicationContext private val context: Context,
+    private val driveSummary: com.pitstop.notif.DriveSummaryNotifier,
 ) {
     /**
      * Serialises drain passes. The post-seal kick (bridge scope), the
@@ -170,6 +171,9 @@ class DriveUploader @Inject constructor(
     @Volatile
     private var passQueueDepth = 0
 
+    /** Guarded by [drainMutex] like the rest of the pass state. */
+    private val acceptedTripIds = mutableListOf<String>()
+
     private suspend fun drainLocked(reason: String): Int {
         val passStartedAt = System.currentTimeMillis()
         val unackedAtStart = dao.unackedCount()
@@ -218,6 +222,9 @@ class DriveUploader @Inject constructor(
         // doesn't mark the row in any way visible to dao.oldestUnackedMeta(),
         // so without this gate we'd hot-loop forever on the same drive.
         val seenThisPass = mutableSetOf<String>()
+        // Trip ids the server acked as NEW this pass (duplicates excluded) —
+        // handed to the drive-summary notifier once the pass ends.
+        acceptedTripIds.clear()
         var drained = 0
         var rejected = 0
         var index = 0
@@ -338,6 +345,8 @@ class DriveUploader @Inject constructor(
                 detail = detail,
             ),
         )
+        // Fire-and-forget on the notifier's own scope; never delays the pass.
+        if (acceptedTripIds.isNotEmpty()) driveSummary.onPassFinished(acceptedTripIds.toList())
         logs.info(
             "DriveUploader: queue drained this pass",
             mapOf(
@@ -378,6 +387,7 @@ class DriveUploader @Inject constructor(
         return try {
             val resp = api.postDrive(dto)
             dao.markAcked(meta.clientDriveUuid, now, resp.tripId)
+            if (!resp.duplicate) acceptedTripIds += resp.tripId
             // Server has the data — release the on-disk copy now. The
             // row stays around for the 24-hour audit window but won't
             // be re-uploaded.

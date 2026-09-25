@@ -24,8 +24,18 @@ import com.pitstop.ui.config.settingsRows
 import com.pitstop.ui.fuel.FuelAddContent
 import com.pitstop.ui.history.FillupFilter
 import com.pitstop.ui.history.FillupSortOrder
-import com.pitstop.ui.history.HistoryListContent
+import com.pitstop.ui.history.TripsListContent
 import com.pitstop.ui.history.HistorySubTab
+import com.pitstop.ui.history.CarSection
+import com.pitstop.ui.components.AppBarHost
+import com.pitstop.ui.components.LocalAppBarHost
+import com.pitstop.ui.fuel.FuelHubContent
+import com.pitstop.ui.fuel.LogFillupSheetContent
+import com.pitstop.ui.vehicle.CarContent
+import com.pitstop.ui.vehicle.CodesList
+import com.pitstop.ui.vehicle.ServiceContent
+import com.pitstop.ui.status.BridgeSheetContent
+import com.pitstop.ui.BridgeSheetState
 import com.pitstop.ui.history.MergeState
 import com.pitstop.ui.history.TripSelection
 import com.pitstop.ui.history.TripSortOrder
@@ -59,6 +69,8 @@ class ScreenShots {
                 CompositionLocalProvider(
                     LocalUnitSystem provides units,
                     LocalInspectionMode provides true,
+                    // The tab shell's top bar: vehicle switcher, logging chip, gear.
+                    LocalAppBarHost provides AppBarHost(Fixtures.appBar),
                 ) {
                     // Same root Surface MainActivity provides, so bodies that
                     // are not inside their own Scaffold get the app's colours.
@@ -71,6 +83,9 @@ class ScreenShots {
     @Test fun home() = shot("home") { home(Fixtures.home) }
 
     @Test fun homeMetric() = shot("home_metric", units = "metric") { home(Fixtures.home) }
+
+    /** Nothing needs attention → no attention strip at all. */
+    @Test fun homeQuiet() = shot("home_quiet") { home(Fixtures.homeQuiet) }
 
     @Test fun homeSetup() = shot("home_setup") {
         home(StatusUiState(hasServer = true, hasVehicle = false))
@@ -94,9 +109,16 @@ class ScreenShots {
     @Composable
     private fun home(ui: StatusUiState) = StatusContent(
         ui = ui, uploadProgress = UploadProgress.Idle, pendingDrives = 0,
-        onRefresh = {}, onStart = {}, onStop = {}, onSync = {}, onCancelSync = {},
+        onRefresh = {}, onSync = {}, onCancelSync = {},
         onOpenHistory = {}, onOpenSettings = {},
     )
+
+    @Test fun bridgeSheet() = shot("bridge_sheet") {
+        BridgeSheetContent(
+            state = BridgeSheetState(status = Fixtures.staleStatus, needsPairing = true, configured = true),
+            onStart = {}, onStop = {}, onOpenSettings = {},
+        )
+    }
 
     // ── Live ────────────────────────────────────────────────────────
     @Test fun live() = shot("live") {
@@ -111,28 +133,57 @@ class ScreenShots {
         LiveContent(emptyMap(), Fixtures.connected.copy(phase = BridgePhase.Idle), brokerConnected = false, unitSystem = "imperial", obdAgeS = null, driveMode = false)
     }
 
-    // ── History ─────────────────────────────────────────────────────
-    @Test fun historyTrips() = shot("history_trips") { history(HistorySubTab.Trips) }
+    // ── Trips ───────────────────────────────────────────────────────
+    @Test fun trips() = shot("trips") { tripsList() }
 
-    @Test fun historyTripsSelecting() = shot("history_trips_selecting") {
-        history(HistorySubTab.Trips, TripSelection(mode = true, ids = setOf("t2", "t3", "t5")))
+    @Test fun tripsSelecting() = shot("trips_selecting") {
+        tripsList(TripSelection(mode = true, ids = setOf("t2", "t3", "t5")))
     }
 
-    @Test fun historyFillups() = shot("history_fillups") { history(HistorySubTab.Fillups) }
-
-    @Test fun historyDtcs() = shot("history_dtcs") { history(HistorySubTab.Dtcs) }
+    /** A row swiped open: its quick-tag chips showing under it. */
+    @Test fun tripsTagging() = shot("trips_tagging") { tripsList(tagging = "t2") }
 
     @Composable
-    private fun history(tab: HistorySubTab, selection: TripSelection = TripSelection()) = HistoryListContent(
-        subTab = tab, onSubTab = {}, ui = Fixtures.historyUi, pendingCount = 2,
+    private fun tripsList(selection: TripSelection = TripSelection(), tagging: String? = null) = TripsListContent(
+        subTab = HistorySubTab.Trips, onSubTab = {}, ui = Fixtures.historyUi, pendingCount = 2,
         uploadProgress = UploadProgress.Idle, onSync = {}, onCancelSync = {}, onRefresh = {},
         selection = selection, mergeState = MergeState.Idle, hiddenTripIds = emptySet(),
         tripSort = TripSortOrder.RecentFirst, tripFilter = TripSourceFilter.All, towingOnly = false,
         onTripSort = {}, onTripFilter = {}, onTowingOnly = {}, onToggleSelect = {}, onLongPress = {},
-        onCancelSelection = {}, onMerge = {}, onDelete = {},
-        fillupSort = FillupSortOrder.RecentFirst, fillupFilter = FillupFilter.All,
-        onFillupSort = {}, onFillupFilter = {}, onOpenTrip = {}, onOpenFillup = {}, onOpenDtc = { _, _ -> },
+        onCancelSelection = {}, onMerge = {}, onDelete = {}, onOpenTrip = {},
+        taggingTripId = tagging,
     )
+
+    // ── Fuel ────────────────────────────────────────────────────────
+    @Test fun fuelHub() = shot("fuel_hub") {
+        FuelHubContent(ui = Fixtures.historyUi, sort = FillupSortOrder.RecentFirst, filter = FillupFilter.All)
+    }
+
+    @Test fun logFillupSheet() = shot("log_fillup_sheet") {
+        LogFillupSheetContent(form = Fixtures.quickForm, more = false)
+    }
+
+    @Test fun logFillupSheetMore() = shot("log_fillup_sheet_more") {
+        LogFillupSheetContent(form = Fixtures.quickForm, more = true)
+    }
+
+    // ── Car ─────────────────────────────────────────────────────────
+    @Test fun carCodes() = shot("car_codes") {
+        CarContent(section = CarSection.Codes, onSection = {}, codes = {
+            CodesList(
+                state = com.pitstop.ui.history.HistoryListState(data = Fixtures.carDtcs),
+                lastRefresh = Fixtures.historyUi.lastRefresh, onRefresh = {}, onOpen = { _, _ -> },
+            )
+        })
+    }
+
+    @Test fun carService() = shot("car_service") {
+        CarContent(section = CarSection.Service, onSection = {}, service = { ServiceContent(Fixtures.serviceWithReminders) })
+    }
+
+    @Test fun carServicePresets() = shot("car_service_presets") {
+        CarContent(section = CarSection.Service, onSection = {}, service = { ServiceContent(Fixtures.serviceEmpty) })
+    }
 
     // ── Details ─────────────────────────────────────────────────────
     @Test fun tripDetail() = shot("trip_detail") { tripDetail("imperial") }
@@ -152,6 +203,14 @@ class ScreenShots {
 
     @Test fun dtcDetail() = shot("dtc_detail") {
         DtcDetailContent(entry = Fixtures.dtcTimeline, onOpenTrip = {})
+    }
+
+    /** A code that isn't in the bundled table: the honest family fallback. */
+    @Test fun dtcDetailUnknown() = shot("dtc_detail_unknown") {
+        DtcDetailContent(
+            entry = Fixtures.dtcTimeline.copy(code = "P1456", description = "EVAP control system leak (fuel tank)"),
+            onOpenTrip = {},
+        )
     }
 
     // ── Fuel ────────────────────────────────────────────────────────

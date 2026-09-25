@@ -7,6 +7,9 @@ import com.pitstop.data.SettingsRepository
 import com.pitstop.http.FillupRequest
 import com.pitstop.http.FillupUpdateRequest
 import com.pitstop.http.PitstopApi
+import com.pitstop.domain.FuelField
+import com.pitstop.domain.FuelTriple
+import com.pitstop.http.StationPriceDto
 import com.pitstop.util.UnitFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,7 +69,17 @@ data class FuelFormState(
     //   100 = Regular 87, 101 = Mid 89, 102 = Premium 91, 103 = Premium 93,
     //   200 = Diesel, 300 = E85, 400 = LPG / propane
     val fuelType: Int = 100,
+
+    /** Quick-log sheet: which two of {total, price, volume} the user typed,
+     *  most recent last — the third is derived (see [FuelTriple]). */
+    val quickPinned: List<FuelField> = listOf(FuelField.Total, FuelField.Price),
+    /** "Last price here $3.299" — the user's own last fill at the station
+     *  nearest the GPS fix, from /analytics/station-prices. */
+    val stationPriceHint: StationPriceHint? = null,
 )
+
+/** A price the user paid before at (about) this spot. [perGal] is USD per US gal. */
+data class StationPriceHint(val perGal: Double, val dateIso: String?)
 
 /** Field-level problems; null = fine. Pure so it is unit-testable. */
 data class FuelFormErrors(
@@ -147,6 +160,8 @@ class FuelAddViewModel @Inject constructor(
     private val api: PitstopApi,
     private val stateBus: com.pitstop.service.BridgeStateBus,
     private val logBuffer: com.pitstop.log.LogBuffer,
+    private val activeVehicle: com.pitstop.data.ActiveVehicle,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -189,7 +204,9 @@ class FuelAddViewModel @Inject constructor(
 
     private suspend fun loadVehicles() {
         val current = settingsRepository.current()
-        val defaultSlug = current.settings.vehicleSlug.ifBlank { "" }
+        // The vehicle the app is showing (top-bar switcher), which is the
+        // bridge's configured one unless the user switched.
+        val defaultSlug = runCatching { activeVehicle.current() }.getOrDefault(current.settings.vehicleSlug)
         if (current.queryToken.isBlank()) {
             logBuffer.warn("fuel: QUERY token blank; vehicle picker will be empty")
         }
@@ -232,7 +249,10 @@ class FuelAddViewModel @Inject constructor(
         // Once the vehicle list is known, fetch the latest fillup for the
         // active selection so the "Last value" hint and odometer prefill
         // reflect the per-vehicle history (not just the live OBD reading).
-        if (resolvedSlug.isNotBlank()) loadLatestOdoForSlug(resolvedSlug)
+        if (resolvedSlug.isNotBlank()) {
+            loadLatestOdoForSlug(resolvedSlug)
+            loadStationPrices(resolvedSlug)
+        }
         // Retry the autoFill now that we have the vehicle's
         // backend-persisted latest_odo as a fallback for an empty
         // in-process BridgeStateBus (cold app start).
@@ -360,10 +380,91 @@ class FuelAddViewModel @Inject constructor(
     }
 
     fun selectVehicle(slug: String) {
-        _form.value = _form.value.copy(selectedVehicleSlug = slug)
+        _form.value = _form.value.copy(selectedVehicleSlug = slug, stationPriceHint = null)
         // Re-fetch latest odo for the newly-picked vehicle so the
         // hint + prefill update right away.
-        viewModelScope.launch { loadLatestOdoForSlug(slug) }
+        viewModelScope.launch {
+            loadLatestOdoForSlug(slug)
+            loadStationPrices(slug)
+        }
+    }
+
+    // ── Quick-log sheet ─────────────────────────────────────────────
+
+    private var stationPrices: List<StationPriceDto> = emptyList()
+    private var stationPricesSlug: String? = null
+
+    /**
+     * The Fuel hub's quick sheet opened. This ViewModel is Activity-scoped
+     * there (a save must survive a tab switch), so its init ran long ago:
+     * follow the top-bar vehicle, and re-take the GPS fix and the odometer
+     * the way a fresh form would.
+     */
+    fun onSheetOpened() {
+        viewModelScope.launch {
+            val slug = runCatching { activeVehicle.current() }.getOrNull()
+            if (_form.value.vehicles.isEmpty()) loadVehicles()
+            if (slug != null && slug.isNotBlank() && slug != _form.value.selectedVehicleSlug) {
+                _form.value = _form.value.copy(selectedVehicleSlug = slug, stationPriceHint = null)
+            }
+            val sel = _form.value.selectedVehicleSlug
+            if (sel.isNotBlank()) {
+                loadLatestOdoForSlug(sel)
+                loadStationPrices(sel)
+            }
+            autoFillOdometer()
+        }
+        refreshGps()
+    }
+
+    /** Type into one of total / price / volume; the untouched third follows. */
+    fun setQuickField(field: FuelField, value: String) {
+        val f = _form.value
+        val next = FuelTriple(f.totalPrice, f.pricePerVolume, f.volume, f.quickPinned).edit(field, value)
+        update {
+            it.copy(
+                totalPrice = next.total,
+                pricePerVolume = next.price,
+                volume = next.volume,
+                quickPinned = next.pinned,
+            )
+        }
+    }
+
+    /** The hub showed its "saved" snackbar; don't replay it on the next visit. */
+    fun acknowledgeSubmitted() {
+        _form.value = _form.value.copy(submittedId = null)
+    }
+
+    /** Tap on "last price here": use it as the price. */
+    fun useStationPrice() {
+        val hint = _form.value.stationPriceHint ?: return
+        val display = UnitFormat.pricePerVolumeValue(hint.perGal, system) ?: return
+        setQuickField(FuelField.Price, String.format(Locale.US, "%.3f", display))
+    }
+
+    private suspend fun loadStationPrices(slug: String) {
+        if (stationPricesSlug == slug && stationPrices.isNotEmpty()) {
+            recomputePriceHint()
+            return
+        }
+        val v = _form.value.vehicles.firstOrNull { it.slug == slug } ?: return
+        stationPrices = runCatching { api.getStationPrices(v.id) }.getOrElse { emptyList() }
+        stationPricesSlug = slug
+        recomputePriceHint()
+    }
+
+    private fun recomputePriceHint() {
+        val fix = _form.value.gps ?: return
+        val v = _form.value.vehicles.firstOrNull { it.slug == _form.value.selectedVehicleSlug }
+        val near = nearestStationPrice(stationPrices, fix.lat, fix.lon) ?: run {
+            _form.value = _form.value.copy(stationPriceHint = null)
+            return
+        }
+        val price = near.latestPrice ?: return
+        // Stored in the vehicle's fuel unit; the hint is per US gallon.
+        val perGal = if (v?.fuelUnit == 0) price * GAL_TO_L else price
+        _form.value = _form.value.copy(stationPriceHint = StationPriceHint(perGal, near.latestDate))
     }
 
     fun selectFuelType(code: Int) {
@@ -434,6 +535,7 @@ class FuelAddViewModel @Inject constructor(
                 gpsRefreshing = false,
                 nearestPriorStation = nearest?.stationName,
             )
+            recomputePriceHint()
         }
     }
 
@@ -528,7 +630,10 @@ class FuelAddViewModel @Inject constructor(
                     lastOdometer = f.odometer.toDoubleOrNull() ?: f.lastOdometer,
                     stationSuggestions = f.stationSuggestions,
                     gps = f.gps,
+                    nearestPriorStation = f.nearestPriorStation,
                 )
+                // A new fillup moves the fuel estimate; don't wait 30 min.
+                com.pitstop.widget.FuelWidgetProvider.refreshWidgets(appContext)
             } catch (e: Exception) {
                 logBuffer.warn("fuel: submit failed", mapOf("err" to (e.message ?: e::class.java.simpleName)))
                 _form.value = f.copy(
@@ -590,4 +695,27 @@ class FuelAddViewModel @Inject constructor(
          *  and long road trips without admitting garbage frames. */
         const val MAX_MI_SINCE_LAST = 10_000.0
     }
+}
+
+/** Station cluster within [radiusM] of the fix with a known price, nearest first. */
+fun nearestStationPrice(
+    stations: List<StationPriceDto>,
+    lat: Double,
+    lon: Double,
+    radiusM: Double = 150.0,
+): StationPriceDto? = stations
+    .filter { it.lat != null && it.lon != null && it.latestPrice != null }
+    .map { it to haversineM(lat, lon, it.lat!!, it.lon!!) }
+    .filter { it.second <= radiusM }
+    .minByOrNull { it.second }
+    ?.first
+
+private fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val r = 6_371_000.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = kotlin.math.sin(dLat / 2).let { it * it } +
+        kotlin.math.cos(Math.toRadians(lat1)) * kotlin.math.cos(Math.toRadians(lat2)) *
+        kotlin.math.sin(dLon / 2).let { it * it }
+    return r * 2 * kotlin.math.atan2(kotlin.math.sqrt(a), kotlin.math.sqrt(1 - a))
 }

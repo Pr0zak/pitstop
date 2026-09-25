@@ -43,6 +43,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.material.icons.automirrored.outlined.Label
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -112,44 +118,59 @@ import java.net.URLEncoder
 import java.time.ZoneId
 
 /**
- * History tab — root surface owns its own NavHost so drilling into a
- * detail screen doesn't break the bottom NavigationBar. Routes:
- *   list                  – the four subtabs (Trips/Fillups/DTCs/Map)
- *   trip/{id}             – TripDetailScreen
- *   trip/{id}/map         – full-screen, interactive route map
- *   fillup/{id}           – FillupDetailScreen
- *   fillup/{editId}/edit  – the Fuel form, prefilled, in edit mode
- *   dtc/{code}?vehicleId= – DtcDetailScreen
+ * Navigation for one tab's detail stack. Trips, Fuel and Car each own a
+ * NavHost (so drilling into a detail keeps the bottom bar), and all three
+ * register the same detail routes — a trip opened from a DTC under Car
+ * stays under Car, and Back returns there.
  *
- * Every route owns its own Scaffold + top bar (brand bar on the list,
- * DetailTopAppBar on the rest), so a detail can title itself with the
- * thing it shows. The bottom NavigationBar is owned by MainActivity's
- * Scaffold so it stays put across detail transitions.
- *
- * Deep links (Home → a DTC / a trip) arrive through the Activity-scoped
- * [HistoryViewModel.pendingLink] and are pushed here once composed.
+ *   list                        – the tab's root content
+ *   trip/{id}?edit=             – TripDetailScreen (edit = tag sheet open)
+ *   trip/{id}/map               – full-screen, interactive route map
+ *   fillup/{id}                 – FillupDetailScreen
+ *   fillup/{editId}/edit        – the Fuel form, prefilled, in edit mode
+ *   dtc/{code}?vehicleId=       – DtcDetailScreen
+ */
+class SectionNav(
+    val openTrip: (String) -> Unit,
+    val openFillup: (String) -> Unit,
+    val openDtc: (code: String, vehicleId: String) -> Unit,
+)
+
+/**
+ * One tab's NavHost. [viewModel] is the Activity-scoped [HistoryViewModel]
+ * (the pager disposes a tab's NavHost when it scrolls away, so an
+ * entry-scoped ViewModel would be rebuilt — and refetch — on every visit).
+ * Deep links addressed to [host] are pushed once this host is composed.
  */
 @Composable
-fun HistoryScreen(
-    // Scoped to the Activity, not to a NavBackStackEntry. MainActivity's
-    // pager keeps beyondViewportPageCount at 0, so leaving History disposes
-    // this whole NavHost — with an entry-scoped ViewModel that meant a
-    // brand-new instance (and a fresh five-endpoint fan-out) every time the
-    // tab came back. Activity scope keeps one instance, one list, one
-    // refresh policy — and is what lets Home deep-link in.
-    viewModel: HistoryViewModel = hiltViewModel(LocalContext.current.requireActivity()),
+fun SectionHost(
+    host: SectionHostId,
+    viewModel: HistoryViewModel,
+    root: @Composable (SectionNav) -> Unit,
 ) {
     val nav = rememberNavController()
     val openDtc: (String, String) -> Unit = { code, vehicleId ->
         nav.navigate("dtc/${URLEncoder.encode(code, "UTF-8")}?vehicleId=$vehicleId")
     }
+    val sectionNav = remember(nav) {
+        SectionNav(
+            openTrip = { id -> nav.navigate("trip/$id") },
+            openFillup = { id -> nav.navigate("fillup/$id") },
+            openDtc = openDtc,
+        )
+    }
 
     val pendingLink by viewModel.pendingLink.collectAsStateWithLifecycle()
     LaunchedEffect(pendingLink) {
-        when (val link = pendingLink) {
-            null -> return@LaunchedEffect
+        val link = pendingLink ?: return@LaunchedEffect
+        if (link.host != host) return@LaunchedEffect
+        // A notification tapped while a detail is already open: start from
+        // the tab root so Back behaves.
+        nav.popBackStack(ROUTE_LIST, inclusive = false)
+        when (link) {
             is HistoryDeepLink.Dtc -> openDtc(link.code, link.vehicleId)
-            is HistoryDeepLink.Trip -> nav.navigate("trip/${link.id}")
+            is HistoryDeepLink.Trip -> nav.navigate("trip/${link.id}?edit=${link.edit}")
+            is HistoryDeepLink.Fillup -> nav.navigate("fillup/${link.id}")
         }
         viewModel.consumeLink()
     }
@@ -159,17 +180,16 @@ fun HistoryScreen(
         startDestination = ROUTE_LIST,
         modifier = Modifier.fillMaxSize(),
     ) {
-        composable(ROUTE_LIST) {
-            HistoryListRoute(
-                viewModel = viewModel,
-                onOpenTrip = { id -> nav.navigate("trip/$id") },
-                onOpenFillup = { id -> nav.navigate("fillup/$id") },
-                onOpenDtc = openDtc,
-            )
-        }
+        composable(ROUTE_LIST) { root(sectionNav) }
         composable(
-            route = "trip/{id}",
-            arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            route = "trip/{id}?edit={edit}",
+            arguments = listOf(
+                navArgument("id") { type = NavType.StringType },
+                navArgument("edit") {
+                    type = NavType.BoolType
+                    defaultValue = false
+                },
+            ),
         ) { entry ->
             val id = entry.arguments?.getString("id").orEmpty()
             TripDetailScreen(
@@ -180,6 +200,7 @@ fun HistoryScreen(
                     nav.popBackStack()
                     viewModel.refresh(forceNetwork = true)
                 },
+                startEditing = entry.arguments?.getBoolean("edit") == true,
             )
         }
         composable(
@@ -234,13 +255,21 @@ fun HistoryScreen(
 
 private const val ROUTE_LIST = "list"
 
-/** Collects [HistoryViewModel] state and hands it to [HistoryListContent]. */
+/** The Trips tab: Trips | Map under the shared top bar. */
 @Composable
-private fun HistoryListRoute(
+fun TripsScreen(
+    viewModel: HistoryViewModel = hiltViewModel(LocalContext.current.requireActivity()),
+) {
+    SectionHost(SectionHostId.Trips, viewModel) { nav ->
+        TripsListRoute(viewModel = viewModel, onOpenTrip = nav.openTrip)
+    }
+}
+
+/** Collects [HistoryViewModel] state and hands it to [TripsListContent]. */
+@Composable
+private fun TripsListRoute(
     viewModel: HistoryViewModel,
     onOpenTrip: (String) -> Unit,
-    onOpenFillup: (String) -> Unit,
-    onOpenDtc: (code: String, vehicleId: String) -> Unit,
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val subTab by viewModel.subTab.collectAsStateWithLifecycle()
@@ -253,8 +282,7 @@ private fun HistoryListRoute(
     val tripSort by viewModel.tripSort.collectAsStateWithLifecycle()
     val tripFilter by viewModel.tripSourceFilter.collectAsStateWithLifecycle()
     val towingOnly by viewModel.towingOnly.collectAsStateWithLifecycle()
-    val fillupSort by viewModel.fillupSort.collectAsStateWithLifecycle()
-    val fillupFilter by viewModel.fillupFilter.collectAsStateWithLifecycle()
+    val tagging by viewModel.taggingTripId.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
     // Returning to the tab re-fetches only when the page has gone stale.
@@ -286,7 +314,7 @@ private fun HistoryListRoute(
         )
     }
 
-    HistoryListContent(
+    TripsListContent(
         subTab = subTab,
         onSubTab = viewModel::selectSubTab,
         ui = ui,
@@ -309,26 +337,24 @@ private fun HistoryListRoute(
         onCancelSelection = viewModel::exitTripSelection,
         onMerge = viewModel::mergeSelectedTrips,
         onDelete = viewModel::deleteSelection,
-        fillupSort = fillupSort,
-        fillupFilter = fillupFilter,
-        onFillupSort = viewModel::setFillupSort,
-        onFillupFilter = viewModel::setFillupFilter,
         onOpenTrip = onOpenTrip,
-        onOpenFillup = onOpenFillup,
-        onOpenDtc = onOpenDtc,
+        taggingTripId = tagging,
+        onToggleTagging = viewModel::toggleTagging,
+        onTag = { id, category -> viewModel.tagTrip(id, category = category) },
+        onToggleTowing = { id -> viewModel.tagTrip(id, toggleTowing = true) },
         snackbarHostState = snackbar,
         mapContent = { com.pitstop.ui.history.heatmap.HeatmapTab() },
     )
 }
 
 /**
- * Stateless body of the History list — the four sub-tabs under one top
- * bar. Split out so screenshot tests can render it from fixtures; the Map
- * sub-tab is a slot because MapLibre needs a live Android view.
+ * Stateless body of the Trips tab — Trips | Map under one top bar. Split
+ * out so screenshot tests can render it from fixtures; the Map sub-tab is a
+ * slot because MapLibre needs a live Android view.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun HistoryListContent(
+internal fun TripsListContent(
     subTab: HistorySubTab,
     onSubTab: (HistorySubTab) -> Unit,
     ui: HistoryUiState,
@@ -351,13 +377,11 @@ internal fun HistoryListContent(
     onCancelSelection: () -> Unit,
     onMerge: () -> Unit,
     onDelete: () -> Unit,
-    fillupSort: FillupSortOrder,
-    fillupFilter: FillupFilter,
-    onFillupSort: (FillupSortOrder) -> Unit,
-    onFillupFilter: (FillupFilter) -> Unit,
     onOpenTrip: (String) -> Unit,
-    onOpenFillup: (String) -> Unit,
-    onOpenDtc: (code: String, vehicleId: String) -> Unit,
+    taggingTripId: String? = null,
+    onToggleTagging: (String) -> Unit = {},
+    onTag: (id: String, category: String) -> Unit = { _, _ -> },
+    onToggleTowing: (String) -> Unit = {},
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     mapContent: @Composable () -> Unit = {},
 ) {
@@ -405,39 +429,22 @@ internal fun HistoryListContent(
                     )
                 }
             }
-            val header: @Composable () -> Unit = {
-                ListHeaderLine(
-                    info = ui.lastRefresh,
-                    loading = when (subTab) {
-                        HistorySubTab.Trips -> ui.trips.loading
-                        HistorySubTab.Fillups -> ui.fillups.loading
-                        else -> ui.dtcs.loading
-                    },
-                    failed = when (subTab) {
-                        HistorySubTab.Trips -> ui.trips.error
-                        HistorySubTab.Fillups -> ui.fillups.error
-                        else -> ui.dtcs.error
-                    } != null,
-                    itemCount = when (subTab) {
-                        HistorySubTab.Trips -> ui.trips.data.size
-                        HistorySubTab.Fillups -> ui.fillups.data.size
-                        else -> ui.dtcs.data.size
-                    },
-                    noun = when (subTab) {
-                        HistorySubTab.Trips -> "trip"
-                        HistorySubTab.Fillups -> "fillup"
-                        else -> "code"
-                    },
-                    newCount = if (subTab == HistorySubTab.Trips) ui.lastRefresh?.newTrips ?: 0 else 0,
-                    pendingDrives = if (subTab == HistorySubTab.Trips) pendingCount else 0,
-                    syncing = uploadProgress is UploadProgress.Running,
-                    onSync = onSync,
-                )
-            }
             when (subTab) {
                 HistorySubTab.Trips -> TripsTab(
                     state = ui.trips,
-                    header = header,
+                    header = {
+                        ListHeaderLine(
+                            info = ui.lastRefresh,
+                            loading = ui.trips.loading,
+                            failed = ui.trips.error != null,
+                            itemCount = ui.trips.data.size,
+                            noun = "trip",
+                            newCount = ui.lastRefresh?.newTrips ?: 0,
+                            pendingDrives = pendingCount,
+                            syncing = uploadProgress is UploadProgress.Running,
+                            onSync = onSync,
+                        )
+                    },
                     onRefresh = onRefresh,
                     selection = selection,
                     hidden = hiddenTripIds,
@@ -450,22 +457,10 @@ internal fun HistoryListContent(
                     onOpen = onOpenTrip,
                     onToggleSelect = onToggleSelect,
                     onLongPress = onLongPress,
-                )
-                HistorySubTab.Fillups -> FillupsTab(
-                    ui = ui,
-                    header = header,
-                    onRefresh = onRefresh,
-                    sort = fillupSort,
-                    filter = fillupFilter,
-                    onSort = onFillupSort,
-                    onFilter = onFillupFilter,
-                    onOpen = onOpenFillup,
-                )
-                HistorySubTab.Dtcs -> DtcsTab(
-                    state = ui.dtcs,
-                    header = header,
-                    onRefresh = onRefresh,
-                    onOpen = onOpenDtc,
+                    taggingTripId = taggingTripId,
+                    onToggleTagging = onToggleTagging,
+                    onTag = onTag,
+                    onToggleTowing = onToggleTowing,
                 )
                 HistorySubTab.Map -> mapContent()
             }
@@ -523,7 +518,7 @@ private fun SelectionTopBar(
 }
 
 @Composable
-private fun SyncConfirmDialog(
+internal fun SyncConfirmDialog(
     prompt: SyncConfirmPrompt,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
@@ -565,7 +560,7 @@ private fun SyncConfirmDialog(
  * since the upload card only appears here while a pass runs or failed.
  */
 @Composable
-private fun ListHeaderLine(
+internal fun ListHeaderLine(
     info: RefreshInfo?,
     loading: Boolean,
     failed: Boolean,
@@ -639,6 +634,10 @@ private fun TripsTab(
     onOpen: (String) -> Unit,
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
+    taggingTripId: String? = null,
+    onToggleTagging: (String) -> Unit = {},
+    onTag: (id: String, category: String) -> Unit = { _, _ -> },
+    onToggleTowing: (String) -> Unit = {},
 ) {
     val groups = remember(state.data, sort, filter, towingOnly, hidden) {
         groupAndSortTrips(state.data, sort, filter, towingOnly, hidden)
@@ -719,7 +718,13 @@ private fun TripsTab(
                 for (row in rows) {
                     when (row) {
                         is TripRow.Single -> item(key = row.key) {
-                            TripCard(row.trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+                            TaggableTripRow(
+                                row.trip, is24h, selection, onOpen, onToggleSelect, onLongPress,
+                                tagging = taggingTripId == row.trip.id,
+                                onToggleTagging = onToggleTagging,
+                                onTag = onTag,
+                                onToggleTowing = onToggleTowing,
+                            )
                         }
                         is TripRow.ShortHops -> {
                             val open = row.key in expandedHops
@@ -734,7 +739,13 @@ private fun TripsTab(
                             }
                             if (open) {
                                 items(row.trips, key = { it.id }) { trip ->
-                                    TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+                                    TaggableTripRow(
+                                        trip, is24h, selection, onOpen, onToggleSelect, onLongPress,
+                                        tagging = taggingTripId == trip.id,
+                                        onToggleTagging = onToggleTagging,
+                                        onTag = onTag,
+                                        onToggleTowing = onToggleTowing,
+                                    )
                                 }
                             }
                         }
@@ -750,7 +761,7 @@ private fun TripsTab(
  * Rendered as LazyColumn items rather than instead of the list, so the
  * header and pull-to-refresh stay available in every state.
  */
-private fun LazyListScope.listStates(
+internal fun LazyListScope.listStates(
     loading: Boolean,
     error: String?,
     empty: Boolean,
@@ -791,7 +802,7 @@ private fun LazyListScope.listStates(
  * rather than as a truncated label.
  */
 @Composable
-private fun ListControls(
+internal fun ListControls(
     chips: LazyListScope.() -> Unit,
     sortOptions: List<String>,
     selectedSort: Int,
@@ -867,7 +878,7 @@ private fun Modifier.edgeFade(start: Boolean, end: Boolean, width: Dp = 32.dp): 
         }
 
 @Composable
-private fun GroupHeader(label: String, summary: String) {
+internal fun GroupHeader(label: String, summary: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1005,6 +1016,130 @@ private fun TripCard(
     }
 }
 
+/**
+ * A trip card that reveals quick-tag chips when swiped either way. Swipe,
+ * not long-press: long-press already enters multi-select. The swipe never
+ * dismisses — it snaps back and toggles the chip row under the card. While
+ * selecting, rows don't swipe (every gesture there means "select").
+ * TalkBack users get the same toggle as a custom action.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TaggableTripRow(
+    trip: TripDto,
+    is24h: Boolean,
+    selection: TripSelection,
+    onOpen: (String) -> Unit,
+    onToggleSelect: (String) -> Unit,
+    onLongPress: (String) -> Unit,
+    tagging: Boolean,
+    onToggleTagging: (String) -> Unit,
+    onTag: (id: String, category: String) -> Unit,
+    onToggleTowing: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (selection.mode) {
+            TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+        } else {
+            // confirmValueChange can fire more than once for one gesture on
+            // this material3 version; the time gate makes one swipe = one toggle.
+            val lastToggle = remember { longArrayOf(0L) }
+            val state = rememberSwipeToDismissBoxState(
+                confirmValueChange = { v ->
+                    if (v != SwipeToDismissBoxValue.Settled) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastToggle[0] > 500L) {
+                            lastToggle[0] = now
+                            onToggleTagging(trip.id)
+                        }
+                    }
+                    false
+                },
+                positionalThreshold = { it * 0.25f },
+            )
+            SwipeToDismissBox(
+                state = state,
+                backgroundContent = { TagSwipeBackground() },
+                modifier = Modifier.semantics {
+                    customActions = listOf(
+                        CustomAccessibilityAction(if (tagging) "Hide tags" else "Tag trip") {
+                            onToggleTagging(trip.id)
+                            true
+                        },
+                    )
+                },
+            ) {
+                TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+            }
+        }
+        if (tagging && !selection.mode) {
+            TripTagChips(trip = trip, onTag = onTag, onToggleTowing = onToggleTowing, onDone = { onToggleTagging(trip.id) })
+        }
+    }
+}
+
+@Composable
+private fun TagSwipeBackground() {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(12.dp))
+            .padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        for (i in 0..1) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.AutoMirrored.Outlined.Label,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(Modifier.size(6.dp))
+                Text("Tag", color = MaterialTheme.colorScheme.onSecondaryContainer, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** Commute / Errands / Road trip (one category) + Towing (a flag). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun TripTagChips(
+    trip: TripDto,
+    onTag: (id: String, category: String) -> Unit,
+    onToggleTowing: (String) -> Unit,
+    onDone: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+    LazyRow(
+        state = rememberPitstopListState(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        contentPadding = PaddingValues(horizontal = 4.dp),
+        modifier = Modifier.weight(1f),
+    ) {
+        items(QUICK_TRIP_CATEGORIES) { c ->
+            FilterChip(
+                selected = trip.category.equals(c, ignoreCase = true),
+                onClick = { onTag(trip.id, c) },
+                label = { Text(c) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = trip.isTowing,
+                onClick = { onToggleTowing(trip.id) },
+                label = { Text("Towing") },
+            )
+        }
+    }
+    IconButton(onClick = onDone) {
+        Icon(Icons.Filled.Close, contentDescription = "Close tags")
+    }
+    }
+}
+
 /** "31m" / "1h 30m" / "45s". */
 private fun fmtTripDuration(s: Int): String = when {
     s >= 3600 -> "${s / 3600}h ${(s % 3600) / 60}m"
@@ -1054,86 +1189,10 @@ internal fun TagChip(text: String, fg: Color, bg: Color) {
     )
 }
 
-// ── Fillups ─────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
-@Composable
-private fun FillupsTab(
-    ui: HistoryUiState,
-    header: @Composable () -> Unit,
-    onRefresh: () -> Unit,
-    sort: FillupSortOrder,
-    filter: FillupFilter,
-    onSort: (FillupSortOrder) -> Unit,
-    onFilter: (FillupFilter) -> Unit,
-    onOpen: (String) -> Unit,
-) {
-    val state = ui.fillups
-    val groups = remember(state.data, sort, filter) { groupAndSortFillups(state.data, sort, filter) }
-    val is24h = is24HourClock()
-    PullToRefreshBox(
-        isRefreshing = state.loading && state.data.isNotEmpty(),
-        onRefresh = onRefresh,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        LazyColumn(
-            state = rememberPitstopListState(),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item(key = "stats") {
-                FillupStatsHeader(
-                    fillups = state.data,
-                    costPerMile = ui.costPerMile,
-                    monthlySpend = ui.monthlySpend,
-                )
-            }
-            item(key = "controls") {
-                ListControls(
-                    chips = {
-                        for (f in FillupFilter.entries) {
-                            item(key = f.name) {
-                                FilterChip(
-                                    selected = f == filter,
-                                    onClick = { onFilter(f) },
-                                    label = { Text(f.name) },
-                                )
-                            }
-                        }
-                    },
-                    sortOptions = FillupSortOrder.entries.map { it.label },
-                    selectedSort = sort.ordinal,
-                    onSort = { onSort(FillupSortOrder.entries[it]) },
-                )
-            }
-            item(key = "header") { header() }
-            listStates(
-                loading = state.loading,
-                error = state.error,
-                empty = state.data.isEmpty(),
-                filteredEmpty = groups.isEmpty(),
-                what = "fillups",
-                emptyIcon = Icons.Outlined.LocalGasStation,
-                emptyTitle = "No fillups yet",
-                emptyBody = "Log one from the Fuel tab at the pump.",
-                onRetry = onRefresh,
-            )
-            for ((key, items) in groups) {
-                stickyHeader(key = "fillup-header-${key.name}") {
-                    GroupHeader(
-                        label = key.label,
-                        summary = "${items.size} fillup${if (items.size == 1) "" else "s"}",
-                    )
-                }
-                items(items, key = { it.id }) { f -> FillupCard(f, is24h, onOpen) }
-            }
-        }
-    }
-}
+// ── Fillups (rendered by the Fuel hub) ─────────────────────────────
 
 @Composable
-private fun FillupCard(f: FillupDto, is24h: Boolean, onOpen: (String) -> Unit) {
+internal fun FillupCard(f: FillupDto, is24h: Boolean, onOpen: (String) -> Unit) {
     val system = LocalUnitSystem.current
     Card(
         onClick = { onOpen(f.id) },
@@ -1173,89 +1232,6 @@ private fun FillupCard(f: FillupDto, is24h: Boolean, onOpen: (String) -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-        }
-    }
-}
-
-// ── DTCs ────────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DtcsTab(
-    state: HistoryListState<DtcDto>,
-    header: @Composable () -> Unit,
-    onRefresh: () -> Unit,
-    onOpen: (code: String, vehicleId: String) -> Unit,
-) {
-    val is24h = is24HourClock()
-    PullToRefreshBox(
-        isRefreshing = state.loading && state.data.isNotEmpty(),
-        onRefresh = onRefresh,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        LazyColumn(
-            state = rememberPitstopListState(),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item(key = "header") { header() }
-            listStates(
-                loading = state.loading,
-                error = state.error,
-                empty = state.data.isEmpty(),
-                filteredEmpty = false,
-                what = "trouble codes",
-                emptyIcon = Icons.Outlined.CheckCircle,
-                emptyTitle = "No trouble codes",
-                emptyBody = "Nothing logged in the last year — clean bill of health.",
-                onRetry = onRefresh,
-            )
-            items(state.data, key = { it.id }) { dtc ->
-                Card(
-                    onClick = { onOpen(dtc.code, dtc.vehicleId) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = dtc.code,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (dtc.clearedAt == null) {
-                                TagChip(
-                                    "ACTIVE",
-                                    MaterialTheme.colorScheme.onErrorContainer,
-                                    MaterialTheme.colorScheme.errorContainer,
-                                )
-                                Spacer(Modifier.size(8.dp))
-                            }
-                            Text(
-                                text = DateLabel.list(dtc.seenAt, withTime = true, grouped = false, is24h = is24h),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        dtc.description?.takeIf { it.isNotBlank() }?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
             }
         }
     }

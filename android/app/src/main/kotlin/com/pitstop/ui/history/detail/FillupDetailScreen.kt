@@ -61,6 +61,7 @@ import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.LoadErrorState
 import com.pitstop.ui.components.OverflowAction
 import com.pitstop.ui.theme.LocalUnitSystem
+import com.pitstop.ui.theme.ext
 import com.pitstop.util.DateLabel
 import com.pitstop.util.UnitFormat
 import java.time.OffsetDateTime
@@ -150,6 +151,9 @@ internal fun FillupDetailContent(
     val costPerMile = remember(fillup, context) {
         computeCostPerMile(fillup, context)
     }
+    // Deltas vs this vehicle's recent average — the only coloured numbers
+    // on the card (the hero itself is a neutral surface).
+    val deltas = remember(fillup, context) { fillupDeltas(fillup, context) }
 
     Column(
         modifier = modifier
@@ -159,10 +163,12 @@ internal fun FillupDetailContent(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // Hero: one big total, then the four per-fill figures on one row.
+        // A normal surface, not a tinted one: colour is reserved for the
+        // two comparisons (economy and price vs your average).
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                containerColor = MaterialTheme.colorScheme.surface,
             ),
         ) {
             Column(
@@ -175,12 +181,12 @@ internal fun FillupDetailContent(
                     Text(
                         "Total",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
                         UnitFormat.money(total),
                         style = MaterialTheme.typography.displayMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -192,11 +198,18 @@ internal fun FillupDetailContent(
                     HeroCell(
                         label = "Price${UnitFormat.perVolumeUnit(system)}",
                         value = UnitFormat.money(UnitFormat.pricePerVolumeValue(ppg, system), 3),
+                        // Paying more than usual is the bad direction.
+                        delta = deltas.pricePct?.let { DeltaText(it, good = it < 0) },
                         modifier = Modifier.weight(1f),
                     )
                     HeroCell(
                         label = if (system == "imperial") "MPG" else "L/100km",
                         value = UnitFormat.economyNumber(mpg, system),
+                        // Arrow follows the DISPLAYED number (L/100 km falls when
+                        // economy improves); colour follows better / worse.
+                        delta = deltas.mpgPct?.let { d ->
+                            DeltaText(if (UnitFormat.economyHigherIsBetter(system)) d else -d, good = d > 0)
+                        },
                         modifier = Modifier.weight(1f),
                     )
                     HeroCell(
@@ -380,22 +393,49 @@ private fun computeCostPerMile(
     return if (miles > 0) total / miles else null
 }
 
+/** A signed change for a hero cell: [pct] drives the arrow, [good] the colour. */
+private data class DeltaText(val pct: Double, val good: Boolean)
+
+/** Percent deltas vs the average of the OTHER fills in [context]. */
+internal data class FillupDeltas(val mpgPct: Double?, val pricePct: Double?)
+
+internal fun fillupDeltas(fillup: FillupDto, context: List<FillupDto>): FillupDeltas {
+    val others = context.filter { it.id != fillup.id }
+    val mpg = fillup.mpg ?: fillup.mpgReported
+    val avgMpg = others.filter { it.isFull && !it.isMissed }.mapNotNull { it.mpg }.filter { it > 0 }
+        .takeIf { it.isNotEmpty() }?.average()
+    val ppg = fillup.pricePerUnit
+    val avgPpg = others.mapNotNull { it.pricePerUnit }.filter { it > 0 }.takeIf { it.isNotEmpty() }?.average()
+    return FillupDeltas(
+        mpgPct = if (mpg != null && avgMpg != null) (mpg - avgMpg) / avgMpg * 100.0 else null,
+        pricePct = if (ppg != null && avgPpg != null) (ppg - avgPpg) / avgPpg * 100.0 else null,
+    )
+}
+
 @Composable
-private fun HeroCell(label: String, value: String, modifier: Modifier = Modifier) {
+private fun HeroCell(label: String, value: String, modifier: Modifier = Modifier, delta: DeltaText? = null) {
     Column(modifier = modifier.semantics(mergeDescendants = true) {}) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(2.dp))
         Text(
             value,
             style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            color = MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
         )
+        if (delta != null && kotlin.math.abs(delta.pct) >= 0.5) {
+            Text(
+                "${if (delta.pct > 0) "▲" else "▼"} ${"%.0f".format(kotlin.math.abs(delta.pct))}% vs avg",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (delta.good) MaterialTheme.ext.good else MaterialTheme.ext.bad,
+                maxLines = 1,
+            )
+        }
     }
 }
 

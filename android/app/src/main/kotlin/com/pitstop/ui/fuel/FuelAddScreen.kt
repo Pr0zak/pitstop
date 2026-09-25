@@ -416,7 +416,7 @@ internal fun FuelAddContent(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DateTimeRow(value: LocalDateTime?, onChange: (LocalDateTime?) -> Unit) {
+internal fun DateTimeRow(value: LocalDateTime?, onChange: (LocalDateTime?) -> Unit) {
     var pickDate by remember { mutableStateOf(false) }
     var pickTime by remember { mutableStateOf(false) }
     val effective = value ?: LocalDateTime.now()
@@ -613,7 +613,7 @@ private fun VehiclePickerRow(
  * E85, ...).
  */
 @Composable
-private fun FuelTypeDropdown(
+internal fun FuelTypeDropdown(
     selected: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
@@ -645,7 +645,7 @@ private fun FuelTypeDropdown(
 }
 
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -662,7 +662,7 @@ private fun ToggleRow(
 }
 
 @Composable
-private fun StationLocationRow(coords: String, onRefresh: () -> Unit) {
+internal fun StationLocationRow(coords: String, onRefresh: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -693,7 +693,7 @@ private fun StationLocationRow(coords: String, onRefresh: () -> Unit) {
  * reference's flat dark inputs.
  */
 @Composable
-private fun darkTextFieldColors() = TextFieldDefaults.colors(
+internal fun darkTextFieldColors() = TextFieldDefaults.colors(
     focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
     unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
     disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,

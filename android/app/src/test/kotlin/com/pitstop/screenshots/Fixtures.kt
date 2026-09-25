@@ -98,7 +98,44 @@ object Fixtures {
         ),
         hasServer = true,
         hasVehicle = true,
+        range = com.pitstop.domain.RangeEstimate(
+            fuel = com.pitstop.domain.FuelSnapshot(
+                pct = 62.0, usGallons = 12.2, tankUsGallons = 19.5, readingAtMs = NOW - 4 * 60_000L, isEstimate = true,
+            ),
+            basis = com.pitstop.domain.RangeBasis(20.4, com.pitstop.domain.RangeBasisSource.RecentTrips),
+            rangeMi = 12.2 * 20.4,
+        ),
+        lastDrive = com.pitstop.ui.status.LastDrive(
+            trip = TripDto(
+                id = "t2", vehicleId = "v1",
+                startedAt = Instant.ofEpochMilli(NOW - 158 * 60_000L).toString(),
+                endedAt = Instant.ofEpochMilli(NOW - 127 * 60_000L).toString(),
+                durationS = 1860, distanceKm = 27.4, maxSpeedKph = 113.0, fuelUsedL = 2.6,
+            ),
+            baseline = TripBaselineDto(
+                bucketLabel = "10–30 mi", sampleSize = 42, sufficient = true,
+                avgDurationS = 1590.0, avgMpg = 21.2,
+            ),
+            route = sketchRoute(),
+        ),
+        parked = com.pitstop.domain.ParkedSpot("t2", 40.0, -83.0, NOW - 127 * 60_000L),
+        reminders = listOf(
+            com.pitstop.domain.ReminderItem(
+                expenseId = "r1", title = "Oil change", category = "Service", currentOdo = 76_700.0,
+                remindOdo = 76_820.0, remindDate = null, distanceRemaining = 120.0, daysRemaining = 20, overdue = false,
+            ),
+        ),
     )
+
+    /** Home with nothing needing attention: no codes, no service due. */
+    val homeQuiet: StatusUiState get() = home.copy(activeDtcs = emptyList(), reminders = emptyList())
+
+    /** A made-up loop, not a real route. */
+    private fun sketchRoute(): List<Pair<Double, Double>> =
+        (0..60).map { i ->
+            val a = i / 60.0 * PI * 1.6
+            (40.0 + 0.02 * sin(a) + 0.004 * sin(a * 5)) to (-83.0 + 0.03 * kotlin.math.cos(a * 0.8))
+        }
 
     private fun trip(id: String, start: String, durS: Int, km: Double, maxKph: Double) = TripDto(
         id = id, vehicleId = "v1", startedAt = start, durationS = durS,
@@ -168,6 +205,16 @@ object Fixtures {
             description = "System too lean (bank 1)"),
     )
 
+    /** Codes list: an active known code, an active unknown one, a cleared one. */
+    val carDtcs = listOf(
+        DtcDto(id = "d1", vehicleId = "v1", code = "P0420", seenAt = iso(2, 18, 3),
+            description = "Catalyst system efficiency below threshold (bank 1)"),
+        DtcDto(id = "d3", vehicleId = "v1", code = "P1456", seenAt = iso(4, 9, 12),
+            description = "EVAP control system leak (fuel tank)"),
+        DtcDto(id = "d2", vehicleId = "v1", code = "P0171", seenAt = iso(40, 7, 51), clearedAt = iso(38, 9, 0),
+            description = "System too lean (bank 1)"),
+    )
+
     val historyUi = HistoryUiState(
         trips = HistoryListState(data = trips),
         fillups = HistoryListState(data = fillups),
@@ -175,6 +222,64 @@ object Fixtures {
         costPerMile = home.costPerMile.orEmpty(),
         monthlySpend = home.monthlySpend.orEmpty(),
         lastRefresh = RefreshInfo(atMs = NOW - 90_000, newTrips = 2),
+        range = home.range,
+    )
+
+    // ── Service ────────────────────────────────────────────────────
+    private val serviceVehicle = VehicleDto(id = "v1", slug = "demo", name = "Demo SUV", distUnit = 1, latestOdoKm = 123_450.0)
+
+    private fun expense(id: String, title: String, date: String, odo: Double?, cost: String, cat: Int?, notes: String? = null) =
+        com.pitstop.http.ExpenseDto(
+            id = id, vehicleId = "v1", expenseDate = date, odo = odo, costTypeId = cat, title = title, notes = notes,
+            cost = kotlinx.serialization.json.JsonPrimitive(cost),
+        )
+
+    val serviceWithReminders = com.pitstop.ui.vehicle.ServiceUi(
+        loading = false,
+        vehicle = serviceVehicle,
+        reminders = listOf(
+            com.pitstop.domain.ReminderItem("r0", "Tire rotation", "Tires", 76_700.0, 76_500.0, null, -200.0, null, overdue = true),
+            com.pitstop.domain.ReminderItem("r1", "Oil change", "Service", 76_700.0, 76_820.0, "2026-10-15", 120.0, 20, overdue = false),
+        ),
+        progress = mapOf("r0" to 1.0, "r1" to 0.97),
+        scheduled = listOf(
+            com.pitstop.http.ExpenseDto(
+                id = "s1", vehicleId = "v1", expenseDate = "2026-09-01", odo = 76_500.0, title = "Engine air filter",
+                remindOdo = 106_500.0, repeatOdo = 30_000.0, cost = kotlinx.serialization.json.JsonPrimitive("0"),
+            ),
+        ),
+        history = listOf(
+            expense("h1", "Oil change + filter", "2026-04-11", 71_820.0, "68.40", 1),
+            expense("h2", "Front brake pads", "2025-12-02", 68_110.0, "312.00", 3),
+            expense("h3", "Tire rotation", "2025-09-20", 66_050.0, "0.00", null, notes = com.pitstop.domain.Maintenance.PRESET_NOTE),
+        ),
+        categories = mapOf(1 to "Service", 3 to "Repairs", 5 to "Tires"),
+        currentOdo = 76_710.0,
+        distInMiles = true,
+        confirmingDoneId = "r0",
+    )
+
+    val serviceEmpty = com.pitstop.ui.vehicle.ServiceUi(
+        loading = false,
+        vehicle = serviceVehicle,
+        history = listOf(expense("h9", "Oil change and diff fluid", "2020-01-23", 11_719.0, "241.50", 1)),
+        categories = mapOf(1 to "Service"),
+        stale = com.pitstop.domain.StaleService(behind = 64_991.0, lastDate = "2020-01-23"),
+        currentOdo = 76_710.0,
+        distInMiles = true,
+        pendingPreset = com.pitstop.domain.Maintenance.PRESETS.first(),
+    )
+
+    // ── Top bar ────────────────────────────────────────────────────
+    val appBar = com.pitstop.ui.components.AppBarState(
+        vehicleName = "Demo SUV",
+        vehicles = listOf(
+            com.pitstop.ui.components.AppBarVehicle("demo", "Demo SUV"),
+            com.pitstop.ui.components.AppBarVehicle("truck", "Work truck"),
+        ),
+        selectedSlug = "demo",
+        loggingLabel = "Running",
+        loggingTone = PillTone.Healthy,
     )
 
     // ── Trip detail ────────────────────────────────────────────────
@@ -234,6 +339,12 @@ object Fixtures {
         volume = "13.84", pricePerVolume = "3.279", totalPrice = "45.38",
         gps = com.pitstop.ui.fuel.GpsFix(lat = 40.0, lon = -83.0, accuracyMeters = 8f),
         nearestPriorStation = "Main St Fuel", stationSuggestions = listOf("Main St Fuel", "Corner Gas", "Hilltop Station"),
+    )
+    /** Quick sheet: total + price typed, volume derived, a price hint nearby. */
+    val quickForm = fuelForm.copy(
+        totalPrice = "46.74", pricePerVolume = "3.299", volume = "14.168",
+        stationName = "Main St Fuel",
+        stationPriceHint = com.pitstop.ui.fuel.StationPriceHint(perGal = 3.349, dateIso = iso(9, 12, 5)),
     )
     val fuelFormErrors = fuelForm.copy(odometer = "76100", volume = "", totalPrice = "", showAllErrors = true)
 

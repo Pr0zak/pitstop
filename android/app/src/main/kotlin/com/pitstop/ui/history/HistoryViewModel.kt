@@ -73,6 +73,10 @@ data class HistoryUiState(
     val monthlySpend: List<MonthlySpendPointDto> = emptyList(),
     /** Null until the first pass completes. */
     val lastRefresh: RefreshInfo? = null,
+    /** The vehicle these lists belong to (units, tank size, name). */
+    val vehicle: com.pitstop.http.VehicleDto? = null,
+    /** Range to empty for the Fuel hub header; null until computed. */
+    val range: com.pitstop.domain.RangeEstimate? = null,
 )
 
 /** Sort orders for the Trips list (TRIPS-1). [param] is the server's
@@ -97,20 +101,47 @@ enum class TripSourceFilter(val label: String, val param: String?) {
     Other("Other", "other"),
 }
 
-/** History's four sub-tabs. Hoisted here (not `remember`ed in the screen)
- *  so Home and notification deep links can pick one before the tab shows. */
+/** The Trips tab's two sub-tabs. Hoisted here (not `remember`ed in the
+ *  screen) so Home and notification deep links can pick one before the tab
+ *  shows. Fillups moved to the Fuel tab and trouble codes to Car → Codes. */
 enum class HistorySubTab(val label: String) {
     Trips("Trips"),
-    Fillups("Fillups"),
-    Dtcs("DTCs"),
     Map("Map"),
 }
 
-/** A detail route History's NavHost should push once it is on screen. */
-sealed interface HistoryDeepLink {
-    data class Dtc(val code: String, val vehicleId: String) : HistoryDeepLink
-    data class Trip(val id: String) : HistoryDeepLink
+/** The Car tab's sub-sections. */
+enum class CarSection(val label: String) {
+    Live("Live"),
+    Codes("Codes"),
+    Service("Service"),
 }
+
+/** Which tab's NavHost a deep link is meant for. Every section host
+ *  registers the same detail routes, so the target only decides where the
+ *  detail is pushed (and what Back returns to). */
+enum class SectionHostId { Trips, Fuel, Car }
+
+/** A detail route a section NavHost should push once it is on screen. */
+sealed interface HistoryDeepLink {
+    val host: SectionHostId
+
+    data class Dtc(val code: String, val vehicleId: String) : HistoryDeepLink {
+        override val host get() = SectionHostId.Car
+    }
+
+    /** [edit] opens the trip with its tag / details sheet already up. */
+    data class Trip(val id: String, val edit: Boolean = false) : HistoryDeepLink {
+        override val host get() = SectionHostId.Trips
+    }
+
+    data class Fillup(val id: String) : HistoryDeepLink {
+        override val host get() = SectionHostId.Fuel
+    }
+}
+
+/** Quick trip-tag categories (stored in `trips.category`); Towing is the
+ *  separate `is_towing` flag. "Errands" matches the trip editor's chip. */
+val QUICK_TRIP_CATEGORIES = listOf("Commute", "Errands", "Road trip")
 
 /** Trips hidden from the list while their delete sits in the Undo window. */
 data class PendingTripDelete(val ids: Set<String>)
@@ -175,6 +206,10 @@ class HistoryViewModel @Inject constructor(
     private val uploadProgressBus: UploadProgressBus,
     private val networkFreshness: NetworkFreshness,
     private val networkMonitor: NetworkMonitor,
+    private val activeVehicle: com.pitstop.data.ActiveVehicle,
+    private val directory: com.pitstop.data.VehicleDirectory,
+    private val rangeRepository: com.pitstop.data.RangeRepository,
+    private val alerts: com.pitstop.notif.VehicleAlerts,
 ) : ViewModel() {
 
     private val _syncConfirm = MutableStateFlow<SyncConfirmPrompt?>(null)
@@ -218,16 +253,75 @@ class HistoryViewModel @Inject constructor(
     /** Consumed by HistoryScreen's NavHost, then cleared via [consumeLink]. */
     val pendingLink: StateFlow<HistoryDeepLink?> = _pendingLink.asStateFlow()
 
-    /** Home's active-DTC row: land on DTCs with that code's detail pushed. */
+    private val _carSection = MutableStateFlow(CarSection.Live)
+    val carSection: StateFlow<CarSection> = _carSection.asStateFlow()
+    fun selectCarSection(s: CarSection) { _carSection.value = s }
+
+    /** Home's attention strip / a notification: Car → Codes with that code's detail pushed. */
     fun openDtc(code: String, vehicleId: String) {
-        _subTab.value = HistorySubTab.Dtcs
+        _carSection.value = CarSection.Codes
         _pendingLink.value = HistoryDeepLink.Dtc(code, vehicleId)
     }
 
-    /** Home's recent-trip row: land on Trips with that trip's detail pushed. */
-    fun openTrip(id: String) {
+    /** Home's trip rows / the drive-summary notification: Trips with that trip pushed. */
+    fun openTrip(id: String, edit: Boolean = false) {
         _subTab.value = HistorySubTab.Trips
-        _pendingLink.value = HistoryDeepLink.Trip(id)
+        _pendingLink.value = HistoryDeepLink.Trip(id, edit)
+    }
+
+    fun openFillup(id: String) {
+        _pendingLink.value = HistoryDeepLink.Fillup(id)
+    }
+
+    /** Trip whose quick-tag chips are showing (swipe on a Trips row). */
+    private val _taggingTripId = MutableStateFlow<String?>(null)
+    val taggingTripId: StateFlow<String?> = _taggingTripId.asStateFlow()
+    fun toggleTagging(id: String) {
+        _taggingTripId.value = if (_taggingTripId.value == id) null else id
+    }
+
+    /**
+     * Quick tag from the Trips list — a category chip (tap the current one to
+     * clear it) or the Towing flag. Optimistic: the row changes at once and
+     * rolls back with a snackbar if the PATCH fails. Same endpoint and body
+     * shape as the trip detail's Edit sheet (raw object so a clear is sent
+     * as an explicit JSON null). Runs on this Activity-scoped ViewModel, so
+     * a tab switch can't cancel it half-way.
+     */
+    fun tagTrip(id: String, category: String? = null, toggleTowing: Boolean = false) {
+        val before = _ui.value.trips.data.firstOrNull { it.id == id } ?: return
+        val body = kotlinx.serialization.json.buildJsonObject {
+            if (toggleTowing) {
+                put("is_towing", kotlinx.serialization.json.JsonPrimitive(!before.isTowing))
+            } else {
+                val next = if (before.category.equals(category, ignoreCase = true)) null else category
+                put("category", kotlinx.serialization.json.JsonPrimitive(next))
+            }
+        }
+        val after = if (toggleTowing) {
+            before.copy(isTowing = !before.isTowing)
+        } else {
+            before.copy(category = if (before.category.equals(category, ignoreCase = true)) null else category)
+        }
+        replaceTrip(after)
+        viewModelScope.launch {
+            runCatching { api.patchTrip(id, body) }
+                .onSuccess { logBuffer.info("trips: quick tag saved", mapOf("trip_id" to id)) }
+                .onFailure { e ->
+                    replaceTrip(before)
+                    _messages.tryEmit("Couldn't tag that trip — check the connection")
+                    logBuffer.warn(
+                        "trips: quick tag failed",
+                        mapOf("trip_id" to id, "err" to (e.message ?: e::class.java.simpleName)),
+                    )
+                }
+        }
+    }
+
+    private fun replaceTrip(t: TripDto) {
+        _ui.update { st ->
+            st.copy(trips = st.trips.copy(data = st.trips.data.map { if (it.id == t.id) t else it }))
+        }
     }
 
     fun consumeLink() { _pendingLink.value = null }
@@ -312,8 +406,30 @@ class HistoryViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     init {
-        refresh()
+        observeVehicle()
         observeUploads()
+    }
+
+    /**
+     * The first emission is the initial load; a later one is the top-bar
+     * vehicle switch — clear the lists (they belong to the other vehicle)
+     * and fetch fresh.
+     */
+    private fun observeVehicle() {
+        viewModelScope.launch {
+            var last: String? = null
+            activeVehicle.slug.collect { slug ->
+                val switched = last != null && last != slug
+                last = slug
+                if (switched) {
+                    resolvedVehicleId = null
+                    _taggingTripId.value = null
+                    _tripSelection.value = TripSelection()
+                    _ui.value = HistoryUiState()
+                }
+                refresh(forceNetwork = switched)
+            }
+        }
     }
 
     /**
@@ -598,7 +714,7 @@ class HistoryViewModel @Inject constructor(
                 )
             }
             val secrets = settings.current()
-            val slug = secrets.settings.vehicleSlug.trim()
+            val slug = activeVehicle.current()
             val apiBaseUrl = secrets.settings.apiBaseUrl.trim()
             if (slug.isEmpty() || apiBaseUrl.isEmpty()) {
                 _ui.update {
@@ -612,7 +728,7 @@ class HistoryViewModel @Inject constructor(
                 return@launch
             }
             // Resolve slug → vehicle UUID once.
-            val vehicles = runCatching { api.getVehicles(cacheControl) }.getOrElse { exc ->
+            val vehicles = runCatching { directory.refresh(cacheControl) }.getOrElse { exc ->
                 logBuffer.warn(
                     "history: vehicles fetch failed",
                     mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
@@ -667,6 +783,7 @@ class HistoryViewModel @Inject constructor(
             val (tripsResult, fillupsResult, dtcsResult, cpmResult, spendResult) = awaitAll(
                 tripsDeferred, fillupsDeferred, dtcsDeferred, cpmDeferred, spendDeferred,
             )
+            val vehicle = vehicles.firstOrNull { it.id == vehicleId }
 
             _ui.update { current ->
                 @Suppress("UNCHECKED_CAST")
@@ -686,6 +803,7 @@ class HistoryViewModel @Inject constructor(
                 // only "Couldn't load" behind.
                 val known = current.trips.data.mapTo(HashSet()) { it.id }
                 current.copy(
+                    vehicle = vehicle ?: current.vehicle,
                     costPerMile = cpm.getOrNull()?.points ?: current.costPerMile,
                     monthlySpend = spend.getOrNull()?.months ?: current.monthlySpend,
                     trips = HistoryListState(
@@ -713,6 +831,23 @@ class HistoryViewModel @Inject constructor(
                         fromCache = networkFreshness.snapshot() != freshnessBefore,
                     ),
                 )
+            }
+            if (vehicle != null) {
+                // New-code notifications ride on data this pass already has.
+                @Suppress("UNCHECKED_CAST")
+                (dtcsResult as Result<List<DtcDto>>).getOrNull()?.let { all ->
+                    runCatching { alerts.onActiveDtcs(vehicle, all.filter { it.clearedAt == null }) }
+                }
+                // Range for the Fuel hub header: cached basis unless stale.
+                val basis = runCatching { rangeRepository.ensureBasis(vehicle) }.getOrNull()
+                _ui.update {
+                    it.copy(
+                        range = com.pitstop.domain.RangeMath.estimate(
+                            com.pitstop.domain.RangeMath.fuelSnapshot(vehicle),
+                            basis,
+                        ),
+                    )
+                }
             }
         }
     }

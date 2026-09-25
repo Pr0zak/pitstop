@@ -24,11 +24,11 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.Instant
-import java.time.OffsetDateTime
 
 /**
  * Small (2×2) home-screen widget that draws a circular fuel-level gauge
@@ -59,7 +59,12 @@ class FuelWidgetProvider : AppWidgetProvider() {
         fun api(): PitstopApi
         fun settings(): SettingsRepository
         fun logBuffer(): LogBuffer
+        fun appPrefs(): com.pitstop.data.AppPrefs
+        fun rangeRepository(): com.pitstop.data.RangeRepository
     }
+
+    /** One render's worth of data. */
+    private data class WidgetData(val pct: Double?, val sub: String, val range: String? = null)
 
     override fun onUpdate(
         context: Context,
@@ -72,7 +77,7 @@ class FuelWidgetProvider : AppWidgetProvider() {
         ids.forEach { id ->
             manager.updateAppWidget(
                 id,
-                buildRemoteViews(context, manager, id, pct = null, sub = "loading…"),
+                buildRemoteViews(context, manager, id, WidgetData(pct = null, sub = "loading…")),
             )
         }
 
@@ -87,20 +92,20 @@ class FuelWidgetProvider : AppWidgetProvider() {
         // the whole onUpdate handler. We just leave the widget showing
         // whatever it had last.
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
-            val (pct, sub) = runCatching { fetchFuel(entry) }.getOrElse { exc ->
+            val data = runCatching { fetchFuel(entry) }.getOrElse { exc ->
                 entry.logBuffer().warn(
                     "fuel widget fetch threw",
                     mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
                 )
-                null to (exc.message?.take(24) ?: "err")
+                WidgetData(null, exc.message?.take(24) ?: "err")
             }
             entry.logBuffer().info(
                 "fuel widget fetch result",
-                mapOf("pct" to (pct ?: -1.0), "sub" to sub),
+                mapOf("pct" to (data.pct ?: -1.0), "sub" to data.sub, "range" to (data.range ?: "")),
             )
             withContext(Dispatchers.Main) {
                 ids.forEach { id ->
-                    manager.updateAppWidget(id, buildRemoteViews(context, manager, id, pct, sub))
+                    manager.updateAppWidget(id, buildRemoteViews(context, manager, id, data))
                 }
             }
         }
@@ -120,44 +125,35 @@ class FuelWidgetProvider : AppWidgetProvider() {
         onUpdate(context, manager, intArrayOf(appWidgetId))
     }
 
-    /** Resolve the active vehicle, pull its latest fuel reading, format
-     *  a percent + "X.X gal · Yh ago" subtitle. Returns Pair(pct, sub).
-     *  Either half may be null when the data is incomplete. */
-    private suspend fun fetchFuel(entry: WidgetEntryPoint): Pair<Double?, String> {
+    /** Resolve the vehicle the app is showing, pull its fuel state, and
+     *  add the range line from the cached mpg basis (RangeRepository only
+     *  refetches trips when its cache is over 6 h old). */
+    private suspend fun fetchFuel(entry: WidgetEntryPoint): WidgetData {
         val secrets = entry.settings().current()
         if (secrets.queryToken.isBlank() || secrets.settings.apiBaseUrl.isBlank()) {
-            return null to "not configured"
+            return WidgetData(null, "not configured")
         }
-        val slug = secrets.settings.vehicleSlug.trim()
-        if (slug.isEmpty()) return null to "set slug in app"
+        val slug = com.pitstop.data.effectiveVehicleSlug(
+            entry.appPrefs().viewVehicleSlug.first(),
+            secrets.settings.vehicleSlug,
+        )
+        if (slug.isEmpty()) return WidgetData(null, "set slug in app")
         val vehicles = entry.api().getVehicles()
         val vehicle = vehicles.firstOrNull { it.slug == slug }
-            ?: return null to "no vehicle"
-        // Prefer the persisted hybrid estimator (backend ADR-019); fall
-        // back to legacy smoothed-sensor display when the estimator
-        // hasn't been seeded yet.
-        val estimateL = vehicle.fuelLevelEstimateL
-        val tankL = vehicle.tankCapacityL?.takeIf { it > 0 }
-        val tankGal = vehicle.tank1Capacity?.takeIf { it > 0 }
-        val pct: Double?
-        val gallons: Double?
-        val age: String?
-        if (estimateL != null && tankL != null) {
-            pct = (estimateL / tankL * 100.0).coerceIn(0.0, 100.0)
-            val isUserUnitGallons = tankGal != null && tankL > tankGal * 1.5
-            gallons = if (isUserUnitGallons) estimateL * 0.264172 else estimateL
-            age = vehicle.fuelLevelEstimateUpdatedAt?.let { formatAge(it) }
-        } else {
-            val fuelEntry = vehicle.latest["fuel_level"]
-            pct = fuelEntry?.valueNum
-            gallons = tankGal?.takeIf { pct != null }?.let { it * pct!! / 100.0 }
-            age = fuelEntry?.time?.let { formatAge(it) }
-        }
+            ?: return WidgetData(null, "no vehicle")
+        // Same fuel rules as Home (estimator first, sensor fallback) — the
+        // shared RangeMath, so the widget and the app agree.
+        val fuel = com.pitstop.domain.RangeMath.fuelSnapshot(vehicle)
+        val basis = runCatching { entry.rangeRepository().ensureBasis(vehicle) }.getOrNull()
+        val est = com.pitstop.domain.RangeMath.estimate(fuel, basis)
+        val system = secrets.settings.unitSystem
+        val age = fuel.readingAtMs?.let { formatAgeMs(it) }
         val sub = listOfNotNull(
-            gallons?.let { "%.1f gal".format(it) },
+            fuel.usGallons?.let { com.pitstop.util.UnitFormat.volumeGal(it, system, 1) },
             age,
         ).joinToString(" · ").ifEmpty { "—" }
-        return pct to sub
+        val range = est.rangeMi?.let { com.pitstop.ui.components.RangeFormat.range(it, system) }
+        return WidgetData(fuel.pct, sub, range)
     }
 
     /** Build the RemoteViews bundle: gauge bitmap, conditional subtitle,
@@ -173,20 +169,26 @@ class FuelWidgetProvider : AppWidgetProvider() {
         context: Context,
         manager: AppWidgetManager,
         widgetId: Int,
-        pct: Double?,
-        sub: String,
+        data: WidgetData,
     ): RemoteViews {
         val options = manager.getAppWidgetOptions(widgetId)
         val minHeightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
         // 100 dp threshold: 1×1 ~70dp / 1×2 ~110dp / 2×2 ~150dp.
         val showSubtitle = minHeightDp >= 100
         return RemoteViews(context.packageName, R.layout.fuel_widget).apply {
-            setImageViewBitmap(R.id.widget_gauge, renderGauge(pct))
+            setImageViewBitmap(R.id.widget_gauge, renderGauge(data.pct))
             if (showSubtitle) {
                 setViewVisibility(R.id.widget_subtitle, android.view.View.VISIBLE)
-                setTextViewText(R.id.widget_subtitle, sub)
+                setTextViewText(R.id.widget_subtitle, data.sub)
+                if (data.range != null) {
+                    setViewVisibility(R.id.widget_range, android.view.View.VISIBLE)
+                    setTextViewText(R.id.widget_range, data.range)
+                } else {
+                    setViewVisibility(R.id.widget_range, android.view.View.GONE)
+                }
             } else {
                 setViewVisibility(R.id.widget_subtitle, android.view.View.GONE)
+                setViewVisibility(R.id.widget_range, android.view.View.GONE)
             }
             setOnClickPendingIntent(R.id.widget_root, openAppPendingIntent(context))
         }
@@ -297,9 +299,8 @@ private fun renderGauge(pct: Double?): Bitmap {
     return bitmap
 }
 
-private fun formatAge(isoTime: String): String? = runCatching {
-    val readingInstant = OffsetDateTime.parse(isoTime).toInstant()
-    val ageSec = Duration.between(readingInstant, Instant.now()).seconds
+private fun formatAgeMs(ms: Long): String? = runCatching {
+    val ageSec = Duration.between(Instant.ofEpochMilli(ms), Instant.now()).seconds
     when {
         ageSec < 0 -> "live"
         ageSec < 90 -> "live"

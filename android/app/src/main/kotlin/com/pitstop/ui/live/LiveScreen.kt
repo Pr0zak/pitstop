@@ -67,7 +67,9 @@ private data class TileSpec(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveScreen(
-    onOpenHome: () -> Unit = {},
+    onOpenBridgeStatus: () -> Unit = {},
+    /** False when hosted under Car's own top bar + section tabs. */
+    showTopBar: Boolean = true,
     viewModel: LiveViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.latestByMetric.collectAsStateWithLifecycle()
@@ -93,7 +95,8 @@ fun LiveScreen(
     LiveContent(
         metrics, bridgeStatus, brokerConnected, unitSystem, obdAgeS,
         onStartBridge = viewModel::startBridge,
-        onOpenHome = onOpenHome,
+        onOpenBridgeStatus = onOpenBridgeStatus,
+        showTopBar = showTopBar,
     )
 }
 
@@ -107,10 +110,11 @@ internal fun LiveContent(
     unitSystem: String,
     obdAgeS: Long?,
     onStartBridge: () -> Unit = {},
-    onOpenHome: () -> Unit = {},
+    onOpenBridgeStatus: () -> Unit = {},
     /** Landscape "drive mode": two big gauges + four tiles, no scroll. */
     driveMode: Boolean =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
+    showTopBar: Boolean = true,
 ) {
     // Stale guard: once OBD has been quiet >10 s the numbers are the last
     // reading, not the current one — say so and dim them.
@@ -123,14 +127,14 @@ internal fun LiveContent(
     // already consumed the system bars; without it this page re-applies
     // the status-bar inset and leaves an empty band on top.
     Scaffold(
-        topBar = { PitstopTopAppBar() },
+        topBar = { if (showTopBar) PitstopTopAppBar() },
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
         if (metrics.isEmpty()) {
             LiveEmptyState(
                 phase = bridgeStatus.phase,
                 onStartBridge = onStartBridge,
-                onOpenHome = onOpenHome,
+                onOpenBridgeStatus = onOpenBridgeStatus,
                 modifier = Modifier.padding(padding),
             )
             return@Scaffold
@@ -520,14 +524,14 @@ private fun bleStatusOf(phase: com.pitstop.service.BridgePhase): Pair<String, Pi
 
 /**
  * Nothing has arrived yet. Explains why and offers the fix in place: a
- * Start button while the bridge is idle / errored, otherwise a pointer to
- * Home where the connection detail lives.
+ * Start button while the bridge is idle / errored, otherwise the bridge
+ * sheet (top-bar logging chip) where the connection detail lives.
  */
 @Composable
 private fun LiveEmptyState(
     phase: com.pitstop.service.BridgePhase,
     onStartBridge: () -> Unit,
-    onOpenHome: () -> Unit,
+    onOpenBridgeStatus: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val idle = phase == com.pitstop.service.BridgePhase.Idle ||
@@ -539,10 +543,10 @@ private fun LiveEmptyState(
             "Start the bridge to stream live engine data from the dongle."
         } else {
             "The bridge is running but no engine data has arrived yet. " +
-                "Turn the ignition on, or check the connection on Home."
+                "Turn the ignition on, or check the connection."
         },
-        actionLabel = if (idle) "Start bridge" else "Open Home",
-        onAction = if (idle) onStartBridge else onOpenHome,
+        actionLabel = if (idle) "Start bridge" else "Check connection",
+        onAction = if (idle) onStartBridge else onOpenBridgeStatus,
         modifier = modifier.fillMaxSize(),
     )
 }

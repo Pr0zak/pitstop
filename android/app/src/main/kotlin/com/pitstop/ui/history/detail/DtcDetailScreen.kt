@@ -137,6 +137,13 @@ internal fun DtcDetailContent(
             StatusBadge(active = entry.active)
         }
 
+        // Plain-language guidance: severity, safe to drive?, common causes.
+        val guide = remember(entry.code, entry.description) {
+            com.pitstop.domain.DtcGuide.lookup(entry.code, entry.description)
+        }
+        // The description is already the line above; the card leads with what to do.
+        com.pitstop.ui.components.DtcGuidanceCard(guide, heading = "What this means for you")
+
         // Stats card.
         Card(
             modifier = Modifier.fillMaxWidth(),

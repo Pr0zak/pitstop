@@ -197,7 +197,23 @@ class ConfigViewModel @Inject constructor(
     private val presenceTracker: PresenceTracker,
     private val activityBus: ActivityRecognitionBus,
     private val wifiSsidReader: WifiSsidReader,
+    private val appPrefs: com.pitstop.data.AppPrefs,
 ) : AndroidViewModel(application) {
+
+    // ── Notification toggles (AppPrefs, not the Settings form) ──────────
+    // Written straight through: they're independent switches with no
+    // secret-field or debounce concerns, so they skip the form's save path.
+
+    val driveSummaryNotif: kotlinx.coroutines.flow.StateFlow<Boolean> = appPrefs.driveSummaryNotif
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, true)
+    val serviceReminderNotif: kotlinx.coroutines.flow.StateFlow<Boolean> = appPrefs.serviceReminderNotif
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, true)
+    val vehicleAlertNotif: kotlinx.coroutines.flow.StateFlow<Boolean> = appPrefs.vehicleAlertNotif
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, true)
+
+    fun setDriveSummaryNotif(on: Boolean) { viewModelScope.launch { appPrefs.setDriveSummaryNotif(on) } }
+    fun setServiceReminderNotif(on: Boolean) { viewModelScope.launch { appPrefs.setServiceReminderNotif(on) } }
+    fun setVehicleAlertNotif(on: Boolean) { viewModelScope.launch { appPrefs.setVehicleAlertNotif(on) } }
 
     // ── CompanionDeviceManager (reliable background auto-start) ──────────
 

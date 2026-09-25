@@ -108,6 +108,9 @@ data class VehicleDto(
      *  Needed to PATCH a fillup in the units it is stored in. */
     @SerialName("dist_unit") val distUnit: Int? = null,
     @SerialName("fuel_unit") val fuelUnit: Int? = null,
+    /** PCM odometer in km (float on the wire). The web's maintenance
+     *  presets start their interval here, so the phone does too. */
+    @SerialName("latest_odo_km") val latestOdoKm: Double? = null,
 )
 
 @Serializable
@@ -312,6 +315,8 @@ interface PitstopApi {
         @Query("sort") sort: String? = null,
         @Query("source") source: String? = null,
         @Query("towing") towing: Boolean? = null,
+        /** ISO-8601 lower bound on started_at (the range basis wants 30 days). */
+        @Query("from") from: String? = null,
     ): List<TripDto>
 
     @GET("api/dtcs")
@@ -419,7 +424,129 @@ interface PitstopApi {
         @Query("vehicle_id") vehicleId: String,
         @Query("days") days: Int = 365,
     ): DtcTimelineResponse
+
+    // ── Maintenance (Car → Service; web MaintenanceView parity) ──────
+
+    /** Overdue + "upcoming" (within 500 mi / 30 days) reminders. Anything
+     *  further out is omitted — see [com.pitstop.domain.Maintenance.scheduled]. */
+    @GET("api/maintenance/reminders")
+    suspend fun getReminders(
+        @Query("vehicle_id") vehicleId: String,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): RemindersResponse
+
+    /** Close a reminder: logs a $0 service today and advances the repeat. Ingest token. */
+    @POST("api/maintenance/reminders/{expenseId}/done")
+    suspend fun markReminderDone(@Path("expenseId") expenseId: String): kotlinx.serialization.json.JsonObject
+
+    @GET("api/expenses")
+    suspend fun getExpenses(
+        @Query("vehicle_id") vehicleId: String,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): List<ExpenseDto>
+
+    /** Ingest token. Used for the one-tap reminder presets. */
+    @POST("api/expenses")
+    suspend fun createExpense(@Body body: ExpenseCreateRequest): ExpenseDto
+
+    @GET("api/expense-categories")
+    suspend fun getExpenseCategories(): List<ExpenseCategoryDto>
+
+    /** Per-station price history from the user's own fillups. */
+    @GET("api/analytics/station-prices")
+    suspend fun getStationPrices(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("limit_per_station") limitPerStation: Int = 1,
+    ): List<StationPriceDto>
 }
+
+// ── Maintenance DTOs ────────────────────────────────────────────────
+// Shapes verified against the live backend (2026-09-25):
+//   reminders: {"overdue":[…], "upcoming":[…]} — overdue rows carry
+//     miles_over / days_over, upcoming rows miles_until / days_until;
+//     there is NO status field and NO vehicle_id.
+//   expenses: cost is a Decimal serialised as a STRING ("241.50"), so it is
+//     a JsonPrimitive here — typing it Double would, under coerceInputValues,
+//     silently null every cost. remind_date is "YYYY-MM-DD"; odo / remind_odo
+//     / repeat_* are floats (repeat_months too).
+
+@kotlinx.serialization.Serializable
+data class RemindersResponse(
+    val overdue: List<ReminderDto> = emptyList(),
+    val upcoming: List<ReminderDto> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+data class ReminderDto(
+    @SerialName("expense_id") val expenseId: String,
+    val title: String? = null,
+    val category: String? = null,
+    @SerialName("current_odo") val currentOdo: Double? = null,
+    @SerialName("remind_odo") val remindOdo: Double? = null,
+    @SerialName("remind_date") val remindDate: String? = null,
+    @SerialName("miles_over") val milesOver: Double? = null,
+    @SerialName("days_over") val daysOver: Int? = null,
+    @SerialName("miles_until") val milesUntil: Double? = null,
+    @SerialName("days_until") val daysUntil: Int? = null,
+    val notes: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class ExpenseDto(
+    val id: String,
+    @SerialName("vehicle_id") val vehicleId: String,
+    @SerialName("expense_date") val expenseDate: String,
+    val odo: Double? = null,
+    @SerialName("cost_type_id") val costTypeId: Int? = null,
+    val title: String? = null,
+    val notes: String? = null,
+    val cost: kotlinx.serialization.json.JsonPrimitive? = null,
+    @SerialName("is_income") val isIncome: Boolean = false,
+    @SerialName("is_template") val isTemplate: Boolean = false,
+    @SerialName("remind_odo") val remindOdo: Double? = null,
+    @SerialName("remind_date") val remindDate: String? = null,
+    @SerialName("repeat_odo") val repeatOdo: Double? = null,
+    @SerialName("repeat_months") val repeatMonths: Double? = null,
+) {
+    val costValue: Double? get() = cost?.content?.toDoubleOrNull()
+}
+
+/**
+ * POST /expenses. [cost] and [expenseDate] have no defaults on purpose: the
+ * app's Json has encodeDefaults=false, and the backend requires both.
+ */
+@kotlinx.serialization.Serializable
+data class ExpenseCreateRequest(
+    @SerialName("vehicle_id") val vehicleId: String,
+    val title: String,
+    @SerialName("expense_date") val expenseDate: String,
+    val cost: Double,
+    val odo: Double? = null,
+    val notes: String? = null,
+    @SerialName("repeat_odo") val repeatOdo: Double? = null,
+    @SerialName("repeat_months") val repeatMonths: Double? = null,
+    @SerialName("remind_odo") val remindOdo: Double? = null,
+    @SerialName("remind_date") val remindDate: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class ExpenseCategoryDto(
+    val id: Int,
+    val name: String,
+)
+
+/** One cluster of /analytics/station-prices. Prices are in the vehicle's
+ *  fuel unit ($/gal for fuel_unit=1). */
+@kotlinx.serialization.Serializable
+data class StationPriceDto(
+    @SerialName("cluster_id") val clusterId: String,
+    val name: String? = null,
+    val lat: Double? = null,
+    val lon: Double? = null,
+    @SerialName("fillup_count") val fillupCount: Int = 0,
+    @SerialName("latest_price") val latestPrice: Double? = null,
+    @SerialName("latest_date") val latestDate: String? = null,
+)
 
 @kotlinx.serialization.Serializable
 data class DtcDto(

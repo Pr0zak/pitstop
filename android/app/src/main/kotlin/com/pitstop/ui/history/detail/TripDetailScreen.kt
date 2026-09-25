@@ -103,13 +103,15 @@ fun TripDetailScreen(
     onOpenMap: () -> Unit,
     onDeleted: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Open with the details (tag) sheet up — the drive-summary "Tag as…" action. */
+    startEditing: Boolean = false,
     viewModel: TripDetailViewModel = hiltViewModel(),
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val storedSeries by viewModel.storedSeries.collectAsStateWithLifecycle()
     val unitSystem = LocalUnitSystem.current
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
-    var editing by rememberSaveable { mutableStateOf(false) }
+    var editing by rememberSaveable { mutableStateOf(startEditing) }
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(ui.deleted) { if (ui.deleted) onDeleted() }

@@ -54,6 +54,9 @@ class PitstopApp : Application(), Configuration.Provider {
         // cases where the immediate kick missed (Doze, process
         // death between seal and worker schedule).
         scheduleDriveUploads(this)
+        // Daily service-reminder + check-engine backstop, so those
+        // notifications fire on days the app is never opened.
+        com.pitstop.notif.scheduleVehicleChecks(this)
         // Start the persistent sync-reminder observer. Watches the
         // unacked drive queue; posts a sticky notification once it
         // reaches SyncReminderManager.THRESHOLD drives. Especially
@@ -206,6 +209,30 @@ class PitstopApp : Application(), Configuration.Provider {
                 "hang that stops logging until it is unplugged."
         }
         nm.createNotificationChannel(deviceAlertChannel)
+
+        // Phone-first redesign: one channel per kind so each can be
+        // silenced in system settings independently of the in-app toggles.
+        nm.createNotificationChannel(
+            NotificationChannel(
+                com.pitstop.notif.AppNotifications.DRIVE_SUMMARY_CHANNEL_ID,
+                "Drive summaries",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = "Distance and economy of a drive once it has uploaded" },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(
+                com.pitstop.notif.AppNotifications.SERVICE_REMINDER_CHANNEL_ID,
+                "Service reminders",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply { description = "A maintenance item is due soon or overdue" },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(
+                com.pitstop.notif.AppNotifications.VEHICLE_ALERT_CHANNEL_ID,
+                "Vehicle alerts",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply { description = "A new check-engine (trouble) code appeared" },
+        )
     }
 
     companion object {

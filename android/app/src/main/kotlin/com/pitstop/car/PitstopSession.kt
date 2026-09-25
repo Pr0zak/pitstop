@@ -19,10 +19,11 @@ import javax.inject.Inject
 class PitstopSession(
     private val stateBus: BridgeStateBus,
     private val settingsRepository: SettingsRepository,
+    private val rangeRepository: com.pitstop.data.RangeRepository,
 ) : Session() {
 
     override fun onCreateScreen(intent: Intent): Screen =
-        LiveCarScreen(carContext, stateBus, settingsRepository)
+        LiveCarScreen(carContext, stateBus, settingsRepository, rangeRepository)
 }
 
 /**
@@ -35,6 +36,7 @@ class PitstopSession(
 class PitstopSessionFactory @Inject constructor(
     private val stateBus: BridgeStateBus,
     private val settingsRepository: SettingsRepository,
+    private val rangeRepository: com.pitstop.data.RangeRepository,
 ) {
-    fun create(): Session = PitstopSession(stateBus, settingsRepository)
+    fun create(): Session = PitstopSession(stateBus, settingsRepository, rangeRepository)
 }

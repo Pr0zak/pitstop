@@ -70,7 +70,12 @@ class LiveCarScreen(
     carContext: CarContext,
     private val stateBus: BridgeStateBus,
     private val settingsRepository: SettingsRepository,
+    private val rangeRepository: com.pitstop.data.RangeRepository? = null,
 ) : Screen(carContext), DefaultLifecycleObserver {
+
+    /** Live metrics plus the synthetic range tile (see [withRangeTile]). */
+    private fun currentMetrics(): Map<String, MetricSample> =
+        withRangeTile(stateBus.latestByMetric.value, rangeRepository?.inputs?.value)
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var observerJob: Job? = null
@@ -125,7 +130,7 @@ class LiveCarScreen(
      * counts as unchanged — e.g. RPM drifting 722 -> 723 with 0 decimals.
      */
     private fun renderSignature(): String {
-        val metrics = stateBus.latestByMetric.value
+        val metrics = currentMetrics()
         val status = stateBus.status.value
         val settings = cachedSettings ?: return ""
         val now = System.currentTimeMillis()
@@ -234,7 +239,7 @@ class LiveCarScreen(
     private var cachedSettings: com.pitstop.data.Settings? = null
 
     override fun onGetTemplate(): Template {
-        val metrics = stateBus.latestByMetric.value
+        val metrics = currentMetrics()
         val status = stateBus.status.value
 
         // Tile order comes from DataStore via the collector above, so a
