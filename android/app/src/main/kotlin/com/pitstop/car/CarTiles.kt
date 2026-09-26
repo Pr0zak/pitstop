@@ -49,6 +49,12 @@ data class CarTileSpec(
     val warnLowWord: String = "LOW",
     /** Severe = RED (stop soon); otherwise YELLOW (keep an eye on it). */
     val warnSevere: Boolean = false,
+    /**
+     * Full-scale range of the arc on a gauge tile, in CANONICAL units.
+     * Null draws the number with no arc — for a metric with no natural
+     * scale, an arc would only suggest a limit that doesn't exist.
+     */
+    val gauge: ClosedFloatingPointRange<Double>? = null,
 ) {
     fun unit(system: String): String = quantity.unit(system)
 }
@@ -56,22 +62,22 @@ data class CarTileSpec(
 object CarTileCatalog {
     val ALL: List<CarTileSpec> = listOf(
         // ── Engine ────────────────────────────────────────────────
-        CarTileSpec("engine_rpm", "RPM", UnitFormat.Quantity.None, 0, accent = true, icon = R.drawable.ic_metric_tach),
-        CarTileSpec("vehicle_speed", "Speed", UnitFormat.Quantity.SpeedKph, 0, icon = R.drawable.ic_metric_speed),
+        CarTileSpec("engine_rpm", "RPM", UnitFormat.Quantity.None, 0, accent = true, icon = R.drawable.ic_metric_tach, gauge = 0.0..7000.0),
+        CarTileSpec("vehicle_speed", "Speed", UnitFormat.Quantity.SpeedKph, 0, icon = R.drawable.ic_metric_speed, gauge = 0.0..200.0),
         // 105 °C: past the normal thermostat band on any modern engine even
         // under load; a coolant reading there is worth a word, not a hue.
         CarTileSpec(
             "coolant_temp", "Coolant", UnitFormat.Quantity.TempC, 0, icon = R.drawable.ic_metric_temp,
-            trend = true, warnHigh = 105.0, warnHighWord = "HOT", warnSevere = true,
+            trend = true, warnHigh = 105.0, warnHighWord = "HOT", warnSevere = true, gauge = 40.0..120.0,
         ),
-        CarTileSpec("intake_air_temp", "Intake", UnitFormat.Quantity.TempC, 0, icon = R.drawable.ic_metric_temp, trend = true),
-        CarTileSpec("engine_load", "Eng load", UnitFormat.Quantity.Percent, 0, icon = R.drawable.ic_metric_load),
-        CarTileSpec("throttle_position", "Throttle", UnitFormat.Quantity.Percent, 0, icon = R.drawable.ic_metric_load),
+        CarTileSpec("intake_air_temp", "Intake", UnitFormat.Quantity.TempC, 0, icon = R.drawable.ic_metric_temp, trend = true, gauge = -20.0..60.0),
+        CarTileSpec("engine_load", "Eng load", UnitFormat.Quantity.Percent, 0, icon = R.drawable.ic_metric_load, gauge = 0.0..100.0),
+        CarTileSpec("throttle_position", "Throttle", UnitFormat.Quantity.Percent, 0, icon = R.drawable.ic_metric_load, gauge = 0.0..100.0),
         CarTileSpec("maf_air_flow", "MAF", UnitFormat.Quantity.MassFlowGramsPerSec, 1, icon = R.drawable.ic_metric_air),
         CarTileSpec("manifold_pressure", "MAP", UnitFormat.Quantity.PressureKpa, 0, icon = R.drawable.ic_metric_pressure),
         CarTileSpec("run_time_since_start", "Run time", UnitFormat.Quantity.Seconds, 0, icon = R.drawable.ic_metric_clock),
         // ── Fuel system ───────────────────────────────────────────
-        CarTileSpec("fuel_level", "Fuel", UnitFormat.Quantity.Percent, 0, icon = R.drawable.ic_metric_fuel, trend = true),
+        CarTileSpec("fuel_level", "Fuel", UnitFormat.Quantity.Percent, 0, icon = R.drawable.ic_metric_fuel, trend = true, gauge = 0.0..100.0),
         CarTileSpec("stft_b1", "STFT B1", UnitFormat.Quantity.Percent, 1, icon = R.drawable.ic_metric_trim),
         CarTileSpec("ltft_b1", "LTFT B1", UnitFormat.Quantity.Percent, 1, icon = R.drawable.ic_metric_trim, trend = true),
         CarTileSpec("stft_b2", "STFT B2", UnitFormat.Quantity.Percent, 1, icon = R.drawable.ic_metric_trim),
@@ -90,6 +96,7 @@ object CarTileCatalog {
         CarTileSpec(
             RANGE_TILE_KEY, "Range", UnitFormat.Quantity.DistanceKm, 0,
             icon = R.drawable.ic_metric_fuel, trend = false, warnLow = 80.0, warnLowWord = "LOW",
+            gauge = 0.0..800.0,
         ),
         // ── Emissions / fuel control ──────────────────────────────
         // Added when the phone learned to poll these directly (0.1.221).
@@ -136,13 +143,31 @@ object CarTileCatalog {
         CarTileSpec(
             "control_module_voltage", "Battery", UnitFormat.Quantity.Volt, 1,
             icon = R.drawable.ic_metric_battery, trend = true,
-            warnHigh = 15.0, warnLow = 12.0,
+            warnHigh = 15.0, warnLow = 12.0, gauge = 11.0..15.5,
         ),
         // ── GPS / IMU (from phone bridge) ─────────────────────────
         // m/s on the wire; SpeedMps renders mph or km/h, never the raw
         // SI value. 0 decimals now that it's a human-scale number.
         CarTileSpec("gps_speed", "GPS spd", UnitFormat.Quantity.SpeedMps, 0, icon = R.drawable.ic_metric_speed),
         CarTileSpec("gps_alt", "Altitude", UnitFormat.Quantity.AltitudeM, 0, icon = R.drawable.ic_metric_altitude, trend = true),
+        // ── This trip (synthetic, see [withTripTiles]) ────────────
+        // Running totals for the drive in progress, from LiveTripStats.
+        // Not PIDs, so they only have a value while a drive is open.
+        CarTileSpec(TRIP_DISTANCE_KEY, "Distance", UnitFormat.Quantity.DistanceKm, 1, icon = R.drawable.ic_metric_speed),
+        CarTileSpec(TRIP_MINUTES_KEY, "Drive time", UnitFormat.Quantity.Minutes, 0, icon = R.drawable.ic_metric_clock),
+        CarTileSpec(TRIP_ECONOMY_KEY, "Trip econ", UnitFormat.Quantity.EconomyMpg, 1, icon = R.drawable.ic_metric_fuel, accent = true),
+        CarTileSpec(TRIP_FUEL_KEY, "Fuel used", UnitFormat.Quantity.VolumeL, 2, icon = R.drawable.ic_metric_fuel),
+        CarTileSpec(TRIP_IDLE_KEY, "Idle", UnitFormat.Quantity.Minutes, 0, icon = R.drawable.ic_metric_clock),
+        // Link health as a tile, so the Trip tab can stand in for Status.
+        // Its text comes from the bridge state, not a sample — see
+        // LiveCarScreen.tileRender.
+        CarTileSpec(LINK_TILE_KEY, "Link", UnitFormat.Quantity.None, 0, icon = R.drawable.ic_metric_battery),
+    )
+
+    /** The Trip tab. Fixed: these tiles only make sense together. */
+    val DEFAULT_TRIP: List<String> = listOf(
+        TRIP_DISTANCE_KEY, TRIP_MINUTES_KEY, TRIP_ECONOMY_KEY,
+        TRIP_FUEL_KEY, TRIP_IDLE_KEY, LINK_TILE_KEY,
     )
 
     /**
@@ -208,11 +233,17 @@ object CarTileCatalog {
         val title: String,
         val defaults: List<String>?,
         @DrawableRes val icon: Int,
+        /** Tiles are drawn as rendered arc gauges rather than icon + text. */
+        val gauges: Boolean = false,
     ) {
-        Drive("drive", "Drive", DEFAULT_HOME, R.drawable.ic_metric_speed),
+        Drive("drive", "Drive", DEFAULT_HOME, R.drawable.ic_metric_speed, gauges = true),
         Engine("engine", "Engine", DEFAULT_ENGINE, R.drawable.ic_metric_tach),
         Fuel("fuel", "Fuel", DEFAULT_FUEL, R.drawable.ic_metric_fuel),
         Diagnostics("diag", "Diag", DEFAULT_DIAG, R.drawable.ic_metric_trim),
+
+        /** The drive in progress: distance, time, economy, fuel, idle, plus
+         *  a Link tile so it can replace Status in the default set. */
+        Trip("trip", "Trip", DEFAULT_TRIP, R.drawable.ic_metric_clock),
 
         /** Live bridge/session state from the in-process bus. No network.
          *  A PaneTemplate: OBD link, engine, upload, device — plus a
@@ -245,11 +276,14 @@ object CarTileCatalog {
             const val MAX_TABS = 4
 
             /**
-             * Status in, Diag out: "is it connected and uploading?" is what a
-             * driver actually checks mid-trip; fuel trims are for the phone.
-             * Diag remains one Settings tap away.
+             * Trip in, Status out. Status answered "is it connected and
+             * uploading?", which the Trip tab's Link tile and the red dot on
+             * every grid's first tile now cover; a whole tab for a check you
+             * rarely need was the wrong trade. Status and Diag remain one
+             * Settings tap away. A stored tab list is left alone, so this
+             * only changes the car for someone who never picked tabs.
              */
-            val DEFAULT_TABS: List<String> = listOf("drive", "engine", "fuel", "session")
+            val DEFAULT_TABS: List<String> = listOf("drive", "engine", "fuel", "trip")
 
             /**
              * The tabs to render. Falls back to the defaults when the stored
@@ -352,6 +386,50 @@ fun renderCarTile(
         }
     }
     return CarTileRender(text, level, stale)
+}
+
+/** Keys of the synthetic This-trip tiles, filled by [withTripTiles]. */
+const val TRIP_DISTANCE_KEY = "trip_distance_km"
+const val TRIP_MINUTES_KEY = "trip_minutes"
+const val TRIP_ECONOMY_KEY = "trip_mpg"
+const val TRIP_FUEL_KEY = "trip_fuel_l"
+const val TRIP_IDLE_KEY = "trip_idle_minutes"
+
+/** The link-health tile: text from the bridge state, never a sample. */
+const val LINK_TILE_KEY = "link"
+
+/**
+ * Below these the trip economy is noise (a few hundred metres on a cold
+ * start reads 4 mpg), so the tile stays "—" until both are cleared.
+ */
+private const val MIN_ECONOMY_KM = 1.0
+private const val MIN_ECONOMY_L = 0.1
+
+/**
+ * Add the drive-in-progress totals to a metric snapshot. Stamped [nowMs]:
+ * they are recomputed every tick, so they are never "stale" the way a
+ * silent PID is. Nothing is added when no drive is open, and the tiles
+ * then explain why (the grid's empty reason).
+ */
+fun withTripTiles(
+    metrics: Map<String, com.pitstop.service.MetricSample>,
+    trip: com.pitstop.drive.LiveTripStats.Snapshot?,
+    nowMs: Long,
+): Map<String, com.pitstop.service.MetricSample> {
+    if (trip == null) return metrics
+    fun s(key: String, v: Double) = key to com.pitstop.service.MetricSample(key, v, nowMs)
+    val out = metrics.toMutableMap()
+    out += s(TRIP_DISTANCE_KEY, trip.distanceKm)
+    out += s(TRIP_MINUTES_KEY, trip.durationS / 60.0)
+    out += s(TRIP_IDLE_KEY, trip.idleS / 60.0)
+    trip.fuelL?.let { l ->
+        out += s(TRIP_FUEL_KEY, l)
+        if (trip.distanceKm >= MIN_ECONOMY_KM && l >= MIN_ECONOMY_L) {
+            // mpg on the wire, like every economy figure the app renders.
+            out += s(TRIP_ECONOMY_KEY, (trip.distanceKm * 0.621371) / (l * 0.264172))
+        }
+    }
+    return out
 }
 
 /** Metric key of the synthetic range-to-empty tile. */

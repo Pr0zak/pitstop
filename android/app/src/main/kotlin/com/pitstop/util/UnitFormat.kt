@@ -80,6 +80,15 @@ object UnitFormat {
         /** Fuel volume stored in US gallons — fillup amounts. */
         VolumeGal("L", "gal", toMetric = { it * USGAL_TO_L }),
 
+        /** A duration already in minutes — trip time, idle time. */
+        Minutes("min", "min"),
+
+        /**
+         * Fuel economy stored in US mpg. Metric inverts to L/100 km, so the
+         * direction of "better" flips — see [economyHigherIsBetter].
+         */
+        EconomyMpg("L/100km", "mpg", toMetric = { MPG_L100_CONSTANT / it }),
+
         AltitudeM("m", "ft", toImperial = { it * 3.28084 }),
         PressureKpa("kPa", "psi", toImperial = { it * 0.145038 }),
 

@@ -20,10 +20,11 @@ class PitstopSession(
     private val stateBus: BridgeStateBus,
     private val settingsRepository: SettingsRepository,
     private val rangeRepository: com.pitstop.data.RangeRepository,
+    private val driveRecorder: com.pitstop.drive.DriveRecorder,
 ) : Session() {
 
     override fun onCreateScreen(intent: Intent): Screen =
-        LiveCarScreen(carContext, stateBus, settingsRepository, rangeRepository)
+        LiveCarScreen(carContext, stateBus, settingsRepository, rangeRepository, driveRecorder)
 }
 
 /**
@@ -37,6 +38,7 @@ class PitstopSessionFactory @Inject constructor(
     private val stateBus: BridgeStateBus,
     private val settingsRepository: SettingsRepository,
     private val rangeRepository: com.pitstop.data.RangeRepository,
+    private val driveRecorder: com.pitstop.drive.DriveRecorder,
 ) {
-    fun create(): Session = PitstopSession(stateBus, settingsRepository, rangeRepository)
+    fun create(): Session = PitstopSession(stateBus, settingsRepository, rangeRepository, driveRecorder)
 }

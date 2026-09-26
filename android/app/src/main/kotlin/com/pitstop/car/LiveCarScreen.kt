@@ -71,11 +71,18 @@ class LiveCarScreen(
     private val stateBus: BridgeStateBus,
     private val settingsRepository: SettingsRepository,
     private val rangeRepository: com.pitstop.data.RangeRepository? = null,
+    private val driveRecorder: com.pitstop.drive.DriveRecorder? = null,
 ) : Screen(carContext), DefaultLifecycleObserver {
 
-    /** Live metrics plus the synthetic range tile (see [withRangeTile]). */
-    private fun currentMetrics(): Map<String, MetricSample> =
-        withRangeTile(stateBus.latestByMetric.value, rangeRepository?.inputs?.value)
+    /** Live metrics plus the synthetic range and this-trip tiles. */
+    private fun currentMetrics(): Map<String, MetricSample> {
+        val now = System.currentTimeMillis()
+        return withTripTiles(
+            withRangeTile(stateBus.latestByMetric.value, rangeRepository?.inputs?.value),
+            driveRecorder?.current()?.live?.snapshot(now),
+            now,
+        )
+    }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var observerJob: Job? = null
@@ -148,7 +155,7 @@ class LiveCarScreen(
                 append('|')
                 // Includes the 5 s age bucket, so a quiet tile's "· 25s"
                 // advances without every tick counting as a change.
-                append(tileRender(spec, metrics, settings.unitSystem, now, reason))
+                append(tileRender(spec, metrics, status, settings, now, reason))
             }
         }
     }
@@ -156,15 +163,23 @@ class LiveCarScreen(
     private fun tileRender(
         spec: CarTileSpec,
         metrics: Map<String, MetricSample>,
-        system: String,
+        status: BridgeStatus,
+        settings: com.pitstop.data.Settings,
         now: Long,
         emptyReason: String?,
     ): CarTileRender {
+        if (spec.key == LINK_TILE_KEY) {
+            return CarTileRender(
+                linkText(status, settings),
+                if (obdDown(status, now)) TileWarn.Caution else TileWarn.None,
+                stale = false,
+            )
+        }
         val sample = metrics[spec.key]
         return renderCarTile(
             value = sample?.value,
             spec = spec,
-            system = system,
+            system = settings.unitSystem,
             trend = trends.classify(spec.key),
             ageS = sample?.let { ((now - it.tsMs) / 1000L).coerceAtLeast(0L) },
             emptyReason = emptyReason,
@@ -181,7 +196,9 @@ class LiveCarScreen(
         metrics: Map<String, MetricSample>,
         status: BridgeStatus,
     ): String? {
-        if (specs.any { metrics[it.key] != null }) return null
+        // The Link tile always has text, so it must not count as "data" —
+        // otherwise a parked car's Trip tab reads as five bare dashes.
+        if (specs.any { it.key != LINK_TILE_KEY && metrics[it.key] != null }) return null
         return when {
             status.engineState == EngineState.Off -> "Engine off"
             status.phase == BridgePhase.Idle -> "Bridge off"
@@ -341,12 +358,13 @@ class LiveCarScreen(
                 .setSingleList(
                     ItemList.Builder().apply {
                         specs.forEachIndexed { i, spec ->
+                            val render = tileRender(spec, metrics, status, settings, now, reason)
                             addItem(
-                                buildTile(
-                                    spec,
-                                    tileRender(spec, metrics, settings.unitSystem, now, reason),
-                                    badged = i == 0 && down,
-                                ),
+                                if (kind.gauges && spec.key != LINK_TILE_KEY) {
+                                    buildGaugeTile(spec, metrics[spec.key]?.value, settings.unitSystem, render, badged = i == 0 && down)
+                                } else {
+                                    buildTile(spec, render, badged = i == 0 && down)
+                                },
                             )
                         }
                     }.build(),
@@ -448,6 +466,26 @@ class LiveCarScreen(
         )
     }
 
+    /**
+     * The Link tile's one line: the Status pane's OBD-link and Upload rows
+     * squeezed to what fits under a grid title at 800 px.
+     */
+    private fun linkText(status: BridgeStatus, settings: com.pitstop.data.Settings): String {
+        val upload = when {
+            settings.manualSyncOnly -> "local"
+            status.brokerConnected -> "live"
+            else -> "offline"
+        }
+        return when (status.phase) {
+            BridgePhase.Connected -> "OK · $upload"
+            BridgePhase.Scanning -> "Searching"
+            BridgePhase.Connecting -> "Connecting…"
+            BridgePhase.Disconnected -> "Reconnecting"
+            BridgePhase.Idle -> "Bridge off"
+            BridgePhase.Error -> "Error"
+        }
+    }
+
     private fun agoText(s: Long): String = if (s < 60) "${s}s ago" else "${s / 60}m ago"
 
     private fun humanBytes(b: Long): String = when {
@@ -518,6 +556,59 @@ class LiveCarScreen(
                     )
                 } else {
                     setImage(icon, GridItem.IMAGE_TYPE_ICON)
+                }
+            }
+            .build()
+    }
+
+    /**
+     * A Drive-tab tile: the number drawn inside an arc gauge as the tile's
+     * LARGE image (see [GaugeBitmap]), with the title still the label and the
+     * text carrying only what the number doesn't — unit, trend arrow, warning
+     * word, age. Same refresh rules as [buildTile]: the title never changes.
+     */
+    private fun buildGaugeTile(
+        spec: CarTileSpec,
+        value: Double?,
+        system: String,
+        render: CarTileRender,
+        badged: Boolean,
+    ): GridItem {
+        val num = spec.quantity.number(value, system, spec.digits)
+        // render.text is "<num> <unit><extras>" when there is a value, or the
+        // grid's empty reason ("Engine off") when there isn't.
+        val caption = if (num != "—" && render.text.startsWith(num)) {
+            render.text.removePrefix(num).trim()
+        } else {
+            render.text.takeIf { it != "—" }.orEmpty()
+        }
+        val icon = CarIcon.Builder(
+            androidx.core.graphics.drawable.IconCompat.createWithBitmap(
+                GaugeBitmap.render(
+                    number = num,
+                    fraction = GaugeBitmap.fraction(value, spec.gauge),
+                    arc = spec.gauge != null,
+                    warn = render.warn,
+                    stale = render.stale,
+                ),
+            ),
+        ).build()
+        return GridItem.Builder()
+            .setTitle(spec.label)
+            .apply { if (caption.isNotEmpty()) setText(caption) }
+            .apply {
+                // Same empty-badge crash rule as buildTile.
+                if (badged) {
+                    setImage(
+                        icon,
+                        GridItem.IMAGE_TYPE_LARGE,
+                        androidx.car.app.model.Badge.Builder()
+                            .setHasDot(true)
+                            .setBackgroundColor(CarColor.RED)
+                            .build(),
+                    )
+                } else {
+                    setImage(icon, GridItem.IMAGE_TYPE_LARGE)
                 }
             }
             .build()

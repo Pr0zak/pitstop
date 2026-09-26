@@ -65,9 +65,12 @@ class CarTileRenderTest {
     }
 
     @Test
-    fun `drive defaults drop speed and status replaces diag`() {
+    fun `drive defaults drop speed and trip replaces status and diag`() {
         assertFalse("vehicle_speed" in CarTileCatalog.DEFAULT_HOME)
-        assertTrue("session" in CarTileCatalog.CarScreenKind.DEFAULT_TABS)
+        assertTrue("trip" in CarTileCatalog.CarScreenKind.DEFAULT_TABS)
+        assertFalse("session" in CarTileCatalog.CarScreenKind.DEFAULT_TABS)
         assertFalse("diag" in CarTileCatalog.CarScreenKind.DEFAULT_TABS)
+        // The Trip tab carries link health now that Status is not a default.
+        assertTrue(LINK_TILE_KEY in CarTileCatalog.DEFAULT_TRIP)
     }
 }

@@ -26,8 +26,12 @@ class DriveBuffer(
     private val engineEvents = ConcurrentLinkedQueue<EngineEvent>()
     private val totalFrames = AtomicLong(0)
 
+    /** Running distance / fuel / idle for the head unit's Trip tab. */
+    val live = LiveTripStats(startedAtMs)
+
     fun addPid(t: Long, metric: String, valueNum: Double?, valueText: String? = null) {
         pidReadings.add(PidSample(t, metric, valueNum, valueText))
+        if (valueNum != null) live.onPid(t, metric, valueNum)
         totalFrames.incrementAndGet()
     }
 
@@ -41,6 +45,7 @@ class DriveBuffer(
         accuracyM: Double?,
     ) {
         gpsPoints.add(GpsSample(t, lat, lon, altM, speedMps, headingDeg, accuracyM))
+        live.onGps(t, lat, lon)
         totalFrames.incrementAndGet()
     }
 
