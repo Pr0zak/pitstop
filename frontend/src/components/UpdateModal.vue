@@ -30,7 +30,7 @@ const readyToUpgrade = computed(
   () =>
     info.value?.update_available === true &&
     !!info.value.latest_version &&
-    !!auth.ingestToken,
+    auth.ingestOk,
 );
 
 async function reload() {
@@ -210,7 +210,7 @@ onBeforeUnmount(() => {
             Upgrade to {{ info!.latest_version }}
           </button>
           <button
-            v-if="!auth.ingestToken && info?.update_available"
+            v-if="!auth.ingestOk && info?.update_available"
             class="btn"
             disabled
             title="Set the ingest token in Settings to enable in-app upgrades"

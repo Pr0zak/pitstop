@@ -67,10 +67,6 @@ export const useLiveStore = defineStore("live", () => {
       return;
     }
     const url = liveSocketUrl(vehicleId);
-    if (!url) {
-      s.status = "disconnected";
-      return;
-    }
     s.status = "connecting";
     let ws: WebSocket;
     try {

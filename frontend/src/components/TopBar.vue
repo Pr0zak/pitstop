@@ -9,7 +9,7 @@ import { ShieldAlert } from "lucide-vue-next";
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
-const vehicleId = computed(() => (auth.hasQueryToken ? vehicles.selectedVehicleId : null));
+const vehicleId = computed(() => (auth.queryOk ? vehicles.selectedVehicleId : null));
 const { status, lastFrameAt } = useLive(vehicleId);
 const now = useNow(10_000);
 
@@ -42,7 +42,7 @@ const liveLabel = computed(() =>
     </div>
     <div class="right">
       <RouterLink
-        v-if="auth.hasQueryToken && vehicles.selectedVehicle"
+        v-if="auth.queryOk && vehicles.selectedVehicle"
         to="/live"
         class="live-pill"
         :class="{ on: streaming }"
@@ -52,7 +52,7 @@ const liveLabel = computed(() =>
         <span class="lbl">{{ liveLabel }}</span>
       </RouterLink>
       <RouterLink
-        v-if="!auth.hasQueryToken"
+        v-if="!auth.queryOk"
         to="/settings"
         class="token-pill"
         title="Query token missing or rejected — open Settings"

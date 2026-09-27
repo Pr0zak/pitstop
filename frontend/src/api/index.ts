@@ -56,11 +56,13 @@ export const apiIngest = makeClient("pitstop_ingest_token", "ingest");
 
 // Convenience getter for the WebSocket URL — encodes the token in the query string,
 // since browsers don't allow custom headers on WebSocket connections.
-export function liveSocketUrl(vehicleId: string): string | null {
+// With query auth off on the backend there is no token and the param is
+// omitted; the socket is still opened.
+export function liveSocketUrl(vehicleId: string): string {
   const token = readToken("pitstop_query_token");
-  if (!token) return null;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
-  const params = new URLSearchParams({ vehicle_id: vehicleId, token });
+  const params = new URLSearchParams({ vehicle_id: vehicleId });
+  if (token) params.set("token", token);
   return `${proto}//${host}/ws/live?${params.toString()}`;
 }

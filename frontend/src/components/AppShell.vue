@@ -14,7 +14,7 @@ const route = useRoute();
 const router = useRouter();
 
 onMounted(async () => {
-  if (!auth.hasQueryToken) return;
+  if (!auth.queryOk) return;
   // Best-effort vehicle load; individual views surface their own errors.
   try {
     await vehicles.ensureLoaded();

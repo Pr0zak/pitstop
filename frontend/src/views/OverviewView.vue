@@ -624,7 +624,7 @@ function onFillupSaved() {
       </div>
     </div>
 
-    <div v-if="!auth.hasQueryToken" class="card need-token">
+    <div v-if="!auth.queryOk" class="card need-token">
       <h3>Set up your API tokens</h3>
       <p class="muted">
         pitstop hasn't been authenticated with this browser yet. Add your QUERY token in

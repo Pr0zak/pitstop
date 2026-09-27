@@ -6,6 +6,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 
+from ..config import settings
 from ..db.deps import get_pool
 from ..db.session import engine
 from ..version import BUILD_TIME, GIT_SHA, VERSION
@@ -16,6 +17,18 @@ router = APIRouter()
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/auth/config")
+async def auth_config() -> dict[str, bool]:
+    """Which token scopes the backend enforces. Unauthenticated on purpose:
+    it only reveals whether a token is configured, never the token itself.
+    The web app reads it at startup so a homelab deploy with blank
+    QUERY_TOKEN / INGEST_TOKEN never prompts for a token."""
+    return {
+        "query_required": bool(settings.query_token),
+        "ingest_required": bool(settings.ingest_token),
+    }
 
 
 @router.get("/version")

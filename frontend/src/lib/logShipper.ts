@@ -2,7 +2,7 @@
  * Browser-side log shipper for pitstop.
  *
  * Buffers entries in memory (cap 50) and POSTs them to /api/logs every 10 s.
- * Silently drops batches if no INGEST token is configured. On flush failure,
+ * Silently drops batches if the backend needs an INGEST token and none is set. On flush failure,
  * logs to console (raw console.warn — never console.error, to avoid recursive
  * capture from the window-error catcher) and drops the batch.
  *
@@ -13,6 +13,7 @@
 
 import { ingestLogs } from "@/api/endpoints";
 import type { LogIngestEntry, LogLevel } from "@/api/types";
+import { useAuthStore } from "@/stores/auth";
 
 const SESSION_KEY = "pitstop_session_id";
 const INGEST_TOKEN_KEY = "pitstop_ingest_token";
@@ -23,11 +24,17 @@ let buffer: LogIngestEntry[] = [];
 let flushTimer: number | null = null;
 let installed = false;
 
-function hasIngestToken(): boolean {
+function canIngest(): boolean {
   try {
-    return !!localStorage.getItem(INGEST_TOKEN_KEY);
+    return useAuthStore().ingestOk;
   } catch {
-    return false;
+    // Pinia not installed yet (error before app setup) — fall back to the
+    // raw token check.
+    try {
+      return !!localStorage.getItem(INGEST_TOKEN_KEY);
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -87,8 +94,8 @@ function enqueue(entry: LogIngestEntry): void {
 
 async function flush(): Promise<void> {
   if (buffer.length === 0) return;
-  if (!hasIngestToken()) {
-    // Without an INGEST token the backend would 401; drop silently.
+  if (!canIngest()) {
+    // The backend needs an INGEST token and we have none — it would 401.
     buffer = [];
     return;
   }

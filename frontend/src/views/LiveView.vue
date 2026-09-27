@@ -58,7 +58,7 @@ let seedFor: string | null = null;
 async function loadSeed(id: string | null) {
   seedFor = id;
   seed.value = {};
-  if (!id || !auth.hasQueryToken) return;
+  if (!id || !auth.queryOk) return;
   try {
     const rows = await api.latestReadings(id);
     if (seedFor !== id || !rows) return;
@@ -358,7 +358,7 @@ function trimClass(v: number | null): string {
       </div>
     </header>
 
-    <div v-if="!auth.hasQueryToken" class="card">
+    <div v-if="!auth.queryOk" class="card">
       <p class="muted">Set up your QUERY token in Settings to start the live feed.</p>
     </div>
     <div v-else-if="!vehicleIdRef" class="card">

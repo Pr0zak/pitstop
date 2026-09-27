@@ -154,7 +154,7 @@ onMounted(async () => {
   void loadServerVersion();
   localQueryToken.value = auth.queryToken;
   localIngestToken.value = auth.ingestToken;
-  if (auth.hasQueryToken) {
+  if (auth.queryOk) {
     await settings.fetchSettings();
     await Promise.all([loadStorage(), loadDevices()]);
   }
@@ -323,7 +323,7 @@ const devicesError = ref<string | null>(null);
 const allVehicles = ref<{ id: string; slug: string; name: string }[]>([]);
 
 async function loadDevices() {
-  if (!auth.hasQueryToken) return;
+  if (!auth.queryOk) return;
   devicesLoading.value = true;
   devicesError.value = null;
   try {
@@ -384,7 +384,7 @@ const purgeBusy = ref(false);
 const purgeMessage = ref<string | null>(null);
 
 async function loadStorage() {
-  if (!auth.hasQueryToken) return;
+  if (!auth.queryOk) return;
   storageLoading.value = true;
   storageError.value = null;
   try {
@@ -508,6 +508,12 @@ function geolocate() {
 
       <section id="access" class="card">
         <h3>Access tokens <span class="saves">this browser · Save tokens</span></h3>
+        <p v-if="!auth.queryRequired && !auth.ingestRequired" class="muted">
+          Token auth is off on this server (<code>QUERY_TOKEN</code> and
+          <code>INGEST_TOKEN</code> are blank in <code>.env</code>), so this browser needs no
+          tokens. Anyone who can reach pitstop on the network can read and change its data.
+        </p>
+        <template v-else>
         <p class="muted">
           The query token is used for read endpoints and the live websocket; the ingest token for
           writes. Kept in this browser's localStorage only.
@@ -528,6 +534,7 @@ function geolocate() {
           </button>
           <span v-if="tokensSaved" class="muted" role="status">Saved.</span>
         </div>
+        </template>
       </section>
 
       <section id="units" class="card">

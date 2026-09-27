@@ -73,7 +73,7 @@ const loading = ref(false);
 const error = ref<string | null>(null);
 
 async function loadFleet() {
-  if (!auth.hasQueryToken) return;
+  if (!auth.queryOk) return;
   loading.value = true;
   error.value = null;
   try {
@@ -265,7 +265,7 @@ const overall = computed(() => {
       </p>
     </header>
 
-    <StateCard v-if="!auth.hasQueryToken" state="empty" title="No query token">
+    <StateCard v-if="!auth.queryOk" state="empty" title="No query token">
       Set up your QUERY token in <RouterLink to="/settings">Settings</RouterLink> to load fleet data.
     </StateCard>
     <StateCard v-else-if="loading && rows.length === 0" state="loading" title="Loading fleet…" />
