@@ -667,3 +667,41 @@ at the end of this ADR.
 (58.30L -> 38.34L, target 50.2% from 28 readings / 14 distinct) — applying`, then `snap ...
 liters=38.34L ... window=28 readings / 14 distinct ending 2026-09-04T23:05:45+00:00`. The
 gauge went from 79 % to 52 % in one cycle; the trip fuel accounting put the tank at ~41 L.
+
+## ADR-026 — Live nearby fuel prices come from Google Places, behind a server-side key and a hard monthly cap
+
+**Context.** pitstop only knew what the user had paid, at stations they had already used
+(`/analytics/station-prices`), plus the EIA weekly regional average. "What does gas cost around
+here right now?" needs a live source. GasBuddy has no public API; its unofficial one is scraping
+and breaks. Google Places API (New) Nearby Search returns, per gas station, `fuelOptions.fuelPrices[]`
+— the last known price per grade (`REGULAR_UNLEADED`, `MIDGRADE`, `PREMIUM`, `DIESEL`, …) and its
+`updateTime`. Requesting that field bills the call as "Nearby Search Enterprise + Atmosphere":
+1,000 free calls a month, then $40.00 per 1,000 (Google's pricing page, checked 2026-09-26).
+Not every station reports prices, and a reported price can be days old.
+
+**Decision.**
+
+1. **One endpoint, `GET /fuel-prices/nearby`, used by both clients.** The key lives in
+   `settings.places_api_key` and never leaves the server; Settings reports `places.key_set`
+   plus this month's call count. The phone never holds the key (ADR-013).
+2. **Every outcome is a 200 with a `status`** — `ok`, `no_key`, `no_location`,
+   `quota_reached`, `upstream_error` (with Google's message in `detail`) — so the phone and web
+   cards render states instead of decoding HTTP errors.
+3. **Search origin, in order:** the caller's `lat`/`lon` (the phone's own fix), the vehicle's
+   latest `gps_points` row, then Settings → home. The web UI is served over plain http on the
+   LAN, where browsers refuse geolocation, so the web card searches around the parked car.
+4. **Cost guard.** Results are cached in memory for 30 minutes per 2-dp grid cell (~1.1 km);
+   the search is centred on the cell with the radius padded by 1 km, and distances are
+   recomputed from the real origin. `places_api_usage` counts calls per UTC month; a slot is
+   reserved with a conditional upsert *before* calling Google and the reservation fails at 900,
+   below the free 1,000. A daily quota set in the Cloud console is the second guard.
+5. **Prices are never persisted.** Google's terms restrict storing Places content, so the
+   in-memory cache is the only copy; a backend restart simply costs one call per cell.
+6. **A list, not map pins.** Stations are shown as a list with an "Open in Google Maps" link,
+   not plotted on the OpenFreeMap basemap (ADR-024) — Google's terms restrict showing Places
+   content on a non-Google map.
+7. **Own history is joined in.** A fillup within 150 m of a station is that station's
+   history; the card shows "you paid $X on <date>" next to today's price.
+
+**Consequences.** Each uncached lookup sends a location to Google. A missing price is shown as
+"—", never 0, and every price carries its age. Setting or clearing the key clears the cache.

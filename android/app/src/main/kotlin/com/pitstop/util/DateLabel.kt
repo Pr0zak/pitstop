@@ -75,6 +75,32 @@ object DateLabel {
         return "$date · ${time(t, is24h, locale)}"
     }
 
+    /**
+     * Relative age of an ISO-8601 timestamp: "just now", "12 min ago",
+     * "2 h ago" (under two days), then "3 d ago". Null if [iso] doesn't
+     * parse. A stamp slightly in the future (phone/server clock skew) reads
+     * "just now" rather than a negative age.
+     */
+    fun ago(iso: String?, nowMs: Long = System.currentTimeMillis()): String? {
+        val ms = epochMs(iso) ?: return null
+        return agoMs(nowMs - ms)
+    }
+
+    /** [ago] for an age already in milliseconds. */
+    fun agoMs(ageMs: Long): String {
+        val mins = (ageMs / 60_000L).coerceAtLeast(0)
+        return when {
+            mins < 1 -> "just now"
+            mins < 60 -> "$mins min ago"
+            mins < 48 * 60 -> "${mins / 60} h ago"
+            else -> "${mins / (24 * 60)} d ago"
+        }
+    }
+
+    /** Epoch millis of an ISO-8601 timestamp (offset-less = UTC); null if it doesn't parse. */
+    fun epochMs(iso: String?): Long? =
+        iso?.let { parse(it, ZoneOffset.UTC)?.toInstant()?.toEpochMilli() }
+
     /** "6:33 AM" / "18:33". */
     fun time(t: ZonedDateTime, is24h: Boolean, locale: Locale = Locale.getDefault()): String =
         t.format(fmt(if (is24h) "HH:mm" else "h:mm a", locale))

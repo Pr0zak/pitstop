@@ -458,7 +458,122 @@ interface PitstopApi {
         @Query("vehicle_id") vehicleId: String,
         @Query("limit_per_station") limitPerStation: Int = 1,
     ): List<StationPriceDto>
+
+    // ── Live nearby fuel prices (ADR-026) ────────────────────────────
+
+    /**
+     * Google Places prices around [lat]/[lon], joined to the user's own
+     * fillups. Always a 200 — the outcome is in `status`. Null lat/lon are
+     * omitted, and the server then searches around the car's last GPS point
+     * or Settings → home (reported in `origin.source`). Pass
+     * `cacheControl = "no-cache"` for an explicit refresh.
+     */
+    @GET("api/fuel-prices/nearby")
+    suspend fun getNearbyFuelPrices(
+        @Query("vehicle_id") vehicleId: String? = null,
+        @Query("lat") lat: Double? = null,
+        @Query("lon") lon: Double? = null,
+        @Query("grade") grade: String = "REGULAR_UNLEADED",
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): NearbyPricesDto
+
+    /** Server-side settings — the phone reads only the Places key state. */
+    @GET("api/settings")
+    suspend fun getServerSettings(
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): ServerSettingsDto
+
+    /**
+     * Raw-object PATCH (ingest token): the Places key clear must send an
+     * explicit JSON null, which a data class under encodeDefaults=false
+     * would omit. Build bodies with [com.pitstop.domain.PlacesKeyPatch].
+     */
+    @retrofit2.http.PATCH("api/settings")
+    suspend fun patchServerSettings(
+        @Body body: kotlinx.serialization.json.JsonObject,
+    ): ServerSettingsDto
 }
+
+// ── Nearby fuel prices DTOs ─────────────────────────────────────────
+// Shape captured from the live backend (2026-09-27). `distance_m`,
+// `radius_m` and the usage counters are ints; `price` is a float or null
+// (null = the station doesn't report this grade — show "—", never 0);
+// `origin` is null for no_location / no_key-without-location; `fetched_at`
+// is null unless status == ok. `stations` arrives sorted (priced
+// cheapest-first, then unpriced nearest-first) — keep that order.
+
+@Serializable
+data class NearbyPricesDto(
+    val status: String,
+    val detail: String? = null,
+    val grade: String? = null,
+    @SerialName("radius_m") val radiusM: Int = 5_000,
+    val origin: PriceOriginDto? = null,
+    @SerialName("fetched_at") val fetchedAt: String? = null,
+    val cached: Boolean = false,
+    val usage: PlacesUsageDto? = null,
+    val stations: List<NearbyStationDto> = emptyList(),
+)
+
+@Serializable
+data class PriceOriginDto(
+    val lat: Double,
+    val lon: Double,
+    /** device | vehicle | home */
+    val source: String,
+    /** When the car reported that fix (source == vehicle); else null. */
+    @SerialName("as_of") val asOf: String? = null,
+)
+
+@Serializable
+data class PlacesUsageDto(
+    @SerialName("month_calls") val monthCalls: Int = 0,
+    @SerialName("monthly_cap") val monthlyCap: Int = 0,
+)
+
+@Serializable
+data class NearbyStationDto(
+    @SerialName("place_id") val placeId: String,
+    val name: String? = null,
+    val address: String? = null,
+    val lat: Double,
+    val lon: Double,
+    @SerialName("distance_m") val distanceM: Int,
+    val price: Double? = null,
+    val currency: String? = null,
+    @SerialName("price_updated_at") val priceUpdatedAt: String? = null,
+    @SerialName("other_prices") val otherPrices: List<OtherPriceDto> = emptyList(),
+    @SerialName("my_last_price") val myLastPrice: Double? = null,
+    @SerialName("my_last_date") val myLastDate: String? = null,
+    @SerialName("my_fillup_count") val myFillupCount: Int = 0,
+    @SerialName("maps_url") val mapsUrl: String? = null,
+)
+
+@Serializable
+data class OtherPriceDto(
+    val grade: String,
+    val price: Double? = null,
+    val currency: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+/**
+ * `GET /settings`. Only `places` is declared; the rest (ha, home,
+ * retention, …) is web-only and skipped by ignoreUnknownKeys. `places` is
+ * nullable so a backend predating ADR-026 still decodes — the Settings
+ * section then says the server needs an update.
+ */
+@Serializable
+data class ServerSettingsDto(
+    val places: PlacesSettingsDto? = null,
+)
+
+@Serializable
+data class PlacesSettingsDto(
+    @SerialName("key_set") val keySet: Boolean = false,
+    @SerialName("month_calls") val monthCalls: Int = 0,
+    @SerialName("monthly_cap") val monthlyCap: Int = 0,
+)
 
 // ── Maintenance DTOs ────────────────────────────────────────────────
 // Shapes verified against the live backend (2026-09-25):

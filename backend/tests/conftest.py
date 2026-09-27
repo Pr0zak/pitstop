@@ -87,6 +87,7 @@ def test_app() -> FastAPI:
         profiles,
         readings,
     )
+    from pitstop.api import fuel_prices as fuel_prices_api
     from pitstop.api import settings as settings_api
     from pitstop.api import trips as trips_api
     from pitstop.api import vehicles as vehicles_api
@@ -129,6 +130,7 @@ def test_app() -> FastAPI:
     app.include_router(maintenance.router)
     app.include_router(live_ws.router)
     app.include_router(logs_api.router)
+    app.include_router(fuel_prices_api.router)
     return app
 
 

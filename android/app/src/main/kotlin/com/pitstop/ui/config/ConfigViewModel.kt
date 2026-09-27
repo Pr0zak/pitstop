@@ -103,7 +103,32 @@ sealed interface ConfigToast {
     object SetupLinkEmpty : ConfigToast
     /** Auto-save couldn't write (DataStore / keystore fault). */
     object SaveFailed : ConfigToast
+    object PlacesKeySaved : ConfigToast
+    object PlacesKeyCleared : ConfigToast
+    data class PlacesKeyFailed(val message: String) : ConfigToast
 }
+
+/**
+ * The Google Places API key for live fuel prices (ADR-026). It lives on the
+ * server, never on the phone: Settings shows only whether one is set plus
+ * this month's lookup count, and the field below it is a write-only draft.
+ */
+sealed interface PlacesKeyStatus {
+    object Loading : PlacesKeyStatus
+    data class Loaded(val keySet: Boolean, val monthCalls: Int, val monthlyCap: Int) : PlacesKeyStatus
+    /** The server answered but predates ADR-026 (no `places` in /settings). */
+    object Unsupported : PlacesKeyStatus
+    data class Failed(val message: String) : PlacesKeyStatus
+}
+
+internal const val PLACES_UNSUPPORTED = "This server doesn't have live prices yet — update pitstop"
+
+data class PlacesKeyUi(
+    val status: PlacesKeyStatus = PlacesKeyStatus.Loading,
+    /** What the user has typed — in memory only, sent by an explicit Save. */
+    val draft: String = "",
+    val saving: Boolean = false,
+)
 
 /** Where the debounced auto-save is — the pinned strip's "Saving… / All
  *  changes saved" line. Failures also raise [ConfigToast.SaveFailed]. */
@@ -866,6 +891,83 @@ class ConfigViewModel @Inject constructor(
         if (_connTest.value != ConnTest.Idle && _connTest.value != ConnTest.InProgress) {
             _connTest.value = ConnTest.Idle
         }
+    }
+
+    // ── Places API key (server-side setting) ────────────────────────────
+    // Deliberately outside ConfigFormState: the form auto-saves to DataStore
+    // on a debounce, and this value must only ever leave the phone through
+    // an explicit Save (non-blank) or an explicit Remove (JSON null) — never
+    // as a blank from form init (see PlacesKeyPatch).
+
+    private val _placesKey = MutableStateFlow(PlacesKeyUi())
+    val placesKey: StateFlow<PlacesKeyUi> = _placesKey.asStateFlow()
+
+    /** Re-read `places` from GET /settings (bypassing the HTTP cache). */
+    fun refreshPlacesKey() {
+        viewModelScope.launch {
+            if (settingsRepository.current().settings.apiBaseUrl.isBlank()) {
+                _placesKey.update { it.copy(status = PlacesKeyStatus.Failed("Set up the server first")) }
+                return@launch
+            }
+            if (_placesKey.value.status !is PlacesKeyStatus.Loaded) {
+                _placesKey.update { it.copy(status = PlacesKeyStatus.Loading) }
+            }
+            val status = runCatching { api.getServerSettings(cacheControl = "no-cache") }.fold(
+                onSuccess = { dto -> placesStatus(dto.places) },
+                onFailure = { e -> PlacesKeyStatus.Failed(placesFailure(e, write = false)) },
+            )
+            _placesKey.update { it.copy(status = status) }
+        }
+    }
+
+    fun setPlacesKeyDraft(value: String) {
+        _placesKey.update { it.copy(draft = value) }
+    }
+
+    /** PATCH the typed key. A blank draft sends nothing. */
+    fun savePlacesKey() {
+        val body = com.pitstop.domain.PlacesKeyPatch.set(_placesKey.value.draft) ?: return
+        writePlacesKey(body, cleared = false)
+    }
+
+    /** Explicit removal: PATCH `{"places": {"api_key": null}}`. */
+    fun clearPlacesKey() {
+        writePlacesKey(com.pitstop.domain.PlacesKeyPatch.clear(), cleared = true)
+    }
+
+    private fun writePlacesKey(body: kotlinx.serialization.json.JsonObject, cleared: Boolean) {
+        if (_placesKey.value.saving) return
+        _placesKey.update { it.copy(saving = true) }
+        viewModelScope.launch {
+            runCatching { api.patchServerSettings(body) }.fold(
+                onSuccess = { dto ->
+                    if (dto.places == null) {
+                        // A pre-ADR-026 server drops the unknown field and
+                        // answers 200 — nothing was stored, so don't say so.
+                        _placesKey.update { it.copy(status = PlacesKeyStatus.Unsupported, saving = false) }
+                        _toast.emit(ConfigToast.PlacesKeyFailed(PLACES_UNSUPPORTED))
+                        return@fold
+                    }
+                    _placesKey.update { it.copy(status = placesStatus(dto.places), draft = "", saving = false) }
+                    _toast.emit(if (cleared) ConfigToast.PlacesKeyCleared else ConfigToast.PlacesKeySaved)
+                },
+                onFailure = { e ->
+                    _placesKey.update { it.copy(saving = false) }
+                    _toast.emit(ConfigToast.PlacesKeyFailed(placesFailure(e, write = true)))
+                },
+            )
+        }
+    }
+
+    private fun placesStatus(p: com.pitstop.http.PlacesSettingsDto?): PlacesKeyStatus =
+        if (p == null) PlacesKeyStatus.Unsupported else PlacesKeyStatus.Loaded(p.keySet, p.monthCalls, p.monthlyCap)
+
+    private fun placesFailure(e: Throwable, write: Boolean): String = when {
+        e is HttpException && (e.code() == 401 || e.code() == 403) ->
+            if (write) "The server rejected the Ingest token" else "The server rejected the Query token"
+        e is HttpException -> "Server error ${e.code()}"
+        e is IOException -> "Can't reach the server"
+        else -> e.message ?: e::class.java.simpleName
     }
 
     private val _brokerTest = MutableStateFlow<BrokerTest>(BrokerTest.Idle)

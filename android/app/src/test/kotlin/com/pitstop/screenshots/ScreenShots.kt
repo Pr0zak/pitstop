@@ -30,6 +30,13 @@ import com.pitstop.ui.history.CarSection
 import com.pitstop.ui.components.AppBarHost
 import com.pitstop.ui.components.LocalAppBarHost
 import com.pitstop.ui.fuel.FuelHubContent
+import com.pitstop.ui.fuel.NearbyPricesCard
+import com.pitstop.ui.config.PlacesKeySection
+import com.pitstop.ui.config.PlacesKeyStatus
+import com.pitstop.ui.config.PlacesKeyUi
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.Modifier
 import com.pitstop.ui.fuel.LogFillupSheetContent
 import com.pitstop.ui.vehicle.CarContent
 import com.pitstop.ui.vehicle.CodesList
@@ -156,7 +163,44 @@ class ScreenShots {
 
     // ── Fuel ────────────────────────────────────────────────────────
     @Test fun fuelHub() = shot("fuel_hub") {
-        FuelHubContent(ui = Fixtures.historyUi, sort = FillupSortOrder.RecentFirst, filter = FillupFilter.All)
+        FuelHubContent(
+            ui = Fixtures.historyUi,
+            sort = FillupSortOrder.RecentFirst,
+            filter = FillupFilter.All,
+            nearbyCard = { NearbyPricesCard(Fixtures.nearbyOk, nowMs = Fixtures.NOW) },
+        )
+    }
+
+    @Test fun nearbyPrices() = shot("nearby_prices") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            NearbyPricesCard(Fixtures.nearbyExpanded, nowMs = Fixtures.NOW)
+            NearbyPricesCard(Fixtures.nearbyVehicle, nowMs = Fixtures.NOW)
+        }
+    }
+
+    @Test fun nearbyPricesStates() = shot("nearby_prices_states") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            for (s in listOf(
+                Fixtures.nearbyNoKey, Fixtures.nearbyNoLocation, Fixtures.nearbyQuota,
+                Fixtures.nearbyUpstream, Fixtures.nearbyEmpty, Fixtures.nearbyLoading, Fixtures.nearbyFailed,
+            )) {
+                NearbyPricesCard(s, nowMs = Fixtures.NOW)
+            }
+        }
+    }
+
+    @Test fun nearbyPricesMetric() = shot("nearby_prices_metric", units = "metric") {
+        Column(Modifier.padding(12.dp)) { NearbyPricesCard(Fixtures.nearbyOk, nowMs = Fixtures.NOW) }
+    }
+
+    @Test fun settingsPlacesKey() = shot("settings_places_key") {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            PlacesKeySection(PlacesKeyUi(status = PlacesKeyStatus.Loaded(keySet = false, monthCalls = 0, monthlyCap = 900)))
+            PlacesKeySection(
+                PlacesKeyUi(status = PlacesKeyStatus.Loaded(keySet = true, monthCalls = 37, monthlyCap = 900), draft = "demo-key"),
+            )
+            PlacesKeySection(PlacesKeyUi(status = PlacesKeyStatus.Unsupported))
+        }
     }
 
     @Test fun logFillupSheet() = shot("log_fillup_sheet") {

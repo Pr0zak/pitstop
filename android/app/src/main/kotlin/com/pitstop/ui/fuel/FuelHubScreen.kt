@@ -1,5 +1,8 @@
 package com.pitstop.ui.fuel
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -58,6 +61,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,10 +79,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.domain.FuelField
 import com.pitstop.domain.RangeEstimate
 import com.pitstop.http.FillupDto
+import com.pitstop.ui.components.LocalAppBarHost
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.RangeFormat
 import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.rememberPitstopListState
+import com.pitstop.ui.config.SettingsTarget
 import com.pitstop.ui.history.FillupCard
 import com.pitstop.ui.history.FillupFilter
 import com.pitstop.ui.history.FillupSortOrder
@@ -97,6 +103,7 @@ import com.pitstop.ui.theme.ext
 import com.pitstop.util.UnitFormat
 import com.pitstop.util.requireActivity
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * The Fuel tab: a hub rather than a form. Range + last fill up top, the
@@ -127,6 +134,13 @@ private fun FuelHubRoute(
     // Activity-scoped: a save in flight must survive a tab switch (the pager
     // disposes this page, and with it any entry-scoped ViewModel's scope).
     val fuelVm: FuelAddViewModel = hiltViewModel(activity)
+    // Activity-scoped for the same reason: a price lookup (GPS fix + server
+    // round-trip) must outlive a tab switch.
+    val nearbyVm: NearbyPricesViewModel = hiltViewModel(activity)
+    val nearby by nearbyVm.ui.collectAsStateWithLifecycle()
+    val appBarHost = LocalAppBarHost.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val ui by historyVm.ui.collectAsStateWithLifecycle()
     val sort by historyVm.fillupSort.collectAsStateWithLifecycle()
     val filter by historyVm.fillupFilter.collectAsStateWithLifecycle()
@@ -143,7 +157,10 @@ private fun FuelHubRoute(
         }
     }
     LaunchedEffect(sheetOpen) { if (sheetOpen) fuelVm.onSheetOpened() }
-    LaunchedEffect(Unit) { historyVm.refreshIfStale() }
+    LaunchedEffect(Unit) {
+        historyVm.refreshIfStale()
+        nearbyVm.refreshIfStale()
+    }
     LaunchedEffect(form.submittedId) {
         if (form.submittedId != null && form.editingId == null) {
             sheetOpen = false
@@ -163,10 +180,29 @@ private fun FuelHubRoute(
         filter = filter,
         onSort = historyVm::setFillupSort,
         onFilter = historyVm::setFillupFilter,
-        onRefresh = { historyVm.refresh(forceNetwork = true) },
+        onRefresh = {
+            historyVm.refresh(forceNetwork = true)
+            nearbyVm.refresh(forceNetwork = true)
+        },
         onOpenFillup = onOpenFillup,
         onLog = { sheetOpen = true },
         snackbarHostState = snackbar,
+        nearbyCard = {
+            NearbyPricesCard(
+                state = nearby,
+                onGrade = nearbyVm::setGrade,
+                onRefresh = { nearbyVm.refresh(forceNetwork = true) },
+                onToggleExpanded = nearbyVm::toggleExpanded,
+                onOpenStation = { url ->
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } catch (_: ActivityNotFoundException) {
+                        scope.launch { snackbar.showSnackbar("No app can open Google Maps links") }
+                    }
+                },
+                onOpenSettings = { appBarHost?.onOpenSettingsAt?.invoke(SettingsTarget.PlacesKey) },
+            )
+        },
     )
 
     if (sheetOpen) {
@@ -214,6 +250,8 @@ internal fun FuelHubContent(
     onOpenFillup: (String) -> Unit = {},
     onLog: () -> Unit = {},
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
+    /** The "Nearby prices" card, under range / last fill. Null hides it. */
+    nearbyCard: (@Composable () -> Unit)? = null,
 ) {
     val state = ui.fillups
     val groups = remember(state.data, sort, filter) { groupAndSortFillups(state.data, sort, filter) }
@@ -247,6 +285,9 @@ internal fun FuelHubContent(
             ) {
                 item(key = "hub-header") {
                     FuelHubHeader(range = ui.range, lastFill = state.data.maxByOrNull { it.fillupDate })
+                }
+                if (nearbyCard != null) {
+                    item(key = "nearby-prices") { nearbyCard() }
                 }
                 item(key = "stats") {
                     FillupStatsHeader(

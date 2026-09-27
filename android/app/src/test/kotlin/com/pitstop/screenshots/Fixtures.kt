@@ -366,4 +366,89 @@ object Fixtures {
             VehicleDto(id = "v2", slug = "truck", name = "Work truck", year = 2014, make = "Acme", model = "Hauler"),
         ),
     )
+
+    // ── Nearby prices (ADR-026) — made-up stations on a made-up street ──
+    private fun isoAgo(ms: Long) = Instant.ofEpochMilli(NOW - ms).toString()
+
+    private fun station(
+        id: String,
+        name: String?,
+        distanceM: Int,
+        price: Double?,
+        updatedAgoMs: Long? = 3 * 3_600_000L,
+        myLast: Double? = null,
+        myLastAgoDays: Long? = null,
+    ) = com.pitstop.http.NearbyStationDto(
+        placeId = id,
+        name = name,
+        address = "$distanceM Example Ave, Sampletown, ST 00000, USA",
+        lat = 40.0,
+        lon = -90.0,
+        distanceM = distanceM,
+        price = price,
+        currency = price?.let { "USD" },
+        priceUpdatedAt = price?.let { updatedAgoMs?.let { isoAgo(it) } },
+        myLastPrice = myLast,
+        myLastDate = myLastAgoDays?.let { isoAgo(it * 86_400_000L) },
+        myFillupCount = if (myLast != null) 2 else 0,
+        mapsUrl = "https://www.google.com/maps/search/?api=1&query=40.000000,-90.000000&query_place_id=$id",
+    )
+
+    private val nearbyStations = listOf(
+        station("a", "Station Alpha", 2_140, 2.99, myLast = 3.09, myLastAgoDays = 12),
+        station("b", "Station Bravo", 820, 3.049, updatedAgoMs = 40 * 60_000L),
+        station("c", "Station Charlie", 3_900, 3.09, updatedAgoMs = 26 * 3_600_000L),
+        station("d", "Station Delta", 1_300, 3.19),
+        station("e", "Station Echo", 4_600, 3.29, updatedAgoMs = 4 * 86_400_000L),
+        station("f", null, 330, null, myLast = 3.15, myLastAgoDays = 40),
+    )
+
+    private fun nearbyDto(
+        status: String = "ok",
+        detail: String? = null,
+        source: String? = "device",
+        stations: List<com.pitstop.http.NearbyStationDto> = nearbyStations,
+        cached: Boolean = true,
+        fetched: Boolean = true,
+    ) = com.pitstop.http.NearbyPricesDto(
+        status = status,
+        detail = detail,
+        grade = "REGULAR_UNLEADED",
+        radiusM = 5_000,
+        origin = source?.let {
+            com.pitstop.http.PriceOriginDto(40.0, -90.0, it, asOf = if (it == "vehicle") isoAgo(3 * 3_600_000L) else null)
+        },
+        fetchedAt = if (fetched) isoAgo(14 * 60_000L) else null,
+        cached = cached,
+        usage = com.pitstop.http.PlacesUsageDto(monthCalls = 37, monthlyCap = 900),
+        stations = stations,
+    )
+
+    val nearbyOk = com.pitstop.ui.fuel.NearbyPricesUi(result = nearbyDto())
+    val nearbyExpanded = nearbyOk.copy(result = nearbyDto(cached = false).copy(fetchedAt = isoAgo(5_000)), expanded = true)
+    val nearbyVehicle = nearbyOk.copy(
+        grade = com.pitstop.domain.FuelGrade.Premium,
+        result = nearbyDto(source = "vehicle", stations = nearbyStations.take(2)),
+    )
+    val nearbyNoKey = com.pitstop.ui.fuel.NearbyPricesUi(
+        result = nearbyDto(status = "no_key", source = null, stations = emptyList(), fetched = false),
+    )
+    val nearbyNoLocation = com.pitstop.ui.fuel.NearbyPricesUi(
+        result = nearbyDto(status = "no_location", source = null, stations = emptyList(), fetched = false),
+        hasLocationPermission = false,
+    )
+    val nearbyQuota = com.pitstop.ui.fuel.NearbyPricesUi(
+        result = nearbyDto(status = "quota_reached", source = "home", stations = emptyList(), fetched = false),
+    )
+    val nearbyUpstream = com.pitstop.ui.fuel.NearbyPricesUi(
+        result = nearbyDto(
+            status = "upstream_error",
+            detail = "API key not valid. Please pass a valid API key.",
+            stations = emptyList(),
+            fetched = false,
+        ),
+    )
+    val nearbyEmpty = com.pitstop.ui.fuel.NearbyPricesUi(result = nearbyDto(stations = emptyList(), cached = false))
+    val nearbyLoading = com.pitstop.ui.fuel.NearbyPricesUi(loading = true)
+    val nearbyFailed = com.pitstop.ui.fuel.NearbyPricesUi(error = "Couldn't reach the server")
 }

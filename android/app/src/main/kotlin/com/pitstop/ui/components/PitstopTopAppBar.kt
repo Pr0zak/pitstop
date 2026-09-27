@@ -77,6 +77,8 @@ class AppBarHost(
     val onSelectVehicle: (String) -> Unit = {},
     val onOpenStatus: () -> Unit = {},
     val onOpenSettings: () -> Unit = {},
+    /** Open Settings straight at one setting (e.g. the Places API key). */
+    val onOpenSettingsAt: (com.pitstop.ui.config.SettingsTarget) -> Unit = {},
 )
 
 /**

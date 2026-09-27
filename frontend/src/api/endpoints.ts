@@ -8,6 +8,9 @@ import type {
   TripDetail,
   Dtc,
   Settings,
+  SettingsPatch,
+  FuelGrade,
+  NearbyPrices,
   Fillup,
   Expense,
   Category,
@@ -302,7 +305,7 @@ export async function getSettings(): Promise<Settings> {
   const r = await apiQuery.get<Settings>("/settings");
   return r.data;
 }
-export async function updateSettings(payload: Partial<Settings>): Promise<Settings> {
+export async function updateSettings(payload: SettingsPatch): Promise<Settings> {
   const r = await apiIngest.patch<Settings>("/settings", payload);
   return r.data;
 }
@@ -464,6 +467,21 @@ export async function stationPrices(
   });
   return r.data;
 }
+// Live nearby prices from Google Places (ADR-026). No lat/lon from the
+// web: the UI is plain http on the LAN where browsers refuse geolocation,
+// so the server searches around the car's last GPS point, then home.
+// Always a 200 — the card renders `status`. Uncached lookups cost money,
+// so callers fetch on demand only (no polling).
+export async function nearbyFuelPrices(
+  vehicleId: string | null | undefined,
+  grade: FuelGrade = "REGULAR_UNLEADED",
+): Promise<NearbyPrices> {
+  const r = await apiQuery.get<NearbyPrices>("/fuel-prices/nearby", {
+    params: { ...(vehicleId ? { vehicle_id: vehicleId } : {}), grade },
+  });
+  return r.data;
+}
+
 export interface EiaWeeklyPoint {
   week_of: string;
   price: number;

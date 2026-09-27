@@ -41,6 +41,7 @@ import FillupModal from "@/components/FillupModal.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import StateCard from "@/components/StateCard.vue";
 import WindowChips from "@/components/WindowChips.vue";
+import NearbyPricesCard from "@/components/NearbyPricesCard.vue";
 import { useQueryParam } from "@/composables/useQueryParam";
 import { chartColors, chartPalette, withAlpha } from "@/lib/chartTheme";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
@@ -1117,6 +1118,10 @@ const mpgVsTempChart = computed(() => {
 
       <!-- Stations map -->
       <template v-else-if="tab === 'map'">
+        <!-- Live prices near the parked car (ADR-026). Lives on this tab so
+             the paid lookup only runs when the user comes looking for
+             stations, not on every Fuel page load. -->
+        <NearbyPricesCard :vehicle-id="vehicleId" :vehicle-name="vehicles.selectedVehicle?.name ?? null" />
         <StateCard v-if="stationsQ.loading.value" state="loading" title="Loading stations…" />
         <StateCard v-else-if="stationsQ.error.value" state="error" :message="stationsQ.error.value" @retry="stationsQ.reload()" />
         <StateCard

@@ -244,9 +244,19 @@ export interface HomeLocation {
   lon?: number | null;
 }
 
+/** Google Places API (New) — live nearby fuel prices (ADR-026). The key
+ *  itself is never returned; only whether one is stored. */
+export interface PlacesSettings {
+  key_set: boolean;
+  month_calls: number;
+  monthly_cap: number;
+}
+
 export interface Settings {
   ha: HaSettings;
   home: HomeLocation;
+  /** Optional: absent on backends older than ADR-026. */
+  places?: PlacesSettings;
   disk_alert_pct?: number | null;
   /** Null = no auto-purge for OBD readings. Positive integer = nightly cron. */
   retention_readings_days?: number | null;
@@ -254,6 +264,89 @@ export interface Settings {
   retention_logs_days?: number | null;
   /** Null = no auto-purge for level='debug' rows specifically. */
   retention_logs_debug_days?: number | null;
+}
+
+/** PATCH /settings body — the write shape differs from the read shape for
+ *  secrets: `ha.token` / `places.api_key` are write-only. A non-blank
+ *  string sets the secret, explicit `null` clears it, and the field must be
+ *  OMITTED (never "") to leave it unchanged. */
+export interface SettingsPatch {
+  ha?: {
+    enabled?: boolean;
+    url?: string | null;
+    discovery_prefix?: string | null;
+    token?: string | null;
+    per_pid_toggles?: Record<string, boolean> | null;
+  };
+  home?: HomeLocation;
+  places?: { api_key: string | null };
+  disk_alert_pct?: number | null;
+  retention_readings_days?: number | null;
+  retention_logs_days?: number | null;
+  retention_logs_debug_days?: number | null;
+}
+
+// ─── Nearby fuel prices (GET /fuel-prices/nearby, ADR-026) ────────────
+
+export type FuelGrade = "REGULAR_UNLEADED" | "MIDGRADE" | "PREMIUM" | "DIESEL";
+
+/** Every response is HTTP 200; the card renders `status` directly. */
+export type NearbyPricesStatus =
+  | "ok"
+  | "no_key"
+  | "no_location"
+  | "quota_reached"
+  | "upstream_error";
+
+export interface NearbyOrigin {
+  lat: number;
+  lon: number;
+  /** device = caller's lat/lon (phone only); vehicle = car's last GPS
+   *  point; home = Settings → home. */
+  source: "device" | "vehicle" | "home";
+  /** Time of the vehicle GPS fix; null for device / home. */
+  as_of: string | null;
+}
+
+export interface NearbyOtherPrice {
+  /** Google's grade code — may be outside FuelGrade (E85, SP91, …). */
+  grade: string;
+  price: number;
+  currency: string | null;
+  updated_at: string | null;
+}
+
+export interface NearbyStation {
+  place_id: string;
+  name: string | null;
+  address: string | null;
+  lat: number;
+  lon: number;
+  distance_m: number;
+  /** Null when the station reports no price for the requested grade —
+   *  render "—", never 0. */
+  price: number | null;
+  currency: string | null;
+  price_updated_at: string | null;
+  other_prices: NearbyOtherPrice[];
+  my_last_price: number | null;
+  my_last_date: string | null;
+  my_fillup_count: number;
+  maps_url: string;
+}
+
+export interface NearbyPrices {
+  status: NearbyPricesStatus;
+  detail: string | null;
+  grade: FuelGrade;
+  radius_m: number;
+  origin: NearbyOrigin | null;
+  /** Null unless status is "ok". */
+  fetched_at: string | null;
+  cached: boolean;
+  usage: { month_calls: number; monthly_cap: number };
+  /** Server order: priced cheapest-first, then unpriced nearest-first. */
+  stations: NearbyStation[];
 }
 
 // Field names mirror the backend API exactly (which mirrors Fuelio's CSV

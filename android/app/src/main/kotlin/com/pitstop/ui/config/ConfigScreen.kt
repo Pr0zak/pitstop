@@ -62,6 +62,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -133,6 +134,10 @@ fun ConfigScreen(
     /** Non-null when opened full-screen from the top-bar gear: the root
      *  gets a back arrow that closes Settings. */
     onClose: (() -> Unit)? = null,
+    /** Open straight at one setting instead of the root (a feature card's
+     *  "set this up" button); [onTargetConsumed] fires once it has. */
+    target: SettingsTarget? = null,
+    onTargetConsumed: () -> Unit = {},
 ) {
     // Consume a pitstop://setup?… deep link forwarded by MainActivity: import
     // it once, then clear so a recompose doesn't re-import.
@@ -159,6 +164,7 @@ fun ConfigScreen(
     val brokerTest by viewModel.brokerTest.collectAsStateWithLifecycle()
     val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
     val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
+    val placesKey by viewModel.placesKey.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val nav = rememberNavController()
@@ -242,6 +248,21 @@ fun ConfigScreen(
         scope.launch { snackbarHostState.showSnackbar("Diagnostics copied") }
     }
 
+    // Deep-link to a sub-screen, with the root kept underneath so Back
+    // behaves as if the user had tapped through. [focusPlaces] then scrolls
+    // the Places key section into view.
+    var focusPlaces by remember { mutableStateOf(false) }
+    LaunchedEffect(target) {
+        when (target) {
+            SettingsTarget.PlacesKey -> {
+                nav.navigate(ROUTE_CONNECTION) { launchSingleTop = true }
+                focusPlaces = true
+                onTargetConsumed()
+            }
+            null -> Unit
+        }
+    }
+
     NavHost(navController = nav, startDestination = ROUTE_ROOT) {
         composable(ROUTE_ROOT) {
             ConfigRootContent(
@@ -277,6 +298,16 @@ fun ConfigScreen(
                     slug = form.vehicleSlug,
                     connTest = connTest,
                     onSlugChange = { v -> viewModel.update { it.copy(vehicleSlug = v) } },
+                )
+                LaunchedEffect(Unit) { viewModel.refreshPlacesKey() }
+                PlacesKeySection(
+                    state = placesKey,
+                    focus = focusPlaces,
+                    onFocused = { focusPlaces = false },
+                    onDraftChange = viewModel::setPlacesKeyDraft,
+                    onSave = viewModel::savePlacesKey,
+                    onClear = viewModel::clearPlacesKey,
+                    onRetry = viewModel::refreshPlacesKey,
                 )
                 MqttBrokerSection(
                     form = form,
@@ -421,6 +452,15 @@ private fun toastMessage(t: ConfigToast): String = when (t) {
     ConfigToast.SetupLinkInvalid -> "Clipboard isn't a pitstop setup link"
     ConfigToast.SetupLinkEmpty -> "That setup link had nothing to import"
     ConfigToast.SaveFailed -> "Couldn't save settings — your last change may be lost"
+    ConfigToast.PlacesKeySaved -> "Places API key saved on the server"
+    ConfigToast.PlacesKeyCleared -> "Places API key removed"
+    is ConfigToast.PlacesKeyFailed -> "Couldn't update the key: ${t.message}"
+}
+
+/** Places in Settings a feature can deep-link to. */
+enum class SettingsTarget {
+    /** Connection → Live fuel prices (the Google Places API key). */
+    PlacesKey,
 }
 
 /** "Saving…" while a write is pending or running; "All changes saved" once
@@ -1444,6 +1484,100 @@ private fun PitstopServerSection(
             onValueChange = { v -> update { it.copy(queryToken = v) }; onEdit() },
         )
         ConnStatusRow(connTest = connTest, onTest = onTest)
+    }
+}
+
+// ── Live fuel prices (Google Places key, stored server-side) ───────
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+internal fun PlacesKeySection(
+    state: PlacesKeyUi,
+    focus: Boolean = false,
+    onFocused: () -> Unit = {},
+    onDraftChange: (String) -> Unit = {},
+    onSave: () -> Unit = {},
+    onClear: () -> Unit = {},
+    onRetry: () -> Unit = {},
+) {
+    val requester = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    LaunchedEffect(focus) {
+        if (focus) {
+            requester.bringIntoView()
+            onFocused()
+        }
+    }
+    var confirmClear by remember { mutableStateOf(false) }
+    SettingsSection(
+        title = "Live fuel prices",
+        description = "A Google Places API key lets the Fuel tab show live prices at nearby stations. " +
+            "It is stored on your pitstop server, not on this phone, and can't be read back.",
+        modifier = Modifier.bringIntoViewRequester(requester),
+    ) {
+        val loaded = state.status as? PlacesKeyStatus.Loaded
+        val (tone, label) = when (val s = state.status) {
+            PlacesKeyStatus.Loading -> PillTone.Connecting to "Checking…"
+            is PlacesKeyStatus.Loaded -> if (s.keySet) PillTone.Healthy to "Key set" else PillTone.Neutral to "Not set"
+            PlacesKeyStatus.Unsupported -> PillTone.Degraded to "Server needs update"
+            is PlacesKeyStatus.Failed -> PillTone.Offline to s.message
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            StatusPill(tone = tone, label = label, compact = true, subject = "Places API key")
+            Spacer(Modifier.weight(1f))
+            if (loaded != null && loaded.monthlyCap > 0) {
+                Text(
+                    "${loaded.monthCalls}/${loaded.monthlyCap} lookups this month",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (state.status is PlacesKeyStatus.Failed) {
+                TextButton(onClick = onRetry) { Text("Retry") }
+            }
+        }
+        if (state.status is PlacesKeyStatus.Unsupported) {
+            Text(
+                PLACES_UNSUPPORTED,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@SettingsSection
+        }
+        SecretField(
+            label = if (loaded?.keySet == true) "Replace key" else "Places API key",
+            value = state.draft,
+            onValueChange = onDraftChange,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (loaded?.keySet == true) {
+                TextButton(onClick = { confirmClear = true }, enabled = !state.saving) { Text("Remove key") }
+            }
+            Spacer(Modifier.weight(1f))
+            Button(onClick = onSave, enabled = state.draft.isNotBlank() && !state.saving) {
+                if (state.saving) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("Save key")
+            }
+        }
+    }
+    if (confirmClear) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Remove the Places API key?") },
+            text = { Text("The Fuel tab stops showing live prices until a key is added again.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    onClear()
+                }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+        )
     }
 }
 

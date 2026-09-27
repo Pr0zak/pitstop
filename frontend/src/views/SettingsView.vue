@@ -7,7 +7,7 @@ import { useUnitsStore, type UnitSystem } from "@/stores/units";
 import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2, Undo2, Bug, Palette } from "lucide-vue-next";
 import HondaLinkTest from "@/components/HondaLinkTest.vue";
 import { useToastStore, errMessage } from "@/stores/toast";
-import type { Settings } from "@/api/types";
+import type { Settings, SettingsPatch } from "@/api/types";
 import HomeLocationPicker from "@/components/HomeLocationPicker.vue";
 import UpdateModal from "@/components/UpdateModal.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
@@ -78,6 +78,13 @@ const haDiscoveryPrefix = ref("homeassistant");
 const haTestStatus = ref<"idle" | "ok" | "fail" | "running">("idle");
 const haTestMsg = ref<string | null>(null);
 
+// Google Places API key (nearby fuel prices, ADR-026). Write-only like the
+// HA token: empty means "don't change"; clearing is an explicit action.
+const placesKey = ref("");
+const placesInfo = computed(() => settings.settings?.places ?? null);
+const confirmClearPlacesOpen = ref(false);
+const placesClearBusy = ref(false);
+
 const homeLat = ref<number | null>(null);
 const homeLon = ref<number | null>(null);
 const diskAlertPct = ref<number | null>(null);
@@ -108,6 +115,7 @@ function formState() {
     haUrl: haUrl.value,
     haDiscoveryPrefix: haDiscoveryPrefix.value,
     haToken: haToken.value,
+    placesKey: placesKey.value,
     homeLat: homeLat.value,
     homeLon: homeLon.value,
     diskAlertPct: diskAlertPct.value,
@@ -129,6 +137,7 @@ function applyFromServer(s: Settings) {
   haUrl.value = s.ha?.url ?? "";
   haDiscoveryPrefix.value = s.ha?.discovery_prefix ?? "homeassistant";
   haToken.value = "";
+  placesKey.value = "";
   homeLat.value = s.home?.lat ?? null;
   homeLon.value = s.home?.lon ?? null;
   diskAlertPct.value = s.disk_alert_pct ?? null;
@@ -174,19 +183,7 @@ async function saveAll() {
   saveStatus.value = "saving";
   saveError.value = null;
   try {
-    const payload: {
-      ha: {
-        enabled: boolean;
-        url: string | null;
-        discovery_prefix: string;
-        token?: string | null;
-      };
-      home: { lat: number | null; lon: number | null };
-      disk_alert_pct: number | null;
-      retention_readings_days: number | null;
-      retention_logs_days: number | null;
-      retention_logs_debug_days: number | null;
-    } = {
+    const payload: SettingsPatch & { ha: NonNullable<SettingsPatch["ha"]> } = {
       ha: {
         enabled: haEnabled.value,
         url: haUrl.value || null,
@@ -201,11 +198,15 @@ async function saveAll() {
     if (haToken.value) {
       payload.ha.token = haToken.value;
     }
-    // patchSettings expects partial Settings; the wire shape uses ha.token (separate from token_set).
-    // We cast at the call site since the type definition models the read shape.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await settings.patchSettings(payload as any);
+    // Only a key the user actually typed — never "" from an untouched
+    // field (the backend ignores blanks too, but don't rely on it).
+    const newPlacesKey = placesKey.value.trim();
+    if (newPlacesKey) {
+      payload.places = { api_key: newPlacesKey };
+    }
+    await settings.patchSettings(payload);
     haToken.value = ""; // clear after save
+    placesKey.value = "";
     if (settings.settings) applyFromServer(settings.settings);
     else snapshot.value = JSON.stringify(formState());
     saveStatus.value = "saved";
@@ -214,6 +215,22 @@ async function saveAll() {
   } catch (e: unknown) {
     saveStatus.value = "error";
     saveError.value = errMessage(e, "save failed");
+  }
+}
+
+/** Explicit clear — the only path that sends `api_key: null`. Sends just
+ *  the places block, so unsaved edits elsewhere on the page survive. */
+async function clearPlacesKey() {
+  placesClearBusy.value = true;
+  try {
+    await settings.patchSettings({ places: { api_key: null } });
+    placesKey.value = "";
+    confirmClearPlacesOpen.value = false;
+    toast.success("Places API key removed");
+  } catch (e: unknown) {
+    toast.error(errMessage(e, "couldn't clear the key"));
+  } finally {
+    placesClearBusy.value = false;
   }
 }
 
@@ -620,6 +637,45 @@ function geolocate() {
             <span v-else-if="haTestStatus === 'running'" class="muted"><RefreshCw :size="12" aria-hidden="true" /> testing…</span>
           </div>
         </div>
+        <div id="places" class="sub">
+          <h4>
+            Nearby fuel prices <span class="saves">server · save bar</span>
+            <span v-if="placesInfo?.key_set" class="badge success">Key set</span>
+            <span v-else class="badge">Not set</span>
+          </h4>
+          <p class="muted">
+            Live prices at stations near the car, shown on Fuel → Stations. Uses Google Places; the
+            key stays on the server.
+          </p>
+          <div class="grid two">
+            <label class="full">
+              Places API key
+              <input
+                type="password"
+                v-model="placesKey"
+                :placeholder="placesInfo?.key_set ? 'leave blank to keep current' : 'paste API key'"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <small v-if="placesInfo" class="muted">
+                {{ placesInfo.month_calls }}/{{ placesInfo.monthly_cap }} lookups this month
+              </small>
+            </label>
+          </div>
+          <div class="actions">
+            <button
+              type="button"
+              :disabled="!placesInfo?.key_set || placesClearBusy"
+              @click="confirmClearPlacesOpen = true"
+            >
+              <Trash2 :size="14" aria-hidden="true" /> Clear key
+            </button>
+          </div>
+          <p class="muted small places-help">
+            Google Cloud → enable Places API (New) → create a key restricted to it. Lookups are capped
+            at 900/month (Google's free tier is 1,000).
+          </p>
+        </div>
         <div class="sub">
           <h4>HondaLink connection test <span class="saves">nothing is saved</span></h4>
           <HondaLinkTest />
@@ -879,6 +935,16 @@ function geolocate() {
       @cancel="unmapTarget = null"
     />
     <ConfirmDialog
+      :open="confirmClearPlacesOpen"
+      title="Remove the Places API key?"
+      message="Nearby prices stop working until a key is added again."
+      confirm-label="Remove key"
+      tone="danger"
+      :busy="placesClearBusy"
+      @confirm="clearPlacesKey"
+      @cancel="confirmClearPlacesOpen = false"
+    />
+    <ConfirmDialog
       :open="confirmPurgeOpen"
       title="Delete old readings?"
       :message="
@@ -952,7 +1018,8 @@ function geolocate() {
   gap: 1rem;
   min-width: 0;
 }
-.settings section {
+.settings section,
+#places {
   scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
 }
 .card h3 {
@@ -1222,6 +1289,9 @@ small {
 }
 .warn-text {
   color: var(--c-warn);
+}
+.places-help {
+  margin: 0.6rem 0 0;
 }
 .grid.two > label {
   min-width: 0;

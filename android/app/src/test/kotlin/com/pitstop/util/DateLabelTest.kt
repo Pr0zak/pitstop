@@ -83,4 +83,23 @@ class DateLabelTest {
         )
         assertEquals("—", DateLabel.detailTitle(null, is24h = false, now = now, zone = zone))
     }
+
+    @Test fun `ago buckets`() {
+        val nowMs = now.toInstant().toEpochMilli()
+        assertEquals("just now", DateLabel.ago("2026-09-25T18:59:40Z", nowMs))
+        assertEquals("12 min ago", DateLabel.ago("2026-09-25T18:48:00Z", nowMs))
+        assertEquals("2 h ago", DateLabel.ago("2026-09-25T16:55:00Z", nowMs))
+        assertEquals("47 h ago", DateLabel.ago("2026-09-23T20:00:00Z", nowMs))
+        assertEquals("3 d ago", DateLabel.ago("2026-09-22T19:00:00Z", nowMs))
+    }
+
+    @Test fun `ago tolerates skew and garbage`() {
+        val nowMs = now.toInstant().toEpochMilli()
+        // Server clock a little ahead of the phone.
+        assertEquals("just now", DateLabel.ago("2026-09-25T19:02:00Z", nowMs))
+        // Python isoformat with microseconds.
+        assertEquals("just now", DateLabel.ago("2026-09-25T19:00:00.684392+00:00", nowMs))
+        assertEquals(null, DateLabel.ago(null, nowMs))
+        assertEquals(null, DateLabel.ago("not a date", nowMs))
+    }
 }

@@ -18,13 +18,23 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
 from ..schemas import SettingsOut, SettingsUpdate
+from ..services import fuel_prices
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 
-def _row_to_settings(row: asyncpg.Record) -> dict[str, Any]:
+_SETTINGS_SELECT = (
+    "SELECT ha_enabled, ha_url, ha_token, ha_discovery_prefix, "
+    "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct, "
+    "       retention_readings_days, retention_logs_days, "
+    "       retention_logs_debug_days, places_api_key "
+    "FROM settings WHERE id = 1"
+)
+
+
+def _row_to_settings(row: asyncpg.Record, places_calls: int = 0) -> dict[str, Any]:
     toggles = row["ha_per_pid_toggles"]
     if isinstance(toggles, str):
         toggles = json.loads(toggles)
@@ -37,6 +47,11 @@ def _row_to_settings(row: asyncpg.Record) -> dict[str, Any]:
             "per_pid_toggles": toggles or {},
         },
         "home": {"lat": row["home_lat"], "lon": row["home_lon"]},
+        "places": {
+            "key_set": bool(row["places_api_key"]),
+            "month_calls": places_calls,
+            "monthly_cap": fuel_prices.MONTHLY_CAP,
+        },
         "disk_alert_pct": row["disk_alert_pct"],
         "retention_readings_days": row["retention_readings_days"],
         "retention_logs_days": row["retention_logs_days"],
@@ -46,24 +61,16 @@ def _row_to_settings(row: asyncpg.Record) -> dict[str, Any]:
 
 async def _fetch_settings(conn: asyncpg.Connection) -> dict[str, Any]:
     row = await conn.fetchrow(
-        "SELECT ha_enabled, ha_url, ha_token, ha_discovery_prefix, "
-        "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct, "
-        "       retention_readings_days, retention_logs_days, "
-        "       retention_logs_debug_days "
-        "FROM settings WHERE id = 1"
+        _SETTINGS_SELECT
     )
     if row is None:
         # Initial migration seeds id=1, but be defensive on a stale DB.
         await conn.execute("INSERT INTO settings (id) VALUES (1)")
         row = await conn.fetchrow(
-            "SELECT ha_enabled, ha_url, ha_token, ha_discovery_prefix, "
-            "       ha_per_pid_toggles, home_lat, home_lon, disk_alert_pct, "
-            "       retention_readings_days, retention_logs_days, "
-            "       retention_logs_debug_days "
-            "FROM settings WHERE id = 1"
+            _SETTINGS_SELECT
         )
     assert row is not None
-    return _row_to_settings(row)
+    return _row_to_settings(row, await fuel_prices.month_calls(conn))
 
 
 @router.get(
@@ -117,6 +124,21 @@ async def patch_settings(
         if "lon" in home_fields:
             args.append(home_fields["lon"])
             set_parts.append(f"home_lon = ${len(args)}")
+
+    if body.places is not None:
+        places_fields = body.places.model_dump(exclude_unset=True)
+        if "api_key" in places_fields:
+            key = places_fields["api_key"]
+            if key is None:
+                args.append(None)
+                set_parts.append(f"places_api_key = ${len(args)}")
+            elif key.strip():
+                args.append(key.strip())
+                set_parts.append(f"places_api_key = ${len(args)}")
+            # "" / whitespace: ignored — never blank-overwrite a secret.
+            # A new or cleared key invalidates cached results fetched
+            # under the old one (e.g. an error-free empty list).
+            fuel_prices.cache.clear()
 
     if body.disk_alert_pct is not None:
         args.append(body.disk_alert_pct)

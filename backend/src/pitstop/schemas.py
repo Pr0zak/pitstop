@@ -375,6 +375,27 @@ class HASettingsUpdate(BaseModel):
     per_pid_toggles: dict[str, bool] | None = None
 
 
+class PlacesSettings(BaseModel):
+    """Google Places API (New) — live nearby fuel prices.
+
+    The key is never returned; clients see ``key_set`` plus this month's
+    call count against the service's hard cap."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key_set: bool = False
+    month_calls: int = 0
+    monthly_cap: int = 0
+
+
+class PlacesSettingsUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    # A non-blank string sets the key; explicit null clears it. "" is
+    # ignored so a form saved before its fields loaded can't wipe it.
+    api_key: str | None = None
+
+
 class HomeLocation(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -387,6 +408,7 @@ class SettingsOut(BaseModel):
 
     ha: HASettings = Field(default_factory=HASettings)
     home: HomeLocation = Field(default_factory=HomeLocation)
+    places: PlacesSettings = Field(default_factory=PlacesSettings)
     disk_alert_pct: int = 70
     # Auto-purge thresholds. None = no auto-purge for that stream;
     # the manual /admin/purge endpoints still work either way.
@@ -403,6 +425,7 @@ class SettingsUpdate(BaseModel):
 
     ha: HASettingsUpdate | None = None
     home: HomeLocation | None = None
+    places: PlacesSettingsUpdate | None = None
     disk_alert_pct: int | None = None
     retention_readings_days: int | None = None
     retention_logs_days: int | None = None

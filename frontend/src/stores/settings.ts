@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { Settings } from "@/api/types";
+import type { Settings, SettingsPatch } from "@/api/types";
 import * as api from "@/api/endpoints";
 
 export const useSettingsStore = defineStore("settings", () => {
@@ -21,7 +21,7 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  async function patchSettings(payload: Partial<Settings>) {
+  async function patchSettings(payload: SettingsPatch) {
     settings.value = await api.updateSettings(payload);
   }
 

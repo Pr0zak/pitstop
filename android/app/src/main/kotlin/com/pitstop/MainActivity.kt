@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -66,6 +67,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pitstop.ui.RootViewModel
 import com.pitstop.ui.config.ConfigScreen
+import com.pitstop.ui.config.SettingsTarget
 import com.pitstop.ui.history.HistorySubTab
 import com.pitstop.ui.history.HistoryViewModel
 import com.pitstop.ui.onboarding.OnboardingGateViewModel
@@ -256,6 +258,9 @@ private fun PitstopRootBody(
     val scope = rememberCoroutineScope()
     val goTo: (Tab) -> Unit = { tab -> scope.launch { pagerState.scrollToPage(tab.ordinal) } }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    // Where Settings should land when opened from a feature card; consumed
+    // (reset to null) by ConfigScreen once it has navigated.
+    var settingsTarget by remember { mutableStateOf<SettingsTarget?>(null) }
     var bridgeSheetOpen by rememberSaveable { mutableStateOf(false) }
 
     // Route an onNewIntent deep link (shortcut / notification tap on an
@@ -351,6 +356,10 @@ private fun PitstopRootBody(
         onSelectVehicle = appBarVm::selectVehicle,
         onOpenStatus = { bridgeSheetOpen = true },
         onOpenSettings = { settingsOpen = true },
+        onOpenSettingsAt = { target ->
+            settingsTarget = target
+            settingsOpen = true
+        },
     )
 
     Box(Modifier.fillMaxSize()) {
@@ -447,7 +456,12 @@ private fun PitstopRootBody(
             ) {
                 ConfigScreen(
                     pendingSetupLinkFlow = pendingSetupLinkFlow,
-                    onClose = { settingsOpen = false },
+                    onClose = {
+                        settingsOpen = false
+                        settingsTarget = null
+                    },
+                    target = settingsTarget,
+                    onTargetConsumed = { settingsTarget = null },
                 )
             }
         }
