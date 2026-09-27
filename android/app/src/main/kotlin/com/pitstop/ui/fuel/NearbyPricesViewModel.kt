@@ -1,5 +1,6 @@
 package com.pitstop.ui.fuel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.data.ActiveVehicle
@@ -10,6 +11,7 @@ import com.pitstop.http.NearbyPricesDto
 import com.pitstop.http.PitstopApi
 import com.pitstop.log.LogBuffer
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,7 +31,14 @@ data class NearbyPricesUi(
     val result: NearbyPricesDto? = null,
     /** A transport failure (the server never answered with a `status`). */
     val error: String? = null,
+    /** Every station row shown, not just the first [com.pitstop.domain.FuelPrices.COLLAPSED_ROWS]. */
     val expanded: Boolean = false,
+    /**
+     * Card open (chips, rows, footer) vs closed to its one summary line.
+     * Closed by default — it sits above the fillup list and shouldn't
+     * push it off screen. Remembered across launches.
+     */
+    val open: Boolean = false,
     /** Whether the app may read location — shapes the no_location copy. */
     val hasLocationPermission: Boolean = true,
     /** Wall-clock time of the last completed load, for [NearbyPricesViewModel.refreshIfStale]. */
@@ -48,6 +57,7 @@ data class NearbyPricesUi(
  */
 @HiltViewModel
 class NearbyPricesViewModel @Inject constructor(
+    @ApplicationContext context: Context,
     private val api: PitstopApi,
     private val settings: SettingsRepository,
     private val activeVehicle: ActiveVehicle,
@@ -56,7 +66,16 @@ class NearbyPricesViewModel @Inject constructor(
     private val logBuffer: LogBuffer,
 ) : ViewModel() {
 
-    private val _ui = MutableStateFlow(NearbyPricesUi())
+    // Per-device view preferences only (open/closed, chosen grade) — not
+    // server state, so plain SharedPreferences rather than SettingsRepository.
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    private val _ui = MutableStateFlow(
+        NearbyPricesUi(
+            grade = FuelGrade.fromApi(prefs.getString(KEY_GRADE, null)),
+            open = prefs.getBoolean(KEY_OPEN, false),
+        ),
+    )
     val ui: StateFlow<NearbyPricesUi> = _ui.asStateFlow()
 
     private var job: Job? = null
@@ -149,11 +168,19 @@ class NearbyPricesViewModel @Inject constructor(
         if (grade == _ui.value.grade) return
         // Drop the other grade's rows: its prices must never sit under this chip.
         _ui.update { it.copy(grade = grade, result = null, expanded = false) }
+        prefs.edit().putString(KEY_GRADE, grade.apiValue).apply()
         refresh()
     }
 
     fun toggleExpanded() {
         _ui.update { it.copy(expanded = !it.expanded) }
+    }
+
+    fun toggleOpen() {
+        val open = !_ui.value.open
+        // Closing also folds "Show all" back, so reopening is compact.
+        _ui.update { it.copy(open = open, expanded = if (open) it.expanded else false) }
+        prefs.edit().putBoolean(KEY_OPEN, open).apply()
     }
 
     private suspend fun currentFix(fresh: Boolean): GpsFix? {
@@ -181,5 +208,8 @@ class NearbyPricesViewModel @Inject constructor(
         const val STALE_AFTER_MS = 5 * 60_000L
         const val FIX_REUSE_MS = 5 * 60_000L
         const val FIX_TIMEOUT_MS = 6_000L
+        const val PREFS = "nearby_prices"
+        const val KEY_OPEN = "open"
+        const val KEY_GRADE = "grade"
     }
 }

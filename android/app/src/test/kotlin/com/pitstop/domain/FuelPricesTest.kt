@@ -96,4 +96,28 @@ class FuelPricesTest {
             json.encodeToString(JsonObject.serializer(), PlacesKeyPatch.clear()),
         )
     }
+
+    @Test fun `closed-card summary names the cheapest priced station`() {
+        fun st(name: String?, price: Double?, m: Int) = FuelPrices.SummaryStation(name, price, "USD", m)
+        fun sum(
+            status: NearbyStatus?,
+            stations: List<FuelPrices.SummaryStation> = emptyList(),
+            loading: Boolean = false,
+            error: String? = null,
+            hasResult: Boolean = true,
+        ) = FuelPrices.summary(status, stations, "Regular", loading, error, hasResult, { "${it}m" }, Locale.US)
+
+        // Server order is cheapest-first; an unpriced nearer station never wins.
+        assertEquals(
+            "$4.20 at Conoco · 640m",
+            sum(NearbyStatus.Ok, listOf(st("Conoco", 4.2, 640), st("Shell", null, 100), st("QT", 4.26, 1900))),
+        )
+        assertEquals("$4.20 at a station · 640m", sum(NearbyStatus.Ok, listOf(st(null, 4.2, 640))))
+        assertEquals("No Regular prices reported nearby", sum(NearbyStatus.Ok, listOf(st("Shell", null, 100))))
+        assertEquals("No stations nearby", sum(NearbyStatus.Ok))
+        assertEquals("Add a Places API key to see prices", sum(NearbyStatus.NoKey))
+        assertEquals("Monthly lookup limit reached", sum(NearbyStatus.QuotaReached))
+        assertEquals("Looking up prices…", sum(null, loading = true, hasResult = false))
+        assertEquals("Couldn't reach the server", sum(null, error = "Couldn't reach the server", hasResult = false))
+    }
 }

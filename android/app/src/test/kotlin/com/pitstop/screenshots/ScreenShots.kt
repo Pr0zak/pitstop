@@ -167,14 +167,15 @@ class ScreenShots {
             ui = Fixtures.historyUi,
             sort = FillupSortOrder.RecentFirst,
             filter = FillupFilter.All,
-            nearbyCard = { NearbyPricesCard(Fixtures.nearbyOk, nowMs = Fixtures.NOW) },
+            nearbyCard = { NearbyPricesCard(Fixtures.nearbyClosed, nowMs = Fixtures.NOW) },
         )
     }
 
     @Test fun nearbyPrices() = shot("nearby_prices") {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            NearbyPricesCard(Fixtures.nearbyExpanded, nowMs = Fixtures.NOW)
-            NearbyPricesCard(Fixtures.nearbyVehicle, nowMs = Fixtures.NOW)
+            NearbyPricesCard(Fixtures.nearbyClosed, nowMs = Fixtures.NOW)
+            NearbyPricesCard(Fixtures.nearbyExpanded.copy(open = true), nowMs = Fixtures.NOW)
+            NearbyPricesCard(Fixtures.nearbyVehicle.copy(open = true), nowMs = Fixtures.NOW)
         }
     }
 
@@ -184,7 +185,7 @@ class ScreenShots {
                 Fixtures.nearbyNoKey, Fixtures.nearbyNoLocation, Fixtures.nearbyQuota,
                 Fixtures.nearbyUpstream, Fixtures.nearbyEmpty, Fixtures.nearbyLoading, Fixtures.nearbyFailed,
             )) {
-                NearbyPricesCard(s, nowMs = Fixtures.NOW)
+                NearbyPricesCard(s.copy(open = true), nowMs = Fixtures.NOW)
             }
         }
     }

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -48,6 +50,10 @@ import java.time.ZoneId
  * list — deliberately not map pins, Google's terms restrict Places content
  * on a non-Google map. A row opens the station in Google Maps.
  *
+ * Closed by default to a single summary line ("$4.20 at Conoco · 0.4 mi");
+ * tapping the header opens the chips, rows and footer. The open state is
+ * remembered by [NearbyPricesViewModel].
+ *
  * Stateless; [NearbyPricesViewModel] owns the state. [nowMs] is a parameter
  * so screenshot tests render fixed ages.
  */
@@ -59,6 +65,7 @@ internal fun NearbyPricesCard(
     onGrade: (FuelGrade) -> Unit = {},
     onRefresh: () -> Unit = {},
     onToggleExpanded: () -> Unit = {},
+    onToggleOpen: () -> Unit = {},
     onOpenStation: (String) -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
@@ -71,29 +78,72 @@ internal fun NearbyPricesCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Column(modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(
+            modifier = Modifier.padding(
+                start = 16.dp,
+                end = 4.dp,
+                top = 6.dp,
+                bottom = if (state.open) 12.dp else 6.dp,
+            ),
+        ) {
+            Row(
+                modifier = Modifier.clickable(
+                    onClickLabel = if (state.open) "Collapse nearby prices" else "Expand nearby prices",
+                    onClick = onToggleOpen,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "Nearby prices",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.semantics { heading() },
                     )
-                    val asOfAgo = DateLabel.ago(result?.origin?.asOf, nowMs)
-                    FuelPrices.originLine(result?.origin?.source, asOfAgo)?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = muted)
+                    val sub = if (state.open) {
+                        FuelPrices.originLine(result?.origin?.source, DateLabel.ago(result?.origin?.asOf, nowMs))
+                    } else {
+                        FuelPrices.summary(
+                            status = status,
+                            stations = result?.stations.orEmpty().map {
+                                FuelPrices.SummaryStation(it.name, it.price, it.currency, it.distanceM)
+                            },
+                            gradeLabel = state.grade.label,
+                            loading = state.loading,
+                            error = state.error,
+                            hasResult = result != null,
+                            distance = { m -> UnitFormat.distanceKm(m / 1000.0, system, 1) },
+                        )
+                    }
+                    sub?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
-                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                    if (state.loading) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        IconButton(onClick = onRefresh) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh prices")
+                if (state.open) {
+                    Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                        if (state.loading) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            IconButton(onClick = onRefresh) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh prices")
+                            }
                         }
                     }
                 }
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Icon(
+                        if (state.open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        tint = muted,
+                    )
+                }
             }
+            if (!state.open) return@Column
 
             Row(
                 modifier = Modifier

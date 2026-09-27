@@ -424,7 +424,8 @@ object Fixtures {
         stations = stations,
     )
 
-    val nearbyOk = com.pitstop.ui.fuel.NearbyPricesUi(result = nearbyDto())
+    val nearbyClosed = com.pitstop.ui.fuel.NearbyPricesUi(result = nearbyDto())
+    val nearbyOk = nearbyClosed.copy(open = true)
     val nearbyExpanded = nearbyOk.copy(result = nearbyDto(cached = false).copy(fetchedAt = isoAgo(5_000)), expanded = true)
     val nearbyVehicle = nearbyOk.copy(
         grade = com.pitstop.domain.FuelGrade.Premium,

@@ -142,8 +142,59 @@ object FuelPrices {
     /** How long a `cached=false` answer may still be called "just now". */
     const val FRESH_MS = 10 * 60_000L
 
-    /** Rows shown before "Show all". */
-    const val COLLAPSED_ROWS = 5
+    /** Rows shown before "Show all" once the card is open. */
+    const val COLLAPSED_ROWS = 3
+
+    /**
+     * The one line a closed card shows: "$4.20 at Conoco · 0.4 mi" for the
+     * cheapest priced station (the server sorts priced cheapest-first, so
+     * that is the first row with a price), otherwise a short status.
+     * [distance] formats metres in the user's unit.
+     */
+    fun summary(
+        status: NearbyStatus?,
+        stations: List<SummaryStation>,
+        gradeLabel: String,
+        loading: Boolean,
+        error: String?,
+        hasResult: Boolean,
+        distance: (Int) -> String,
+        locale: Locale = Locale.getDefault(),
+    ): String {
+        if (!hasResult) {
+            return when {
+                loading -> "Looking up prices…"
+                error != null -> error
+                else -> "Not loaded yet"
+            }
+        }
+        return when (status) {
+            NearbyStatus.Ok -> {
+                val best = stations.firstOrNull { it.price != null }
+                when {
+                    best != null -> listOfNotNull(
+                        "${price(best.price, best.currency, locale)} at ${best.name ?: "a station"}",
+                        distance(best.distanceM),
+                    ).joinToString(" · ")
+                    stations.isNotEmpty() -> "No $gradeLabel prices reported nearby"
+                    else -> "No stations nearby"
+                }
+            }
+            NearbyStatus.NoKey -> "Add a Places API key to see prices"
+            NearbyStatus.NoLocation -> "No location to search from"
+            NearbyStatus.QuotaReached -> "Monthly lookup limit reached"
+            NearbyStatus.UpstreamError -> "Google couldn't answer"
+            null -> "Update pitstop to see prices"
+        }
+    }
+
+    /** What [summary] needs from a station row. */
+    data class SummaryStation(
+        val name: String?,
+        val price: Double?,
+        val currency: String?,
+        val distanceM: Int,
+    )
 }
 
 /**

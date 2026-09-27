@@ -193,6 +193,7 @@ private fun FuelHubRoute(
                 onGrade = nearbyVm::setGrade,
                 onRefresh = { nearbyVm.refresh(forceNetwork = true) },
                 onToggleExpanded = nearbyVm::toggleExpanded,
+                onToggleOpen = nearbyVm::toggleOpen,
                 onOpenStation = { url ->
                     try {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
