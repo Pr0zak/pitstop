@@ -10,6 +10,19 @@ import { useAsync } from "@/composables/useAsync";
 import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
+import InsightChart from "@/components/charts/InsightChart.vue";
+import { mpgOverSpan, padRange } from "@/lib/fuelInsights";
+import {
+  MONTH_ABBR,
+  dotSeries,
+  endDotSeries,
+  fixedScales,
+  insightAxes,
+  insightColors,
+  lineSeries,
+  monthTicks,
+  yearTicks,
+} from "@/lib/insightChartOpts";
 import type { AnalyticsWindow } from "@/api/types";
 import {
   fmtMpg,
@@ -17,6 +30,7 @@ import {
   fmtInt,
   fmtDistance,
   fmtPricePerVolume,
+  nf,
   convEconomyMpg,
   convDistance,
   convTempC,
@@ -38,6 +52,7 @@ const WINDOW_OPTIONS = [
 ];
 const window = useQueryParam<AnalyticsWindow>("window", "all", ["month", "3m", "year", "all"]);
 const PAL = chartPalette();
+const DAY_MS = 86_400_000;
 
 // Time range for aggregate calls
 const fromIso = computed(() => {
@@ -59,12 +74,16 @@ const fromIso = computed(() => {
   return new Date(now - ms).toISOString();
 });
 
+// Monthly MPG for the "MPG over time" panel. Always monthly buckets: the
+// panel has its own 12 mo / 3 yr / All span (synced to ?mpgspan=), so the
+// page-level window doesn't scope it. /analytics/mpg returns every month
+// since the first fillup; the span is cut client-side (lib/fuelInsights).
 const mpgQ = useAsync(
   () =>
     vehicleId.value
-      ? api.mpgTrend(vehicleId.value, window.value)
+      ? api.mpgTrend(vehicleId.value, "month")
       : Promise.resolve({ points: [] }),
-  [vehicleId, window],
+  [vehicleId],
 );
 
 const rpmQ = useAsync(
@@ -98,57 +117,92 @@ const tempCoolantQ = useAsync(
 // dep ref changes, so each of these queries reloads on vehicle switch.
 // A manual watch fired a second, redundant round of requests.)
 
-// MPG line chart. Split into a stable opts computed and a data computed so a
-// pure data refresh (vehicle switch, window change) hits UPlotChart's cheap
-// setData() path instead of a full destroy()+rebuild. Opts still recomputes
-// when the EPA reference line's presence/value changes (rare — vehicle switch).
+// ── MPG over time ────────────────────────────────────────────────────
+// Monthly MPG as faint dots, a 3-month rolling median line with a light
+// area and an emphasised end point, and the vehicle's EPA combined sticker
+// as a dashed reference when set. Headline = fillup-weighted average over
+// the span. Maths in lib/fuelInsights.ts (shared shape with the phone).
+type MpgSpanKey = "12m" | "3y" | "all";
+const MPG_SPAN_OPTIONS = [
+  { value: "12m" as const, label: "12 mo" },
+  { value: "3y" as const, label: "3 yr" },
+  { value: "all" as const, label: "All" },
+];
+const mpgSpan = useQueryParam<MpgSpanKey>("mpgspan", "3y", ["12m", "3y", "all"]);
 const epaMpg = computed(() => vehicles.selectedVehicle?.epa_mpg_combined ?? null);
-const mpgOpts = computed<uPlot.Options>(() => {
-  // EPA reference line (Task #90). Constant value across the window
-  // when the vehicle has an epa_mpg_combined set; rendered as a
-  // dashed grey line under the actual-MPG primary so the user can
-  // see how their real-world economy compares to the sticker.
-  const epa = epaMpg.value;
+const mpgSeries = computed(() =>
+  mpgOverSpan(
+    mpgQ.data.value?.points ?? [],
+    mpgSpan.value === "12m" ? 12 : mpgSpan.value === "3y" ? 36 : null,
+  ),
+);
+const mpgHeadline = computed(() => {
+  const { points, average } = mpgSeries.value;
+  if (average == null) return null;
+  return {
+    value: nf(1).format(convEconomyMpg(average)),
+    sub:
+      mpgSpan.value === "all"
+        ? `average over all ${points.length} months`
+        : mpgSpan.value === "12m"
+          ? "average over the last 12 months"
+          : "average over the last 3 years",
+  };
+});
+const mpgChart = computed(() => {
+  const pts = mpgSeries.value.points;
+  if (pts.length === 0) return null;
+  const c = insightColors();
+  const ys = pts.map((p) => convEconomyMpg(p.mpg));
+  const med = pts.map((p) => convEconomyMpg(p.median));
+  const epa = epaMpg.value != null ? convEconomyMpg(epaMpg.value) : null;
+  const x0 = pts[0].t - 15 * DAY_MS;
+  const x1 = pts[pts.length - 1].t + 15 * DAY_MS;
+  const y = padRange(epa != null ? [...ys, epa] : ys);
+  const unit = economyUnitLabel();
   const series: uPlot.Series[] = [
     {},
-    { label: economyUnitLabel() === "mpg" ? "MPG" : economyUnitLabel(), stroke: PAL[0], width: 2 },
+    dotSeries("Monthly", c.accent, 3, 0.55),
+    lineSeries("3-mo median", c.accent, { fill: true }),
+    endDotSeries(c.accent),
+  ];
+  const data: (number | null)[][] = [
+    pts.map((p) => p.t),
+    ys,
+    med,
+    med.map((v, i) => (i === med.length - 1 ? v : null)),
   ];
   if (epa != null) {
     series.push({
-      label: `EPA combined (${fmtMpg(epa)})`,
+      label: "EPA combined",
       stroke: "rgba(154,160,170,0.65)",
       width: 1,
       dash: [4, 3],
+      points: { show: false },
     });
+    data.push(pts.map(() => epa));
   }
-  return {
+  const opts: uPlot.Options = {
     width: 600,
-    height: 220,
-    scales: { x: { time: true } },
-    axes: [{}, { label: economyUnitLabel() }],
+    height: 240,
+    scales: fixedScales([x0, x1], y),
+    axes: insightAxes(
+      mpgSpan.value === "12m" ? monthTicks(x0, x1, 3) : yearTicks(x0, x1),
+      (v) => nf(0).format(v),
+    ),
     series,
   };
-});
-/** /analytics/mpg ignores `window` beyond choosing month vs year buckets —
- *  every month since the first fillup comes back — so trim to the selected
- *  window here. "all" (yearly buckets) is left as is. */
-const mpgPointsInWindow = computed(() => {
-  const points = mpgQ.data.value?.points ?? [];
-  const from = fromIso.value;
-  if (!from || window.value === "all") return points;
-  const fromMonth = from.slice(0, 7);
-  return points.filter((p) => p.period >= fromMonth);
-});
-const mpgData = computed<uPlot.AlignedData | null>(() => {
-  const points = mpgPointsInWindow.value;
-  if (points.length === 0) return null;
-  const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
-  const y = points.map((p) => (p.mpg != null ? convEconomyMpg(p.mpg) : null));
-  // The per-point EPA column belongs to the aligned data; it's only present
-  // when the vehicle has a sticker value. Series count in mpgOpts matches.
-  const epa = epaMpg.value;
-  const epaCol = epa != null ? t.map(() => convEconomyMpg(epa)) : null;
-  return epaCol ? [t, y, epaCol] : [t, y];
+  return {
+    data: data as uPlot.AlignedData,
+    opts,
+    hover: pts.map((p, i) => ({ x: p.t, y: med[i] })),
+    tips: pts.map((p, i) => ({
+      title: `${MONTH_ABBR[Number(p.period.slice(5)) - 1]} ${p.period.slice(0, 4)}`,
+      main: `${nf(1).format(ys[i])} ${unit}`,
+      fills: `${p.fills} fill${p.fills === 1 ? "" : "s"}`,
+      sub: `3-mo median ${nf(1).format(med[i])}`,
+    })),
+  };
 });
 
 // RPM histogram (avg per bucket → bar series via paths.bars)
@@ -462,15 +516,38 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
         <RouterLink to="/">Lifetime cost →</RouterLink>
       </nav>
       <div class="grid">
-        <section class="card">
-          <h3>Economy trend</h3>
-          <StateCard v-if="mpgQ.loading.value" state="loading" bare />
+        <section class="card wide">
+          <header class="head-inline">
+            <h3>MPG over time</h3>
+            <WindowChips v-model="mpgSpan" :options="MPG_SPAN_OPTIONS" label="MPG time span" />
+          </header>
+          <StateCard v-if="mpgQ.loading.value && !mpgQ.data.value" state="loading" bare />
           <StateCard v-else-if="mpgQ.error.value" state="error" bare :message="mpgQ.error.value" @retry="mpgQ.reload()" />
-          <StateCard v-else-if="!mpgData" state="empty" bare title="No fillups in window." />
-          <UPlotChart v-else :data="mpgData" :options="mpgOpts" />
-          <p class="muted small" v-if="mpgPointsInWindow.length">
-            Latest: {{ fmtMpg(mpgPointsInWindow[mpgPointsInWindow.length - 1].mpg) }}
-          </p>
+          <StateCard v-else-if="!mpgChart" state="empty" bare title="No fillups with economy yet." />
+          <template v-else>
+            <div v-if="mpgHeadline" class="insight-head">
+              <span class="insight-big">{{ mpgHeadline.value }}<small>{{ economyUnitLabel() }}</small></span>
+              <span class="insight-sub">{{ mpgHeadline.sub }}</span>
+            </div>
+            <div class="insight-legend">
+              <span><i class="sw dot" style="background: var(--c-accent); opacity: 0.55"></i>Monthly</span>
+              <span><i class="sw" style="background: var(--c-accent)"></i>3-month median</span>
+              <span v-if="epaMpg != null"><i class="sw epa"></i>EPA combined ({{ fmtMpg(epaMpg) }})</span>
+            </div>
+            <InsightChart
+              :data="mpgChart.data"
+              :options="mpgChart.opts"
+              :hover="mpgChart.hover"
+              mode="x"
+              label="Monthly fuel economy with a 3-month rolling median"
+            >
+              <template #tip="{ index }">
+                <span class="k">{{ mpgChart.tips[index].title }}</span><br />
+                <b>{{ mpgChart.tips[index].main }}</b> · {{ mpgChart.tips[index].fills }}<br />
+                <span class="k">{{ mpgChart.tips[index].sub }}</span>
+              </template>
+            </InsightChart>
+          </template>
         </section>
 
         <section class="card">
@@ -665,6 +742,14 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
 }
 .head-inline h3 {
   margin: 0;
+}
+.card.wide {
+  grid-column: 1 / -1;
+}
+.insight-legend .sw.epa {
+  height: 0;
+  border-top: 1px dashed rgba(154, 160, 170, 0.8);
+  border-radius: 0;
 }
 .breakdown-rows {
   display: flex;

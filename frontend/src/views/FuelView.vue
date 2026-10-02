@@ -45,6 +45,16 @@ import NearbyPricesCard from "@/components/NearbyPricesCard.vue";
 import { useQueryParam } from "@/composables/useQueryParam";
 import { chartColors, chartPalette, withAlpha } from "@/lib/chartTheme";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
+import InsightChart from "@/components/charts/InsightChart.vue";
+import { compareToMarket, eiaLookup, groupByMonth, localDay, padRange } from "@/lib/fuelInsights";
+import {
+  dotSeries,
+  fixedScales,
+  insightAxes,
+  insightColors,
+  lineSeries,
+  monthTicks,
+} from "@/lib/insightChartOpts";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
 import { WMO_CODE } from "@/api/types";
 
@@ -176,6 +186,7 @@ const DEFAULT_VISIBLE: Record<string, boolean> = {
   cpm: true,
   overlay: true,
   range: true,
+  market: true,
   ppg: true,
   freq: true,
   vol: true,
@@ -203,6 +214,7 @@ const chartChoices = [
   { key: "cpm", label: "Cost / distance" },
   { key: "overlay", label: "OBD vs fillup" },
   { key: "range", label: "Range" },
+  { key: "market", label: "vs market" },
   { key: "ppg", label: "Price trend" },
   { key: "freq", label: "Frequency" },
   { key: "vol", label: "Volume" },
@@ -317,6 +329,112 @@ watch([vehicleId], () => {
   offset.value = 0;
 });
 
+// ── What you paid vs the market ──────────────────────────────────────
+// Fixed 52-week window (independent of the stats window): each fillup's
+// price per unit against the EIA US weekly retail average for the week
+// containing / preceding it. Maths is canonical $/US gal in
+// lib/fuelInsights; display converts to the user's volume unit.
+// One EIA fetch (the backend's full 520-week cap, newest first) serves the
+// chart's last 52 weeks and the per-fillup "vs US avg" chip in the list.
+const eiaQ = useAsync(() => api.eiaWeekly("us", 520), []);
+const market = computed(() => {
+  const eia = (eiaQ.data.value?.points ?? []).slice(0, 52);
+  if (eia.length === 0) return null;
+  const src = volSrc.value;
+  const fills = ((statsFillupsQ.data.value?.items ?? []) as Fillup[]).flatMap((f) => {
+    const ppu = toNum(f.price_per_unit);
+    if (ppu == null || ppu <= 0 || !f.fillup_date) return [];
+    const vol = toNum(f.fuel_volume);
+    return [
+      {
+        day: localDay(f.fillup_date),
+        ppg: convPricePerVolume(ppu, src, "imperial"),
+        gallons: vol != null ? convVolume(vol, src, "imperial") : null,
+      },
+    ];
+  });
+  const r = compareToMarket(eia, fills);
+  if (r.fills.length === 0 || r.meanDiff == null) return null;
+  return r;
+});
+/** "¢" difference in the display unit (per gal or per L). */
+function centsPerUnit(diffPerGal: number): string {
+  return nf(0).format(Math.abs(convPricePerVolume(diffPerGal, "gal") * 100));
+}
+// Per-fillup chip: this fillup's price against the EIA US week containing /
+// preceding it (same matching as the chart). Null outside the EIA series.
+const eiaAt = computed(() => eiaLookup(eiaQ.data.value?.points ?? []));
+function vsMarket(f: Fillup): { text: string; below: boolean; title: string } | null {
+  const ppu = fillupPpu(f);
+  if (ppu == null || !f.fillup_date) return null;
+  const day = localDay(f.fillup_date);
+  const e = eiaAt.value(day);
+  if (e == null) return null;
+  const diff = convPricePerVolume(ppu, volSrc.value, "imperial") - e;
+  const below = diff <= 0;
+  return {
+    text: `${below ? "▼" : "▲"} ${centsPerUnit(diff)}¢ vs US avg`,
+    below,
+    title: `US average that week ${fmtPricePerVolume(e, "gal")}`,
+  };
+}
+const marketHeadline = computed(() => {
+  const m = market.value;
+  if (!m || m.meanDiff == null) return null;
+  const below = m.meanDiff < 0;
+  return {
+    cents: `${centsPerUnit(m.meanDiff)}¢`,
+    dir: below ? "below average" : "above average",
+    sub: `per ${volUnitLabel() === "gal" ? "gallon" : "litre"} over ${m.fills.length} fillup${m.fills.length === 1 ? "" : "s"} · ${below ? "saved" : "cost"} about ${fmtMoney(m.dollars, 0)}`,
+  };
+});
+const marketChart = computed(() => {
+  const m = market.value;
+  if (!m) return null;
+  const c = insightColors();
+  const DAY = 86_400_000;
+  const ppu = (perGal: number) => convPricePerVolume(perGal, "gal");
+  // One aligned x axis: union of EIA weeks and fillup days.
+  const xs = Array.from(new Set([...m.eia.map((p) => p.t), ...m.fills.map((f) => f.t)])).sort(
+    (a, b) => a - b,
+  );
+  const eiaBy = new Map(m.eia.map((p) => [p.t, ppu(p.price)]));
+  const fillBy = new Map<number, number>();
+  // Two fillups on one day: keep the later one as the plotted dot (both stay hoverable).
+  for (const f of m.fills) fillBy.set(f.t, ppu(f.ppg));
+  const x0 = m.eia[0].t - 3 * DAY;
+  const x1 = Math.max(m.eia[m.eia.length - 1].t, m.fills[m.fills.length - 1].t) + 3 * DAY;
+  const y = padRange([...m.eia.map((p) => ppu(p.price)), ...m.fills.map((f) => ppu(f.ppg))]);
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 240,
+    scales: fixedScales([x0, x1], y),
+    axes: insightAxes(monthTicks(x0, x1, 2), (v) => `$${v.toFixed(2)}`),
+    series: [
+      {},
+      lineSeries("US weekly average (EIA)", c.compare),
+      dotSeries("Your fillups", c.accent, 4.5),
+    ],
+  };
+  const data = [
+    xs,
+    xs.map((t) => eiaBy.get(t) ?? null),
+    xs.map((t) => fillBy.get(t) ?? null),
+  ] as uPlot.AlignedData;
+  const unit = volUnitLabel();
+  return {
+    data,
+    opts,
+    hover: m.fills.map((f) => ({ x: f.t, y: ppu(f.ppg) })),
+    tips: m.fills.map((f) => ({
+      title: fmtDate(f.day, "MMM d, yyyy"),
+      main: `${fmtMoney(ppu(f.ppg), 3)}/${unit}`,
+      vol: f.gallons != null ? fmtVolume(f.gallons, "gal", 2) : "—",
+      sub: `US avg that week ${fmtMoney(ppu(f.eia), 3)} · ${f.diff < 0 ? "−" : "+"}${centsPerUnit(f.diff)}¢`,
+    })),
+  };
+});
+
 // Sorting. Header click-targets keep the conceptual names (odometer, volume,
 // total_price, mpg_recomputed) since the user reads them; the comparator
 // translates each to the actual API field name.
@@ -381,12 +499,35 @@ function changeSort(k: SortKey) {
 type FillupFilter = "all" | "full" | "partial";
 const fillupFilter = ref<FillupFilter>("all");
 
-const groupedFillups = computed<Array<{ key: DateGroupKey; label: string; items: Fillup[] }>>(() => {
+interface FillupGroup {
+  key: string;
+  label: string;
+  items: Fillup[];
+  /** Calendar-month header stats — only when the list is sorted by date. */
+  month?: { fills: number; volume: number; total: number; barFrac: number };
+}
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const groupedFillups = computed<FillupGroup[]>(() => {
   const items = sortedFillups.value.filter((f) => {
     if (fillupFilter.value === "all") return true;
     if (fillupFilter.value === "full") return f.is_full !== false;
     return f.is_full === false;
   });
+  // Sorted by date → one group per calendar month, with fills / volume /
+  // total and a spend bar scaled to the biggest month on this page. Any
+  // other sort keeps the relative-date buckets (a month header would
+  // scatter a price- or volume-ranked list).
+  if (sortKey.value === "fillup_date") {
+    return groupByMonth(
+      items.filter((f) => !!f.fillup_date),
+      (f) => ({ day: localDay(f.fillup_date), cost: fillupTotal(f), volume: toNum(f.fuel_volume) }),
+    ).map((g) => ({
+      key: g.key,
+      label: `${MONTH_NAMES[Number(g.key.slice(5)) - 1]} ${g.key.slice(0, 4)}`,
+      items: g.items,
+      month: { fills: g.fills, volume: g.volume, total: g.total, barFrac: g.barFrac },
+    }));
+  }
   const byKey = new Map<DateGroupKey, Fillup[]>();
   for (const f of items) {
     const k = dateGroupFor(f.fillup_date);
@@ -971,9 +1112,19 @@ const mpgVsTempChart = computed(() => {
         </div>
         <StateCard v-if="groupedFillups.length === 0" state="empty" title="No fillups match the current filter." />
         <div v-for="group in groupedFillups" :key="group.key" class="card no-pad">
-          <header class="group-head">
+          <header class="group-head" :class="{ 'month-head': group.month }">
             <span class="group-label">{{ group.label }}</span>
-            <span class="muted small">{{ group.items.length }}</span>
+            <template v-if="group.month">
+              <span class="muted small num month-stats">
+                {{ group.month.fills }} fill{{ group.month.fills === 1 ? "" : "s" }} ·
+                {{ fmtVolume(group.month.volume, volSrc, 1) }} ·
+                <strong>{{ fmtMoney(group.month.total, 0) }}</strong>
+              </span>
+              <span class="month-bar" aria-hidden="true">
+                <i :style="{ width: `${(group.month.barFrac * 100).toFixed(0)}%` }" />
+              </span>
+            </template>
+            <span v-else class="muted small">{{ group.items.length }}</span>
           </header>
           <div class="table-scroll fill-table">
           <table class="data">
@@ -1020,7 +1171,15 @@ const mpgVsTempChart = computed(() => {
                 <td class="num">{{ fmtOdo(f.odo, distSrc) }}</td>
                 <td class="num">{{ fmtVolume(f.fuel_volume, volSrc) }}</td>
                 <td class="num">{{ fmtMoney(fillupTotal(f)) }}</td>
-                <td class="num">{{ fmtPricePerVolume(fillupPpu(f), volSrc) }}</td>
+                <td class="num">
+                  {{ fmtPricePerVolume(fillupPpu(f), volSrc) }}
+                  <span
+                    v-if="vsMarket(f)"
+                    class="mkt-chip"
+                    :class="vsMarket(f)!.below ? 'below' : 'above'"
+                    :title="vsMarket(f)!.title"
+                  >{{ vsMarket(f)!.text }}</span>
+                </td>
                 <td>{{ f.city ?? f.station_id ?? "—" }}</td>
                 <td class="num" :title="weatherTitle(f)">
                   <span v-if="f.weather_temp_c != null">
@@ -1081,6 +1240,9 @@ const mpgVsTempChart = computed(() => {
                   <span v-else-if="f.mpg_reported != null && f.mpg_reported > 0" class="mpg-fallback">{{ fmtMpg(f.mpg_reported) }}</span>
                   <span>{{ fmtOdo(f.odo, distSrc) }}</span>
                   <span v-if="f.city || f.station_id" class="fc-station">{{ f.city ?? f.station_id }}</span>
+                </span>
+                <span v-if="vsMarket(f)" class="fc-mkt">
+                  <span class="mkt-chip" :class="vsMarket(f)!.below ? 'below' : 'above'">{{ vsMarket(f)!.text }}</span>
                 </span>
               </button>
               <button
@@ -1306,6 +1468,31 @@ const mpgVsTempChart = computed(() => {
               </div>
             </template>
           </div>
+
+          <section v-if="chartVisible.market && marketChart && marketHeadline" class="card chart-card wide">
+            <h3>What you paid vs the market <span class="tag-fixed">last 52 weeks</span></h3>
+            <div class="insight-head">
+              <span class="insight-big">{{ marketHeadline.cents }}<small>{{ marketHeadline.dir }}</small></span>
+              <span class="insight-sub">{{ marketHeadline.sub }}</span>
+            </div>
+            <div class="insight-legend">
+              <span><i class="sw dot" style="background: var(--c-accent)"></i>Your fillups, $/{{ volUnitLabel() }}</span>
+              <span><i class="sw" style="background: var(--c-compare)"></i>US weekly average (EIA)</span>
+            </div>
+            <InsightChart
+              :data="marketChart.data"
+              :options="marketChart.opts"
+              :hover="marketChart.hover"
+              mode="xy"
+              :label="`Your price per ${volUnitLabel()} at each fillup against the US weekly average`"
+            >
+              <template #tip="{ index }">
+                <span class="k">{{ marketChart.tips[index].title }}</span><br />
+                <b>{{ marketChart.tips[index].main }}</b> · {{ marketChart.tips[index].vol }}<br />
+                <span class="k">{{ marketChart.tips[index].sub }}</span>
+              </template>
+            </InsightChart>
+          </section>
 
           <div v-if="chartVisible.ppg" class="card chart-card">
             <h3>Price per {{ volUnitLabel() === 'gal' ? 'gallon' : 'litre' }}</h3>
@@ -1662,5 +1849,57 @@ td .badge {
     flex-wrap: wrap;
     gap: 0.5rem;
   }
+}
+/* Month group header (date sort): stats + spend bar scaled to the biggest
+   month on the page. */
+.group-head.month-head {
+  flex-wrap: wrap;
+}
+.group-head.month-head .group-label {
+  white-space: nowrap;
+}
+.fc-mkt {
+  display: block;
+}
+.fc-mkt .mkt-chip {
+  margin-left: 0;
+}
+.month-stats strong {
+  color: var(--c-ink0);
+  font-weight: 600;
+}
+.month-bar {
+  position: relative;
+  flex: 1 1 120px;
+  max-width: 220px;
+  height: 4px;
+  margin-left: auto;
+  border-radius: 2px;
+  background: var(--c-bg4);
+}
+.month-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--c-accent);
+}
+/* "▼ 17¢ vs US avg" — fillup price against the EIA week. */
+.mkt-chip {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-family: 'Geist', -apple-system, system-ui, sans-serif;
+}
+.mkt-chip.below {
+  color: var(--c-success);
+  background: var(--c-success-soft);
+}
+.mkt-chip.above {
+  color: var(--c-danger);
+  background: var(--c-danger-soft);
 }
 </style>

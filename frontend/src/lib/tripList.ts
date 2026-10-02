@@ -89,3 +89,93 @@ export function groupTotals(trips: Trip[]): GroupTotals {
   }
   return { count: trips.length, distanceKm, fuelL: anyFuel ? fuelL : null };
 }
+
+// ─── Row extras: 30-day economy bar, idle share, weather ────────────────
+
+/** Trips basis window, days — same as the phone's RangeMath.BASIS_WINDOW_DAYS. */
+export const BASIS_WINDOW_DAYS = 30;
+/** Below this much measured driving the 30-day average is too noisy to show. */
+export const MIN_BASIS_MILES = 20;
+
+/**
+ * 30-day average economy in US mpg: total distance ÷ total fuel over the
+ * trips that measured fuel (a long trip weighs what it burned). Mirrors the
+ * phone's RangeMath.tripBasisMpg — null below 20 mi or outside 5–80 mpg.
+ */
+export function tripBasisMpg(
+  trips: readonly Pick<Trip, "started_at" | "distance_km" | "fuel_used_l">[],
+  nowMs: number = Date.now(),
+): number | null {
+  const cutoff = nowMs - BASIS_WINDOW_DAYS * 86_400_000;
+  let km = 0;
+  let l = 0;
+  for (const t of trips) {
+    const d = t.distance_km;
+    const f = t.fuel_used_l;
+    if (d == null || f == null || !(d > 0) || !(f > 0)) continue;
+    const at = Date.parse(t.started_at);
+    if (!Number.isFinite(at) || at < cutoff || at > nowMs + 60_000) continue;
+    km += d;
+    l += f;
+  }
+  const mi = km * KM_TO_MI;
+  if (mi < MIN_BASIS_MILES || l <= 0) return null;
+  const mpg = mi / (l * L_TO_GAL);
+  return mpg >= 5 && mpg <= 80 ? mpg : null;
+}
+
+export interface MpgBar {
+  /** Bar fill, 0..1. */
+  frac: number;
+  /** Where the average tick sits, 0..1. */
+  avgFrac: number;
+  tone: "good" | "warn" | "none";
+}
+
+/**
+ * Thin economy bar for a trip row. The scale tops out at 1.25 × the average
+ * so the tick always sits at 80 % whatever the vehicle (a truck's 14 mpg
+ * reads the same as a hybrid's 50). Green at or above the average, amber
+ * below, muted (empty) when the trip has no economy.
+ */
+export function mpgBar(mpg: number | null, avg: number | null): MpgBar | null {
+  if (avg == null || !(avg > 0)) return null;
+  const max = avg * 1.25;
+  if (mpg == null) return { frac: 0, avgFrac: 0.8, tone: "none" };
+  return { frac: Math.min(1, mpg / max), avgFrac: 0.8, tone: mpg >= avg ? "good" : "warn" };
+}
+
+/** "40s" / "45m" / "1h 5m" — compact duration (under a minute stays in
+ *  seconds so a short idle doesn't read "0m"). */
+export function shortDuration(s: number): string {
+  if (s < 60) return `${Math.round(s)}s`;
+  if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
+  return `${Math.round(s / 60)}m`;
+}
+
+export interface IdleInfo {
+  text: string;
+  /** Idle over 20 % of the trip. */
+  high: boolean;
+}
+
+/** "idle 2m · 21 %", or "idle —" when the trip has no idle figure. */
+export function idleInfo(t: Pick<Trip, "idle_s" | "duration_s">): IdleInfo {
+  const idle = t.idle_s;
+  const dur = t.duration_s;
+  if (idle == null || dur == null || !(dur > 0)) return { text: "idle —", high: false };
+  const share = idle / dur;
+  return { text: `idle ${shortDuration(idle)} · ${Math.round(share * 100)} %`, high: share > 0.2 };
+}
+
+/** One-word WMO weather label: 0 clear, 1–3 cloudy, 45–48 fog, 51–67 rain,
+ *  71–77 snow, 80+ showers (in-between codes fall to the next band down). */
+export function wmoShortLabel(code: number | null | undefined): string {
+  if (code == null) return "";
+  if (code === 0) return "Clear";
+  if (code <= 3) return "Cloudy";
+  if (code <= 48) return "Fog";
+  if (code <= 67) return "Rain";
+  if (code <= 77) return "Snow";
+  return "Showers";
+}

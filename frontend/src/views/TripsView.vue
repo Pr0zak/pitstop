@@ -18,6 +18,7 @@ import {
   fmtVolumeL,
   fmtMpg,
   fmtWhen,
+  fmtTempC,
   nf,
   convDistance,
   convVolume,
@@ -29,7 +30,17 @@ import {
   DATE_GROUP_ORDER,
   type DateGroupKey,
 } from "@/composables/useFormat";
-import { foldShortHops, groupTotals, tripMpg, type TripRow } from "@/lib/tripList";
+import {
+  foldShortHops,
+  groupTotals,
+  idleInfo,
+  mpgBar,
+  tripBasisMpg,
+  tripMpg,
+  wmoShortLabel,
+  type TripRow,
+} from "@/lib/tripList";
+import TripThumb from "@/components/TripThumb.vue";
 import { ChevronRight } from "lucide-vue-next";
 
 const vehicles = useVehiclesStore();
@@ -155,6 +166,31 @@ const { data, loading, error, reload } = useAsync(
       : Promise.resolve({ items: [], total: 0 }),
   [vehicleId, fromIso, toIso, limit, offset, sort, srcFilter, towingOnly],
 );
+
+// 30-day economy basis for the per-row bar: its own fetch so the page's
+// date / source filters don't move the reference line. Same arithmetic as
+// the phone's range basis (lib/tripList.tripBasisMpg).
+const basisQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.listTrips({
+          vehicle_id: vehicleId.value,
+          from: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+          limit: 500,
+        })
+      : Promise.resolve({ items: [], total: 0 }),
+  [vehicleId],
+);
+const avg30 = computed(() => tripBasisMpg(basisQ.data.value?.items ?? []));
+function bar(t: Trip) {
+  return mpgBar(tripMpg(t), avg30.value);
+}
+/** "70 °F Cloudy", or "" when the trip has no weather. */
+function tripWeather(t: Trip): string {
+  if (t.weather_temp_c == null) return "";
+  const w = wmoShortLabel(t.weather_code);
+  return w ? `${fmtTempC(t.weather_temp_c)} ${w}` : fmtTempC(t.weather_temp_c);
+}
 
 watch([vehicleId, fromIso, toIso, sort, srcFilter, towingOnly], () => {
   offset.value = 0;
@@ -577,6 +613,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
             <tr>
               <th v-if="selectMode" class="sel-cell"><span class="sr-only">Selected</span></th>
               <th v-if="ranked" class="num">#</th>
+              <th class="thumb-cell"><span class="sr-only">Route</span></th>
               <th class="started-h">Started</th>
               <th class="num">Duration</th>
               <th class="num">Distance</th>
@@ -584,6 +621,8 @@ const purposeRollup = computed<PurposeRow[]>(() => {
               <th class="num">Max speed</th>
               <th class="num">Max RPM</th>
               <th class="num">Fuel</th>
+              <th class="num" title="Engine on, vehicle stopped — share of the trip">Idle</th>
+              <th>Weather</th>
             </tr>
           </thead>
           <tbody>
@@ -595,7 +634,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                 @click="toggleHops(r.key)"
               >
                 <td v-if="selectMode" class="sel-cell"></td>
-                <td :colspan="ranked ? 9 : 8">
+                <td :colspan="ranked ? 12 : 11">
                   <button type="button" class="hops-btn" :aria-expanded="openHops.has(r.key)" @click.stop="toggleHops(r.key)">
                     <ChevronRight :size="14" class="hops-chev" :class="{ open: openHops.has(r.key) }" aria-hidden="true" />
                     {{ hopsLabel(r) }}
@@ -614,6 +653,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                   </span>
                 </td>
                 <td v-if="ranked" class="num muted">{{ rankOf(r.trip) }}</td>
+                <td class="thumb-cell"><TripThumb :trip-id="r.trip.id" :size="36" /></td>
                 <td class="started-cell">
                   <RouterLink
                     :to="`/trips/${r.trip.id}`"
@@ -629,10 +669,24 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                 </td>
                 <td class="num">{{ fmtDuration(r.trip.duration_s) }}</td>
                 <td class="num">{{ fmtDistanceKm(r.trip.distance_km ?? null) }}</td>
-                <td class="num mpg-cell">{{ tripEcon(r.trip) }}</td>
+                <td class="num mpg-cell">
+                  {{ tripEcon(r.trip) }}
+                  <span
+                    v-if="bar(r.trip)"
+                    class="mpg-bar"
+                    :class="bar(r.trip)!.tone"
+                    :title="`Tick = 30-day average, ${fmtMpg(avg30)}`"
+                    aria-hidden="true"
+                  >
+                    <i :style="{ width: `${(bar(r.trip)!.frac * 100).toFixed(0)}%` }" />
+                    <b :style="{ left: `${(bar(r.trip)!.avgFrac * 100).toFixed(0)}%` }" />
+                  </span>
+                </td>
                 <td class="num">{{ fmtSpeedKph(r.trip.max_speed_kph ?? null) }}</td>
                 <td class="num">{{ fmtRpm(r.trip.max_rpm) }}</td>
                 <td class="num">{{ fmtVolumeL(r.trip.fuel_used_l ?? null) }}</td>
+                <td class="num" :class="{ 'idle-high': idleInfo(r.trip).high }">{{ idleInfo(r.trip).text.replace(/^idle /, "") }}</td>
+                <td class="wx-cell">{{ tripWeather(r.trip) || "—" }}</td>
               </tr>
             </template>
           </tbody>
@@ -649,6 +703,8 @@ const purposeRollup = computed<PurposeRow[]>(() => {
             </li>
             <li v-else :class="{ selected: selectedIds.has(r.trip.id), 'hop-child': r.kind === 'hop' }">
               <RouterLink :to="`/trips/${r.trip.id}`" class="trip-card" @click="onStartedClick($event, r.trip.id)">
+                <TripThumb :trip-id="r.trip.id" :size="48" class="tc-thumb" />
+                <div class="tc-body">
                 <div class="tc-top">
                   <span v-if="ranked" class="rank num">#{{ rankOf(r.trip) }}</span>
                   <span class="tc-date">{{ rowWhen(r.trip) }}</span>
@@ -660,6 +716,14 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                   <span>{{ fmtSpeedKph(r.trip.max_speed_kph ?? null) }} max</span>
                   <span>{{ fmtVolumeL(r.trip.fuel_used_l ?? null) }}</span>
                 </div>
+                <span v-if="bar(r.trip)" class="mpg-bar wide" :class="bar(r.trip)!.tone" aria-hidden="true">
+                  <i :style="{ width: `${(bar(r.trip)!.frac * 100).toFixed(0)}%` }" />
+                  <b :style="{ left: `${(bar(r.trip)!.avgFrac * 100).toFixed(0)}%` }" />
+                </span>
+                <div class="tc-meta">
+                  <span class="meta-pill" :class="{ warn: idleInfo(r.trip).high }">{{ idleInfo(r.trip).text }}</span>
+                  <span v-if="tripWeather(r.trip)" class="meta-pill">{{ tripWeather(r.trip) }}</span>
+                </div>
                 <div
                   v-if="r.trip.category || r.trip.is_towing || r.trip.gps_only || (r.trip.dtc_count ?? 0) > 0"
                   class="tc-chips"
@@ -668,6 +732,7 @@ const purposeRollup = computed<PurposeRow[]>(() => {
                   <span v-if="r.trip.is_towing" class="row-chip warn">Tow</span>
                   <span v-if="r.trip.gps_only" class="row-chip">GPS only</span>
                   <span v-if="(r.trip.dtc_count ?? 0) > 0" class="row-chip danger">{{ r.trip.dtc_count }} DTC</span>
+                </div>
                 </div>
               </RouterLink>
             </li>
@@ -1062,8 +1127,9 @@ tr.hop-child {
 }
 .trip-card {
   display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.75rem;
   padding: 0.7rem 0.9rem;
   color: var(--c-ink1);
   text-decoration: none;
@@ -1092,5 +1158,77 @@ tr.hop-child {
   gap: 0.4rem 0.9rem;
   font-size: 0.82rem;
   color: var(--c-ink2);
+}
+/* Row extras: route thumbnail, economy bar vs 30-day average, idle share,
+   weather. */
+.thumb-cell {
+  width: 44px;
+  padding-right: 0 !important;
+}
+.tc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+}
+.mpg-bar {
+  position: relative;
+  display: block;
+  width: 72px;
+  height: 4px;
+  margin: 4px 0 0 auto;
+  border-radius: 2px;
+  background: var(--c-bg4);
+}
+.mpg-bar.wide {
+  width: 100%;
+  margin: 2px 0;
+}
+.mpg-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--c-ink3);
+}
+.mpg-bar.good i {
+  background: var(--c-success);
+}
+.mpg-bar.warn i {
+  background: var(--c-warn);
+}
+.mpg-bar b {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 10px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--c-ink0);
+}
+.idle-high {
+  color: var(--c-warn);
+}
+.wx-cell {
+  white-space: nowrap;
+  color: var(--c-ink2);
+}
+.tc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.meta-pill {
+  font-size: 0.72rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--c-bg3);
+  border: 1px solid var(--c-line0);
+  color: var(--c-ink2);
+}
+.meta-pill.warn {
+  color: var(--c-warn);
+  background: var(--c-warn-soft);
+  border-color: rgba(255, 176, 32, 0.35);
 }
 </style>

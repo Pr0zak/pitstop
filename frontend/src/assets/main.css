@@ -76,6 +76,9 @@
   --chart-8: #a3e635;
   --chart-grid: rgba(255, 255, 255, 0.06);
   --chart-axis: #6a6f78;
+  /* Comparison series next to the accent (EIA market price, last year's
+     spend). Dark-only app; the light-mode value #2f6fd0 is the phone's. */
+  --c-compare: #4d8ae0;
 
   /* ── Focus ring ─── */
   --focus-ring: 0 0 0 2px var(--c-bg), 0 0 0 4px var(--c-info);
@@ -497,4 +500,56 @@ table.data th.tabular {
 .table-scroll {
   position: relative;
   overflow-x: auto;
+}
+
+/* ── Insight chart panels (MPG over time, paid vs market, spend YoY) ──
+   Headline number + one-line sub, an optional legend row, then the chart. */
+.insight-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  margin: 0.15rem 0 0.5rem;
+}
+.insight-big {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 28px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  color: var(--c-ink0);
+}
+.insight-big small {
+  margin-left: 0.35rem;
+  font-family: 'Geist', -apple-system, system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--c-ink2);
+}
+.insight-sub {
+  font-size: 0.85rem;
+  color: var(--c-ink2);
+}
+.insight-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--c-ink2);
+}
+.insight-legend .sw {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  margin-right: 0.4rem;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.insight-legend .sw.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
 }

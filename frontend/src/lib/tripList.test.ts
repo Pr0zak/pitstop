@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Trip } from "@/api/types";
-import { foldShortHops, groupTotals, tripMpg } from "./tripList";
+import {
+  foldShortHops,
+  groupTotals,
+  idleInfo,
+  mpgBar,
+  shortDuration,
+  tripBasisMpg,
+  tripMpg,
+  wmoShortLabel,
+} from "./tripList";
 
 let seq = 0;
 function trip(distance_km: number | null, fuel_used_l: number | null = null): Trip {
@@ -66,5 +75,34 @@ describe("groupTotals", () => {
 
   it("reports no fuel (not zero) when no trip carried a fuel reading", () => {
     expect(groupTotals([trip(10), trip(5)]).fuelL).toBeNull();
+  });
+});
+
+describe("row extras", () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  it("30-day basis is distance over fuel, gated on 20 mi", () => {
+    const trips = [
+      { started_at: "2026-09-30T10:00:00Z", distance_km: 40, fuel_used_l: 4 },
+      { started_at: "2026-09-29T10:00:00Z", distance_km: 10, fuel_used_l: 0 },
+      { started_at: "2026-08-01T10:00:00Z", distance_km: 500, fuel_used_l: 10 },
+    ];
+    expect(tripBasisMpg(trips, now)).toBeCloseTo((40 * 0.621371) / (4 * 0.264172), 6);
+    expect(tripBasisMpg([trips[0]].map((t) => ({ ...t, distance_km: 20 })), now)).toBeNull();
+  });
+  it("mpg bar puts the tick at 80 % and tones by the average", () => {
+    expect(mpgBar(25, 20)).toEqual({ frac: 1, avgFrac: 0.8, tone: "good" });
+    expect(mpgBar(15, 20)).toEqual({ frac: 0.6, avgFrac: 0.8, tone: "warn" });
+    expect(mpgBar(null, 20)?.tone).toBe("none");
+    expect(mpgBar(15, null)).toBeNull();
+  });
+  it("idle share and weather labels", () => {
+    expect(idleInfo({ idle_s: 95, duration_s: 444 })).toEqual({ text: "idle 2m · 21 %", high: true });
+    expect(idleInfo({ idle_s: 30, duration_s: 600 })).toEqual({ text: "idle 30s · 5 %", high: false });
+    expect(idleInfo({ idle_s: null, duration_s: 600 }).text).toBe("idle —");
+    expect(shortDuration(3900)).toBe("1h 5m");
+    expect(shortDuration(20)).toBe("20s");
+    expect([0, 2, 45, 61, 73, 81, null].map(wmoShortLabel)).toEqual([
+      "Clear", "Cloudy", "Fog", "Rain", "Snow", "Showers", "",
+    ]);
   });
 });

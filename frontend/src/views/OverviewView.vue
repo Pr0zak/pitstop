@@ -4,6 +4,25 @@ import { RouterLink } from "vue-router";
 import FillupModal from "@/components/FillupModal.vue";
 import StateCard from "@/components/StateCard.vue";
 import Sparkline from "@/components/charts/Sparkline.vue";
+import InsightChart from "@/components/charts/InsightChart.vue";
+import type uPlot from "uplot";
+import {
+  batterySummary,
+  compareSpend,
+  localDay,
+  quarterTicks,
+  type BatteryBand,
+} from "@/lib/fuelInsights";
+import {
+  MONTH_ABBR,
+  endDotSeries,
+  fixedScales,
+  insightAxes,
+  insightColors,
+  lineSeries,
+  stepVertices,
+} from "@/lib/insightChartOpts";
+import { cssVar } from "@/lib/chartTheme";
 import type { Fillup } from "@/api/types";
 import { useVehiclesStore } from "@/stores/vehicles";
 import { useAuthStore } from "@/stores/auth";
@@ -121,6 +140,185 @@ const odoHistoryQ = useAsync(
         }),
   [vehicleId],
 );
+
+// ── Fuel spend, this year vs last ──────────────────────────────────────
+// Every fillup since Jan 1 of last year → running total of price_total by
+// day of year, this year (accent, end dot) against last year (compare blue)
+// as stepped lines. Maths in lib/fuelInsights.compareSpend.
+const spendYear = new Date().getFullYear();
+const spendFillupsQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.listFillups({ vehicle_id: vehicleId.value, from: `${spendYear - 1}-01-01`, limit: 500 })
+      : Promise.resolve({ items: [] as Fillup[], total: 0 }),
+  [vehicleId],
+);
+const spend = computed(() => {
+  const items = spendFillupsQ.data.value?.items ?? [];
+  if (items.length === 0) return null;
+  const fills = items
+    .filter((f) => !!f.fillup_date)
+    .map((f) => ({ day: localDay(f.fillup_date), cost: toNum(f.price_total) }));
+  const c = compareSpend(fills, spendYear);
+  if (c.current.length < 2 && c.previous.length < 2) return null;
+  return c;
+});
+const spendHeadline = computed(() => {
+  const c = spend.value;
+  if (!c) return null;
+  const prevYear = c.year - 1;
+  return {
+    total: fmtMoney(c.total, 0),
+    sub:
+      c.previous.length < 2
+        ? `no fillups recorded in ${prevYear}`
+        : `${fmtMoney(Math.abs(c.delta), 0)} ${c.delta >= 0 ? "more" : "less"} than ${prevYear} by the same date (${fmtMoney(c.previousAtSameDate, 0)})`,
+  };
+});
+const spendChart = computed(() => {
+  const c = spend.value;
+  if (!c) return null;
+  const col = insightColors();
+  // Same-day fillups collapse to the day's final running total, then each
+  // series becomes explicit staircase vertices on one shared x axis.
+  const steps = (rows: typeof c.current) => {
+    const byDay = new Map<number, number>();
+    for (const r of rows) byDay.set(r.doy, r.total);
+    return stepVertices([...byDay].map(([x, y]) => ({ x, y })));
+  };
+  const cur = steps(c.current);
+  const prev = steps(c.previous);
+  const xs = Array.from(new Set([...cur.map((p) => p.x), ...prev.map((p) => p.x)])).sort((a, b) => a - b);
+  const curBy = new Map(cur.map((p) => [p.x, p.y]));
+  const prevBy = new Map(prev.map((p) => [p.x, p.y]));
+  const lastCur = c.current[c.current.length - 1];
+  const yMax = Math.max(c.previous[c.previous.length - 1].total, lastCur.total) * 1.06 || 1;
+  const opts: uPlot.Options = {
+    width: 600,
+    height: 240,
+    scales: fixedScales([0, 365], [0, yMax]),
+    axes: insightAxes(
+      quarterTicks(c.year).map((t) => ({ v: t.doy, label: t.label })),
+      (v) => (v >= 1000 ? `$${nf(0, 1).format(v / 1000)}k` : `$${nf(0).format(v)}`),
+    ),
+    series: [
+      {},
+      lineSeries(String(c.year - 1), col.compare),
+      lineSeries(String(c.year), col.accent),
+      endDotSeries(col.accent),
+    ],
+  };
+  const data = [
+    xs,
+    xs.map((x) => prevBy.get(x) ?? null),
+    xs.map((x) => curBy.get(x) ?? null),
+    xs.map((x) => (x === lastCur.doy && c.current.length > 1 ? lastCur.total : null)),
+  ] as uPlot.AlignedData;
+  const pts = c.current.slice(1);
+  return {
+    data,
+    opts,
+    hover: pts.map((p) => ({ x: p.doy, y: p.total })),
+    tips: pts.map((p) => {
+      const [y, m, d] = (p.day as string).split("-").map(Number);
+      const prev = c.previous.filter((q) => q.doy <= p.doy);
+      return {
+        title: `${MONTH_ABBR[m - 1]} ${d}, ${y}`,
+        main: `${c.year}: ${fmtMoney(p.total, 0)}`,
+        sub: `${c.year - 1} by then: ${fmtMoney(prev[prev.length - 1]?.total ?? 0, 0)}`,
+      };
+    }),
+  };
+});
+
+// ── Battery, resting voltage ──────────────────────────────────────────
+// Daily average of battery_voltage over the last 14 days. The WiCAN wakes
+// while parked, so these are mostly resting readings. Good ≥ 12.4 V,
+// Fair 12.0–12.4, Low < 12.0. Hidden when there's no data.
+const batteryQ = useAsync(
+  () =>
+    vehicleId.value
+      ? api.aggregateReadings({
+          vehicle_id: vehicleId.value,
+          metric: "battery_voltage",
+          bucket: "day",
+          from: new Date(Date.now() - 14 * 86_400_000).toISOString(),
+        })
+      : Promise.resolve([]),
+  [vehicleId],
+);
+const BAND_LABEL: Record<BatteryBand, string> = { good: "Good", fair: "Fair", low: "Low" };
+const battery = computed(() => {
+  const rows = (batteryQ.data.value ?? [])
+    .filter((b) => b.avg != null && Number.isFinite(b.avg))
+    .map((b) => ({ day: b.bucket.slice(0, 10), v: b.avg as number }))
+    .sort((a, b) => (a.day < b.day ? -1 : 1));
+  const sum = batterySummary(rows.map((r) => r.v));
+  if (!sum) return null;
+  const [lo, hi] = [Math.min(11.6, ...rows.map((r) => r.v - 0.1)), Math.max(12.8, ...rows.map((r) => r.v + 0.1))];
+  const t = rows.map((r) => {
+    const [y, m, d] = r.day.split("-").map(Number);
+    return new Date(y, m - 1, d, 12).getTime();
+  });
+  const label = (day: string) => {
+    const [, m, d] = day.split("-").map(Number);
+    return `${MONTH_ABBR[m - 1]} ${d}`;
+  };
+  const ink = cssVar("--c-ink1", "#e7e9ee");
+  const bands: [number, number, string][] = [
+    [12.4, hi, cssVar("--c-success", "#4ade80")],
+    [12.0, 12.4, cssVar("--c-warn", "#ffb020")],
+    [lo, 12.0, cssVar("--c-danger", "#ff3a2e")],
+  ];
+  const x0 = t[0] - 0.5 * 86_400_000;
+  const x1 = t[t.length - 1] + 0.5 * 86_400_000;
+  const axes = insightAxes(
+    rows.length > 1
+      ? [
+          { v: t[0], label: label(rows[0].day) },
+          { v: t[t.length - 1], label: label(rows[rows.length - 1].day) },
+        ]
+      : [{ v: t[0], label: label(rows[0].day) }],
+    (v) => v.toFixed(1),
+  );
+  axes[1] = { ...axes[1], splits: () => [12.0, 12.4] };
+  const opts: uPlot.Options = {
+    width: 400,
+    height: 120,
+    scales: fixedScales([x0, x1], [lo, hi]),
+    axes,
+    series: [
+      {},
+      { ...lineSeries("Resting voltage", ink), points: { show: true, size: 6, width: 0, fill: ink, stroke: ink } },
+    ],
+    hooks: {
+      // Faint good / fair / low bands behind the line.
+      drawAxes: [
+        (u: uPlot) => {
+          const ctx = u.ctx;
+          ctx.save();
+          ctx.globalAlpha = 0.08;
+          for (const [a, b, c] of bands) {
+            const yTop = u.valToPos(b, "y", true);
+            const yBot = u.valToPos(a, "y", true);
+            ctx.fillStyle = c;
+            ctx.fillRect(u.bbox.left, yTop, u.bbox.width, yBot - yTop);
+          }
+          ctx.restore();
+        },
+      ],
+    },
+  };
+  return {
+    ...sum,
+    data: [t, rows.map((r) => r.v)] as uPlot.AlignedData,
+    opts,
+    hover: rows.map((r, i) => ({ x: t[i], y: r.v })),
+    tips: rows.map((r) => ({ title: label(r.day), main: `${r.v.toFixed(2)} V` })),
+    pill: BAND_LABEL[sum.band],
+    sentence: `Mostly in the ${sum.mostly} band. A healthy resting battery sits at 12.4 V or more; a steady slide under 12.0 V usually means it's near the end.`,
+  };
+});
 
 // EIA weekly retail-gasoline averages — feeds the "vs region avg"
 // sub-line on the Gas price hero. Region is hard-coded to "midwest"
@@ -359,41 +557,38 @@ const gaugeColor = computed(() => {
   const p = heroData.value.fuelLevelPct;
   if (p == null) return 'var(--c-line0)';
   if (p < 15) return 'var(--c-danger)';
-  if (p < 35) return 'var(--c-warn)';
+  if (p < 30) return 'var(--c-warn)';
   return 'var(--c-success)';
 });
 
+// Fuel gauge geometry — the phone's range-card arc (mock B): a 234° sweep
+// from lower-left (E) over the top to lower-right (F), centre (110, 100),
+// radius 82 in a 220×160 box. A non-zero level always shows a 2 % sliver.
+const G = { cx: 110, cy: 100, r: 82, a0: Math.PI * 0.85, a1: Math.PI * 2.15 };
+function gaugePt(a: number, r = G.r): [number, number] {
+  return [G.cx + r * Math.cos(a), G.cy + r * Math.sin(a)];
+}
 function gaugeArcPath(pctIn: number): string {
   const pct = Math.max(0, Math.min(100, pctIn));
   if (pct <= 0) return '';
-  const cx = 100, cy = 100, r = 78;
-  const startAngle = Math.PI;
-  const endAngle = Math.PI + (Math.PI * pct) / 100;
-  const sx = cx + r * Math.cos(startAngle);
-  const sy = cy + r * Math.sin(startAngle);
-  const ex = cx + r * Math.cos(endAngle);
-  const ey = cy + r * Math.sin(endAngle);
-  // Sweep is always 0–180° (top-half gauge), so large-arc-flag is ALWAYS 0.
-  // Previously this was `pct > 50 ? 1 : 0`, which told SVG to take the LONGER
-  // arc when pct>50 — drawing the wrong way around the circle and leaving
-  // only the two rounded-cap endpoints visible.
-  return `M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 0 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
+  const to = G.a0 + (G.a1 - G.a0) * Math.max(0.02, pct / 100);
+  const [x0, y0] = gaugePt(G.a0);
+  const [x1, y1] = gaugePt(to);
+  const large = to - G.a0 > Math.PI ? 1 : 0;
+  return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${G.r} ${G.r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
 }
-
+/** Quarter ticks just inside the arc. */
 function gaugeTickPath(): string {
-  const cx = 100, cy = 100, rOuter = 67, rInner = 61;
-  const angles = [180, 225, 270, 315, 360];
-  return angles
-    .map((deg) => {
-      const a = (deg * Math.PI) / 180;
-      const x1 = cx + rOuter * Math.cos(a);
-      const y1 = cy + rOuter * Math.sin(a);
-      const x2 = cx + rInner * Math.cos(a);
-      const y2 = cy + rInner * Math.sin(a);
+  return [0, 0.25, 0.5, 0.75, 1]
+    .map((f) => {
+      const a = G.a0 + (G.a1 - G.a0) * f;
+      const [x1, y1] = gaugePt(a, G.r - 12);
+      const [x2, y2] = gaugePt(a, G.r - 18);
       return `M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)}`;
     })
     .join(' ');
 }
+const gaugeEnds = { e: gaugePt(G.a0), f: gaugePt(G.a1) };
 
 const dtcsQ = useAsync(
   () => (vehicleId.value ? api.listDtcs(vehicleId.value, true) : Promise.resolve([])),
@@ -652,7 +847,12 @@ function onFillupSaved() {
         <div class="card hero fuel-gauge" :style="{ '--gauge-accent': gaugeColor }">
           <h3>Fuel level</h3>
           <div class="fuel-gauge-wrap">
-            <svg class="fuel-gauge-svg" viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+            <svg
+              class="fuel-gauge-svg"
+              viewBox="0 0 220 160"
+              role="img"
+              :aria-label="heroData.fuelLevelPct != null ? `Fuel ${heroData.fuelLevelPct.toFixed(0)} percent` : 'No fuel reading'"
+            >
               <path class="gauge-track" :d="gaugeArcPath(100)" fill="none" stroke-width="14" stroke-linecap="round" />
               <path
                 v-if="heroData.fuelLevelPct != null && heroData.fuelLevelPct > 0"
@@ -663,12 +863,12 @@ function onFillupSaved() {
                 stroke-linecap="round"
               />
               <path class="gauge-tick" :d="gaugeTickPath()" fill="none" stroke-width="1.5" stroke-linecap="round" />
+              <text class="gauge-pct" :x="110" :y="104" text-anchor="middle">
+                {{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) + '%' : '—' }}
+              </text>
+              <text class="gauge-end" :x="gaugeEnds.e[0] - 4" :y="gaugeEnds.e[1] + 22" text-anchor="middle">E</text>
+              <text class="gauge-end" :x="gaugeEnds.f[0] + 4" :y="gaugeEnds.f[1] + 22" text-anchor="middle">F</text>
             </svg>
-            <span class="fuel-gauge-end e" aria-hidden="true">E</span>
-            <span class="fuel-gauge-end f" aria-hidden="true">F</span>
-            <span class="fuel-gauge-pct">
-              {{ heroData.fuelLevelPct != null ? heroData.fuelLevelPct.toFixed(0) + '%' : '—' }}
-            </span>
             <span
               v-if="heroData.estimateStale"
               class="stale-badge"
@@ -755,6 +955,31 @@ function onFillupSaved() {
             <span v-if="spendBars.avg != null" class="trend-cap">12-mo avg {{ fmtMoney(spendBars.avg, 0) }}</span>
           </div>
         </div>
+      </section>
+
+      <section v-if="spendChart && spendHeadline && spend" class="card spend-yoy">
+        <h3>Fuel spend, this year vs last</h3>
+        <div class="insight-head">
+          <span class="insight-big">{{ spendHeadline.total }}<small>so far in {{ spend.year }}</small></span>
+          <span class="insight-sub">{{ spendHeadline.sub }}</span>
+        </div>
+        <div class="insight-legend">
+          <span><i class="sw" style="background: var(--c-accent)"></i>{{ spend.year }}</span>
+          <span><i class="sw" style="background: var(--c-compare)"></i>{{ spend.year - 1 }}</span>
+        </div>
+        <InsightChart
+          :data="spendChart.data"
+          :options="spendChart.opts"
+          :hover="spendChart.hover"
+          mode="x"
+          :label="`Running fuel spend by day of year, ${spend.year} against ${spend.year - 1}`"
+        >
+          <template #tip="{ index }">
+            <span class="k">{{ spendChart.tips[index].title }}</span><br />
+            <b>{{ spendChart.tips[index].main }}</b><br />
+            <span class="k">{{ spendChart.tips[index].sub }}</span>
+          </template>
+        </InsightChart>
       </section>
 
       <!-- Ownership row: everything else, collapsed by default. -->
@@ -959,6 +1184,30 @@ function onFillupSaved() {
             </li>
           </ul>
         </section>
+
+        <section v-if="battery" class="card battery">
+          <h3>
+            Battery, resting voltage
+            <span class="band-pill" :class="battery.band">{{ battery.pill }}</span>
+          </h3>
+          <div class="insight-head">
+            <span class="insight-big">{{ battery.latest.toFixed(2) }}<small>V</small></span>
+            <span class="insight-sub">latest day · {{ battery.days }} day{{ battery.days === 1 ? "" : "s" }} with data</span>
+          </div>
+          <InsightChart
+            :data="battery.data"
+            :options="battery.opts"
+            :hover="battery.hover"
+            mode="xy"
+            :label="`Daily battery voltage over ${battery.days} days`"
+          >
+            <template #tip="{ index }">
+              <span class="k">{{ battery.tips[index].title }}</span><br />
+              <b>{{ battery.tips[index].main }}</b>
+            </template>
+          </InsightChart>
+          <p class="muted small battery-note">{{ battery.sentence }}</p>
+        </section>
       </div>
 
       <FillupModal
@@ -1134,33 +1383,22 @@ function onFillupSaved() {
   stroke: var(--c-ink3);
   opacity: 0.7;
 }
-.fuel-gauge-pct {
-  position: absolute;
-  left: 50%;
-  bottom: 8%;
-  transform: translateX(-50%);
+.gauge-pct {
   font-family: 'Geist Mono', ui-monospace, monospace;
-  font-size: 1.55rem;
+  font-size: 36px;
   font-weight: 600;
   letter-spacing: -0.04em;
-  line-height: 1;
   font-variant-numeric: tabular-nums;
-  color: var(--c-ink0);
+  fill: var(--c-ink0);
 }
-.fuel-gauge-end {
-  position: absolute;
-  bottom: 2px;
+.gauge-end {
   font-family: 'Geist', sans-serif;
-  font-size: 0.72rem;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--c-ink3);
+  fill: var(--c-ink3);
 }
-.fuel-gauge-end.e {
-  left: 2px;
-}
-.fuel-gauge-end.f {
-  right: 2px;
+.fuel-gauge-svg {
+  max-height: 150px;
 }
 .stale-badge {
   position: absolute;
@@ -1295,4 +1533,35 @@ function onFillupSaved() {
 .coo-purchase { background: var(--chart-4); }
 .coo-fuel    { background: var(--chart-1); }
 .coo-maint   { background: var(--chart-3); }
+.battery h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.band-pill {
+  margin-left: auto;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.band-pill.good {
+  color: var(--c-success);
+  background: var(--c-success-soft);
+}
+.band-pill.fair {
+  color: var(--c-warn);
+  background: var(--c-warn-soft);
+}
+.band-pill.low {
+  color: var(--c-danger);
+  background: var(--c-danger-soft);
+}
+.battery-note {
+  margin: 0.4rem 0 0;
+}
+.spend-yoy h3,
+.battery h3 {
+  margin-bottom: 0.4rem;
+}
 </style>

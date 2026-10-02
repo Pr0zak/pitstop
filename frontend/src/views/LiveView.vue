@@ -123,6 +123,15 @@ function ageText(thenMs: number, nowMs: number): string {
   return `${d} day${d === 1 ? "" : "s"} ago`;
 }
 
+/** Per-tile freshness while parked: "as of 16 hr ago", or "no reading". */
+function asOf(...keys: string[]): string {
+  for (const k of keys) {
+    const v = shown.value[k];
+    if (v) return `as of ${ageText(v.time, tick.value)}`;
+  }
+  return "no reading";
+}
+
 function num(key: string): number | null {
   const v = shown.value?.[key]?.value;
   if (typeof v === "number") return v;
@@ -403,14 +412,17 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Coolant</h3>
             <div class="big"><QtyValue :text="fmtTempC(coolant)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('coolant_temp') }}</div>
           </div>
           <div class="card tile">
             <h3>Battery</h3>
             <div class="big"><QtyValue :text="fmtNum(voltage, 2)" unit="V" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('control_module_voltage') }}</div>
           </div>
           <div class="card tile">
             <h3>Fuel level</h3>
             <div class="big"><QtyValue :text="fmtNum(fuelLvl, 0)" unit="%" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('fuel_level') }}</div>
           </div>
         </div>
       </section>
@@ -422,18 +434,22 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Throttle</h3>
             <div class="big"><QtyValue :text="fmtPct(throttle)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('throttle_position') }}</div>
           </div>
           <div class="card tile">
             <h3>Engine load</h3>
             <div class="big"><QtyValue :text="fmtPct(load)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('engine_load') }}</div>
           </div>
           <div class="card tile">
             <h3>MAF</h3>
             <div class="big"><QtyValue :text="fmtNum(maf, 2)" unit="g/s" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('maf_air_flow') }}</div>
           </div>
           <div class="card tile">
             <h3>Torque</h3>
             <div class="big"><QtyValue :text="fmtNum(torque, 0)" unit="%" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('engine_torque_pct') }}</div>
             <div class="muted small" v-if="instantTorqueLbft != null">
               ≈ {{ instantTorqueLbft.toFixed(0) }} lb·ft
             </div>
@@ -441,6 +457,7 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Speed</h3>
             <div class="big"><QtyValue :text="fmtSpeedKph(speed)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('vehicle_speed') }}</div>
           </div>
         </div>
       </section>
@@ -452,10 +469,12 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Fuel rate</h3>
             <div class="big"><QtyValue :text="fmtFuelRateLh(fuelRate)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('engine_fuel_rate', 'fuel_rate') }}</div>
           </div>
           <div class="card tile">
             <h3>Exhaust flow</h3>
             <div class="big"><QtyValue :text="fmtNum(exhaustFlow, 1)" unit="kg/h" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('engine_exhaust_flow') }}</div>
           </div>
           <div class="card tile highlight">
             <h3>Instant economy</h3>
@@ -463,22 +482,27 @@ function trimClass(v: number | null): string {
               <QtyValue :text="fmtNum(instantEconomy.value, 1)" :unit="instantEconomy.unit" />
             </div>
             <div class="muted small">computed from fuel rate ÷ speed</div>
+            <div v-if="parked" class="tile-age">{{ asOf('engine_fuel_rate', 'fuel_rate') }}</div>
           </div>
           <div class="card tile">
             <h3>STFT B1</h3>
             <div class="big" :class="trimClass(stftB1)">{{ fmtTrim(stftB1) }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf('stft_b1') }}</div>
           </div>
           <div class="card tile">
             <h3>LTFT B1</h3>
             <div class="big" :class="trimClass(ltftB1)">{{ fmtTrim(ltftB1) }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf('ltft_b1') }}</div>
           </div>
           <div class="card tile">
             <h3>STFT B2</h3>
             <div class="big" :class="trimClass(stftB2)">{{ fmtTrim(stftB2) }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf('stft_b2') }}</div>
           </div>
           <div class="card tile">
             <h3>LTFT B2</h3>
             <div class="big" :class="trimClass(ltftB2)">{{ fmtTrim(ltftB2) }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf('ltft_b2') }}</div>
           </div>
         </div>
       </section>
@@ -490,15 +514,18 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Commanded AFR</h3>
             <div class="big"><QtyValue :text="fmtNum(cmdAfr, 3)" unit="λ" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('commanded_afr_ratio') }}</div>
           </div>
           <div class="card tile">
             <h3>O2 S1 lambda</h3>
             <div class="big"><QtyValue :text="fmtNum(o2S1Lambda, 3)" unit="λ" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('o2_s1_lambda') }}</div>
             <div class="muted small">upstream wide-range</div>
           </div>
           <div class="card tile">
             <h3>Fuel rail</h3>
             <div class="big"><QtyValue :text="fmtPressureKpa(fuelRail)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('fuel_rail_pressure') }}</div>
           </div>
         </div>
       </section>
@@ -510,18 +537,22 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Catalyst B1</h3>
             <div class="big"><QtyValue :text="fmtTempC(catB1)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('catalyst_temp_b1') }}</div>
           </div>
           <div class="card tile">
             <h3>Catalyst B2</h3>
             <div class="big"><QtyValue :text="fmtTempC(catB2)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('catalyst_temp_b2') }}</div>
           </div>
           <div class="card tile">
             <h3>Commanded EGR</h3>
             <div class="big"><QtyValue :text="fmtPct(cmdEgr)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('commanded_egr') }}</div>
           </div>
           <div class="card tile">
             <h3>Evap purge</h3>
             <div class="big"><QtyValue :text="fmtPct(cmdEvapPurge)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('commanded_evap_purge') }}</div>
           </div>
         </div>
       </section>
@@ -533,18 +564,22 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Intake air</h3>
             <div class="big"><QtyValue :text="fmtTempC(iat)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('intake_air_temp') }}</div>
           </div>
           <div class="card tile">
             <h3>MAP</h3>
             <div class="big"><QtyValue :text="fmtPressureKpa(map)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('intake_manifold_pressure') }}</div>
           </div>
           <div class="card tile">
             <h3>Baro</h3>
             <div class="big"><QtyValue :text="fmtPressureKpa(baro)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('barometric_pressure') }}</div>
           </div>
           <div class="card tile">
             <h3>Timing</h3>
             <div class="big"><QtyValue :text="fmtNum(timing, 1)" unit="°" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('timing_advance') }}</div>
           </div>
         </div>
       </section>
@@ -556,14 +591,17 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Odometer</h3>
             <div class="big"><QtyValue :text="fmtInt(odometer)" :unit="odometerUnit" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('odometer') }}</div>
           </div>
           <div class="card tile">
             <h3>Run time</h3>
             <div class="big"><QtyValue :text="fmtRunTime(timeSinceStart)" unit="" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('time_since_engine_start') }}</div>
           </div>
           <div class="card tile">
             <h3>Distance since DTC clear</h3>
             <div class="big"><QtyValue :text="fmtInt(distSinceClear)" :unit="distUnit" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('distance_since_code_clear') }}</div>
           </div>
         </div>
       </section>
@@ -679,5 +717,10 @@ function trimClass(v: number | null): string {
 .tile .small {
   font-size: 0.72rem;
   margin-top: 0.15rem;
+}
+.tile-age {
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--c-ink3);
 }
 </style>
