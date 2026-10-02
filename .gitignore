@@ -87,3 +87,7 @@ backend/dist/
 db_data/
 mosquitto_data/
 mosquitto_log/
+
+# Emulator / Playwright screenshots and mockups — real prices, dates and
+# trip shapes from the live server. Never commit.
+design/

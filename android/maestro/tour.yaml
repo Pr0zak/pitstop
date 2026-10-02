@@ -1,0 +1,20 @@
+appId: io.github.pr0zak.pitstop
+---
+- launchApp
+- extendedWaitUntil: {visible: "Trips", timeout: 45000}
+- takeScreenshot: home
+- scroll
+- takeScreenshot: home-scrolled
+- tapOn: "Trips"
+- waitForAnimationToEnd: {timeout: 8000}
+- takeScreenshot: trips
+- tapOn: "Fuel"
+- waitForAnimationToEnd: {timeout: 8000}
+- takeScreenshot: fuel
+- scroll
+- takeScreenshot: fuel-scrolled
+- tapOn: "Car"
+- waitForAnimationToEnd: {timeout: 8000}
+- takeScreenshot: car
+- scroll
+- takeScreenshot: car-scrolled
