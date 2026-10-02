@@ -31,7 +31,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -42,6 +44,9 @@ data class LastDrive(
     val trip: com.pitstop.http.TripDto,
     val baseline: com.pitstop.http.TripBaselineDto? = null,
     val route: List<Pair<Double, Double>> = emptyList(),
+    /** [route] projected for drawing, with per-point speeds; built off the
+     *  main thread. Null = derive from [route] (screenshot fixtures). */
+    val shape: com.pitstop.domain.RouteShape? = null,
 )
 
 /**
@@ -73,6 +78,9 @@ data class StatusUiState(
     val costPerMile: List<CostPerMilePointDto>? = null,
     /** /analytics/monthly-spend — full history, monthly. */
     val monthlySpend: List<MonthlySpendPointDto>? = null,
+    /** This year's vs last year's running fuel spend; null while loading
+     *  or when this year has no costed fillup (the Trends page hides). */
+    val spendYoy: com.pitstop.domain.FuelCharts.SpendYoy? = null,
     /** /dtcs?active_only=true — empty list when nothing active. */
     val activeDtcs: List<DtcDto>? = null,
     /** Mirrors [com.pitstop.data.Settings.manualSyncOnly]; the
@@ -100,6 +108,9 @@ data class StatusUiState(
      *  live CDM association list (WicanCompanionManager.hasAssociation()), the
      *  same source Settings uses, so the two screens can't disagree. */
     val companionPaired: Boolean = false,
+    /** Why the last Home refresh couldn't load data, in one plain line;
+     *  null once a refresh reaches the vehicle. Replaces the skeleton. */
+    val loadProblem: String? = null,
 ) {
     /**
      * Auto-start is ON but the WiCAN isn't paired on API 31+, so the OS will
@@ -138,6 +149,7 @@ class StatusViewModel @Inject constructor(
     private val directory: com.pitstop.data.VehicleDirectory,
     private val rangeRepository: com.pitstop.data.RangeRepository,
     private val alerts: com.pitstop.notif.VehicleAlerts,
+    private val appPrefs: com.pitstop.data.AppPrefs,
 ) : AndroidViewModel(application) {
 
     private val bridgeStateBus: BridgeStateBus = stateBus
@@ -171,14 +183,32 @@ class StatusViewModel @Inject constructor(
     private val mpgYearly = MutableStateFlow<List<MpgPointDto>?>(null)
     private val costPerMile = MutableStateFlow<List<CostPerMilePointDto>?>(null)
     private val monthlySpend = MutableStateFlow<List<MonthlySpendPointDto>?>(null)
+    private val spendYoy = MutableStateFlow<com.pitstop.domain.FuelCharts.SpendYoy?>(null)
     private val activeDtcs = MutableStateFlow<List<DtcDto>?>(null)
     private val vehicle = MutableStateFlow<com.pitstop.http.VehicleDto?>(null)
     private val rangeBasis = MutableStateFlow<com.pitstop.domain.RangeBasis?>(null)
     private val lastDrive = MutableStateFlow<LastDrive?>(null)
     private val lastRoute = MutableStateFlow<List<com.pitstop.http.RoutePointDto>>(emptyList())
     private val reminders = MutableStateFlow<List<com.pitstop.domain.ReminderItem>?>(null)
+    private val loadProblem = MutableStateFlow<String?>(null)
+
+    /** Read once per ViewModel, so the full pairing card doesn't collapse
+     *  while it is on screen; the next visit (tab ViewModels are disposed
+     *  on swipe) shows the one-line version. */
+    private val _pairCardCompact = MutableStateFlow(true)
+    val pairCardCompact: StateFlow<Boolean> = _pairCardCompact.asStateFlow()
+
+    fun onPairCardShown() {
+        viewModelScope.launch { appPrefs.setPairCardSeen() }
+    }
+
+    fun collapsePairCard() {
+        _pairCardCompact.value = true
+        onPairCardShown()
+    }
 
     init {
+        viewModelScope.launch { _pairCardCompact.value = appPrefs.pairCardSeen.first() }
         viewModelScope.launch {
             updateChecking.value = true
             updateInfo.value = updateChecker.check()
@@ -210,13 +240,17 @@ class StatusViewModel @Inject constructor(
      */
     private suspend fun refreshHomeDataInternal(cacheControl: String? = null) {
         val secrets = runCatching { settingsRepository.current() }.getOrNull()
-        if (secrets == null || secrets.queryToken.isBlank() || secrets.settings.apiBaseUrl.isBlank()) {
-            logBuffer.warn("home refresh: QUERY_TOKEN / API base URL not configured; skipping")
+        // The query token is optional: a server with auth off answers
+        // without one, and one that needs it answers 401 (logged below).
+        if (secrets == null || secrets.settings.apiBaseUrl.isBlank()) {
+            logBuffer.warn("home refresh: API base URL not configured; skipping")
+            loadProblem.value = "The server URL isn't set"
             clearHomeData()
             return
         }
         val slug = activeVehicle.current().ifEmpty {
             logBuffer.warn("home refresh: vehicle slug not set in Settings; skipping")
+            loadProblem.value = "No vehicle is selected"
             clearHomeData()
             return
         }
@@ -226,6 +260,12 @@ class StatusViewModel @Inject constructor(
                 "home refresh: /vehicles fetch failed",
                 mapOf("err" to (exc.message ?: exc::class.java.simpleName)),
             )
+            loadProblem.value = when {
+                exc is retrofit2.HttpException && (exc.code() == 401 || exc.code() == 403) ->
+                    "The server rejected the Query token"
+                exc is retrofit2.HttpException -> "The server answered with error ${exc.code()}"
+                else -> "Can't reach the server"
+            }
             clearHomeData()
             return
         }
@@ -234,9 +274,11 @@ class StatusViewModel @Inject constructor(
                 "home refresh: configured slug not found",
                 mapOf("slug" to slug, "available" to vehicles.map { it.slug }),
             )
+            loadProblem.value = "Vehicle \"$slug\" isn't on the server"
             clearHomeData()
             return
         }
+        loadProblem.value = null
 
         // Parallel-fan-out: every fetch lives in its own async{}. They
         // resolve independently so the cards populate as soon as their
@@ -257,6 +299,20 @@ class StatusViewModel @Inject constructor(
             val spendJob = async {
                 runCatching { api.getMonthlySpend(vehicleId) }.getOrNull()
             }
+            // Every fillup since Jan 1 last year, for the this-year-vs-last
+            // spend page. A day early in UTC so a local-Jan-1 fill is in;
+            // spendYoy() buckets by the device's local date.
+            val today = java.time.LocalDate.now()
+            val yoyJob = async {
+                runCatching {
+                    api.getFillups(
+                        vehicleId,
+                        limit = 500,
+                        cacheControl = cacheControl,
+                        from = "${java.time.LocalDate.of(today.year - 1, 1, 1).minusDays(1)}T00:00:00Z",
+                    )
+                }.getOrNull()
+            }
             // One trips fetch serves both Recent trips and the 30-day range basis.
             val tripsJob = async {
                 runCatching { rangeRepository.fetchBasisTrips(vehicleId, cacheControl) }.getOrNull()
@@ -274,6 +330,7 @@ class StatusViewModel @Inject constructor(
             val yearly = mpgYearlyJob.await()
             val cost = costJob.await()
             val spend = spendJob.await()
+            val yoyFills = yoyJob.await()
             val trips30 = tripsJob.await()
             val dtcs = dtcsJob.await()
             val rem = remindersJob.await()?.let { com.pitstop.domain.Maintenance.normalize(it) }
@@ -286,6 +343,7 @@ class StatusViewModel @Inject constructor(
             mpgYearly.value = yearly?.points
             costPerMile.value = cost?.points
             monthlySpend.value = spend?.months
+            spendYoy.value = yoyFills?.let { com.pitstop.domain.FuelCharts.spendYoy(it, today) }
             recentTrips.value = trips?.sortedByDescending { it.startedAt }?.take(6) ?: emptyList()
             activeDtcs.value = dtcs ?: emptyList()
             reminders.value = rem ?: reminders.value
@@ -334,10 +392,15 @@ class StatusViewModel @Inject constructor(
             }
             val route = routeJob.await().orEmpty()
             lastRoute.value = route
+            val (sketch, shape) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                downsample(route.map { it.lat to it.lon }, 160) to
+                    com.pitstop.domain.RouteShape.of(route.map { it.lat to it.lon }, route.map { it.speedMps })
+            }
             lastDrive.value = LastDrive(
                 trip = trip,
                 baseline = baseJob.await(),
-                route = downsample(route.map { it.lat to it.lon }, 160),
+                route = sketch,
+                shape = shape,
             )
         }
     }
@@ -466,6 +529,7 @@ class StatusViewModel @Inject constructor(
         mpgYearly.value = null
         costPerMile.value = null
         monthlySpend.value = null
+        spendYoy.value = null
         activeDtcs.value = null
         vehicle.value = null
         rangeBasis.value = null
@@ -581,6 +645,8 @@ class StatusViewModel @Inject constructor(
             monthlySpend,
             activeDtcs,
             driveBundle,
+            loadProblem,
+            spendYoy,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val bridge = values[0] as BridgeBundle
@@ -600,6 +666,8 @@ class StatusViewModel @Inject constructor(
             @Suppress("UNCHECKED_CAST")
             val dtcs = values[9] as List<DtcDto>?
             val drive = values[10] as DriveBundle
+            val problem = values[11] as String?
+            val yoy = values[12] as com.pitstop.domain.FuelCharts.SpendYoy?
 
             StatusUiState(
                 status = bridge.status.copy(
@@ -628,6 +696,7 @@ class StatusViewModel @Inject constructor(
                 mpgYearly = mpgY,
                 costPerMile = cost,
                 monthlySpend = spend,
+                spendYoy = yoy,
                 activeDtcs = dtcs,
                 range = drive.range,
                 lastDrive = drive.lastDrive,
@@ -648,6 +717,7 @@ class StatusViewModel @Inject constructor(
                 // status changes (incl. companionAssociationId on pair/unpair),
                 // so this is re-read on every relevant event.
                 companionPaired = companionManager.hasAssociation(),
+                loadProblem = problem,
             )
         }.stateIn(
             scope = viewModelScope,

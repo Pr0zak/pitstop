@@ -47,6 +47,8 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LocalGasStation
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -72,7 +74,7 @@ import com.pitstop.ui.history.HistorySubTab
 import com.pitstop.ui.history.HistoryViewModel
 import com.pitstop.ui.onboarding.OnboardingGateViewModel
 import com.pitstop.ui.onboarding.SetupWizardScreen
-import com.pitstop.ui.status.StatusScreen
+import com.pitstop.ui.status.HomeSection
 import com.pitstop.ui.theme.LocalUnitSystem
 import com.pitstop.ui.theme.PitstopTheme
 import com.pitstop.util.requireActivity
@@ -344,11 +346,47 @@ private fun PitstopRootBody(
         }
     }
 
+    // A missing permission gets a one-paragraph explanation before the
+    // system prompt; firing the bare "Nearby devices" dialog the moment the
+    // pager appears (e.g. right after Skip in the wizard) gave no reason.
+    var permRationale by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        // Already-granted permissions return instantly without a dialog, so
-        // after the setup wizard's Permissions step this is a silent no-op —
-        // but it still drives the background-location follow-up above.
-        launcher.launch(perms)
+        val missing = perms.any {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        // All granted (e.g. after the wizard's Permissions step): launching
+        // is a silent no-op that still drives the background-location
+        // follow-up above.
+        // Once per process: a user who denied shouldn't see it on every
+        // tab-host recomposition or rotation.
+        if (missing && !permRationaleShown) {
+            permRationaleShown = true
+            permRationale = true
+        } else if (!missing) {
+            launcher.launch(perms)
+        }
+    }
+    if (permRationale) {
+        AlertDialog(
+            onDismissRequest = { permRationale = false },
+            title = { Text("Permissions pitstop uses") },
+            text = {
+                Text(
+                    "Nearby devices finds the WiCAN over Bluetooth. Location tags " +
+                        "drives and fillups with where they happened. Notifications " +
+                        "tell you when a drive is saved or the car needs attention.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    permRationale = false
+                    launcher.launch(perms)
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { permRationale = false }) { Text("Not now") }
+            },
+        )
     }
 
     val appBarHost = AppBarHost(
@@ -417,7 +455,7 @@ private fun PitstopRootBody(
                     // PitstopTopAppBar reads LocalAppBarHost for the vehicle
                     // switcher, logging chip and gear.
                     when (Tab.entries[page]) {
-                        Tab.Home -> StatusScreen(
+                        Tab.Home -> HomeSection(
                             onOpenHistory = {
                                 historyVm().selectSubTab(HistorySubTab.Trips)
                                 goTo(Tab.Trips)
@@ -435,6 +473,7 @@ private fun PitstopRootBody(
                                 historyVm().selectCarSection(CarSection.Service)
                                 goTo(Tab.Car)
                             },
+                            onOpenFuel = { goTo(Tab.Fuel) },
                         )
                         Tab.Trips -> TripsScreen()
                         Tab.Fuel -> FuelScreen(pendingLogSheet = pendingLogSheetFlow)
@@ -485,3 +524,6 @@ private fun PitstopRootBody(
         }
     }
 }
+
+/** Process-lifetime latch for the permission explanation dialog. */
+private var permRationaleShown = false

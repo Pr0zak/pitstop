@@ -89,7 +89,8 @@ fun FillupStatsHeader(
                     value = UnitFormat.money(UnitFormat.costPerDistanceValue(stats.costPerMi, system)),
                     unit = UnitFormat.perDistanceUnit(system),
                     caption = stats.costPerMiDelta?.let {
-                        moneyDeltaText(UnitFormat.costPerDistanceValue(it, system) ?: it, 2)
+                        moneyDeltaText(UnitFormat.costPerDistanceValue(it, system) ?: it, 2) +
+                            (stats.costPerMiPrevLabel?.let { m -> " vs $m" } ?: "")
                     },
                     // Cheaper is better, so the colour logic inverts.
                     captionColor = stats.costPerMiDelta?.let { if (it <= 0) good else bad },
@@ -97,7 +98,9 @@ fun FillupStatsHeader(
                 StatTile(
                     value = UnitFormat.money(stats.monthSpend, 0),
                     unit = stats.monthLabel ?: "",
-                    caption = stats.monthSpendDelta?.let { moneyDeltaText(it, 0) },
+                    caption = stats.monthSpendDelta?.let {
+                        moneyDeltaText(it, 0) + (stats.monthPrevLabel?.let { m -> " vs $m" } ?: "")
+                    },
                     captionColor = stats.monthSpendDelta?.let { if (it <= 0) good else bad },
                 )
             }
@@ -198,6 +201,9 @@ data class FillupStats(
     val monthSpend: Double? = null,
     val monthSpendDelta: Double? = null,
     val monthLabel: String? = null,
+    /** Month each delta compares against ("Aug"), so "▼ $2" says vs what. */
+    val monthPrevLabel: String? = null,
+    val costPerMiPrevLabel: String? = null,
     val spark: List<Double> = emptyList(),
 ) {
     val isEmpty: Boolean
@@ -222,12 +228,14 @@ fun computeFillupStats(
     // with a non-null value is the most recent real month.
     val cpmPoints = costPerMile.filter { it.costPerMi != null }
     val costPerMi = cpmPoints.lastOrNull()?.costPerMi
-    val costPerMiPrev = cpmPoints.dropLast(1).lastOrNull()?.costPerMi
+    val costPerMiPrevPoint = cpmPoints.dropLast(1).lastOrNull()
+    val costPerMiPrev = costPerMiPrevPoint?.costPerMi
     val costPerMiDelta = if (costPerMi != null && costPerMiPrev != null) costPerMi - costPerMiPrev else null
 
     val spendPoints = monthlySpend.filter { it.fuel > 0 }
     val monthSpend = spendPoints.lastOrNull()?.fuel
-    val monthPrev = spendPoints.dropLast(1).lastOrNull()?.fuel
+    val monthPrevPoint = spendPoints.dropLast(1).lastOrNull()
+    val monthPrev = monthPrevPoint?.fuel
     val monthSpendDelta = if (monthSpend != null && monthPrev != null) monthSpend - monthPrev else null
     val monthLabel = spendPoints.lastOrNull()?.month?.let { monthShortLabel(it) }
 
@@ -239,6 +247,8 @@ fun computeFillupStats(
         monthSpend = monthSpend,
         monthSpendDelta = monthSpendDelta,
         monthLabel = monthLabel,
+        monthPrevLabel = monthPrevPoint?.month?.let { monthShortLabel(it) },
+        costPerMiPrevLabel = costPerMiPrevPoint?.period?.let { monthShortLabel(it) },
         spark = spark,
     )
 }

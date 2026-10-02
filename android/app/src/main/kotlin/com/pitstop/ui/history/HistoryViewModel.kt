@@ -23,6 +23,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -71,6 +72,13 @@ data class HistoryUiState(
      *  rather than failing the whole tab. */
     val costPerMile: List<CostPerMilePointDto> = emptyList(),
     val monthlySpend: List<MonthlySpendPointDto> = emptyList(),
+    /** Fuel tab "What you paid vs the market": the last 52 weeks of fillup
+     *  $/gal against the EIA US weekly average. Null hides the card (no
+     *  EIA data, or no priced fillup in the window). */
+    val marketCompare: com.pitstop.domain.FuelCharts.MarketCompare? = null,
+    /** Every EIA US week the server has (up to 520), oldest first — the
+     *  fillup rows' "vs US avg" pills. Empty = no pills. */
+    val eiaWeeks: List<com.pitstop.domain.FuelCharts.MarketWeek> = emptyList(),
     /** Null until the first pass completes. */
     val lastRefresh: RefreshInfo? = null,
     /** The vehicle these lists belong to (units, tank size, name). */
@@ -216,6 +224,9 @@ class HistoryViewModel @Inject constructor(
     val syncConfirm: StateFlow<SyncConfirmPrompt?> = _syncConfirm.asStateFlow()
 
     private val _ui = MutableStateFlow(HistoryUiState())
+
+    /** Route thumbnails for the Trips rows; process-lifetime cache. */
+    val tripThumbs = TripThumbs(api)
     val ui: StateFlow<HistoryUiState> = _ui.asStateFlow()
 
     /**
@@ -780,10 +791,31 @@ class HistoryViewModel @Inject constructor(
             val spendDeferred = async {
                 runCatching { api.getMonthlySpend(vehicleId, cacheControl) }
             }
+            // Paid-vs-market card: EIA's last 52 weeks + every fillup in
+            // that window (the list fetch above stops at 30). Best-effort.
+            val marketDeferred = async {
+                runCatching {
+                    coroutineScope {
+                        // 520 weeks: the rows' pills reach back as far as the
+                        // server has data; the chart uses the newest 52.
+                        val eia = async { api.getEiaWeekly(region = "us", weeks = 520, cacheControl = cacheControl) }
+                        val since = java.time.LocalDate.now().minusWeeks(54)
+                        val fills = async {
+                            api.getFillups(vehicleId, limit = 500, cacheControl = cacheControl, from = "${since}T00:00:00Z")
+                        }
+                        val points = eia.await().points
+                        com.pitstop.domain.FuelCharts.marketCompare(
+                            fills.await(),
+                            com.pitstop.domain.FuelCharts.lastWeeks(points, 52),
+                        ) to com.pitstop.domain.FuelCharts.marketWeeks(points)
+                    }
+                }
+            }
             val (tripsResult, fillupsResult, dtcsResult, cpmResult, spendResult) = awaitAll(
                 tripsDeferred, fillupsDeferred, dtcsDeferred, cpmDeferred, spendDeferred,
             )
             val vehicle = vehicles.firstOrNull { it.id == vehicleId }
+            val market = marketDeferred.await()
 
             _ui.update { current ->
                 @Suppress("UNCHECKED_CAST")
@@ -806,6 +838,8 @@ class HistoryViewModel @Inject constructor(
                     vehicle = vehicle ?: current.vehicle,
                     costPerMile = cpm.getOrNull()?.points ?: current.costPerMile,
                     monthlySpend = spend.getOrNull()?.months ?: current.monthlySpend,
+                    marketCompare = if (market.isSuccess) market.getOrNull()?.first else current.marketCompare,
+                    eiaWeeks = market.getOrNull()?.second ?: current.eiaWeeks,
                     trips = HistoryListState(
                         data = tripRows ?: current.trips.data,
                         loading = false,

@@ -66,6 +66,17 @@ fun tripMpg(trip: TripDto): Double? {
     return UnitFormat.mpgFrom(km, trip.fuelUsedL)
 }
 
+/** The economy half of a trip row's headline: the figure, or the reason
+ *  there isn't one, instead of a bare "— mpg". */
+fun tripEconomyLabel(trip: TripDto, system: String): String {
+    val mpg = tripMpg(trip)
+    return when {
+        mpg != null -> "${UnitFormat.economyNumber(mpg, system)} ${UnitFormat.economyUnit(system)}"
+        (trip.distanceKm ?: 0.0) < MIN_MPG_DISTANCE_KM -> "too short for ${UnitFormat.economyUnit(system)}"
+        else -> "no fuel data"
+    }
+}
+
 /** Totals for a date-group header, from the rows actually in that group. */
 data class TripGroupTotals(val count: Int, val distanceKm: Double, val fuelL: Double)
 

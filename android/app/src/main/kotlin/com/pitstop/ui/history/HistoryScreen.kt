@@ -9,6 +9,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.CompositionLocalProvider
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -68,6 +74,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -314,37 +321,39 @@ private fun TripsListRoute(
         )
     }
 
-    TripsListContent(
-        subTab = subTab,
-        onSubTab = viewModel::selectSubTab,
-        ui = ui,
-        pendingCount = pendingCount,
-        uploadProgress = uploadProgress,
-        onSync = viewModel::syncNow,
-        onCancelSync = viewModel::cancelSync,
-        onRefresh = { viewModel.refresh(forceNetwork = true) },
-        selection = selection,
-        mergeState = mergeState,
-        hiddenTripIds = pendingDelete?.ids.orEmpty(),
-        tripSort = tripSort,
-        tripFilter = tripFilter,
-        towingOnly = towingOnly,
-        onTripSort = viewModel::setTripSort,
-        onTripFilter = viewModel::setTripSourceFilter,
-        onTowingOnly = viewModel::setTowingOnly,
-        onToggleSelect = viewModel::toggleTripSelection,
-        onLongPress = viewModel::longPressTrip,
-        onCancelSelection = viewModel::exitTripSelection,
-        onMerge = viewModel::mergeSelectedTrips,
-        onDelete = viewModel::deleteSelection,
-        onOpenTrip = onOpenTrip,
-        taggingTripId = tagging,
-        onToggleTagging = viewModel::toggleTagging,
-        onTag = { id, category -> viewModel.tagTrip(id, category = category) },
-        onToggleTowing = { id -> viewModel.tagTrip(id, toggleTowing = true) },
-        snackbarHostState = snackbar,
-        mapContent = { com.pitstop.ui.history.heatmap.HeatmapTab() },
-    )
+    CompositionLocalProvider(LocalTripThumbs provides viewModel.tripThumbs) {
+        TripsListContent(
+            subTab = subTab,
+            onSubTab = viewModel::selectSubTab,
+            ui = ui,
+            pendingCount = pendingCount,
+            uploadProgress = uploadProgress,
+            onSync = viewModel::syncNow,
+            onCancelSync = viewModel::cancelSync,
+            onRefresh = { viewModel.refresh(forceNetwork = true) },
+            selection = selection,
+            mergeState = mergeState,
+            hiddenTripIds = pendingDelete?.ids.orEmpty(),
+            tripSort = tripSort,
+            tripFilter = tripFilter,
+            towingOnly = towingOnly,
+            onTripSort = viewModel::setTripSort,
+            onTripFilter = viewModel::setTripSourceFilter,
+            onTowingOnly = viewModel::setTowingOnly,
+            onToggleSelect = viewModel::toggleTripSelection,
+            onLongPress = viewModel::longPressTrip,
+            onCancelSelection = viewModel::exitTripSelection,
+            onMerge = viewModel::mergeSelectedTrips,
+            onDelete = viewModel::deleteSelection,
+            onOpenTrip = onOpenTrip,
+            taggingTripId = tagging,
+            onToggleTagging = viewModel::toggleTagging,
+            onTag = { id, category -> viewModel.tagTrip(id, category = category) },
+            onToggleTowing = { id -> viewModel.tagTrip(id, toggleTowing = true) },
+            snackbarHostState = snackbar,
+            mapContent = { com.pitstop.ui.history.heatmap.HeatmapTab() },
+        )
+    }
 }
 
 /**
@@ -432,6 +441,9 @@ internal fun TripsListContent(
             when (subTab) {
                 HistorySubTab.Trips -> TripsTab(
                     state = ui.trips,
+                    avgMpg = remember(ui.trips.data) {
+                        com.pitstop.domain.FuelCharts.thirtyDayMpg(ui.trips.data, System.currentTimeMillis())
+                    },
                     header = {
                         ListHeaderLine(
                             info = ui.lastRefresh,
@@ -621,6 +633,8 @@ internal fun ListHeaderLine(
 @Composable
 private fun TripsTab(
     state: HistoryListState<TripDto>,
+    /** The 30-day economy basis Home's range uses; the rows' bar tick. */
+    avgMpg: Double?,
     header: @Composable () -> Unit,
     onRefresh: () -> Unit,
     selection: TripSelection,
@@ -720,6 +734,7 @@ private fun TripsTab(
                         is TripRow.Single -> item(key = row.key) {
                             TaggableTripRow(
                                 row.trip, is24h, selection, onOpen, onToggleSelect, onLongPress,
+                                avgMpg = avgMpg,
                                 tagging = taggingTripId == row.trip.id,
                                 onToggleTagging = onToggleTagging,
                                 onTag = onTag,
@@ -741,6 +756,7 @@ private fun TripsTab(
                                 items(row.trips, key = { it.id }) { trip ->
                                     TaggableTripRow(
                                         trip, is24h, selection, onOpen, onToggleSelect, onLongPress,
+                                        avgMpg = avgMpg,
                                         tagging = taggingTripId == trip.id,
                                         onToggleTagging = onToggleTagging,
                                         onTag = onTag,
@@ -750,6 +766,16 @@ private fun TripsTab(
                             }
                         }
                     }
+                }
+            }
+            if (avgMpg != null && groups.isNotEmpty()) {
+                item(key = "mpg-caption") {
+                    Text(
+                        mpgBarCaption(avgMpg, system),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                    )
                 }
             }
         }
@@ -903,7 +929,7 @@ internal fun GroupHeader(label: String, summary: String) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun TripCard(
     trip: TripDto,
@@ -912,6 +938,7 @@ private fun TripCard(
     onOpen: (String) -> Unit,
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
+    avgMpg: Double? = null,
 ) {
     val system = LocalUnitSystem.current
     val isSelected = trip.id in selection.ids
@@ -953,6 +980,8 @@ private fun TripCard(
             if (selection.mode) {
                 Checkbox(checked = isSelected, onCheckedChange = { onToggleSelect(trip.id) })
             }
+            TripThumb(trip)
+            Spacer(Modifier.width(12.dp))
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -962,8 +991,7 @@ private fun TripCard(
                 // says which day.
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "${UnitFormat.distanceKm(trip.distanceKm, system)} · " +
-                            "${UnitFormat.economyNumber(tripMpg(trip), system)} ${UnitFormat.economyUnit(system)}",
+                        text = "${UnitFormat.distanceKm(trip.distanceKm, system)} · ${tripEconomyLabel(trip, system)}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f),
@@ -974,18 +1002,45 @@ private fun TripCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                TripMpgBar(mpg = tripMpg(trip), avgMpg = avgMpg)
                 val parts = buildList {
                     trip.durationS?.let { add(fmtTripDuration(it)) }
                     trip.maxSpeedKph?.let {
                         add("max ${UnitFormat.Quantity.SpeedKph.format(it, system, 0)}")
                     }
                 }
-                if (parts.isNotEmpty()) {
-                    Text(
-                        text = parts.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                val idle = idleShare(trip)
+                val weather = trip.weatherTempC?.let { t ->
+                    listOfNotNull(UnitFormat.temp(t, system).replace(" °", "°"), weatherWord(trip.weatherCode)).joinToString(" ")
+                }
+                if (parts.isNotEmpty() || idle != null || weather != null) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (parts.isNotEmpty()) {
+                            Text(
+                                text = parts.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (idle != null) {
+                            val high = idle > 0.2
+                            TagChip(
+                                "idle ${fmtTripDuration(trip.idleS ?: 0)} · ${(idle * 100).roundToInt()} %",
+                                if (high) MaterialTheme.ext.warn else MaterialTheme.colorScheme.onSurfaceVariant,
+                                if (high) MaterialTheme.ext.warnContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                            )
+                        }
+                        if (weather != null) {
+                            TagChip(
+                                weather,
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                                MaterialTheme.colorScheme.surfaceContainerHigh,
+                            )
+                        }
+                    }
                 }
                 // Chips only when set, on their own line: they explain a
                 // number above (why this trip's economy looks bad) rather
@@ -1032,6 +1087,7 @@ private fun TaggableTripRow(
     onOpen: (String) -> Unit,
     onToggleSelect: (String) -> Unit,
     onLongPress: (String) -> Unit,
+    avgMpg: Double?,
     tagging: Boolean,
     onToggleTagging: (String) -> Unit,
     onTag: (id: String, category: String) -> Unit,
@@ -1039,7 +1095,7 @@ private fun TaggableTripRow(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (selection.mode) {
-            TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+            TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress, avgMpg)
         } else {
             // confirmValueChange can fire more than once for one gesture on
             // this material3 version; the time gate makes one swipe = one toggle.
@@ -1069,7 +1125,7 @@ private fun TaggableTripRow(
                     )
                 },
             ) {
-                TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress)
+                TripCard(trip, is24h, selection, onOpen, onToggleSelect, onLongPress, avgMpg)
             }
         }
         if (tagging && !selection.mode) {
@@ -1191,8 +1247,15 @@ internal fun TagChip(text: String, fg: Color, bg: Color) {
 
 // ── Fillups (rendered by the Fuel hub) ─────────────────────────────
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun FillupCard(f: FillupDto, is24h: Boolean, onOpen: (String) -> Unit) {
+internal fun FillupCard(
+    f: FillupDto,
+    is24h: Boolean,
+    onOpen: (String) -> Unit,
+    /** This fill's $/gal minus the EIA US average for its week; null = no pill. */
+    vsMarketPerGal: Double? = null,
+) {
     val system = LocalUnitSystem.current
     Card(
         onClick = { onOpen(f.id) },
@@ -1226,13 +1289,78 @@ internal fun FillupCard(f: FillupDto, is24h: Boolean, onOpen: (String) -> Unit) 
                 if (!f.isFull) add("partial")
                 f.city?.let { add(it) }
             }
-            if (parts.isNotEmpty()) {
-                Text(
-                    text = parts.joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            if (parts.isNotEmpty() || vsMarketPerGal != null) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (parts.isNotEmpty()) {
+                        Text(
+                            text = parts.joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (vsMarketPerGal != null) {
+                        val d = UnitFormat.pricePerVolumeValue(vsMarketPerGal, system) ?: vsMarketPerGal
+                        val under = d <= 0
+                        TagChip(
+                            "${if (under) "▼" else "▲"} ${kotlin.math.abs(d * 100).roundToInt()}¢ vs US avg",
+                            if (under) MaterialTheme.ext.good else MaterialTheme.ext.bad,
+                            if (under) MaterialTheme.ext.goodContainer else MaterialTheme.ext.badContainer,
+                        )
+                    }
+                }
             }
+        }
+    }
+}
+
+/**
+ * Month header for the Fuel list: "SEP 2026", "3 fills · 41.2 gal · $165",
+ * and a thin accent bar scaled to the biggest month in the loaded list.
+ */
+@Composable
+internal fun FillupMonthHeader(month: com.pitstop.domain.FuelCharts.FillupMonth, maxTotal: Double) {
+    val system = LocalUnitSystem.current
+    val n = month.fillups.size
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = month.month.format(java.time.format.DateTimeFormatter.ofPattern("MMM yyyy", java.util.Locale.US)).uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() },
+            )
+            Text(
+                text = "$n fill${if (n == 1) "" else "s"} · ${UnitFormat.volumeGal(month.gallons, system, 1)} · " +
+                    UnitFormat.money(month.total, 0),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth((month.total / maxTotal.coerceAtLeast(0.01)).toFloat().coerceIn(0f, 1f))
+                    .height(3.dp)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
         }
     }
 }

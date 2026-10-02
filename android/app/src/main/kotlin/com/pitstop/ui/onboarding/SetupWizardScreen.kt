@@ -263,6 +263,8 @@ internal fun SetupWizardContent(
             LinearProgressIndicator(
                 progress = { (step.ordinal + 1f) / WizardStep.entries.size },
                 modifier = Modifier.fillMaxWidth(),
+                // M3's end-of-track stop dot read as an error marker.
+                drawStopIndicator = {},
             )
             Text(
                 "Step ${step.ordinal + 1} of ${WizardStep.entries.size}",
@@ -330,20 +332,23 @@ private fun ConnectStep(
     )
     // Tokens are secrets: masked, with a visibility toggle — the same
     // field Settings uses (they used to show in plain text here).
+    val notNeeded = (connTest as? ConnTest.Ok)?.tokensRequired == false
     SecretField(
         label = "Ingest token",
         value = form.ingestToken,
         onValueChange = { v -> onFormChange { it.copy(ingestToken = v) } },
+        notNeeded = notNeeded,
     )
     SecretField(
         label = "Query token",
         value = form.queryToken,
         onValueChange = { v -> onFormChange { it.copy(queryToken = v) } },
+        notNeeded = notNeeded,
     )
     if (connTest == ConnTest.Idle) {
         Text(
-            "Test reads your vehicle list with the Query token — it proves the URL " +
-                "and token work before you move on. Nothing is written.",
+            "Test reads your vehicle list. It proves the URL (and the tokens, if " +
+                "your server uses them) work before you move on. Nothing is written.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -489,8 +494,9 @@ private fun ReasonRow(icon: ImageVector, title: String, body: String) {
 private fun connTestPill(connTest: ConnTest): Pair<PillTone, String> = when (val c = connTest) {
     ConnTest.Idle -> PillTone.Neutral to "Not tested"
     ConnTest.InProgress -> PillTone.Connecting to "Testing…"
-    is ConnTest.Ok -> PillTone.Healthy to "Connected · ${c.vehicles.size} vehicle" +
-        if (c.vehicles.size == 1) "" else "s"
+    is ConnTest.Ok -> PillTone.Healthy to
+        if (!c.tokensRequired) "Connected · no token needed"
+        else "Connected · ${c.vehicles.size} vehicle" + if (c.vehicles.size == 1) "" else "s"
     ConnTest.BadUrl -> PillTone.Offline to "Check the URL"
     ConnTest.BadToken -> PillTone.Offline to "Check the Query token"
     is ConnTest.Unreachable -> PillTone.Offline to "Can't reach the server"

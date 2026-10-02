@@ -1,5 +1,12 @@
 package com.pitstop.ui.fuel
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.runtime.getValue
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -114,14 +121,20 @@ internal fun NearbyPricesCard(
                             distance = { m -> UnitFormat.distanceKm(m / 1000.0, system, 1) },
                         )
                     }
-                    sub?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = muted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    if (!state.open && state.loading && result == null) {
+                        // A one-line shimmer while the first lookup runs; the
+                        // summary (cheapest station) replaces it on arrival.
+                        SummaryShimmer()
+                    } else {
+                        sub?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
                 if (state.open) {
@@ -320,3 +333,26 @@ private fun StationRow(st: NearbyStationDto, nowMs: Long, onOpenStation: (String
 /** "123 Main St" out of "123 Main St, Springfield, IL 62701, USA". */
 internal fun shortAddress(address: String?): String? =
     address?.substringBefore(',')?.trim()?.takeIf { it.isNotEmpty() }
+
+@Composable
+private fun SummaryShimmer() {
+    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "nearby-shimmer")
+    val alpha by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 0.6f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(900),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "nearby-shimmer-alpha",
+    )
+    Box(
+        modifier = Modifier
+            .padding(top = 4.dp, bottom = 2.dp)
+            .width(180.dp)
+            .height(12.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = alpha))
+            .semantics { contentDescription = "Looking up prices" },
+    )
+}

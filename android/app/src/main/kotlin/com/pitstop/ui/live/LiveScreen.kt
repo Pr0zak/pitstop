@@ -77,6 +77,8 @@ fun LiveScreen(
     val brokerConnected by viewModel.brokerConnected.collectAsStateWithLifecycle()
     val unitSystem by viewModel.unitSystem.collectAsStateWithLifecycle()
     val obdAgeS by viewModel.obdAgeS.collectAsStateWithLifecycle()
+    val parked by viewModel.parked.collectAsStateWithLifecycle()
+    val battery by viewModel.battery.collectAsStateWithLifecycle()
 
     val view = LocalView.current
     DisposableEffect(view) {
@@ -97,6 +99,8 @@ fun LiveScreen(
         onStartBridge = viewModel::startBridge,
         onOpenBridgeStatus = onOpenBridgeStatus,
         showTopBar = showTopBar,
+        parkedMetrics = parked,
+        battery = battery,
     )
 }
 
@@ -115,6 +119,11 @@ internal fun LiveContent(
     driveMode: Boolean =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
     showTopBar: Boolean = true,
+    /** `/readings/latest`: shown dimmed while the bridge is off and nothing is live. */
+    parkedMetrics: Map<String, MetricSample> = emptyMap(),
+    /** Resting battery voltage by day; null hides the card. */
+    battery: List<BatteryDay>? = null,
+    nowMs: Long = System.currentTimeMillis(),
 ) {
     // Stale guard: once OBD has been quiet >10 s the numbers are the last
     // reading, not the current one — say so and dim them.
@@ -130,7 +139,14 @@ internal fun LiveContent(
         topBar = { if (showTopBar) PitstopTopAppBar() },
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
-        if (metrics.isEmpty()) {
+        val bridgeIdle = bridgeStatus.phase == com.pitstop.service.BridgePhase.Idle ||
+            bridgeStatus.phase == com.pitstop.service.BridgePhase.Error
+        // Parked: the bridge is off and nothing is live, but the server has
+        // the last values the car sent — show those, dimmed and dated,
+        // instead of an empty page.
+        val parked = metrics.isEmpty() && bridgeIdle && parkedMetrics.isNotEmpty()
+        val shown = if (parked) parkedMetrics else metrics
+        if (metrics.isEmpty() && !parked) {
             LiveEmptyState(
                 phase = bridgeStatus.phase,
                 onStartBridge = onStartBridge,
@@ -149,7 +165,9 @@ internal fun LiveContent(
         ) {
             // ── Connection pills ──────────────────────────────────────
             // FlowRow: five pills don't fit one row on a 360 dp phone.
-            FlowRow(
+            if (parked) {
+                ParkedBar(onStartBridge = onStartBridge)
+            } else FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
@@ -192,12 +210,18 @@ internal fun LiveContent(
 
             if (stale) StaleBanner(obdAgeS)
             Column(
-                modifier = Modifier.alpha(if (stale) 0.45f else 1f),
+                modifier = Modifier.alpha(
+                    when {
+                        parked -> 0.55f
+                        stale -> 0.45f
+                        else -> 1f
+                    },
+                ),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
             // ── Hero gauges: Speed + RPM ──────────────────────────────
-            val rpmRaw = metrics["engine_rpm"]?.value
-            val speedKphRaw = metrics["vehicle_speed"]?.value
+            val rpmRaw = shown["engine_rpm"]?.value
+            val speedKphRaw = shown["vehicle_speed"]?.value
             // animateFloatAsState gives smooth needle movement without the
             // per-frame map allocation the old 30 fps loop did. Animate the
             // raw value and only render "—" when the source metric is null.
@@ -229,7 +253,7 @@ internal fun LiveContent(
                     modifier = Modifier.weight(1f),
                 )
             }
-            InstantEconomyTile(metrics, unitSystem, modifier = Modifier.padding(top = 8.dp))
+            InstantEconomyTile(shown, unitSystem, modifier = Modifier.padding(top = 8.dp))
 
             // ── Engine ────────────────────────────────────────────────
             // Every tile names a UnitFormat.Quantity; the °C/°F, kPa/psi
@@ -251,7 +275,8 @@ internal fun LiveContent(
                         UnitFormat.Quantity.MassFlowKgPerHour, 1,
                     ),
                 ),
-                metrics = metrics,
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
                 system = unitSystem,
 
             )
@@ -296,7 +321,8 @@ internal fun LiveContent(
                     // imperial variant.
                     TileSpec("Cmd AFR", "commanded_afr_ratio", UnitFormat.Quantity.Lambda, 3),
                 ),
-                metrics = metrics,
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
                 system = unitSystem,
 
             )
@@ -322,7 +348,8 @@ internal fun LiveContent(
                     TileSpec("Cmd EGR", "commanded_egr", UnitFormat.Quantity.Percent, 1),
                     TileSpec("Evap purge", "commanded_evap_purge", UnitFormat.Quantity.Percent, 1),
                 ),
-                metrics = metrics,
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
                 system = unitSystem,
 
             )
@@ -334,7 +361,8 @@ internal fun LiveContent(
                     TileSpec("Battery", "control_module_voltage", UnitFormat.Quantity.Volt, 1),
                     TileSpec("Run time", "run_time_since_start", UnitFormat.Quantity.Seconds, 0),
                 ),
-                metrics = metrics,
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
                 system = unitSystem,
 
             )
@@ -352,7 +380,8 @@ internal fun LiveContent(
                     TileSpec("Lat", "gps_lat", UnitFormat.Quantity.Degrees, 5),
                     TileSpec("Lon", "gps_lon", UnitFormat.Quantity.Degrees, 5),
                 ),
-                metrics = metrics,
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
                 system = unitSystem,
 
             )
@@ -360,6 +389,7 @@ internal fun LiveContent(
             }
 
 
+            battery?.let { BatteryHealthCard(it, Modifier.padding(top = 12.dp)) }
             Box(modifier = Modifier.padding(bottom = 24.dp))
         }
     }
@@ -377,6 +407,8 @@ private fun LiveSection(
     metrics: Map<String, MetricSample>,
     system: String,
     customBody: (@Composable () -> Unit)? = null,
+    /** Parked mode: each tile says how old its value is. */
+    parkedNowMs: Long? = null,
 ) {
     Text(
         text = title.uppercase(),
@@ -402,6 +434,9 @@ private fun LiveSection(
                         digits = spec.digits,
                         system = system,
                         modifier = Modifier.weight(1f),
+                        asOf = parkedNowMs?.let { now ->
+                            sample?.let { "as of ${com.pitstop.ui.status.parkedFor(now - it.tsMs)} ago" } ?: "no reading"
+                        },
                     )
                 }
                 // Pad incomplete rows so weights line up.
@@ -464,6 +499,8 @@ private fun SmallTile(
     digits: Int = 1,
     system: String = "imperial",
     modifier: Modifier = Modifier,
+    /** "as of 16 h ago" / "no reading" under the value while parked. */
+    asOf: String? = null,
 ) {
     Card(
         modifier = modifier,
@@ -492,6 +529,37 @@ private fun SmallTile(
                     )
                 }
             }
+            if (asOf != null) {
+                Text(
+                    asOf,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/** Parked header: what the dimmed tiles are, and the way back to live data. */
+@Composable
+private fun ParkedBar(onStartBridge: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Parked · bridge off", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Showing the last values the car sent",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            androidx.compose.material3.Button(onClick = onStartBridge) { Text("Start bridge") }
         }
     }
 }
@@ -547,6 +615,7 @@ private fun LiveEmptyState(
         },
         actionLabel = if (idle) "Start bridge" else "Check connection",
         onAction = if (idle) onStartBridge else onOpenBridgeStatus,
+        primaryAction = idle,
         modifier = modifier.fillMaxSize(),
     )
 }

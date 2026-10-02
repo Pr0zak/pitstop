@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Top-level Pitstop screen for the head unit: a TabTemplate of up to four
- * tabs (CarScreenKind). Metric tabs are a GridTemplate of up to six tiles;
+ * tabs (CarScreenKind). Metric tabs are a GridTemplate of up to three tiles;
  * the Status tab is a PaneTemplate. The car's own cluster already shows
  * speed, so the default Drive grid spends that slot elsewhere:
  *
@@ -332,9 +332,9 @@ class LiveCarScreen(
      * One template per screen kind. Metric screens are a GridTemplate;
      * Status is a PaneTemplate.
      *
-     * Grid size is READ from the host, not assumed. MAX_TILES = 6 in the
-     * catalogue is the library's FALLBACK, not any particular car's limit —
-     * real head units often allow more. (An over-limit list does not throw,
+     * Grid size is READ from the host, not assumed; MAX_TILES (3, one row
+     * at 800x480) is the fallback and the catalogue's own cap, so the host
+     * limit only matters if a head unit ever reports fewer. (An over-limit list does not throw,
      * contrary to an earlier comment here; the host silently drops the
      * overflow. Truncating is still right, but for honesty about what the
      * user configured, not to avoid a crash.)

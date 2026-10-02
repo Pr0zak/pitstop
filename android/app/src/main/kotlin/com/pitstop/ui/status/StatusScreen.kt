@@ -51,6 +51,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.IconButton
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -93,6 +99,8 @@ import com.pitstop.ui.components.RangeFormat
 import com.pitstop.ui.components.SeverityChip
 import com.pitstop.ui.components.TrendPage
 import com.pitstop.ui.components.TrendsCarousel
+import com.pitstop.ui.components.SpendYoyChart
+import com.pitstop.domain.RouteShape
 import com.pitstop.ui.components.UploadStatusCard
 import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.history.TagChip
@@ -125,10 +133,13 @@ fun StatusScreen(
     onOpenDtc: (code: String, vehicleId: String) -> Unit = { _, _ -> },
     onOpenTrip: (id: String) -> Unit = {},
     onOpenService: () -> Unit = {},
+    onOpenMpgHistory: () -> Unit = {},
+    onOpenFuel: () -> Unit = {},
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
     val pendingDrives by viewModel.pendingDriveCount.collectAsStateWithLifecycle()
+    val pairCardCompact by viewModel.pairCardCompact.collectAsStateWithLifecycle()
     val context = LocalContext.current
     StatusContent(
         ui = ui,
@@ -142,7 +153,12 @@ fun StatusScreen(
         onOpenDtc = onOpenDtc,
         onOpenTrip = onOpenTrip,
         onOpenService = onOpenService,
+        onOpenMpgHistory = onOpenMpgHistory,
+        onOpenFuel = onOpenFuel,
         onNavigate = { spot -> navigateTo(context, spot) },
+        pairCardCompact = pairCardCompact,
+        onPairCardShown = viewModel::onPairCardShown,
+        onCollapsePairCard = viewModel::collapsePairCard,
     )
 }
 
@@ -178,8 +194,13 @@ internal fun StatusContent(
     onOpenDtc: (code: String, vehicleId: String) -> Unit = { _, _ -> },
     onOpenTrip: (id: String) -> Unit = {},
     onOpenService: () -> Unit = {},
+    onOpenMpgHistory: () -> Unit = {},
+    onOpenFuel: () -> Unit = {},
     onNavigate: (ParkedSpot) -> Unit = {},
     nowMs: Long = System.currentTimeMillis(),
+    pairCardCompact: Boolean = false,
+    onPairCardShown: () -> Unit = {},
+    onCollapsePairCard: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val refreshing = remember { mutableStateOf(false) }
@@ -212,19 +233,58 @@ internal fun StatusContent(
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // At a glance: range, last drive, parked — each a shortcut.
+                GlanceStrip(
+                    range = ui.range,
+                    lastDrive = ui.lastDrive,
+                    parked = ui.parked,
+                    nowMs = nowMs,
+                    onRange = onOpenFuel,
+                    onLastDrive = { ui.lastDrive?.let { onOpenTrip(it.trip.id) } },
+                    onParked = { ui.parked?.let(onNavigate) },
+                )
                 // Fresh install (no server/vehicle) or auto-start without a
                 // paired WiCAN → the setup CTA stays on Home.
                 if (!ui.configured) {
-                    SetupPromptCard(
-                        hasServer = ui.hasServer,
-                        hasVehicle = ui.hasVehicle,
-                        autoStartOn = ui.autoStartOn,
-                        needsPairing = ui.captureNeedsPairing,
-                        onSetUp = onOpenSettings,
-                    )
+                    val serverIncomplete = !ui.hasServer || !ui.hasVehicle
+                    if (!serverIncomplete && pairCardCompact) {
+                        // The top-bar "Pair WiCAN" pill is the persistent
+                        // reminder; after the first visit this is one line.
+                        PairWicanLine(onPair = onOpenSettings)
+                    } else {
+                        if (!serverIncomplete) LaunchedEffect(Unit) { onPairCardShown() }
+                        SetupPromptCard(
+                            hasServer = ui.hasServer,
+                            hasVehicle = ui.hasVehicle,
+                            autoStartOn = ui.autoStartOn,
+                            needsPairing = ui.captureNeedsPairing,
+                            onSetUp = onOpenSettings,
+                            onCollapse = if (serverIncomplete) null else onCollapsePairCard,
+                        )
+                    }
                 }
-                if (ui.hasServer && ui.hasVehicle && ui.hero == null && ui.range == null) {
-                    HomeSkeleton()
+                val waiting = ui.hasServer && ui.hasVehicle && ui.hero == null && ui.range == null
+                // The skeleton gives up after 10 s (or as soon as the refresh
+                // reports why it couldn't load) and names the cause instead.
+                var slow by remember { mutableStateOf(false) }
+                LaunchedEffect(waiting) {
+                    slow = false
+                    if (waiting) {
+                        delay(10_000)
+                        slow = true
+                    }
+                }
+                if (waiting) {
+                    val problem = ui.loadProblem
+                    if (problem == null && !slow) {
+                        HomeSkeleton()
+                    } else {
+                        HomeLoadProblem(
+                            reason = problem ?: "The server is taking a while to answer",
+                            onRetry = { coroutineScope.launch { onRefresh() } },
+                            onOpenSettings = onOpenSettings,
+                        )
+                    }
                 }
 
                 ui.range?.let { RangeHeroCard(it, nowMs = nowMs, stale = ui.hero?.fuelLevelStale == true) }
@@ -257,7 +317,7 @@ internal fun StatusContent(
                     ui.mpgMonthly?.takeIf { it.size >= 2 }?.let { monthly ->
                         add(
                             TrendPage(if (system == "imperial") "MPG, last 12 months" else "L/100 km, last 12 months") {
-                                MpgYearChart(points = monthly, framed = false)
+                                MpgYearChart(points = monthly, framed = false, onOpen = onOpenMpgHistory)
                             },
                         )
                     }
@@ -277,6 +337,9 @@ internal fun StatusContent(
                     }
                     ui.monthlySpend?.takeIf { it.size >= 2 }?.let { spend ->
                         add(TrendPage("Monthly fuel spend") { MonthlySpendCard(months = spend, framed = false) })
+                    }
+                    ui.spendYoy?.let { yoy ->
+                        add(TrendPage("Fuel spend, ${yoy.year} vs ${yoy.year - 1}") { SpendYoyChart(yoy, framed = false) })
                     }
                 }
                 TrendsCarousel(pages = trendPages)
@@ -359,35 +422,8 @@ private fun RangeHeroCard(range: RangeEstimate, nowMs: Long, stale: Boolean) {
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                if (range.rangeMi != null) {
-                    RangeFormat.range(range.rangeMi, system)
-                } else {
-                    range.fuel.usGallons?.let { UnitFormat.volumeGal(it, system, 1) } ?: "—"
-                },
-                style = MaterialTheme.typography.displayMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = if (range.low) MaterialTheme.ext.warn else MaterialTheme.colorScheme.onSurface,
-            )
-            // Fuel bar.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(10.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                    .semantics { contentDescription = "Fuel ${pct?.roundToInt() ?: "unknown"} percent" },
-            ) {
-                if (pct != null) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth((pct / 100.0).toFloat().coerceIn(0.02f, 1f))
-                            .height(10.dp)
-                            .background(barColor),
-                    )
-                }
-            }
-            Text(RangeFormat.fuelLine(range, system), style = MaterialTheme.typography.titleMedium)
+            // Arc gauge, E → F, range in the middle.
+            RangeGauge(range, barColor, Modifier.align(Alignment.CenterHorizontally))
             val basis = RangeFormat.basisLine(range.basis, system)
             Text(
                 basis ?: "Range appears after a few drives with fuel data or a couple of fillups",
@@ -516,6 +552,7 @@ private fun LastDriveCard(d: LastDrive, onOpen: () -> Unit) {
     val mpg = UnitFormat.mpgFrom(trip.distanceKm, trip.fuelUsedL)
     val mpgDelta = DriveSummary.mpgDeltaPct(trip, d.baseline)
     val durDelta = DriveSummary.durationDeltaPct(trip, d.baseline)
+    val shape = d.shape ?: remember(d.route) { RouteShape.of(d.route) }
     Card(
         onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
@@ -525,7 +562,7 @@ private fun LastDriveCard(d: LastDrive, onOpen: () -> Unit) {
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RouteSketch(d.route, Modifier.size(76.dp))
+            RouteSketch(shape, Modifier.size(76.dp))
             Spacer(Modifier.size(14.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
@@ -569,51 +606,8 @@ private fun LastDriveCard(d: LastDrive, onOpen: () -> Unit) {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-/**
- * The route's shape, drawn from its own lat/lon — no map tiles, so it costs
- * nothing, works offline and renders in screenshots (MapLibre can't). A car
- * glyph stands in when the trip has no GPS.
- */
-@Composable
-private fun RouteSketch(route: List<Pair<Double, Double>>, modifier: Modifier = Modifier) {
-    val bg = MaterialTheme.colorScheme.surfaceContainerHigh
-    val line = MaterialTheme.colorScheme.primary
-    val end = MaterialTheme.colorScheme.onSurface
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(bg),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (route.size < 2) {
-            Icon(Icons.Outlined.DirectionsCar, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            return@Box
-        }
-        Canvas(Modifier.fillMaxSize().padding(10.dp)) {
-            val lats = route.map { it.first }
-            val lons = route.map { it.second }
-            val midLat = Math.toRadians((lats.min() + lats.max()) / 2)
-            // Equirectangular: longitude shrinks with cos(lat).
-            val xs = lons.map { it * kotlin.math.cos(midLat) }
-            val minX = xs.min(); val maxX = xs.max()
-            val minY = lats.min(); val maxY = lats.max()
-            val span = maxOf(maxX - minX, maxY - minY).takeIf { it > 0 } ?: 1e-6
-            val scale = minOf(size.width, size.height) / span
-            val ox = (size.width - (maxX - minX) * scale) / 2
-            val oy = (size.height - (maxY - minY) * scale) / 2
-            fun pt(i: Int) = Offset(
-                (ox + (xs[i] - minX) * scale).toFloat(),
-                (oy + (maxY - lats[i]) * scale).toFloat(),
-            )
-            val path = Path().apply {
-                moveTo(pt(0).x, pt(0).y)
-                for (i in 1 until route.size) lineTo(pt(i).x, pt(i).y)
-            }
-            drawPath(path, line, style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawCircle(end, radius = 3.5.dp.toPx(), center = pt(route.size - 1))
+        if (shape?.mph != null) {
+            SpeedLegend(system, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp))
         }
     }
 }
@@ -759,6 +753,7 @@ private fun SetupPromptCard(
     autoStartOn: Boolean,
     needsPairing: Boolean,
     onSetUp: () -> Unit,
+    onCollapse: (() -> Unit)? = null,
 ) {
     // Two flavours share one card: the fresh-install "connect your server" state
     // and the subtler "everything's set but the WiCAN isn't paired, so drives
@@ -766,6 +761,12 @@ private fun SetupPromptCard(
     // doesn't tell an already-connected user to "connect to your server".
     val serverIncomplete = !hasServer || !hasVehicle
     Card(modifier = Modifier.fillMaxWidth()) {
+      Box {
+        if (onCollapse != null) {
+            IconButton(onClick = onCollapse, modifier = Modifier.align(Alignment.TopEnd)) {
+                Icon(Icons.Filled.Close, contentDescription = "Show as one line")
+            }
+        }
         Column(
             modifier = Modifier.fillMaxWidth().padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -812,6 +813,57 @@ private fun SetupPromptCard(
                 onClick = onSetUp,
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             ) { Text(if (serverIncomplete) "Set up now" else "Pair WiCAN") }
+        }
+      }
+    }
+}
+
+/** Collapsed pairing reminder: one line, one action. */
+@Composable
+private fun PairWicanLine(onPair: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                Icons.Outlined.Bluetooth,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+            Text(
+                "Drives won't auto-log until the WiCAN is paired",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onPair) { Text("Pair") }
+        }
+    }
+}
+
+/** Replaces the skeleton once Home knows (or suspects) it won't load. */
+@Composable
+private fun HomeLoadProblem(reason: String, onRetry: () -> Unit, onOpenSettings: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(
+                    Icons.Outlined.CloudOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.ext.warn,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(reason, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onOpenSettings) { Text("Settings") }
+                TextButton(onClick = onRetry) { Text("Retry") }
+            }
         }
     }
 }
@@ -885,6 +937,7 @@ private fun UpdateAvailableCard(
     onOpen: () -> Unit,
 ) {
     Card(
+        modifier = Modifier.fillMaxWidth(),
         colors = androidx.compose.material3.CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
         ),

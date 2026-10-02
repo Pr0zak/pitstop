@@ -165,9 +165,10 @@ object CarTileCatalog {
     )
 
     /** The Trip tab. Fixed: these tiles only make sense together. */
+    /** Link stays: it is the connection check now that Status is not a
+     *  default tab (see DEFAULT_TABS). Minutes, fuel and idle are pickable. */
     val DEFAULT_TRIP: List<String> = listOf(
-        TRIP_DISTANCE_KEY, TRIP_MINUTES_KEY, TRIP_ECONOMY_KEY,
-        TRIP_FUEL_KEY, TRIP_IDLE_KEY, LINK_TILE_KEY,
+        TRIP_DISTANCE_KEY, TRIP_ECONOMY_KEY, LINK_TILE_KEY,
     )
 
     /**
@@ -189,31 +190,31 @@ object CarTileCatalog {
      */
     val DEFAULT_HOME: List<String> = listOf(
         "engine_rpm", "fuel_level", "coolant_temp",
-        "intake_air_temp", "engine_load", "control_module_voltage",
     )
 
     /**
-     * Hard cap. Matches the host's grid content limit — exceeding it throws
-     * rather than truncating, and takes the car app down with it.
+     * Tiles per tab. Three, because that is one full row on the Pilot's
+     * 800x480 head unit: the host lays a tabbed grid out three across and
+     * shows about 1.5 rows, so tiles 4-6 always sat below the fold and
+     * needed a scroll while driving. The host's own grid limit (6 by the
+     * library's fallback) is still read at render time and is never lower.
      */
-    const val MAX_TILES = 6
+    const val MAX_TILES = 3
 
     /** Throttle, run time and the four fuel trims — the tuning view. */
     val DEFAULT_DIAG: List<String> = listOf(
-        "throttle_position", "run_time_since_start", "stft_b1",
-        "ltft_b1", "stft_b2", "ltft_b2",
+        "ltft_b1", "ltft_b2", "throttle_position",
     )
 
+    /** Coolant lives on Drive, so Engine leads with load. */
     val DEFAULT_ENGINE: List<String> = listOf(
-        "coolant_temp", "intake_air_temp", "engine_load",
-        "throttle_position", "maf_air_flow", "manifold_pressure",
+        "engine_load", "intake_air_temp", "control_module_voltage",
     )
 
     /** Range replaced fuel-rail pressure: "how far can I go" is the one fuel
      *  question a driver asks mid-trip. Fuel rail stays pickable. */
     val DEFAULT_FUEL: List<String> = listOf(
         "fuel_level", RANGE_TILE_KEY, "engine_fuel_rate",
-        "engine_exhaust_flow", "commanded_afr_ratio", "o2_s1_lambda",
     )
 
     /**
@@ -314,7 +315,7 @@ object CarTileCatalog {
         // Fall back again if the stored keys resolve to nothing — a config
         // written by an older build could name metrics that no longer exist,
         // and a GridTemplate with an empty list is a blank car screen with no
-        // way back. take(6) matches the host's grid content limit.
+        // way back. A stored six-tile tab keeps its first MAX_TILES.
         val specs = source.mapNotNull { byKey(it) }.take(MAX_TILES)
         return specs.ifEmpty { default.mapNotNull { byKey(it) }.take(MAX_TILES) }
     }

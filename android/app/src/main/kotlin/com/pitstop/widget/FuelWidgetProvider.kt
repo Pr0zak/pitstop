@@ -130,7 +130,8 @@ class FuelWidgetProvider : AppWidgetProvider() {
      *  refetches trips when its cache is over 6 h old). */
     private suspend fun fetchFuel(entry: WidgetEntryPoint): WidgetData {
         val secrets = entry.settings().current()
-        if (secrets.queryToken.isBlank() || secrets.settings.apiBaseUrl.isBlank()) {
+        // Token optional — an auth-off server answers without one.
+        if (secrets.settings.apiBaseUrl.isBlank()) {
             return WidgetData(null, "not configured")
         }
         val slug = com.pitstop.data.effectiveVehicleSlug(

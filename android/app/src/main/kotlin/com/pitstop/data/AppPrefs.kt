@@ -45,6 +45,8 @@ class AppPrefs @Inject constructor(
         val driveSummaryNotif = booleanPreferencesKey("notif_drive_summary")
         val serviceReminderNotif = booleanPreferencesKey("notif_service_reminder")
         val vehicleAlertNotif = booleanPreferencesKey("notif_vehicle_alert")
+        val pairCardSeen = booleanPreferencesKey("home_pair_card_seen")
+        val vehicleNames = stringPreferencesKey("vehicle_names_by_slug")
         fun reminderStates(vehicleId: String) = stringPreferencesKey("notified_reminder_states_$vehicleId")
         fun seenDtcs(vehicleId: String) = stringSetPreferencesKey("seen_dtcs_$vehicleId")
         fun dtcSeeded(vehicleId: String) = booleanPreferencesKey("dtc_seeded_$vehicleId")
@@ -56,6 +58,22 @@ class AppPrefs @Inject constructor(
 
     /** The vehicle the app is showing; null/blank = the bridge's configured slug. */
     val viewVehicleSlug: Flow<String?> = context.appPrefsStore.data.map { it[Keys.viewVehicleSlug] }
+
+    /** Home's "Pair WiCAN" card has been shown in full once; later visits
+     *  render it as one line (the top-bar pill stays the reminder). */
+    val pairCardSeen: Flow<Boolean> = context.appPrefsStore.data.map { it[Keys.pairCardSeen] ?: false }
+
+    suspend fun setPairCardSeen() = context.appPrefsStore.edit { it[Keys.pairCardSeen] = true }
+
+    /** slug → display name from the last /vehicles fetch, so the top bar
+     *  can name the vehicle before this launch's fetch lands. */
+    val vehicleNames: Flow<Map<String, String>> = context.appPrefsStore.data.map { p ->
+        p[Keys.vehicleNames]?.let { runCatching { json.decodeFromString(stateMap, it) }.getOrNull() }.orEmpty()
+    }
+
+    suspend fun setVehicleNames(names: Map<String, String>) {
+        context.appPrefsStore.edit { it[Keys.vehicleNames] = json.encodeToString(stateMap, names) }
+    }
 
     suspend fun setViewVehicleSlug(slug: String) {
         context.appPrefsStore.edit { it[Keys.viewVehicleSlug] = slug }

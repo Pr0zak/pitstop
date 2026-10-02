@@ -269,7 +269,6 @@ fun ConfigScreen(
                 rows = rows,
                 autoStartStatus = autoStartStatus,
                 pairing = pairingInProgress,
-                saveLabel = saveLabel,
                 snackbarHostState = snackbarHostState,
                 onPair = { viewModel.pairCompanion() },
                 onCopyDiagnostics = copyDiagnostics,
@@ -550,7 +549,6 @@ internal fun ConfigRootContent(
     rows: List<SettingsRow>,
     autoStartStatus: AutoStartStatus,
     pairing: Boolean,
-    saveLabel: String,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onPair: () -> Unit = {},
     onCopyDiagnostics: () -> Unit = {},
@@ -577,7 +575,6 @@ internal fun ConfigRootContent(
             AutoStartStrip(
                 status = autoStartStatus,
                 pairing = pairing,
-                saveLabel = saveLabel,
                 onPair = onPair,
                 onCopyDiagnostics = onCopyDiagnostics,
             )
@@ -1002,7 +999,6 @@ private fun CompanionPairingSection(
 private fun AutoStartStrip(
     status: AutoStartStatus,
     pairing: Boolean,
-    saveLabel: String,
     onPair: () -> Unit,
     onCopyDiagnostics: () -> Unit,
 ) {
@@ -1091,7 +1087,6 @@ private fun AutoStartStrip(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    SaveStatusLine(saveLabel)
                 }
                 TextButton(onClick = onCopyDiagnostics) { Text("Copy diagnostics") }
             }
@@ -1117,14 +1112,11 @@ private fun SignalRow(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // One label colour for every row; only the pill carries state.
         Text(
             label,
             style = MaterialTheme.typography.bodyMedium,
-            color = if (state == SignalState.Disabled) {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
+            color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
         StatusPill(tone = pill, label = text, compact = true)
@@ -1399,7 +1391,8 @@ private fun ConnStatusRow(connTest: ConnTest, onTest: () -> Unit) {
         ConnTest.Idle -> PillTone.Neutral to "Not tested"
         ConnTest.InProgress -> PillTone.Connecting to "Testing…"
         is ConnTest.Ok -> PillTone.Healthy to
-            "Connected · ${c.vehicles.size} vehicle${if (c.vehicles.size == 1) "" else "s"}"
+            "Connected · ${c.vehicles.size} vehicle${if (c.vehicles.size == 1) "" else "s"}" +
+            if (c.tokensRequired) "" else " · no token needed"
         ConnTest.BadUrl -> PillTone.Offline to "Check the URL"
         ConnTest.BadToken -> PillTone.Offline to "401 — check the Query token"
         is ConnTest.Unreachable -> PillTone.Offline to "Can't reach the server"
@@ -1473,15 +1466,18 @@ private fun PitstopServerSection(
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        val notNeeded = (connTest as? ConnTest.Ok)?.tokensRequired == false
         SecretField(
             label = "Ingest token",
             value = form.ingestToken,
             onValueChange = { v -> update { it.copy(ingestToken = v) }; onEdit() },
+            notNeeded = notNeeded,
         )
         SecretField(
             label = "Query token",
             value = form.queryToken,
             onValueChange = { v -> update { it.copy(queryToken = v) }; onEdit() },
+            notNeeded = notNeeded,
         )
         ConnStatusRow(connTest = connTest, onTest = onTest)
     }
@@ -1751,8 +1747,8 @@ private fun CarTilesSection(
     val effectiveTabs = tabs.ifEmpty { CarScreenKind.DEFAULT_TABS }
     SettingsSection(
         title = "Android Auto tabs",
-        description = "Up to ${com.pitstop.car.CarTileCatalog.MAX_TILES} tiles per tab; " +
-            "values update in place about every 2 s.",
+        description = "Up to ${com.pitstop.car.CarTileCatalog.MAX_TILES} tiles per tab, one row " +
+            "on the car screen, so nothing needs scrolling; values update in place about every 2 s.",
     ) {
         // Which screens occupy the four tabs. There are more screens than
         // tabs on purpose — the head unit takes at most four, so the SET is
@@ -2010,12 +2006,19 @@ internal fun SecretField(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
+    notNeeded: Boolean = false,
 ) {
     var visible by remember { mutableStateOf(false) }
+    // notNeeded: the server reported auth off (GET /auth/config). The field
+    // stays editable so a token can still be added if the server changes.
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
+        placeholder = if (notNeeded) { { Text("Not needed") } } else null,
+        supportingText = if (notNeeded && value.isBlank()) {
+            { Text("No token needed: this server has auth off") }
+        } else null,
         singleLine = true,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         trailingIcon = {

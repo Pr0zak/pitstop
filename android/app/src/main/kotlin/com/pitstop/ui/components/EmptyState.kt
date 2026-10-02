@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +38,8 @@ fun EmptyState(
     modifier: Modifier = Modifier,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    /** The screen's primary action (filled accent) rather than a tonal one. */
+    primaryAction: Boolean = false,
 ) {
     Column(
         modifier = modifier
@@ -66,8 +69,12 @@ fun EmptyState(
             )
         }
         if (actionLabel != null && onAction != null) {
-            FilledTonalButton(onClick = onAction, modifier = Modifier.padding(top = 8.dp)) {
-                Text(actionLabel)
+            if (primaryAction) {
+                Button(onClick = onAction, modifier = Modifier.padding(top = 8.dp)) { Text(actionLabel) }
+            } else {
+                FilledTonalButton(onClick = onAction, modifier = Modifier.padding(top = 8.dp)) {
+                    Text(actionLabel)
+                }
             }
         }
     }

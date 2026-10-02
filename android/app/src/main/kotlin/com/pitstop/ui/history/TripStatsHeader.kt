@@ -73,7 +73,7 @@ fun TripStatsHeader(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                StatCell(fmt0(dist.convert(stats.weekDistanceMi, system)), dist.unit(system), "this week")
+                StatCell(fmt0(dist.convert(stats.weekDistanceMi, system)), dist.unit(system), "last 7 days")
                 StatCell(formatDuration(stats.weekDurationS), "", "drive time")
                 StatCell(
                     speedDisplay?.let { fmt0(it) } ?: "—",
@@ -178,12 +178,16 @@ private fun DayBars(
         val slot = size.width / days.size
         val barW = slot * 0.62f
         val gap = (slot - barW) / 2f
+        // The headline totals cover the last WEEK_DAYS; earlier bars are
+        // dimmed so the number and the chart visibly agree.
+        val recentFrom = days.size - WEEK_DAYS
         days.forEachIndexed { i, d ->
             val frac = if (maxV > 0.0) (d.distanceMi / maxV).toFloat() else 0f
             // Floor of 2 px so an empty day is still visibly a day.
             val h = (frac * size.height).coerceAtLeast(2f)
+            val base = if (d.distanceMi > 0.0) active else idle
             drawRect(
-                color = if (d.distanceMi > 0.0) active else idle,
+                color = if (i < recentFrom && d.distanceMi > 0.0) base.copy(alpha = 0.4f) else base,
                 topLeft = Offset(slot * i + gap, size.height - h),
                 size = Size(barW, h),
             )

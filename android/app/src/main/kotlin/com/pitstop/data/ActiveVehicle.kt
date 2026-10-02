@@ -48,6 +48,7 @@ class ActiveVehicle @Inject constructor(
 @Singleton
 class VehicleDirectory @Inject constructor(
     private val api: PitstopApi,
+    private val prefs: AppPrefs,
 ) {
     private val _vehicles = MutableStateFlow<List<VehicleDto>>(emptyList())
     val vehicles: StateFlow<List<VehicleDto>> = _vehicles.asStateFlow()
@@ -56,6 +57,7 @@ class VehicleDirectory @Inject constructor(
     suspend fun refresh(cacheControl: String? = null): List<VehicleDto> {
         val list = api.getVehicles(cacheControl)
         _vehicles.value = list
+        runCatching { prefs.setVehicleNames(list.associate { it.slug to it.name }) }
         return list
     }
 

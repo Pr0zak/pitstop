@@ -39,7 +39,8 @@ class VehicleCheckWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val secrets = runCatching { settings.current() }.getOrNull() ?: return Result.success()
-        if (secrets.queryToken.isBlank() || secrets.settings.apiBaseUrl.isBlank()) return Result.success()
+        // Token optional — an auth-off server answers without one.
+        if (secrets.settings.apiBaseUrl.isBlank()) return Result.success()
         val slugs = setOf(
             secrets.settings.vehicleSlug.trim(),
             effectiveVehicleSlug(prefs.viewVehicleSlug.first(), secrets.settings.vehicleSlug),

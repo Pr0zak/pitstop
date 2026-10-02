@@ -140,8 +140,10 @@ enum class SaveStatus { Idle, Saving, Saved, Failed }
 sealed interface ConnTest {
     object Idle : ConnTest
     object InProgress : ConnTest
-    /** Reached the server and read [vehicles] — the picker consumes this. */
-    data class Ok(val vehicles: List<VehicleDto>) : ConnTest
+    /** Reached the server and read [vehicles] — the picker consumes this.
+     *  [tokensRequired] is false when GET /auth/config reports auth off;
+     *  the token fields then read "no token needed". */
+    data class Ok(val vehicles: List<VehicleDto>, val tokensRequired: Boolean = true) : ConnTest
     /** URL isn't a valid http(s)://host:port — caught before any request. */
     object BadUrl : ConnTest
     /** 401/403 — the Query token is wrong (or missing). */
@@ -864,15 +866,18 @@ class ConfigViewModel @Inject constructor(
             _connTest.value = ConnTest.BadUrl
             return
         }
-        if (f.queryToken.isBlank()) {
-            _connTest.value = ConnTest.BadToken
-            return
-        }
+        // No blank-token short-circuit: a server with auth off (blank
+        // QUERY_TOKEN) answers without one, and a server that needs one
+        // answers 401, which lands on BadToken below.
         _connTest.value = ConnTest.InProgress
         viewModelScope.launch {
             if (_formReady.value) persistForm()
+            // A pre-v0.1.250 server has no /auth/config; treat that as
+            // "tokens required", the old behaviour.
+            val auth = runCatching { api.getAuthConfig() }.getOrNull()
+            val tokensRequired = auth == null || auth.queryRequired || auth.ingestRequired
             _connTest.value = runCatching { api.getVehicles() }.fold(
-                onSuccess = { ConnTest.Ok(it) },
+                onSuccess = { ConnTest.Ok(it, tokensRequired) },
                 onFailure = { e ->
                     when {
                         e is HttpException && (e.code() == 401 || e.code() == 403) -> ConnTest.BadToken
@@ -1070,8 +1075,9 @@ class ConfigViewModel @Inject constructor(
             )
             resetConnTest()
             resetBrokerTest()
-            val canTest = _form.value.apiBaseUrl.isNotBlank() &&
-                _form.value.queryToken.isNotBlank()
+            // Tokens are optional (auth-off servers); the test itself
+            // reports a 401 if this server does need one.
+            val canTest = _form.value.apiBaseUrl.isNotBlank()
             runCatching { persistForm() }.onFailure {
                 logBuffer.warn(
                     "setup-link persist failed",

@@ -113,6 +113,43 @@ class ScreenShots {
         }
     }
 
+    // ── Fuel charts (MPG over time, paid vs market, spend by year) ──
+    @Test fun mpgHistory() = shot("mpg_history") { mpgHistory(com.pitstop.domain.FuelCharts.MpgSpan.ThreeYears, 30) }
+
+    @Test fun mpgHistoryAll() = shot("mpg_history_all") { mpgHistory(com.pitstop.domain.FuelCharts.MpgSpan.All, -1) }
+
+    @Test fun mpgHistoryMetric() = shot("mpg_history_metric", units = "metric") {
+        mpgHistory(com.pitstop.domain.FuelCharts.MpgSpan.Year, 5)
+    }
+
+    @Composable
+    private fun mpgHistory(span: com.pitstop.domain.FuelCharts.MpgSpan, selected: Int) =
+        com.pitstop.ui.status.MpgHistoryContent(
+            points = ChartFixtures.mpgMonths, span = span, onSpan = {},
+            selected = selected, onSelect = {}, onBack = {},
+        )
+
+    @Test fun fuelCharts() = shot("fuel_charts") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            com.pitstop.ui.fuel.MarketPriceCard(ChartFixtures.marketCompare)
+            com.pitstop.ui.fuel.MarketPriceCard(ChartFixtures.marketCompare, initialSelected = 10)
+            TrendsCarousel(
+                listOf(
+                    TrendPage("Fuel spend, 2026 vs 2025") {
+                        com.pitstop.ui.components.SpendYoyChart(ChartFixtures.spendYoy, framed = false)
+                    },
+                ),
+            )
+            com.pitstop.ui.components.SpendYoyChart(ChartFixtures.spendYoy, initialSelected = 12)
+        }
+    }
+
+    @Test fun fuelChartsMetric() = shot("fuel_charts_metric", units = "metric") {
+        Column(Modifier.padding(12.dp)) {
+            com.pitstop.ui.fuel.MarketPriceCard(ChartFixtures.marketCompare, initialSelected = 3)
+        }
+    }
+
     @Composable
     private fun home(ui: StatusUiState) = StatusContent(
         ui = ui, uploadProgress = UploadProgress.Idle, pendingDrives = 0,
@@ -134,6 +171,21 @@ class ScreenShots {
 
     @Test fun liveStale() = shot("live_stale") {
         LiveContent(Fixtures.liveMetrics, Fixtures.staleStatus, brokerConnected = true, unitSystem = "imperial", obdAgeS = 95, driveMode = false)
+    }
+
+    /** Bridge off, nothing live: last server values dimmed, battery card. */
+    @Test fun liveParked() = shot("live_parked") {
+        val old = Fixtures.NOW - 16 * 3_600_000L
+        LiveContent(
+            emptyMap(), Fixtures.connected.copy(phase = BridgePhase.Idle), brokerConnected = false,
+            unitSystem = "imperial", obdAgeS = null, driveMode = false,
+            parkedMetrics = Fixtures.liveMetrics.filterKeys { it != "engine_rpm" && it != "vehicle_speed" }
+                .mapValues { (_, m) -> m.copy(tsMs = old) },
+            battery = listOf(12.15, 12.4, 11.98, 12.4, 12.2, 12.4, 12.1, 12.3, 12.0, 12.27).mapIndexed { i, v ->
+                com.pitstop.ui.live.BatteryDay(java.time.LocalDate.of(2026, 9, 19).plusDays(i.toLong()), v)
+            },
+            nowMs = Fixtures.NOW,
+        )
     }
 
     @Test fun liveEmpty() = shot("live_empty") {
@@ -279,7 +331,6 @@ class ScreenShots {
             ),
             autoStartStatus = Fixtures.autoStart,
             pairing = false,
-            saveLabel = "All changes saved",
         )
     }
 

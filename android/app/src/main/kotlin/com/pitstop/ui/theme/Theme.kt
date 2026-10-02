@@ -87,6 +87,8 @@ private val LightColors = lightColorScheme(
  * pill + delta + gauge tones (web Pill.vue's green / amber / red); `tow`
  * and `gps` are the two trip-card provenance chips; `info` is the slate
  * "Local-only" tone. Each has a translucent container for chip fills.
+ * `compare` is the blue of a chart's comparison series (the market
+ * average, last year) drawn against the primary-orange "you" series.
  *
  * Read through [MaterialTheme.ext] — never inline a Color(0x…) for one
  * of these in a screen, or the next palette tweak misses it.
@@ -103,6 +105,7 @@ data class ExtendedColors(
     val infoContainer: Color,
     val tow: Color,
     val gps: Color,
+    val compare: Color,
 )
 
 private val DarkExtended = ExtendedColors(
@@ -116,6 +119,7 @@ private val DarkExtended = ExtendedColors(
     infoContainer = Color(0x1A8AA4C9),
     tow = Color(0xFFFFB020),
     gps = Color(0xFF8AA4C9),
+    compare = Color(0xFF4D8AE0),
 )
 
 private val LightExtended = ExtendedColors(
@@ -129,6 +133,7 @@ private val LightExtended = ExtendedColors(
     infoContainer = Color(0x1A4A6285),
     tow = Color(0xFFB07000),
     gps = Color(0xFF4A6285),
+    compare = Color(0xFF2F6FD0),
 )
 
 private val LocalExtendedColors = staticCompositionLocalOf { DarkExtended }

@@ -207,9 +207,6 @@ class FuelAddViewModel @Inject constructor(
         // The vehicle the app is showing (top-bar switcher), which is the
         // bridge's configured one unless the user switched.
         val defaultSlug = runCatching { activeVehicle.current() }.getOrDefault(current.settings.vehicleSlug)
-        if (current.queryToken.isBlank()) {
-            logBuffer.warn("fuel: QUERY token blank; vehicle picker will be empty")
-        }
         if (current.settings.apiBaseUrl.isBlank()) {
             logBuffer.warn("fuel: API base URL blank; vehicle picker will be empty")
         }

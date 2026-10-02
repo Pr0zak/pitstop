@@ -1,5 +1,11 @@
 package com.pitstop.ui.fuel
 
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.AnimatedVisibility
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
@@ -86,6 +92,7 @@ import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.rememberPitstopListState
 import com.pitstop.ui.config.SettingsTarget
 import com.pitstop.ui.history.FillupCard
+import com.pitstop.ui.history.FillupMonthHeader
 import com.pitstop.ui.history.FillupFilter
 import com.pitstop.ui.history.FillupSortOrder
 import com.pitstop.ui.history.FillupStatsHeader
@@ -256,18 +263,72 @@ internal fun FuelHubContent(
 ) {
     val state = ui.fillups
     val groups = remember(state.data, sort, filter) { groupAndSortFillups(state.data, sort, filter) }
+    // Most recent first → calendar months (a date sort reads best by month);
+    // any other sort keeps the relative-date buckets.
+    val months = remember(state.data, sort, filter) {
+        if (sort != FillupSortOrder.RecentFirst) {
+            null
+        } else {
+            com.pitstop.domain.FuelCharts.fillupMonths(
+                state.data.filter {
+                    when (filter) {
+                        FillupFilter.All -> true
+                        FillupFilter.Full -> it.isFull
+                        FillupFilter.Partial -> !it.isFull
+                    }
+                },
+            )
+        }
+    }
+    val maxMonth = remember(months) { months?.maxOfOrNull { it.total } ?: 0.0 }
+    // Each fill's gap to the EIA US average for its week ("▼ 17¢ vs US avg").
+    val vsMarket = remember(state.data, ui.eiaWeeks) {
+        if (ui.eiaWeeks.isEmpty()) {
+            emptyMap()
+        } else {
+            state.data.mapNotNull { f ->
+                val ppg = f.pricePerUnit?.takeIf { it > 0 } ?: return@mapNotNull null
+                val d = com.pitstop.domain.FuelCharts.localDate(f.fillupDate, java.time.ZoneId.systemDefault())
+                    ?: return@mapNotNull null
+                val w = com.pitstop.domain.FuelCharts.weekFor(ui.eiaWeeks, d) ?: return@mapNotNull null
+                f.id to (ppg - w.price)
+            }.toMap()
+        }
+    }
     val is24h = is24HourClock()
+    val listState = rememberPitstopListState()
+    // The button sat over the trailing price of whichever row scrolled
+    // under it. Hide it while scrolling down; scrolling up or reaching
+    // the end (where the bottom padding clears it) brings it back.
+    var fabVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        var prev = 0 to 0
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { cur ->
+                val down = cur.first > prev.first || (cur.first == prev.first && cur.second > prev.second)
+                val up = cur.first < prev.first || (cur.first == prev.first && cur.second < prev.second)
+                fabVisible = when {
+                    !listState.canScrollForward -> true
+                    down -> false
+                    up -> true
+                    else -> fabVisible
+                }
+                prev = cur
+            }
+    }
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = { PitstopTopAppBar() },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onLog,
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("Log fillup") },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-            )
+            AnimatedVisibility(visible = fabVisible, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+                ExtendedFloatingActionButton(
+                    onClick = onLog,
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("Log fillup") },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
@@ -279,7 +340,7 @@ internal fun FuelHubContent(
                 .padding(padding),
         ) {
             LazyColumn(
-                state = rememberPitstopListState(),
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -296,6 +357,9 @@ internal fun FuelHubContent(
                         costPerMile = ui.costPerMile,
                         monthlySpend = ui.monthlySpend,
                     )
+                }
+                ui.marketCompare?.let { market ->
+                    item(key = "paid-vs-market") { MarketPriceCard(market) }
                 }
                 item(key = "controls") {
                     ListControls(
@@ -339,14 +403,21 @@ internal fun FuelHubContent(
                     emptyBody = "Tap Log fillup at the pump — two numbers and you're done.",
                     onRetry = onRefresh,
                 )
-                for ((key, items) in groups) {
-                    stickyHeader(key = "fillup-header-${key.name}") {
-                        GroupHeader(
-                            label = key.label,
-                            summary = "${items.size} fillup${if (items.size == 1) "" else "s"}",
-                        )
+                if (months != null) {
+                    for (m in months) {
+                        stickyHeader(key = "fillup-month-${m.month}") { FillupMonthHeader(m, maxMonth) }
+                        items(m.fillups, key = { it.id }) { f -> FillupCard(f, is24h, onOpenFillup, vsMarket[f.id]) }
                     }
-                    items(items, key = { it.id }) { f -> FillupCard(f, is24h, onOpenFillup) }
+                } else {
+                    for ((key, items) in groups) {
+                        stickyHeader(key = "fillup-header-${key.name}") {
+                            GroupHeader(
+                                label = key.label,
+                                summary = "${items.size} fillup${if (items.size == 1) "" else "s"}",
+                            )
+                        }
+                        items(items, key = { it.id }) { f -> FillupCard(f, is24h, onOpenFillup, vsMarket[f.id]) }
+                    }
                 }
             }
         }

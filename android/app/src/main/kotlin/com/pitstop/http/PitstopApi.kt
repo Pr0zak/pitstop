@@ -63,6 +63,14 @@ data class LogBatchResponse(
 // ignoreUnknownKeys = true tolerates the rest of the payload).
 // ============================================================================
 
+/** GET /auth/config. Defaults to "required" so a field a future server
+ *  drops can never silently look like auth-off. */
+@Serializable
+data class AuthConfigDto(
+    @SerialName("query_required") val queryRequired: Boolean = true,
+    @SerialName("ingest_required") val ingestRequired: Boolean = true,
+)
+
 @Serializable
 data class VehicleDto(
     @SerialName("id") val id: String,
@@ -163,6 +171,36 @@ data class MpgPointDto(
 )
 
 @Serializable
+data class MetricLatestDto(
+    @SerialName("metric") val metric: String = "",
+    @SerialName("value") val value: Double? = null,
+    @SerialName("time") val time: String = "",
+    @SerialName("source") val source: String? = null,
+)
+
+@Serializable
+data class ReadingBucketDto(
+    @SerialName("bucket") val bucket: String = "",
+    @SerialName("avg") val avg: Double? = null,
+    @SerialName("min") val min: Double? = null,
+    @SerialName("max") val max: Double? = null,
+    @SerialName("count") val count: Int = 0,
+)
+
+/** One EIA week: `week_of` is the week's date (YYYY-MM-DD), `price` $/gal. */
+@Serializable
+data class EiaWeekDto(
+    @SerialName("week_of") val weekOf: String = "",
+    @SerialName("price") val price: Double? = null,
+)
+
+@Serializable
+data class EiaWeeklyResponse(
+    @SerialName("region") val region: String = "us",
+    @SerialName("points") val points: List<EiaWeekDto> = emptyList(),
+)
+
+@Serializable
 data class MpgTrendResponse(
     @SerialName("points") val points: List<MpgPointDto>,
 )
@@ -255,6 +293,14 @@ interface PitstopApi {
     // Passing "no-cache" forces the request onto the network. Null (the
     // default) leaves normal caching in place.
 
+    /** Which token scopes the server enforces. Unauthenticated; a homelab
+     *  deploy with blank QUERY_TOKEN / INGEST_TOKEN reports both false and
+     *  then the phone must not ask for a token (web parity, v0.1.250). */
+    @GET("api/auth/config")
+    suspend fun getAuthConfig(
+        @Header("Cache-Control") cacheControl: String? = "no-cache",
+    ): AuthConfigDto
+
     @GET("api/vehicles")
     suspend fun getVehicles(
         @Header("Cache-Control") cacheControl: String? = null,
@@ -269,7 +315,37 @@ interface PitstopApi {
         @Query("vehicle_id") vehicleId: String,
         @Query("limit") limit: Int = 30,
         @Header("Cache-Control") cacheControl: String? = null,
+        /** ISO datetime lower bound on fillup_date; null = no bound. */
+        @Query("from") from: String? = null,
     ): List<FillupDto>
+
+    /**
+     * EIA weekly retail gasoline average for [region] ("us"), newest first.
+     * Backs the Fuel tab's "What you paid vs the market" card.
+     */
+    /** The newest stored value of every metric for the vehicle. */
+    @GET("api/readings/latest")
+    suspend fun getReadingsLatest(
+        @Query("vehicle_id") vehicleId: String,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): List<MetricLatestDto>
+
+    /** Bucketed avg/min/max of one metric, oldest first. */
+    @GET("api/readings/aggregate")
+    suspend fun getReadingsAggregate(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("metric") metric: String,
+        @Query("bucket") bucket: String = "day",
+        @Query("from") from: String? = null,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): List<ReadingBucketDto>
+
+    @GET("api/analytics/eia-weekly")
+    suspend fun getEiaWeekly(
+        @Query("region") region: String = "us",
+        @Query("weeks") weeks: Int = 52,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): EiaWeeklyResponse
 
     @GET("api/analytics/mpg")
     suspend fun getMpgTrend(
@@ -695,6 +771,11 @@ data class TripDto(
      *  combined two trips via MERGE-1). Surfaced in the History tab
      *  source-filter chips (TRIPS-1). */
     val source: String? = null,
+    /** Seconds spent stopped with the engine on. */
+    @kotlinx.serialization.SerialName("idle_s") val idleS: Int? = null,
+    /** Open-Meteo weather at the trip's start: °C and WMO code. */
+    @kotlinx.serialization.SerialName("weather_temp_c") val weatherTempC: Double? = null,
+    @kotlinx.serialization.SerialName("weather_code") val weatherCode: Int? = null,
 )
 
 /**

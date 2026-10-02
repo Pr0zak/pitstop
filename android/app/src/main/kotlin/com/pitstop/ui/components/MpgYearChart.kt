@@ -1,6 +1,7 @@
 package com.pitstop.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.pitstop.http.MpgPointDto
@@ -64,6 +66,12 @@ fun MpgYearChart(
     modifier: Modifier = Modifier,
     /** False when rendered as a [TrendsCarousel] page: no card, no title. */
     framed: Boolean = true,
+    /**
+     * Opens the full MPG-over-time screen. When set, a tap anywhere on the
+     * chart opens it (the scrub readout lives on that screen) and a
+     * "Full history" hint is shown.
+     */
+    onOpen: (() -> Unit)? = null,
 ) {
     val cleaned = remember(points) {
         points.filter { (it.mpg ?: 0.0) > 0 }.takeLast(12)
@@ -79,8 +87,13 @@ fun MpgYearChart(
         }
     }
     val unit = UnitFormat.economyUnit(system)
+    val openModifier = if (onOpen == null) {
+        Modifier
+    } else {
+        Modifier.clickable(onClickLabel = "Open fuel economy over time", role = Role.Button, onClick = onOpen)
+    }
     TrendFrame(framed = framed, modifier = modifier) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = openModifier.padding(14.dp)) {
             if (framed) {
                 Text(
                     "${if (system == "imperial") "MPG" else "L/100 km"}  ·  last 12 months",
@@ -116,6 +129,7 @@ fun MpgYearChart(
                 gridColor = MaterialTheme.colorScheme.outlineVariant,
                 onSurfaceColor = MaterialTheme.colorScheme.onSurface,
                 onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant,
+                interactive = onOpen == null,
             )
             Spacer(Modifier.height(6.dp))
             Row(
@@ -135,11 +149,21 @@ fun MpgYearChart(
                 )
             }
             Spacer(Modifier.height(2.dp))
-            Text(
-                "3-mo rolling median  ·  ${"%.1f".format(minMpg)}–${"%.1f".format(maxMpg)} $unit",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "3-mo rolling median  ·  ${"%.1f".format(minMpg)}–${"%.1f".format(maxMpg)} $unit",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (onOpen != null) {
+                    Text(
+                        "Full history ›",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
         }
     }
 }
@@ -179,6 +203,8 @@ private fun MpgLineCanvas(
     gridColor: Color,
     onSurfaceColor: Color,
     onSurfaceVariant: Color,
+    /** False when the whole card is a button: no tap / drag selection. */
+    interactive: Boolean = true,
 ) {
     val mpgs = points.mapNotNull { it.mpg }
     val minV = mpgs.min()
@@ -202,30 +228,7 @@ private fun MpgLineCanvas(
         Canvas(
             modifier = Modifier
                 .matchParentSize()
-                .pointerInput(points) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            selected = pickIndex(offset.x, padL, padR, size.width.toFloat(), points.size)
-                        },
-                    )
-                }
-                .pointerInput(points) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            selected = pickIndex(offset.x, padL, padR, size.width.toFloat(), points.size)
-                        },
-                        onDrag = { change, _ ->
-                            selected = pickIndex(
-                                change.position.x,
-                                padL,
-                                padR,
-                                size.width.toFloat(),
-                                points.size,
-                            )
-                            change.consume()
-                        },
-                    )
-                },
+                .then(if (interactive) Modifier.selectGestures(points.size, padL, padR) { selected = it } else Modifier),
         ) {
             val w = size.width
             val h = size.height
@@ -325,6 +328,20 @@ private fun MpgLineCanvas(
         }
     }
 }
+
+/** Tap or drag picks the nearest point index. */
+private fun Modifier.selectGestures(n: Int, padL: Float, padR: Float, onPick: (Int) -> Unit): Modifier =
+    pointerInput(n) {
+        detectTapGestures(onTap = { offset -> onPick(pickIndex(offset.x, padL, padR, size.width.toFloat(), n)) })
+    }.pointerInput(n) {
+        detectDragGestures(
+            onDragStart = { offset -> onPick(pickIndex(offset.x, padL, padR, size.width.toFloat(), n)) },
+            onDrag = { change, _ ->
+                onPick(pickIndex(change.position.x, padL, padR, size.width.toFloat(), n))
+                change.consume()
+            },
+        )
+    }
 
 private fun pickIndex(rawX: Float, padL: Float, padR: Float, w: Float, n: Int): Int {
     if (n <= 0) return -1

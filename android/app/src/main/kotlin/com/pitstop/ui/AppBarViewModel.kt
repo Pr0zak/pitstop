@@ -45,6 +45,7 @@ class AppBarViewModel @Inject constructor(
     settingsRepository: SettingsRepository,
     stateBus: BridgeStateBus,
     directory: VehicleDirectory,
+    appPrefs: com.pitstop.data.AppPrefs,
     private val activeVehicle: ActiveVehicle,
     private val companionManager: WicanCompanionManager,
     private val mqttPublisher: MqttPublisher,
@@ -65,10 +66,15 @@ class AppBarViewModel @Inject constructor(
         activeVehicle.slug,
         bridge,
         settingsRepository.settings,
-    ) { vehicles, slug, b, s ->
+        appPrefs.vehicleNames,
+    ) { vehicles, slug, b, s, cachedNames ->
         val (label, tone) = loggingChip(b, s.manualSyncOnly)
         AppBarState(
-            vehicleName = vehicles.firstOrNull { it.slug == slug }?.name ?: slug.ifBlank { null },
+            // Live list, then last launch's cached name; the raw slug only
+            // on the very first load after install.
+            vehicleName = vehicles.firstOrNull { it.slug == slug }?.name
+                ?: cachedNames[slug]
+                ?: slug.ifBlank { null },
             vehicles = switchableVehicles(vehicles, slug).map { AppBarVehicle(it.slug, it.name) },
             selectedSlug = slug,
             loggingLabel = label,
