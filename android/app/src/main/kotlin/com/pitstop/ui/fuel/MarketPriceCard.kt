@@ -1,5 +1,6 @@
 package com.pitstop.ui.fuel
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -54,6 +56,12 @@ fun MarketPriceCard(
     data: FuelCharts.MarketCompare,
     modifier: Modifier = Modifier,
     initialSelected: Int = -1,
+    /**
+     * Home's "Price you paid": shorter chart, no per-dot readout, and the
+     * whole card is one button ([onClick] → the Fuel tab).
+     */
+    compact: Boolean = false,
+    onClick: (() -> Unit)? = null,
 ) {
     val system = LocalUnitSystem.current
     val perUnit = UnitFormat.perVolumeUnit(system)
@@ -75,18 +83,26 @@ fun MarketPriceCard(
         "${if (data.below) "saved" else "cost"} about ${UnitFormat.money(data.dollars, 0)}"
 
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClickLabel = "Open the Fuel tab", role = Role.Button, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            ),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(12.dp),
     ) {
         Column(Modifier.padding(14.dp)) {
             Text(
-                "What you paid vs the market",
+                if (compact) "Price you paid" else "What you paid vs the market",
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.semantics { heading() },
             )
             Text(
-                "Last 52 weeks  ·  US weekly average from EIA",
+                if (compact) "Last 12 months  ·  vs the US weekly average" else "Last 52 weeks  ·  US weekly average from EIA",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -117,14 +133,15 @@ fun MarketPriceCard(
                     "$headline, $sub",
                 lines = listOf(PlotLine(market, compare)),
                 dots = listOf(PlotDots(fills, accent, radius = 4.5.dp)),
-                hover = fills,
+                hover = if (compact) emptyList() else fills,
                 hoverMode = HoverMode.NearestXY,
                 selected = selected,
                 onSelect = { selected = it },
-                height = 200.dp,
+                height = if (compact) 150.dp else 200.dp,
             )
             Spacer(Modifier.height(4.dp))
             val f = data.fills.getOrNull(selected)
+            if (!compact) {
             Text(
                 text = if (f == null) {
                     "Tap a dot to read a fillup"
@@ -142,6 +159,7 @@ fun MarketPriceCard(
                     .heightIn(min = 34.dp)
                     .semantics { liveRegion = LiveRegionMode.Polite },
             )
+            }
             Spacer(Modifier.height(6.dp))
             ChartLegend(
                 listOf(

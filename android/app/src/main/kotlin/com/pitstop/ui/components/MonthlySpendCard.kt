@@ -85,7 +85,7 @@ fun MonthlySpendCard(
                 currentMonthPrefix = nowYm,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(110.dp)
+                    .height(TrendChartHeight)
                     .semantics {
                         contentDescription = "Fuel spend by month: " +
                             recent.joinToString(", ") {

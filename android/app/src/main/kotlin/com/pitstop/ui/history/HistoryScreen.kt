@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.CompositionLocalProvider
 import kotlin.math.roundToInt
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -110,6 +112,11 @@ import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.LoadErrorState
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.rememberPitstopListState
+import com.pitstop.ui.components.BackToTopButton
+import com.pitstop.ui.components.FastScroller
+import com.pitstop.ui.components.rememberBackToTopVisible
+import com.pitstop.ui.components.rememberReducedMotion
+import com.pitstop.ui.components.scrollToTop
 import com.pitstop.ui.components.UploadStatusCard
 import com.pitstop.ui.fuel.FuelAddScreen
 import com.pitstop.ui.history.detail.DtcDetailScreen
@@ -396,6 +403,9 @@ internal fun TripsListContent(
 ) {
     val selecting = subTab == HistorySubTab.Trips &&
         (selection.mode || mergeState is MergeState.InProgress)
+    val tripsListState = rememberPitstopListState()
+    val scope = rememberCoroutineScope()
+    val reduceMotion = rememberReducedMotion()
     Scaffold(
         // MainActivity's outer Scaffold already consumed the system-bar
         // insets for the whole pager; re-applying them here leaves an empty
@@ -415,6 +425,12 @@ internal fun TripsListContent(
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            BackToTopButton(
+                visible = subTab == HistorySubTab.Trips && rememberBackToTopVisible(tripsListState),
+                onClick = { scope.launch { tripsListState.scrollToTop(reduceMotion) } },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -441,6 +457,7 @@ internal fun TripsListContent(
             when (subTab) {
                 HistorySubTab.Trips -> TripsTab(
                     state = ui.trips,
+                    listState = tripsListState,
                     avgMpg = remember(ui.trips.data) {
                         com.pitstop.domain.FuelCharts.thirtyDayMpg(ui.trips.data, System.currentTimeMillis())
                     },
@@ -633,6 +650,7 @@ internal fun ListHeaderLine(
 @Composable
 private fun TripsTab(
     state: HistoryListState<TripDto>,
+    listState: androidx.compose.foundation.lazy.LazyListState,
     /** The 30-day economy basis Home's range uses; the rows' bar tick. */
     avgMpg: Double?,
     header: @Composable () -> Unit,
@@ -656,6 +674,9 @@ private fun TripsTab(
     val groups = remember(state.data, sort, filter, towingOnly, hidden) {
         groupAndSortTrips(state.data, sort, filter, towingOnly, hidden)
     }
+    // List key → "Sep 2026" (or "2023" when the list spans > 3 years) for
+    // the fast scroller; only on the date-ordered list.
+    val dateLabels = remember(groups, sort) { if (sort == TripSortOrder.RecentFirst) tripDateLabels(groups) else null }
     val system = LocalUnitSystem.current
     val is24h = is24HourClock()
     // Which short-hop runs are unfolded. A List, not a Set, so it saves.
@@ -666,7 +687,7 @@ private fun TripsTab(
         modifier = Modifier.fillMaxSize(),
     ) {
         LazyColumn(
-            state = rememberPitstopListState(),
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -779,6 +800,12 @@ private fun TripsTab(
                 }
             }
         }
+        FastScroller(
+            state = listState,
+            modifier = Modifier.matchParentSize(),
+            labelForKey = dateLabels?.let { m -> { key -> m[key] } },
+            bottomInset = 80.dp,
+        )
     }
 }
 

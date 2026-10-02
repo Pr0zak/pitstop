@@ -117,7 +117,7 @@ fun MpgYearChart(
                 points = smoothed,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp)
+                    .height(TrendChartHeight)
                     .semantics {
                         contentDescription = "Fuel economy by month, " +
                             "${formatPeriodShort(smoothed.first().period)} to " +

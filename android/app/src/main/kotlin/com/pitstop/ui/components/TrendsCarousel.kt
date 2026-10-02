@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
@@ -24,6 +25,16 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+
+/**
+ * Every Trends page draws its chart at this height, so swiping between
+ * pages doesn't make the card jump (cost per mile used to be half the
+ * size of the rest).
+ */
+val TrendChartHeight = 130.dp
+
+/** Every page body is at least this tall (the tallest, spend vs last year), so the card height holds while swiping. */
+val TrendPageMinHeight = 252.dp
 
 /** One page of the Home "Trends" carousel: its title and its body. */
 class TrendPage(val title: String, val content: @Composable () -> Unit)
@@ -75,14 +86,14 @@ fun TrendsCarousel(pages: List<TrendPage>, modifier: Modifier = Modifier) {
                 PageDots(count = pages.size, current = current)
             }
             if (inspection) {
-                pages.first().content()
+                Box(Modifier.heightIn(min = TrendPageMinHeight)) { pages.first().content() }
             } else {
                 HorizontalPager(
                     state = pagerState,
                     verticalAlignment = Alignment.Top,
                     modifier = Modifier.fillMaxWidth(),
                 ) { page ->
-                    pages[page].content()
+                    Box(Modifier.heightIn(min = TrendPageMinHeight)) { pages[page].content() }
                 }
             }
         }

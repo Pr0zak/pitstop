@@ -160,7 +160,7 @@ fun MpgLifetimeCard(
                 yearly = displayYearly,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(110.dp)
+                    .height(TrendChartHeight)
                     .semantics {
                         contentDescription = "Yearly fuel economy: " +
                             displayYearly.joinToString(", ") {

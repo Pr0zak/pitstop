@@ -81,6 +81,10 @@ data class StatusUiState(
     /** This year's vs last year's running fuel spend; null while loading
      *  or when this year has no costed fillup (the Trends page hides). */
     val spendYoy: com.pitstop.domain.FuelCharts.SpendYoy? = null,
+    /** Home's "Price you paid": last 52 weeks of fills vs the EIA US average. */
+    val homeMarket: com.pitstop.domain.FuelCharts.MarketCompare? = null,
+    /** Home's "MPG per tank": the last 20 full tanks. */
+    val tanks: com.pitstop.domain.FuelCharts.TankSeries? = null,
     /** /dtcs?active_only=true — empty list when nothing active. */
     val activeDtcs: List<DtcDto>? = null,
     /** Mirrors [com.pitstop.data.Settings.manualSyncOnly]; the
@@ -184,6 +188,7 @@ class StatusViewModel @Inject constructor(
     private val costPerMile = MutableStateFlow<List<CostPerMilePointDto>?>(null)
     private val monthlySpend = MutableStateFlow<List<MonthlySpendPointDto>?>(null)
     private val spendYoy = MutableStateFlow<com.pitstop.domain.FuelCharts.SpendYoy?>(null)
+    private val homeFuel = MutableStateFlow(HomeFuel())
     private val activeDtcs = MutableStateFlow<List<DtcDto>?>(null)
     private val vehicle = MutableStateFlow<com.pitstop.http.VehicleDto?>(null)
     private val rangeBasis = MutableStateFlow<com.pitstop.domain.RangeBasis?>(null)
@@ -303,6 +308,11 @@ class StatusViewModel @Inject constructor(
             // spend page. A day early in UTC so a local-Jan-1 fill is in;
             // spendYoy() buckets by the device's local date.
             val today = java.time.LocalDate.now()
+            // EIA weekly for "Price you paid" — the only extra request; the
+            // fillups come from the since-last-January list below.
+            val eiaJob = async {
+                runCatching { api.getEiaWeekly(region = "us", weeks = 52, cacheControl = cacheControl) }.getOrNull()
+            }
             val yoyJob = async {
                 runCatching {
                     api.getFillups(
@@ -344,6 +354,15 @@ class StatusViewModel @Inject constructor(
             costPerMile.value = cost?.points
             monthlySpend.value = spend?.months
             spendYoy.value = yoyFills?.let { com.pitstop.domain.FuelCharts.spendYoy(it, today) }
+            val eia = eiaJob.await()
+            homeFuel.value = HomeFuel(
+                market = if (yoyFills != null && eia != null) {
+                    com.pitstop.domain.FuelCharts.marketCompare(yoyFills, eia.points)
+                } else {
+                    null
+                },
+                tanks = yoyFills?.let { com.pitstop.domain.FuelCharts.tankSeries(it, 20) },
+            )
             recentTrips.value = trips?.sortedByDescending { it.startedAt }?.take(6) ?: emptyList()
             activeDtcs.value = dtcs ?: emptyList()
             reminders.value = rem ?: reminders.value
@@ -530,6 +549,7 @@ class StatusViewModel @Inject constructor(
         costPerMile.value = null
         monthlySpend.value = null
         spendYoy.value = null
+        homeFuel.value = HomeFuel()
         activeDtcs.value = null
         vehicle.value = null
         rangeBasis.value = null
@@ -647,6 +667,7 @@ class StatusViewModel @Inject constructor(
             driveBundle,
             loadProblem,
             spendYoy,
+            homeFuel,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val bridge = values[0] as BridgeBundle
@@ -668,6 +689,7 @@ class StatusViewModel @Inject constructor(
             val drive = values[10] as DriveBundle
             val problem = values[11] as String?
             val yoy = values[12] as com.pitstop.domain.FuelCharts.SpendYoy?
+            val fuel = values[13] as HomeFuel
 
             StatusUiState(
                 status = bridge.status.copy(
@@ -697,6 +719,8 @@ class StatusViewModel @Inject constructor(
                 costPerMile = cost,
                 monthlySpend = spend,
                 spendYoy = yoy,
+                homeMarket = fuel.market,
+                tanks = fuel.tanks,
                 activeDtcs = dtcs,
                 range = drive.range,
                 lastDrive = drive.lastDrive,
@@ -724,6 +748,11 @@ class StatusViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = StatusUiState(),
         )
+
+    private data class HomeFuel(
+        val market: com.pitstop.domain.FuelCharts.MarketCompare? = null,
+        val tanks: com.pitstop.domain.FuelCharts.TankSeries? = null,
+    )
 
     private data class BridgeBundle(
         val status: BridgeStatus,

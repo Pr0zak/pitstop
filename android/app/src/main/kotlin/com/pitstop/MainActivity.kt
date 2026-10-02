@@ -474,6 +474,10 @@ private fun PitstopRootBody(
                                 goTo(Tab.Car)
                             },
                             onOpenFuel = { goTo(Tab.Fuel) },
+                            onOpenFillup = { id ->
+                                historyVm().openFillup(id)
+                                goTo(Tab.Fuel)
+                            },
                         )
                         Tab.Trips -> TripsScreen()
                         Tab.Fuel -> FuelScreen(pendingLogSheet = pendingLogSheetFlow)

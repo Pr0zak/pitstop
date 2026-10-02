@@ -71,54 +71,53 @@ fun CostPerMileCard(
                 )
                 Spacer(Modifier.height(6.dp))
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            text = UnitFormat.money(
-                                UnitFormat.costPerDistanceValue(lifetime, system),
-                                digits = 3,
-                            ),
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.headlineMedium.copy(
-                                letterSpacing = (-1.2).sp,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            UnitFormat.perDistanceUnit(system),
-                            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        text = "Lifetime  ·  ${points.count { (it.costPerMi ?: 0.0) > 0 }} months tracked",
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // Headline over a full-width chart, like every other Trends
+            // page (side by side, the bars were half the size).
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = UnitFormat.money(
+                        UnitFormat.costPerDistanceValue(lifetime, system),
+                        digits = 3,
+                    ),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        letterSpacing = (-1.2).sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    UnitFormat.perDistanceUnit(system),
+                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "Lifetime  ·  ${points.count { (it.costPerMi ?: 0.0) > 0 }} months tracked",
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (barable.size >= 2) {
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(TrendChartHeight)
+                        .semantics {
+                            contentDescription = "Monthly cost per distance, last " +
+                                "${barable.size} months, latest " +
+                                UnitFormat.money(barable.last().costPerMi, 3) +
+                                UnitFormat.perDistanceUnit(system)
+                        },
+                ) {
+                    CostBars(
+                        points = barable,
+                        modifier = Modifier.matchParentSize(),
+                        accent = MaterialTheme.colorScheme.primary,
+                        neutral = MaterialTheme.colorScheme.onSurfaceVariant,
+                        onSurface = MaterialTheme.colorScheme.onSurface,
                     )
-                }
-                if (barable.size >= 2) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1.2f)
-                            .height(60.dp)
-                            .semantics {
-                                contentDescription = "Monthly cost per distance, last " +
-                                    "${barable.size} months, latest " +
-                                    UnitFormat.money(barable.last().costPerMi, 3) +
-                                    UnitFormat.perDistanceUnit(system)
-                            },
-                    ) {
-                        CostBars(
-                            points = barable,
-                            modifier = Modifier.matchParentSize(),
-                            accent = MaterialTheme.colorScheme.primary,
-                            neutral = MaterialTheme.colorScheme.onSurfaceVariant,
-                            onSurface = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
                 }
             }
         }

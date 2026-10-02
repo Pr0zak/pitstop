@@ -110,6 +110,13 @@ class ScreenShots {
             TrendsCarousel(listOf(TrendPage("Lifetime MPG") { MpgLifetimeCard(h.mpgYearly!!, framed = false) }))
             TrendsCarousel(listOf(TrendPage("Cost per mile") { CostPerMileCard(h.costPerMile!!, framed = false) }))
             TrendsCarousel(listOf(TrendPage("Monthly fuel spend") { MonthlySpendCard(h.monthlySpend!!, framed = false) }))
+            TrendsCarousel(
+                listOf(
+                    TrendPage("Fuel spend, 2026 vs 2025") {
+                        com.pitstop.ui.components.SpendYoyChart(ChartFixtures.spendYoy, framed = false)
+                    },
+                ),
+            )
         }
     }
 
@@ -141,6 +148,15 @@ class ScreenShots {
                 ),
             )
             com.pitstop.ui.components.SpendYoyChart(ChartFixtures.spendYoy, initialSelected = 12)
+        }
+    }
+
+    @Test fun homeFuelCards() = shot("home_fuel_cards") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            com.pitstop.ui.fuel.MarketPriceCard(ChartFixtures.marketCompare, compact = true, onClick = {})
+            com.pitstop.ui.fuel.TankMpgCard(
+                com.pitstop.domain.FuelCharts.tankSeries(ChartFixtures.tankFills, zone = java.time.ZoneOffset.UTC)!!,
+            )
         }
     }
 

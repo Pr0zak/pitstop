@@ -148,7 +148,8 @@ internal fun mpgBarCaption(avgMpg: Double, system: String): String =
 
 /** Idle share of the drive; null without both numbers. */
 internal fun idleShare(trip: TripDto): Double? {
-    val idle = trip.idleS ?: return null
+    // 0 s is what OBD-less (boat / GPS-only) trips report: nothing to say.
+    val idle = trip.idleS?.takeIf { it > 0 } ?: return null
     val dur = trip.durationS?.takeIf { it > 0 } ?: return null
     return idle.toDouble() / dur
 }
@@ -163,4 +164,26 @@ internal fun weatherWord(code: Int?): String? = when {
     code in 71..77 -> "Snow"
     code >= 80 -> "Showers"
     else -> null
+}
+
+/**
+ * Fast-scroller bubble text per list key: every trip id (and the
+ * short-hop row keyed by its first trip) → "Sep 2026", or just "2023"
+ * when the list spans more than three years.
+ */
+internal fun tripDateLabels(groups: List<Pair<TripGroupKey, List<TripDto>>>): Map<Any, String> {
+    val zone = java.time.ZoneId.systemDefault()
+    val dated = groups.flatMap { it.second }.mapNotNull { t ->
+        com.pitstop.domain.FuelCharts.localDate(t.startedAt, zone)?.let { t.id to it }
+    }
+    if (dated.isEmpty()) return emptyMap()
+    val years = dated.maxOf { it.second.year } - dated.minOf { it.second.year }
+    val fmt = java.time.format.DateTimeFormatter.ofPattern(if (years > 3) "yyyy" else "MMM yyyy", java.util.Locale.US)
+    return buildMap {
+        for ((id, d) in dated) {
+            val label = d.format(fmt)
+            put(id, label)
+            put("hops-$id", label)
+        }
+    }
 }

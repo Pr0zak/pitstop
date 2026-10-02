@@ -289,6 +289,41 @@ object FuelCharts {
             .map { (ym, fs) -> FillupMonth(ym, fs.sortedByDescending { it.fillupDate }) }
             .sortedByDescending { it.month }
 
+    // ── MPG per tank ─────────────────────────────────────────────────
+
+    data class Tank(
+        val fillupId: String,
+        val date: LocalDate,
+        val x: Double,
+        val mpg: Double,
+        /** Mean of this tank and up to four before it. */
+        val roll5: Double,
+    )
+
+    data class TankSeries(val tanks: List<Tank>) {
+        val last: Tank get() = tanks.last()
+        val avg: Double get() = tanks.sumOf { it.mpg } / tanks.size
+        val xRange: Pair<Double, Double> get() = (tanks.first().x - 10) to (last.x + 10)
+    }
+
+    /**
+     * The last [n] full, non-missed tanks with an mpg, oldest first, each
+     * with a 5-tank rolling mean. Null with fewer than two tanks.
+     */
+    fun tankSeries(fillups: List<FillupDto>, n: Int = 20, zone: ZoneId = ZoneId.systemDefault()): TankSeries? {
+        val full = fillups.mapNotNull { f ->
+            val mpg = f.mpg?.takeIf { it > 0 && f.isFull && !f.isMissed } ?: return@mapNotNull null
+            val d = localDate(f.fillupDate, zone) ?: return@mapNotNull null
+            Triple(f, d, mpg)
+        }.sortedBy { it.first.fillupDate }.takeLast(n)
+        if (full.size < 2) return null
+        val tanks = full.mapIndexed { i, (f, d, mpg) ->
+            val w = full.subList(max(0, i - 4), i + 1)
+            Tank(f.id, d, dayX(d), mpg, w.sumOf { it.third } / w.size)
+        }
+        return TankSeries(tanks)
+    }
+
     // ── Trip rows: 30-day economy ────────────────────────────────────
 
     /**

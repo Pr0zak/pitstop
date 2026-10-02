@@ -27,6 +27,7 @@ fun HomeSection(
     onOpenTrip: (id: String) -> Unit = {},
     onOpenService: () -> Unit = {},
     onOpenFuel: () -> Unit = {},
+    onOpenFillup: (String) -> Unit = {},
 ) {
     val viewModel: StatusViewModel = hiltViewModel()
     val nav = rememberNavController()
@@ -41,6 +42,7 @@ fun HomeSection(
                 onOpenService = onOpenService,
                 onOpenMpgHistory = { nav.navigate(ROUTE_MPG) },
                 onOpenFuel = onOpenFuel,
+                onOpenFillup = onOpenFillup,
             )
         }
         composable(ROUTE_MPG) {

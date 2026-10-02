@@ -92,7 +92,7 @@ fun SpendYoyChart(
                 selected = selected,
                 onSelect = { selected = it },
                 scrub = false,
-                height = 150.dp,
+                height = TrendChartHeight,
             )
             Spacer(Modifier.height(4.dp))
             val p = yoy.thisYear.drop(1).getOrNull(selected)

@@ -100,6 +100,12 @@ import com.pitstop.ui.components.SeverityChip
 import com.pitstop.ui.components.TrendPage
 import com.pitstop.ui.components.TrendsCarousel
 import com.pitstop.ui.components.SpendYoyChart
+import com.pitstop.ui.components.BackToTopButton
+import com.pitstop.ui.components.rememberBackToTopVisible
+import com.pitstop.ui.components.rememberReducedMotion
+import com.pitstop.ui.components.scrollToTop
+import com.pitstop.ui.fuel.MarketPriceCard
+import com.pitstop.ui.fuel.TankMpgCard
 import com.pitstop.domain.RouteShape
 import com.pitstop.ui.components.UploadStatusCard
 import com.pitstop.ui.components.is24HourClock
@@ -135,6 +141,7 @@ fun StatusScreen(
     onOpenService: () -> Unit = {},
     onOpenMpgHistory: () -> Unit = {},
     onOpenFuel: () -> Unit = {},
+    onOpenFillup: (String) -> Unit = {},
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
@@ -155,6 +162,7 @@ fun StatusScreen(
         onOpenService = onOpenService,
         onOpenMpgHistory = onOpenMpgHistory,
         onOpenFuel = onOpenFuel,
+        onOpenFillup = onOpenFillup,
         onNavigate = { spot -> navigateTo(context, spot) },
         pairCardCompact = pairCardCompact,
         onPairCardShown = viewModel::onPairCardShown,
@@ -196,6 +204,7 @@ internal fun StatusContent(
     onOpenService: () -> Unit = {},
     onOpenMpgHistory: () -> Unit = {},
     onOpenFuel: () -> Unit = {},
+    onOpenFillup: (String) -> Unit = {},
     onNavigate: (ParkedSpot) -> Unit = {},
     nowMs: Long = System.currentTimeMillis(),
     pairCardCompact: Boolean = false,
@@ -206,10 +215,18 @@ internal fun StatusContent(
     val refreshing = remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val system = LocalUnitSystem.current
+    val scroll = rememberScrollState()
+    val reduceMotion = rememberReducedMotion()
 
     Scaffold(
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         topBar = { PitstopTopAppBar() },
+        floatingActionButton = {
+            BackToTopButton(
+                visible = rememberBackToTopVisible(scroll),
+                onClick = { coroutineScope.launch { scroll.scrollToTop(reduceMotion) } },
+            )
+        },
     ) { padding ->
         PullToRefreshBox(
             isRefreshing = refreshing.value,
@@ -229,7 +246,7 @@ internal fun StatusContent(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -344,11 +361,20 @@ internal fun StatusContent(
                 }
                 TrendsCarousel(pages = trendPages)
 
-                // Recent trips — the last drive already has its own card.
-                val lastId = ui.lastDrive?.trip?.id
-                ui.recentTrips?.filter { it.id != lastId }?.takeIf { it.isNotEmpty() }?.let { trips ->
-                    RecentTripsCard(trips = trips.take(5), onOpenAll = onOpenHistory, onOpenTrip = onOpenTrip)
+                // Fuel: what the pump cost against the market and tank-by-tank
+                // economy — neither is in the Trends carousel. (Recent trips
+                // moved out: the Trips tab is that list, Last drive stays.)
+                if (ui.homeMarket != null || ui.tanks != null) {
+                    Text(
+                        "Fuel",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier
+                            .padding(start = 4.dp, top = 4.dp)
+                            .semantics { heading() },
+                    )
                 }
+                ui.homeMarket?.let { MarketPriceCard(it, compact = true, onClick = onOpenFuel) }
+                ui.tanks?.let { TankMpgCard(it, onOpenFillup = onOpenFillup, onClick = onOpenFuel) }
 
                 ui.update?.takeIf { it.isNewer }?.let { info ->
                     UpdateAvailableCard(
@@ -962,91 +988,4 @@ private fun UpdateAvailableCard(
             }
         }
     }
-}
-
-@Composable
-private fun RecentTripsCard(
-    trips: List<com.pitstop.http.TripDto>,
-    onOpenAll: () -> Unit,
-    onOpenTrip: (String) -> Unit,
-) {
-    val system = LocalUnitSystem.current
-    val is24h = is24HourClock()
-    Card {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Recent trips",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics { heading() },
-                )
-                // A plain navigation link, not a primary action: neutral,
-                // so the accent stays reserved for things that do something.
-                androidx.compose.material3.TextButton(
-                    onClick = onOpenAll,
-                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                ) { Text("See all") }
-            }
-            for (trip in trips) {
-                // Each row opens THAT trip's detail (History → trip/{id}).
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .clickable(onClickLabel = "Open trip") { onOpenTrip(trip.id) }
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            // Ungrouped list: "Today 6:33 AM", "Tue 6:32 PM", "Sep 18, 6:32 PM".
-                            text = DateLabel.list(trip.startedAt, withTime = true, grouped = false, is24h = is24h),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text = formatTripSubtitle(trip, system),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        text = UnitFormat.distanceKm(trip.distanceKm, system),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Economy first, like the History list: "24.8 mpg · 22m · max 68 mph". */
-private fun formatTripSubtitle(trip: com.pitstop.http.TripDto, system: String): String {
-    val parts = mutableListOf<String>()
-    com.pitstop.ui.history.tripMpg(trip)?.let { parts += UnitFormat.economy(it, system) }
-    trip.durationS?.let {
-        parts += when {
-            it >= 3600 -> "${it / 3600}h ${(it % 3600) / 60}m"
-            it >= 60 -> "${it / 60}m"
-            else -> "${it}s"
-        }
-    }
-    trip.maxSpeedKph?.let { parts += "max ${UnitFormat.Quantity.SpeedKph.format(it, system, 0)}" }
-    if (trip.dtcCount > 0) parts += "${trip.dtcCount} DTC"
-    return parts.joinToString(" · ").ifEmpty { "—" }
 }

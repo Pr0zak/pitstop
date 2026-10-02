@@ -90,6 +90,11 @@ import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.RangeFormat
 import com.pitstop.ui.components.is24HourClock
 import com.pitstop.ui.components.rememberPitstopListState
+import com.pitstop.ui.components.BackToTopButton
+import com.pitstop.ui.components.FastScroller
+import com.pitstop.ui.components.rememberBackToTopVisible
+import com.pitstop.ui.components.rememberReducedMotion
+import com.pitstop.ui.components.scrollToTop
 import com.pitstop.ui.config.SettingsTarget
 import com.pitstop.ui.history.FillupCard
 import com.pitstop.ui.history.FillupMonthHeader
@@ -281,6 +286,19 @@ internal fun FuelHubContent(
         }
     }
     val maxMonth = remember(months) { months?.maxOfOrNull { it.total } ?: 0.0 }
+    // List key → "Sep 2026" for the fast scroller's bubble.
+    val monthLabels = remember(months) {
+        buildMap<Any, String> {
+            val fmt = java.time.format.DateTimeFormatter.ofPattern("MMM yyyy", java.util.Locale.US)
+            months?.forEach { m ->
+                val label = m.month.format(fmt)
+                put("fillup-month-${m.month}", label)
+                m.fillups.forEach { put(it.id, label) }
+            }
+        }
+    }
+    val scope = rememberCoroutineScope()
+    val reduceMotion = rememberReducedMotion()
     // Each fill's gap to the EIA US average for its week ("▼ 17¢ vs US avg").
     val vsMarket = remember(state.data, ui.eiaWeeks) {
         if (ui.eiaWeeks.isEmpty()) {
@@ -320,14 +338,21 @@ internal fun FuelHubContent(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = { PitstopTopAppBar() },
         floatingActionButton = {
-            AnimatedVisibility(visible = fabVisible, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
-                ExtendedFloatingActionButton(
-                    onClick = onLog,
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                    text = { Text("Log fillup") },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
+            // "↑ Top" stacks above Log fillup, so the two never overlap.
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                BackToTopButton(
+                    visible = rememberBackToTopVisible(listState),
+                    onClick = { scope.launch { listState.scrollToTop(reduceMotion) } },
                 )
+                AnimatedVisibility(visible = fabVisible, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+                    ExtendedFloatingActionButton(
+                        onClick = onLog,
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        text = { Text("Log fillup") },
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -420,6 +445,13 @@ internal fun FuelHubContent(
                     }
                 }
             }
+            // Month bubble only on the date-ordered list.
+            FastScroller(
+                state = listState,
+                modifier = Modifier.matchParentSize(),
+                labelForKey = if (months != null) { key -> monthLabels[key] } else null,
+                bottomInset = 150.dp,
+            )
         }
     }
 }

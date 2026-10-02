@@ -46,6 +46,12 @@ object ChartFixtures {
         .toList()
         .reversed()
 
+    /** Full tanks with mpg, every 12 days, for MPG per tank. */
+    val tankFills: List<FillupDto> = (0 until 24).map { i ->
+        val d = LocalDate.of(2025, 11, 1).plusDays(i * 12L)
+        fill("k$i", d, 3.5, 15.0).copy(mpg = 18.0 + 1.4 * sin(i / 3.0) + (i % 3) * 0.3, isFull = i % 7 != 3)
+    }
+
     val marketCompare = FuelCharts.marketCompare(fills, eia, ZoneOffset.UTC)!!
 
     val spendYoy = FuelCharts.spendYoy(fills, today, ZoneOffset.UTC)!!
