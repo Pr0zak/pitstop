@@ -52,6 +52,21 @@ object Parked {
         return ParkedSpot(tripId = trip.id, lat = p.lat, lon = p.lon, sinceMs = since)
     }
 
+    /**
+     * Pick between the server's spot (end of the newest uploaded trip)
+     * and the one the phone recorded when it sealed its last drive. The
+     * local one only wins when it is strictly newer — i.e. that drive
+     * has not reached the server yet. Equal or unknown times favour the
+     * server, which is the source of truth.
+     */
+    fun newest(server: ParkedSpot?, local: ParkedSpot?): ParkedSpot? {
+        if (local == null) return server
+        if (server == null) return local
+        val l = local.sinceMs ?: return server
+        val s = server.sinceMs ?: return local
+        return if (l > s) local else server
+    }
+
     /** `geo:` URI with a labelled pin — what maps apps expect for "navigate here". */
     fun geoUri(s: ParkedSpot, label: String = "Car"): String =
         "geo:${s.lat},${s.lon}?q=${s.lat},${s.lon}($label)"

@@ -54,4 +54,20 @@ class ParkedTest {
         val s = ParkedSpot("t", 40.1, -83.2, null)
         assertEquals("geo:40.1,-83.2?q=40.1,-83.2(Car)", Parked.geoUri(s))
     }
+
+    private fun spot(id: String, since: Long?) = ParkedSpot(tripId = id, lat = 40.0, lon = -83.0, sinceMs = since)
+
+    @Test fun `local spot wins only when newer than the uploaded trip`() {
+        assertEquals("local", Parked.newest(spot("server", 1_000), spot("local", 2_000))!!.tripId)
+        assertEquals("server", Parked.newest(spot("server", 2_000), spot("local", 2_000))!!.tripId)
+        assertEquals("server", Parked.newest(spot("server", 3_000), spot("local", 2_000))!!.tripId)
+    }
+
+    @Test fun `either side alone is used, unknown times favour the server`() {
+        assertEquals("local", Parked.newest(null, spot("local", 2_000))!!.tripId)
+        assertEquals("server", Parked.newest(spot("server", 1_000), null)!!.tripId)
+        assertEquals("server", Parked.newest(spot("server", 1_000), spot("local", null))!!.tripId)
+        assertEquals("local", Parked.newest(spot("server", null), spot("local", 1_000))!!.tripId)
+        assertNull(Parked.newest(null, null))
+    }
 }

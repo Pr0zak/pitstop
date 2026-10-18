@@ -154,6 +154,7 @@ class StatusViewModel @Inject constructor(
     private val rangeRepository: com.pitstop.data.RangeRepository,
     private val alerts: com.pitstop.notif.VehicleAlerts,
     private val appPrefs: com.pitstop.data.AppPrefs,
+    private val parkedStore: com.pitstop.drive.ParkedStore,
 ) : AndroidViewModel(application) {
 
     private val bridgeStateBus: BridgeStateBus = stateBus
@@ -620,10 +621,10 @@ class StatusViewModel @Inject constructor(
             Triple(v, b, live)
         },
         lastDrive,
-        lastRoute,
+        combine(lastRoute, parkedStore.latest) { r, local -> r to local },
         bridgeStateBus.status,
         reminders,
-    ) { (v, basis, live), ld, route, status, rem ->
+    ) { (v, basis, live), ld, (route, local), status, rem ->
         val range = v?.let {
             val snap = com.pitstop.domain.RangeMath.withLiveLevel(
                 com.pitstop.domain.RangeMath.fuelSnapshot(it),
@@ -637,7 +638,12 @@ class StatusViewModel @Inject constructor(
         DriveBundle(
             range = range,
             lastDrive = ld,
-            parked = com.pitstop.domain.Parked.spot(ld?.trip, route, driveActive = driving),
+            // The server spot only knows uploaded drives; the phone's own
+            // seal-time spot covers a drive still in the upload queue.
+            parked = if (driving) null else com.pitstop.domain.Parked.newest(
+                server = com.pitstop.domain.Parked.spot(ld?.trip, route, driveActive = false),
+                local = local?.takeIf { v != null && it.vehicleId == v.id }?.spot,
+            ),
             reminders = rem,
             distInMiles = com.pitstop.domain.Maintenance.distInMiles(v),
         )

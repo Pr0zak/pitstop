@@ -45,6 +45,7 @@ class DriveSealer @Inject constructor(
     private val logs: LogBuffer,
     private val settings: SettingsRepository,
     private val wifiGate: WifiUploadGate,
+    private val parkedStore: ParkedStore,
     @ApplicationContext private val context: Context,
 ) {
     private val _lastSealedAt = MutableStateFlow<Long?>(null)
@@ -162,6 +163,11 @@ class DriveSealer @Inject constructor(
             r
         }
         _lastSealedAt.value = endedAtMs
+        // Remember where the car was left now, so Home can show the
+        // Parked pin before this drive is uploaded.
+        runCatching { parkedStore.record(dto, endedAtMs) }.onFailure {
+            logs.warn("DriveSealer: could not save parked spot", mapOf("error" to (it.message ?: it.javaClass.simpleName)))
+        }
         logs.info(
             "DriveSealer: drive persisted",
             mapOf(
