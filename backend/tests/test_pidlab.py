@@ -84,7 +84,7 @@ def test_probe_sends_extended_ids_and_decodes():
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"ok": True, "payload": ATF_RESPONSE.hex(" ").upper()})
 
-    out = _run(RunRequest(probe="atf_temp", base_url="http://10.0.0.5"), handler)
+    out = _run(RunRequest(probe="atf_temp", base_url="http://192.168.1.20"), handler)
     assert seen["path"] == "/api/autopid/test"
     assert seen["body"] == {"cmd": "223083", "init": "ATSH18DA1EF1;ATCRA18DAF11E"}
     assert out["ok"] is True
@@ -96,7 +96,7 @@ def test_negative_response_is_not_decoded():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "payload": "7F 22 31"})
 
-    out = _run(RunRequest(probe="maintenance", base_url="http://10.0.0.5"), handler)
+    out = _run(RunRequest(probe="maintenance", base_url="http://192.168.1.20"), handler)
     assert out["ok"] is False
     assert out["error"].startswith("requestOutOfRange")
     assert "signals" not in out
@@ -111,7 +111,7 @@ def test_tcm_frame_from_firmware_6_decodes():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "payload": payload})
 
-    out = _run(RunRequest(probe="atf_temp", base_url="http://10.0.0.5"), handler)
+    out = _run(RunRequest(probe="atf_temp", base_url="http://192.168.1.20"), handler)
     assert out["length"] == 39
     assert out["signals"][0]["value"] == 37
 
@@ -122,7 +122,7 @@ def test_only_read_did_requests_are_sent(data):
         raise AssertionError("must not reach the dongle")
 
     with pytest.raises(HTTPException) as e:
-        _run(RunRequest(module_id="10", data=data, base_url="http://10.0.0.5"), handler)
+        _run(RunRequest(module_id="10", data=data, base_url="http://192.168.1.20"), handler)
     assert e.value.status_code == 400
 
 
@@ -134,6 +134,6 @@ def test_base_url_must_be_lan(url):
         pidlab._resolve_base_url(url)
 
 
-@pytest.mark.parametrize("url", ["10.0.0.5", "http://192.168.1.20", "http://wican.lan"])
+@pytest.mark.parametrize("url", ["192.168.1.20", "http://172.16.0.9", "http://wican.lan"])
 def test_lan_base_urls_are_accepted(url):
     assert pidlab._resolve_base_url(url).startswith("http://")
