@@ -11,7 +11,7 @@ import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import InsightChart from "@/components/charts/InsightChart.vue";
-import { mpgOverSpan, padRange } from "@/lib/fuelInsights";
+import { mpgOverSpan, niceTicks, padRange } from "@/lib/fuelInsights";
 import {
   MONTH_ABBR,
   dotSeries,
@@ -182,14 +182,35 @@ const mpgChart = computed(() => {
     });
     data.push(pts.map(() => epa));
   }
+  const scales = fixedScales([x0, x1], y);
+  const axes = insightAxes(
+    mpgSpan.value === "12m" ? monthTicks(x0, x1, 3) : yearTicks(x0, x1),
+    (v) => nf(0).format(v),
+  );
+  // Outside temperature on its own right-hand scale: cold months are the
+  // usual reason for an MPG dip, so the two read against each other.
+  const temps = pts.map((p) => (p.tempC != null ? convTempC(p.tempC) : null));
+  const knownTemps = temps.filter((v): v is number => v != null);
+  if (knownTemps.length > 0) {
+    const ty = padRange(knownTemps);
+    scales.temp = { range: () => ty };
+    series.push({ ...lineSeries("Outside temp", c.compare, { width: 1.5 }), scale: "temp", spanGaps: false });
+    data.push(temps);
+    axes.push({
+      scale: "temp",
+      side: 1,
+      splits: (_u, _i, min, max) => niceTicks(min, max, 6),
+      values: (_u, splits) => splits.map((v) => `${nf(0).format(v)}°`),
+      grid: { show: false },
+      ticks: { show: false },
+      size: 40,
+    });
+  }
   const opts: uPlot.Options = {
     width: 600,
     height: 240,
-    scales: fixedScales([x0, x1], y),
-    axes: insightAxes(
-      mpgSpan.value === "12m" ? monthTicks(x0, x1, 3) : yearTicks(x0, x1),
-      (v) => nf(0).format(v),
-    ),
+    scales,
+    axes,
     series,
   };
   return {
@@ -201,7 +222,9 @@ const mpgChart = computed(() => {
       main: `${nf(1).format(ys[i])} ${unit}`,
       fills: `${p.fills} fill${p.fills === 1 ? "" : "s"}`,
       sub: `3-mo median ${nf(1).format(med[i])}`,
+      temp: temps[i] != null ? `${nf(0).format(temps[i] as number)} ${tempUnitLabel()} outside` : null,
     })),
+    hasTemp: knownTemps.length > 0,
   };
 });
 
@@ -533,6 +556,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
               <span><i class="sw dot" style="background: var(--c-accent); opacity: 0.55"></i>Monthly</span>
               <span><i class="sw" style="background: var(--c-accent)"></i>3-month median</span>
               <span v-if="epaMpg != null"><i class="sw epa"></i>EPA combined ({{ fmtMpg(epaMpg) }})</span>
+              <span v-if="mpgChart.hasTemp"><i class="sw" style="background: var(--c-compare)"></i>Outside temp ({{ tempUnitLabel() }}, right axis)</span>
             </div>
             <InsightChart
               :data="mpgChart.data"
@@ -545,6 +569,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
                 <span class="k">{{ mpgChart.tips[index].title }}</span><br />
                 <b>{{ mpgChart.tips[index].main }}</b> · {{ mpgChart.tips[index].fills }}<br />
                 <span class="k">{{ mpgChart.tips[index].sub }}</span>
+                <template v-if="mpgChart.tips[index].temp"><br /><span class="k">{{ mpgChart.tips[index].temp }}</span></template>
               </template>
             </InsightChart>
           </template>

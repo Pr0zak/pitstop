@@ -68,6 +68,7 @@ export interface MonthlyMpgIn {
   period: string; // "YYYY-MM"
   mpg: number | null;
   fillup_count?: number;
+  temp_c?: number | null;
 }
 export interface MonthlyMpgPoint {
   period: string;
@@ -75,6 +76,8 @@ export interface MonthlyMpgPoint {
   t: number;
   mpg: number;
   fills: number;
+  /** Mean outside temperature (°C) at the month's fillups, null if unknown. */
+  tempC: number | null;
   /** 3-month trailing median ending at this month. */
   median: number;
 }
@@ -95,6 +98,7 @@ export function mpgOverSpan(raw: readonly MonthlyMpgIn[], spanMonths: number | n
         t: new Date(y, m - 1, 15, 12).getTime(),
         mpg: p.mpg as number,
         fills: p.fillup_count ?? 1,
+        tempC: p.temp_c ?? null,
       };
     })
     .sort((a, b) => a.t - b.t);

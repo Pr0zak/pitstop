@@ -208,7 +208,8 @@ async def mpg_series(
         # because the distance covers two tanks but only one volume is
         # recorded).
         rows = await conn.fetch(
-            "SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed "
+            "SELECT id, fillup_date, odo, fuel_volume, is_full, is_missed, "
+            "weather_temp_c "
             "FROM fillups WHERE vehicle_id = $1 ORDER BY fillup_date ASC",
             vehicle_id,
         )
@@ -216,17 +217,24 @@ async def mpg_series(
     mpg_map = compute_recomputed_mpg(chain)
 
     by_period: dict[str, list[float]] = defaultdict(list)
+    # Outside temperature per period: mean of the Open-Meteo temperature
+    # stored on every fillup in the period (MPG or not), so the MPG chart
+    # can overlay it. None when no fillup in the period has weather.
+    temps: dict[str, list[float]] = defaultdict(list)
     for row in chain:
+        key = _period_key(row["fillup_date"], window)
+        if row["weather_temp_c"] is not None:
+            temps[key].append(float(row["weather_temp_c"]))
         mpg = mpg_map.get(row["id"])
         if mpg is None:
             continue
-        key = _period_key(row["fillup_date"], window)
         by_period[key].append(mpg)
     points = [
         {
             "period": k,
             "mpg": round(sum(v) / len(v), 3) if v else None,
             "fillup_count": len(v),
+            "temp_c": round(sum(temps[k]) / len(temps[k]), 1) if temps.get(k) else None,
         }
         for k, v in sorted(by_period.items())
     ]

@@ -440,6 +440,8 @@ export interface MpgPoint {
   period: string;
   mpg: number | null;
   fillup_count?: number;
+  /** Mean outside temperature (°C) of the period's fillups; null when none has weather. */
+  temp_c?: number | null;
 }
 
 export interface CostPerMiPoint {
