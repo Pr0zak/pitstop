@@ -350,6 +350,72 @@ export async function testHondaLink(
   return r.data;
 }
 
+// ─── PID Lab (one-shot Mode 22 probes through the WiCAN; nothing stored) ──
+export interface PidLabSignalDef {
+  name: string;
+  unit: string;
+  payload_index: number;
+}
+export interface PidLabProbe {
+  id: string;
+  module: string;
+  module_id: string;
+  did: string;
+  title: string;
+  tx_id: string;
+  check: string;
+  verified: boolean;
+  signals: PidLabSignalDef[];
+}
+export interface PidLabCatalog {
+  wican_url: string;
+  probes: PidLabProbe[];
+}
+export interface PidLabSignal {
+  name: string;
+  value: number | null;
+  unit: string;
+  label: string | null;
+  payload_index: number;
+}
+export interface PidLabResult {
+  ok: boolean;
+  request: { tx_id: string; rx_id: string; data: string };
+  http_status?: number;
+  elapsed_ms?: number;
+  response?: string;
+  length?: number;
+  signals?: PidLabSignal[];
+  error?: string;
+  transcript?: string;
+}
+export interface PidLabDevice {
+  base_url: string;
+  info: Record<string, unknown> | null;
+  autopid: Record<string, unknown> | null;
+  autopid_live_params: number;
+  errors?: Record<string, string>;
+}
+export async function getPidLabCatalog(): Promise<PidLabCatalog> {
+  const r = await apiQuery.get<PidLabCatalog>("/pidlab/catalog");
+  return r.data;
+}
+export async function getPidLabDevice(baseUrl: string): Promise<PidLabDevice> {
+  const r = await apiQuery.get<PidLabDevice>("/pidlab/device", {
+    params: baseUrl ? { base_url: baseUrl } : {},
+  });
+  return r.data;
+}
+export async function runPidLab(body: {
+  probe?: string;
+  module_id?: string;
+  data?: string;
+  base_url?: string;
+}): Promise<PidLabResult> {
+  const r = await apiQuery.post<PidLabResult>("/pidlab/run", body);
+  return r.data;
+}
+
 // ─── fillups ──────────────────────────────────────────────────────────
 
 export interface FillupListParams {

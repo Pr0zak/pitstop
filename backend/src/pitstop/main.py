@@ -28,6 +28,7 @@ from .api import (
 from .api import fuel_prices as fuel_prices_api
 from .api import hondalink as hondalink_api
 from .api import logs as logs_api
+from .api import pidlab as pidlab_api
 from .api import settings as settings_api
 from .api import trips as trips_api
 from .api import utils as utils_api
@@ -207,6 +208,7 @@ app.include_router(live_ws.router)
 app.include_router(utils_api.router)
 app.include_router(logs_api.router)
 app.include_router(hondalink_api.router)
+app.include_router(pidlab_api.router)
 app.include_router(fuel_prices_api.router)
 app.include_router(api_phone.router)
 # Drive batch ingest is mounted under BOTH /ingest/* (direct-to-backend

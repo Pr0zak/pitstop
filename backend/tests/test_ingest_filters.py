@@ -106,3 +106,30 @@ def test_implausible_rejects_decoder_garbage() -> None:
     assert _implausible("engine_rpm", 99_999.0) is False
     assert _implausible("vehicle_speed", 250.0) is False
     assert _implausible("odometer", None) is False
+
+
+# ── Firmware 6 names (2026-10-21) ──────────────────────────────────────────
+
+
+def test_firmware6_unprefixed_names_alias_like_firmware4():
+    from pitstop.workers.wican_aliases import normalise
+
+    assert normalise("EngineRPM") == normalise("0C-EngineRPM") == "engine_rpm"
+    assert normalise("FuelTankLevel") == "fuel_level"
+    assert normalise("Odometer") == "odometer"
+    assert normalise("OxySensor1_WR_FAER") == "o2_s1_lambda"
+
+
+def test_firmware6_quarantined_names_stay_unmapped():
+    from pitstop.workers.wican_aliases import normalise
+
+    # Same quarantine as the 4.x spellings: never a canonical name.
+    for name in ("IntakeAirTempSens1", "EngineFuelRate", "CmdThrottleActRel"):
+        assert normalise(name) == name
+
+
+def test_firmware6_event_bookkeeping_keys_are_dropped():
+    from pitstop.workers.wican_aliases import normalise
+
+    for key in ("ts", "event", "voltage", "MonitorStatus"):
+        assert normalise(key) is None

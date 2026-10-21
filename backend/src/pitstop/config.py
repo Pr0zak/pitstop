@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     pid_profiles_dir: str = "/app/pid_profiles"
 
+    # WiCAN base URL for the PID Lab (firmware 6.x UDS tool), e.g.
+    # http://wican.lan. Blank = the page asks for one.
+    wican_url: str = ""
+
     # Trip derivation tuning.
     #
     # min_distance_km filters 0-km sliver-trips: a parked car still

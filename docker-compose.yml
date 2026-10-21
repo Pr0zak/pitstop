@@ -74,6 +74,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TZ: ${TZ:-UTC}
       PID_PROFILES_DIR: /app/pid_profiles
+      WICAN_URL: ${WICAN_URL:-}
       PITSTOP_DISK_ALERT_WEBHOOK: ${PITSTOP_DISK_ALERT_WEBHOOK:-}
       # /admin/upgrade spawns a docker:27-cli sidecar that bind-mounts
       # the CT's pitstop dir at /work — this env tells the backend

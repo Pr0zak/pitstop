@@ -622,6 +622,14 @@ class MqttIngest:
             await self._handle_wican_status(payload, vehicle_id, now)
             return
 
+        # Firmware 6 rules publish to wican/<id>/events: {"event": ..., ...}
+        # (bump, motion, battery thresholds, the low-tire rule). They are
+        # notices, not telemetry: log them to the depot instead of fanning
+        # their keys out into pid_readings.
+        if parsed.source == "wican" and parsed.metric == "events":
+            log.info("wican event: %s", payload[:300])
+            return
+
         # Bridge v2 envelope: {"v": <num>, "t": <unix_ms>}. Honors the
         # original capture time so an offline-buffer drain doesn't collapse
         # an hour of driving into a 3-minute ingest window.

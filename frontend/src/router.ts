@@ -104,6 +104,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "HondaLink Test" },
   },
   {
+    path: "/pid-lab",
+    name: "pid-lab",
+    component: () => import("./views/PidLabView.vue"),
+    meta: { title: "PID Lab" },
+  },
+  {
     path: "/logos",
     name: "logos",
     component: () => import("./views/LogosView.vue"),

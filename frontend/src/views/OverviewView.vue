@@ -3,6 +3,8 @@ import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
 import FillupModal from "@/components/FillupModal.vue";
 import StateCard from "@/components/StateCard.vue";
+import TpmsGrid from "@/components/TpmsGrid.vue";
+import { TIRE_CORNERS, type TireCorner } from "@/lib/vehicleSignals";
 import Sparkline from "@/components/charts/Sparkline.vue";
 import InsightChart from "@/components/charts/InsightChart.vue";
 import type uPlot from "uplot";
@@ -52,7 +54,7 @@ import {
   vehicleDistUnit,
   vehicleVolUnit,
 } from "@/composables/useFormat";
-import { Fuel, Route, AlertTriangle, ChevronDown } from "lucide-vue-next";
+import { Fuel, Route, AlertTriangle, ChevronDown, Gauge } from "lucide-vue-next";
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
@@ -366,6 +368,29 @@ function formatReadingAge(isoTime: string): string | null {
   if (ageSec < 86_400) return `${Math.floor(ageSec / 3600)}h ago`;
   return `${Math.floor(ageSec / 86_400)}d ago`;
 }
+
+// Tires card: the four TPMS corners from vehicle_state.latest (WiCAN Mode 22,
+// kPa / °C). Absent until any corner has reported — a Home summary card, not a
+// Live tile, so it doesn't render a block of dashes for a car without TPMS.
+const tires = computed(() => {
+  const latest = vehicles.selectedVehicle?.latest ?? {};
+  const pressure: Partial<Record<TireCorner, number | null>> = {};
+  const temp: Partial<Record<TireCorner, number | null>> = {};
+  let newest = 0;
+  for (const c of TIRE_CORNERS) {
+    const p = latest[`tire_pressure_${c}`];
+    pressure[c] = toNum(p?.value_num ?? null);
+    temp[c] = toNum(latest[`tire_temp_${c}`]?.value_num ?? null);
+    const t = p ? Date.parse(p.time) : NaN;
+    if (Number.isFinite(t) && t > newest) newest = t;
+  }
+  if (!TIRE_CORNERS.some((c) => pressure[c] != null)) return null;
+  return {
+    pressure,
+    temp,
+    age: newest > 0 ? formatReadingAge(new Date(newest).toISOString()) : null,
+  };
+});
 
 const heroData = computed(() => {
   const fillups = (heroFillupsQ.data.value?.items ?? []) as HeroFillup[];
@@ -1185,6 +1210,14 @@ function onFillupSaved() {
           </ul>
         </section>
 
+        <section v-if="tires" class="card">
+          <h3>
+            <Gauge :size="14" aria-hidden="true" /> Tires
+            <span v-if="tires.age" class="muted tires-age">updated {{ tires.age }}</span>
+          </h3>
+          <TpmsGrid :pressure-kpa="tires.pressure" :temp-c="tires.temp" />
+        </section>
+
         <section v-if="battery" class="card battery">
           <h3>
             Battery, resting voltage
@@ -1231,6 +1264,13 @@ function onFillupSaved() {
 }
 .head h1 {
   margin-bottom: 0.2rem;
+}
+.tires-age {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .hero-grid {
   display: grid;

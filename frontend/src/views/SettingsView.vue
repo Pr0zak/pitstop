@@ -4,7 +4,7 @@ import { useRoute, RouterLink } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useSettingsStore } from "@/stores/settings";
 import { useUnitsStore, type UnitSystem } from "@/stores/units";
-import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2, Undo2, Bug, Palette } from "lucide-vue-next";
+import { Save, Plug, RefreshCw, MapPin, Link as LinkIcon, HardDrive, Trash2, Undo2, Bug, Palette, FlaskConical } from "lucide-vue-next";
 import HondaLinkTest from "@/components/HondaLinkTest.vue";
 import { useToastStore, errMessage } from "@/stores/toast";
 import type { Settings, SettingsPatch } from "@/api/types";
@@ -925,6 +925,10 @@ function geolocate() {
           <li>
             <RouterLink to="/logos"><Palette :size="14" aria-hidden="true" /> Logo concepts</RouterLink>
             <span class="muted small">Pick the sidebar mark (saved in this browser).</span>
+          </li>
+          <li>
+            <RouterLink to="/pid-lab"><FlaskConical :size="14" aria-hidden="true" /> PID Lab</RouterLink>
+            <span class="muted small">One-shot Mode 22 reads through the WiCAN (firmware 6) to verify new signals.</span>
           </li>
           <li>
             <RouterLink to="/hondalink-test"><Plug :size="14" aria-hidden="true" /> HondaLink test (standalone page)</RouterLink>

@@ -6,6 +6,7 @@ import { useLive } from "@/composables/useLive";
 import ArcGauge from "@/components/charts/ArcGauge.vue";
 import Pill from "@/components/Pill.vue";
 import QtyValue from "@/components/QtyValue.vue";
+import TpmsGrid from "@/components/TpmsGrid.vue";
 import * as api from "@/api/endpoints";
 import {
   fmtPct,
@@ -13,8 +14,19 @@ import {
   fmtSpeedKph,
   fmtFuelRateLh,
   fmtPressureKpa,
+  fmtVolume,
+  convDistance,
   speedUnitLabel,
 } from "@/composables/useFormat";
+import {
+  MISFIRE_CYLINDERS,
+  cylindersLabel,
+  fmtTempF,
+  gearLabel,
+  TIRE_CORNERS,
+  misfireMetric,
+  vcmActive,
+} from "@/lib/vehicleSignals";
 import { useUnitsStore } from "@/stores/units";
 
 const vehicles = useVehiclesStore();
@@ -199,6 +211,31 @@ const speed = computed(() => num("vehicle_speed"));
 const coolant = computed(() => num("coolant_temp"));
 const voltage = computed(() => num("control_module_voltage"));
 const fuelLvl = computed(() => num("fuel_level"));
+// Cluster fuel quantity in LITRES (Mode 22 `fuel_level_l`) — the dash's own
+// figure, beside the PCM's percentage above. Volume follows the units toggle.
+const fuelLitres = computed(() => num("fuel_level_l"));
+// Per-cylinder misfire counters (Mode 22), unsigned and most likely
+// cumulative, so any non-zero cell is worth a look rather than an alarm.
+const misfires = computed(() =>
+  MISFIRE_CYLINDERS.map((cyl) => ({ cyl, count: num(misfireMetric(cyl)) })),
+);
+const misfireKeys = MISFIRE_CYLINDERS.map(misfireMetric);
+
+// Transmission + cylinder deactivation (Mode 22, firmware-6 WiCAN profile).
+// Gear / VCM formatting lives in lib/vehicleSignals so Overview and the
+// Android app share one spec.
+const gear = computed(() => num("gear_position"));
+const atfTemp = computed(() => num("atf_temp")); // °C
+const activeCyl = computed(() => num("active_cylinders"));
+
+// TPMS (Mode 22): pressures in kPa, temps in °C, mapped per wheel as the dash.
+const tirePressure = computed(() =>
+  Object.fromEntries(TIRE_CORNERS.map((c) => [c, num(`tire_pressure_${c}`)])),
+);
+const tireTemp = computed(() =>
+  Object.fromEntries(TIRE_CORNERS.map((c) => [c, num(`tire_temp_${c}`)])),
+);
+const tireKeys = TIRE_CORNERS.map((c) => `tire_pressure_${c}`);
 
 // Drivability
 const throttle = computed(() => num("throttle_position"));
@@ -262,6 +299,8 @@ const cmdEvapPurge = computed(() => num("commanded_evap_purge"));
 
 // Air / atmosphere
 const iat = computed(() => num("intake_air_temp"));
+// Outside air from the cluster, in °F as published (fmtTempF converts).
+const ambientF = computed(() => num("ambient_air_temp_f"));
 const map = computed(() => num("intake_manifold_pressure"));
 const baro = computed(() => num("barometric_pressure"));
 const timing = computed(() => num("timing_advance"));
@@ -285,7 +324,12 @@ const odometerKm = computed(() => {
   if (raw == null) return null;
   return raw - (vehicles.selectedVehicle?.odometer_offset_km ?? 0);
 });
+// `odometer_dash` (Mode 22, MILES) is the instrument cluster's own reading —
+// exactly the number on the dash — so it wins whenever it exists and the
+// offset-corrected PCM value above is only the fallback.
+const odometerDashMi = computed(() => num("odometer_dash"));
 const odometer = computed(() => {
+  if (odometerDashMi.value != null) return convDistance(odometerDashMi.value, "mi");
   const km = odometerKm.value;
   if (km == null) return null;
   return useImperial.value ? km * 0.621371 : km;
@@ -424,6 +468,54 @@ function trimClass(v: number | null): string {
             <div class="big"><QtyValue :text="fmtNum(fuelLvl, 0)" unit="%" /></div>
             <div v-if="parked" class="tile-age">{{ asOf('fuel_level') }}</div>
           </div>
+          <div class="card tile">
+            <h3>Fuel in tank</h3>
+            <div class="big"><QtyValue :text="fmtVolume(fuelLitres, 'L', 1)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('fuel_level_l') }}</div>
+          </div>
+          <div class="card tile wide">
+            <h3>Misfires</h3>
+            <div class="misfires">
+              <div v-for="m in misfires" :key="m.cyl" class="cyl" :class="{ warn: (m.count ?? 0) > 0 }">
+                <span class="cyl-n">{{ m.cyl }}</span>
+                <span class="cyl-v">{{ fmtInt(m.count) }}</span>
+              </div>
+            </div>
+            <div class="muted small">per-cylinder counters</div>
+            <div v-if="parked" class="tile-age">{{ asOf(...misfireKeys) }}</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Transmission / cylinder deactivation -->
+      <section>
+        <h3 class="section-title">Transmission</h3>
+        <div class="tiles">
+          <div class="card tile">
+            <h3>Gear</h3>
+            <div class="big">{{ gearLabel(gear) }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf('gear_position') }}</div>
+          </div>
+          <div class="card tile">
+            <h3>ATF temp</h3>
+            <div class="big"><QtyValue :text="fmtTempC(atfTemp)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('atf_temp') }}</div>
+          </div>
+          <div class="card tile">
+            <h3>Active cylinders</h3>
+            <div class="big" :class="{ ok: vcmActive(activeCyl) }">{{ cylindersLabel(activeCyl) }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf('active_cylinders') }}</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tires -->
+      <section>
+        <h3 class="section-title">Tires</h3>
+        <div class="card tpms-card">
+          <TpmsGrid :pressure-kpa="tirePressure" :temp-c="tireTemp" />
+          <div class="muted small">highlighted: 2 psi or more below the highest tire</div>
+          <div v-if="parked" class="tile-age">{{ asOf(...tireKeys) }}</div>
         </div>
       </section>
 
@@ -567,6 +659,11 @@ function trimClass(v: number | null): string {
             <div v-if="parked" class="tile-age">{{ asOf('intake_air_temp') }}</div>
           </div>
           <div class="card tile">
+            <h3>Outside air</h3>
+            <div class="big"><QtyValue :text="fmtTempF(ambientF)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('ambient_air_temp_f') }}</div>
+          </div>
+          <div class="card tile">
             <h3>MAP</h3>
             <div class="big"><QtyValue :text="fmtPressureKpa(map)" /></div>
             <div v-if="parked" class="tile-age">{{ asOf('intake_manifold_pressure') }}</div>
@@ -591,7 +688,8 @@ function trimClass(v: number | null): string {
           <div class="card tile">
             <h3>Odometer</h3>
             <div class="big"><QtyValue :text="fmtInt(odometer)" :unit="odometerUnit" /></div>
-            <div v-if="parked" class="tile-age">{{ asOf('odometer') }}</div>
+            <div class="muted small">{{ odometerDashMi != null ? "from cluster" : "PCM, offset-corrected" }}</div>
+            <div v-if="parked" class="tile-age">{{ asOf(odometerDashMi != null ? 'odometer_dash' : 'odometer') }}</div>
           </div>
           <div class="card tile">
             <h3>Run time</h3>
@@ -717,6 +815,50 @@ function trimClass(v: number | null): string {
 .tile .small {
   font-size: 0.72rem;
   margin-top: 0.15rem;
+}
+.tile.wide {
+  grid-column: span 2;
+}
+@media (max-width: 400px) {
+  .tile.wide {
+    grid-column: auto;
+  }
+}
+.misfires {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+}
+.cyl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.2rem 0;
+  border: 1px solid var(--c-line1);
+  border-radius: 6px;
+}
+.cyl-n {
+  font-size: 0.68rem;
+  color: var(--c-ink3);
+}
+.cyl-v {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1rem;
+}
+.cyl.warn {
+  border-color: rgba(255, 176, 32, 0.55);
+}
+.cyl.warn .cyl-v {
+  color: var(--c-warn);
+}
+.tpms-card {
+  max-width: 420px;
+}
+.tpms-card .small {
+  font-size: 0.72rem;
+  margin-top: 0.4rem;
 }
 .tile-age {
   margin-top: 0.15rem;

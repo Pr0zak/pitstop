@@ -178,6 +178,71 @@ PIDs above, so a canonical name would surface a permanently-zero metric that loo
 | Outside air temp | `22 7028` | `18DA60F1` | `signed16(p[19],p[20])` | would prove a third, non-powertrain module is reachable |
 | VCM cylinders | `22 2615` | `18DA10F1` | `p[53]` → 3 or 6 | **blocked by the 34-byte cliff** |
 
+## Probe candidates — OBDb signalset decodes, unverified on this car
+
+Source: the OBDb `Honda-Pilot` signalset (`signalsets/v3/default.json`, read 2026-10-21).
+OBDb's `bix` is a bit index into the data **after** the `62 <DID>` echo, so
+`payload index = bix / 8 + 3` in the indexing used on this page. Rows whose bytes sit
+past the ~34-byte reassembly cliff are listed so nobody re-derives them, but cannot be
+read through this dongle on firmware 4.x.
+
+| Signal | Header / DID | Payload bytes | Decode (OBDb) | Under the cliff? |
+|---|---|---|---|---|
+| Dash odometer | `18DA60F1` / `7022` | 9–11 | 24-bit, **miles** | yes |
+| Cluster fuel level | `18DA60F1` / `7029` | 15–16 | 16-bit / 100, litres | yes |
+| Outside air temp | `18DA60F1` / `7028` | 19–20 | 12-bit signed; °F for 2019 (°C only for 2020) | yes |
+| Maintenance Minder: oil, spark plugs, inspection, tire rotation | `18DA60F1` / `7060` | 17–18, 19–20, 29–30, 31–32 | 16-bit, unit unknown | yes |
+| Maintenance Minder: cabin filter, trans fluid, coolant, brake fluid, air cleaner | `18DA60F1` / `7060` | 33–46 | 16-bit, unit unknown | no |
+| Engine oil temp | `18DA10F1` / `2666` | 14 or 17 | byte − 40 °C | yes |
+| VTEC pressure switch / solenoid | `18DA10F1` / `2612` | 24, bits 6 / 7 | on/off | yes |
+| Alternator duty | `18DA10F1` / `2610` | 26 | × 100 / 255 % | yes |
+| Brake pressure | `18DA28F1` / `4005` | 10–11 | 16-bit − 25, bar | yes |
+| Misfire count per cylinder | `18DA10F1` / `2663` | 37–48 | 16-bit each | no |
+| PCM odometer / time since start | `18DA10F1` / `2660` | 46–51 | 24-bit km / 16-bit s | no |
+
+### First reads on firmware 6.0.0-beta.2 (2026-10-21, engine idling in Park)
+
+Read through `POST /api/autopid/test` with `init: "ATSH18DA<mm>F1;ATCRA18DAF1<mm>"`.
+Firmware 6 returns the **whole** response — 39 bytes from the TCM, 57 from the PCM and
+cluster, 59 from TPMS and VSA — so the 34-byte cliff is gone. `/api/uds/request`
+refused most of the same reads with `ESP_ERR_INVALID_RESPONSE` on the OBD-chip
+transport; use the test endpoint. Before any read worked the dongle needed vehicle
+detection (`POST /api/autopid/vehicles/detect`): it found ISO 15765-4 29-bit 500 kbps
+(protocol 7) and 51 supported standard PIDs; until then the chip answered `STOPPED`.
+
+| Probe | Result | Plausibility |
+|---|---|---|
+| ATF `3083` | 37 °C | warming, below coolant |
+| Gear `3086` | 0 / 0 | **verified**: dash shows P |
+| Dash odometer `7022` | miles, 24-bit | **verified**: equals the dash odometer exactly; 53 km below PCM `2660` — the same gap as `01A6` vs the dash |
+| Cluster fuel `7029` | 47.05 L | not yet checked against the gauge |
+| Outside temp `7028` | 76 °F | **verified** against the dash |
+| VTEC `2612` | 0 / 0 | idle |
+| Alternator / A/C `2610` | 0 % / clutch 1 | duty 0 at idle is suspect |
+| Active cylinders `2615` | 6 | idle; **reachable now** (byte 53) |
+| Misfires `2663` | 0 × 6 | **reachable now** |
+| PCM runtime `2660` | 1247 s | matches ~21 min running |
+| TPMS `6001` | FR 196 / FL 213 / RR 205 / RL 209 kPa | **verified**, mapping included: dash 28 / 31 / 30 / 30 psi, the low FR matches |
+| Brake pressure `4005` | 0 bar | foot off the pedal |
+| Maintenance `7060` | `7F 22 31` | **not supported** by this cluster |
+| Oil temp `2666` on `0x10` | `7F 22 31` | **not supported** on the PCM; OBDb's `0x11` variant untried |
+
+Points of disagreement with OBDb:
+
+- **Neutral.** OBDb maps `3086` raw `14` to N; this car reads `0` in N (the D→R→N→D
+  sequence above). Worth reporting upstream.
+- **Modules.** OBDb also lists module `0x11` (oil level on `2666`). Only `0x10` and
+  `0x1E` have been seen to answer here; `0x26`, `0x28` and `0x60` are untested, not absent.
+
+Other sources checked and found to add names but no byte layouts: NinePfive (2016–17
+Accord HDS extraction) names cluster `702A`/`702B` (range, instantaneous economy) and
+PCM `E402` (battery current history at key-off). Pelican's Pilot page shows the cluster
+maintenance group as unconfirmed by any driver.
+
+**Probe safety.** `test_pid` with a custom header leaves the header set on firmware 4.x.
+Every probe must be followed by a restore (`ATSH7DF` then `ATCRA`, two separate lines)
+and a check that `wican/<slug>/pid` still carries its full key count.
+
 ## Polling priorities
 
 **Priority 1 (≤1 Hz):** engine_rpm, vehicle_speed, throttle_position, engine_load,

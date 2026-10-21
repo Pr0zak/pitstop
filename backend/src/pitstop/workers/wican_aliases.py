@@ -137,7 +137,25 @@ WICAN_TO_CANONICAL: dict[str, str] = {
     "66-MAFSensorA": "maf_air_flow",
     # WiCAN's reserved synthetic key — drop it; pitstop has its own ts.
     "timestamp": "_drop_",
+    # Firmware 6 event messages (e.g. ``battery_above``) carry these
+    # bookkeeping keys next to the reading; battery voltage already arrives
+    # on its own topic, so none of them is a metric.
+    "ts": "_drop_",
+    "event": "_drop_",
+    "voltage": "_drop_",
 }
+
+# Firmware 6 (2026-10) names the SAE rows without the ``<HEX>-`` prefix
+# (``EngineRPM``, not ``0C-EngineRPM``). Derive those names from the map
+# above so both firmware generations land on the same canonical metric, and
+# the quarantined 4.x names stay unmapped in either spelling.
+WICAN_TO_CANONICAL.update({
+    key.split("-", 1)[1]: target
+    for key, target in list(WICAN_TO_CANONICAL.items())
+    if len(key) > 3 and key[2] == "-" and key.split("-", 1)[1] not in WICAN_TO_CANONICAL
+})
+# Firmware 6 spells the wide-range O2 rows ``OxySensor1_WR_*``.
+WICAN_TO_CANONICAL["OxySensor1_WR_FAER"] = "o2_s1_lambda"
 
 
 # WiCAN AutoPID "capability"/"monitor" PIDs that read a constant (0, or a

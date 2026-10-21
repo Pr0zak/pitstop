@@ -406,6 +406,21 @@ Separately, the web Live view rendered the raw `odometer` metric with no convers
 
 ## ADR-022 — Extended (Mode 22) PIDs are polled by the phone, not the dongle
 
+> **AMENDED 2026-10-21 for WiCAN firmware 6.0.0-beta.2.** Both failure reasons below
+> were 4.x firmware behaviour, and firmware 6 changes them:
+> - The header leak is fixed upstream (#964): the dongle's own AutoPID now polls Mode 22
+>   rows (ATF, gear, active cylinders, TPMS, cluster DIDs) alongside 51 Mode 01 PIDs with
+>   no key collapse, so the **dongle**, not the phone, is now the primary Mode 22 poller
+>   whenever it is on home WiFi. Its PID list lives in the dongle config (backup in
+>   `data/wican/`, gitignored).
+> - Multi-frame answers arrive whole over HTTP (39–59 bytes). Over BLE they are
+>   **unverified**: the phone path is re-enabled behind a NEW opt-in key
+>   (`extended_pids_fw6_enabled`, default off), with the restore corrected to this car's
+>   29-bit functional header (`ATSH18DB33F1` + `ATCRA`, not `ATSH7DF`). Enable it only
+>   while watching that standard readings keep flowing.
+> - BLE ELM327 on firmware 6 needs the `obd ↔ ble` bridge row and a bonded,
+>   Secure-Connections pairing with the dongle's passkey.
+>
 > **FAILED ON-VEHICLE 2026-08-05. The premise below is wrong; the feature is disabled and
 > should stay disabled.** Enabling the toggle on the real car broke capture within four
 > seconds, for TWO independent reasons.
