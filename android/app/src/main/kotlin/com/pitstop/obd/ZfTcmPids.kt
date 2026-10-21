@@ -27,14 +27,23 @@ package com.pitstop.obd
  * that "corrects" that to 1 is wrong.
  *
  * "payload" throughout means the reassembled ISO-TP block starting at the 0x62
- * positive-response byte — see [IsoTp]. The device truncates its own
- * reassembly at roughly 34 payload bytes; both offsets used here sit safely
- * inside that, and a short block decodes to null rather than to a wrong value.
+ * positive-response byte — see [IsoTp]. Firmware 4.x truncated its own
+ * reassembly at roughly 34 payload bytes; firmware 6 returns the full 39-byte
+ * block over HTTP. Both offsets here sit inside 34 anyway, and a short block
+ * decodes to null rather than to a wrong value.
+ *
+ * Re-verified 2026-10-21 on firmware 6.0.0-beta.2: a real ATF answer
+ * `62 30 83 FF FF 80 03 00 00 00 00 00 04 02 B1 00 00 4D …` has 0x4D = 77 at
+ * payload[17] → 37 °C. Whether the BLE bridge passes every multi-frame line
+ * through (4.x did not, ADR-022) is still UNVERIFIED.
  */
 object ZfTcm {
 
     /** ELM command that points requests at the transmission controller. */
     const val TX_HEADER = "ATSH18DA1EF1"
+
+    /** Receive filter: only the TCM's answers (18DAF11E) reach the ELM. */
+    const val RX_FILTER = "ATCRA18DAF11E"
 
     const val ATF_DID = 0x3083
     const val GEAR_DID = 0x3086
@@ -82,7 +91,7 @@ object ZfTcm {
     /**
      * ATF temperature, published as `atf_temp` (degC).
      *
-     * 10 s cadence: transmission fluid has an enormous thermal mass and takes
+     * 30 s cadence: transmission fluid has an enormous thermal mass and takes
      * minutes to move a degree, so anything faster is pure bus time for no
      * extra information.
      */
@@ -90,9 +99,9 @@ object ZfTcm {
         name = "atf_temp",
         mode = 0x22,
         pid = ATF_DID,
-        periodMs = 10_000,
+        periodMs = 30_000,
         parser = ::decodeAtfTempC,
-        initCommands = listOf(TX_HEADER),
+        initCommands = listOf(TX_HEADER, RX_FILTER),
         isoTp = true,
         request = "223083",
     )
@@ -111,7 +120,7 @@ object ZfTcm {
         pid = GEAR_DID,
         periodMs = 2_000,
         parser = ::decodeGearPosition,
-        initCommands = listOf(TX_HEADER),
+        initCommands = listOf(TX_HEADER, RX_FILTER),
         isoTp = true,
         request = "223086",
     )

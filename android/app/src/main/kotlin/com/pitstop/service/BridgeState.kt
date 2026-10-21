@@ -14,6 +14,50 @@ import javax.inject.Singleton
 enum class BridgePhase { Idle, Scanning, Connecting, Connected, Disconnected, Error }
 
 /**
+ * BLE pairing (bonding) state with the WiCAN, tracked beside [BridgePhase]
+ * rather than inside it: pairing is a reason a connect is slow or failing,
+ * not a link state of its own. Firmware 6 WiCANs require a Secure
+ * Connections bond with a static passkey; 4.x never asks, so on 4.x this
+ * stays [None].
+ */
+enum class BlePairing {
+    None,
+    /** The system passkey dialog is up (or its notification). */
+    InProgress,
+    /** The WiCAN wants pairing and the last attempt didn't finish it. */
+    Required,
+    /** Pairing ran and failed — usually a mistyped passkey. */
+    Failed,
+    /** We hold a bond the WiCAN refuses — it was reflashed or reset. */
+    Rejected,
+    ;
+
+    /** One line for the bridge sheet / Live banner; null when nothing to say. */
+    fun message(): String? = when (this) {
+        None -> null
+        InProgress ->
+            "Pairing with the WiCAN — type the passkey shown on the WiCAN's Settings › Bluetooth page."
+        Required ->
+            "The WiCAN needs Bluetooth pairing. Pair it in Settings › Devices & capture, " +
+                "using the passkey from the WiCAN's Settings › Bluetooth page."
+        Failed ->
+            "Pairing with the WiCAN failed — check the passkey on the WiCAN's Settings › Bluetooth page and pair again."
+        Rejected ->
+            "The WiCAN rejected the saved pairing (it was probably reflashed). Forget it in " +
+                "Android Bluetooth settings, then pair again with the passkey from its Settings › Bluetooth page."
+    }
+
+    /** Short foreground-notification text; null keeps the current one. */
+    fun notificationText(): String? = when (this) {
+        None -> null
+        InProgress -> "Pairing with the WiCAN — enter its passkey"
+        Required -> "WiCAN needs Bluetooth pairing"
+        Failed -> "WiCAN pairing failed — check the passkey"
+        Rejected -> "WiCAN rejected the saved pairing — re-pair it"
+    }
+}
+
+/**
  * Engine state derived from WiCAN responses, not BLE link state. Knowing whether
  * the engine is *actually running* is independent from whether we are paired:
  *   - WiCAN sleeps ~5 min after key-off; BLE drops once it sleeps. Before that
@@ -30,6 +74,8 @@ data class BridgeStatus(
     val deviceMac: String? = null,
     val rssi: Int? = null,
     val errorMessage: String? = null,
+    /** BLE bonding with the WiCAN; see [BlePairing]. */
+    val blePairing: BlePairing = BlePairing.None,
     val brokerUrl: String? = null,
     val brokerConnected: Boolean = false,
     val publishedLastMinute: Int = 0,

@@ -91,8 +91,14 @@ class SettingsRepository @Inject constructor(
         // Opt-in Mode 22 "extended" PIDs (ZF TCM: ATF temp + gear position).
         // Its own key, written only by setExtendedPidsEnabled below — see the
         // accessor docs for why it stays out of the whole-object write.
+        //
+        // NEW key name since firmware 6 (2026-10-21). The old
+        // "extended_pids_enabled" may still hold `true` from before the
+        // v0.1.233 hard-wire-off; reusing it would silently re-enable the
+        // poll on upgrade. A fresh key means everyone starts OFF and has to
+        // opt in again. The old key is simply never read.
         val extendedPidsEnabled: Preferences.Key<Boolean> =
-            booleanPreferencesKey("extended_pids_enabled")
+            booleanPreferencesKey("extended_pids_fw6_enabled")
     }
 
     /**
@@ -411,25 +417,20 @@ class SettingsRepository @Inject constructor(
      * restarting the bridge.
      */
     /**
-     * ALWAYS FALSE. The Settings toggle was removed in v0.1.233 and this is
-     * hard-wired off rather than deleted, because the key may still hold
-     * `true` on a device where it was switched on — and with no UI left, a
-     * stored `true` would be permanently unreachable while continuing to
-     * break capture.
-     *
-     * Mode 22 transmission PIDs (ATF temp, gear) were proven unusable on this
-     * hardware on 2026-08-05: the dongle exposes ONE ELM session, headers are
-     * sticky, and pointing it at the TCM makes every following standard PID
-     * be answered by the wrong module — the published stream collapsed from
-     * 62 keys to 19. The decode work is real and correct and is kept in
-     * ZfTcmPids.kt; it is the transport that cannot carry it. See ADR-022.
+     * History: hard-wired off in v0.1.233 after Mode 22 failed on firmware
+     * 4.49 (2026-08-05, ADR-022) — the phone's header change corrupted the
+     * dongle's own auto_pid stream, and the BLE path truncated multi-frame
+     * answers. Firmware 6 changes both premises: a BLE client suspends the
+     * WiCAN's WiFi (so its own publishing stops while the phone polls), and
+     * the dongle now returns full multi-frame Mode 22 answers. Whether the
+     * raw BLE bridge passes every multi-frame line through is still
+     * UNVERIFIED, so this stays opt-in, default off, and labelled as such.
      */
     val extendedPidsEnabled: Flow<Boolean> =
-        kotlinx.coroutines.flow.flowOf(false)
+        context.dataStore.data.map { it[Keys.extendedPidsEnabled] ?: false }
 
     /** One-shot read for bridge start-up, before the flow collector lands. */
-    /** See [extendedPidsEnabled] — hard-wired off. */
-    suspend fun extendedPidsEnabledNow(): Boolean = false
+    suspend fun extendedPidsEnabledNow(): Boolean = extendedPidsEnabled.first()
 
     /** Focused setter for the extended-PID opt-in. */
     suspend fun setExtendedPidsEnabled(value: Boolean) {

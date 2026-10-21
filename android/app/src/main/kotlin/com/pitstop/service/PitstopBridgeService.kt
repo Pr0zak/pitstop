@@ -152,6 +152,9 @@ class PitstopBridgeService : Service() {
      * whenever extended polling stops.
      */
     @Volatile private var pendingExtended: Pid? = null
+
+    /** Count of ELM `>` prompts seen; the extended path waits on it. */
+    private val elmPrompts = java.util.concurrent.atomic.AtomicInteger(0)
     @Volatile private var pendingExtendedAtMs: Long = 0L
 
     /**
@@ -955,6 +958,19 @@ class PitstopBridgeService : Service() {
                 override fun onDataReceived(bytes: ByteArray) {
                     onUartFrame(bytes)
                 }
+
+                override fun onPairingStateChange(state: WiCanBleManager.PairingState) {
+                    val pairing = when (state) {
+                        WiCanBleManager.PairingState.NONE -> BlePairing.None
+                        WiCanBleManager.PairingState.BONDING -> BlePairing.InProgress
+                        WiCanBleManager.PairingState.REQUIRED -> BlePairing.Required
+                        WiCanBleManager.PairingState.FAILED -> BlePairing.Failed
+                        WiCanBleManager.PairingState.REJECTED -> BlePairing.Rejected
+                    }
+                    logBuffer.info("ble pairing state", mapOf("state" to pairing.name))
+                    stateBus.update { s -> s.copy(blePairing = pairing) }
+                    pairing.notificationText()?.let { updateNotification(it) }
+                }
             })
             bleManager = it
         }
@@ -997,8 +1013,10 @@ class PitstopBridgeService : Service() {
             mgr.connectToDevice(device, reconnect = reconnectAttempt > 0)
 
             // Wait until READY (Connected via Nordic ble means the gatt is connected;
-            // initialize() flips it to READY). Time out at 20s.
-            val readyDeadline = System.currentTimeMillis() + 20_000
+            // initialize() flips it to READY). Time out 5 s after the manager's
+            // own connect timeout — 20 s normally, longer while a firmware-6
+            // WiCAN is waiting for the user to type its pairing passkey.
+            val readyDeadline = System.currentTimeMillis() + mgr.currentConnectTimeoutMs + 5_000
             while (scope.isActive && System.currentTimeMillis() < readyDeadline) {
                 if (stateBus.status.value.phase == BridgePhase.Connected) break
                 if (stateBus.status.value.phase == BridgePhase.Error) break
@@ -1149,7 +1167,16 @@ class PitstopBridgeService : Service() {
             if (due != null) {
                 lastSentPid = due
                 if (due.isExtended) {
-                    sendExtendedRequest(due)
+                    // Every extended PID that is due now goes out in one
+                    // batch, grouped by module, so a header is set once per
+                    // module and restored once per batch (gear + cylinders
+                    // share a 2 s cadence and would otherwise each pay a full
+                    // set/restore).
+                    val batch = pidsToPoll
+                        .filter { it.isExtended && (nextDue[it.name] ?: 0L) <= t }
+                        .sortedBy { it.initCommands.joinToString() }
+                    sendExtendedBatch(batch)
+                    for (p in batch) nextDue[p.name] = t + p.periodMs
                 } else {
                     // Belt and braces: a standard PID must never inherit a
                     // module-specific TX header. Normally already clean (the
@@ -1169,56 +1196,87 @@ class PitstopBridgeService : Service() {
     }
 
     /**
-     * Send one Mode 22 request that needs a module-specific TX header, then
-     * put the header back.
+     * Send a batch of Mode 22 requests that need module-specific TX headers,
+     * then put the header back.
      *
-     * The restore lives in a `finally`, not on the success path, because
-     * leaving the session addressed at the transmission controller silently
-     * breaks every standard PID that follows — the exact failure the WiCAN
-     * demonstrated when a header-changing PID joined its round-robin and its
-     * published stream fell from 62 keys to 19. Cancellation (bridge stop,
-     * BLE drop mid-sequence) and a thrown write both have to end with the
-     * default header restored.
+     * Each step waits for the adapter's `>` prompt before the next write:
+     * an ELM327 aborts whatever it is doing when a new character arrives, so
+     * writing the restore while a 59-byte multi-frame answer is still
+     * streaming would cut it off ("STOPPED") — firmware 6 answers are much
+     * longer than the 4.x ones the old fixed 150 ms window was sized for.
      *
-     * `writeCommand` is non-suspending — Nordic's BleManager enqueues the
-     * write and returns — so the restore still goes out from a `finally` that
-     * runs during coroutine cancellation, where a suspending call would be
-     * skipped.
+     * The restore lives in a `finally`, not only on the success path, because
+     * leaving the session addressed at a module silently breaks every
+     * standard PID that follows — the exact failure the WiCAN demonstrated
+     * when a header-changing PID joined its round-robin and its published
+     * stream fell from 62 keys to 19. Cancellation (bridge stop, BLE drop
+     * mid-sequence) and a thrown write both have to end with the default
+     * header restored; [restoreDefaultHeaderIfDirty] does no suspending work,
+     * so it still runs during cancellation.
      */
-    private suspend fun sendExtendedRequest(pid: Pid) {
+    private suspend fun sendExtendedBatch(batch: List<Pid>) {
         val mgr = bleManager ?: return
         try {
-            pendingExtended = pid
-            pendingExtendedAtMs = System.currentTimeMillis()
-            for (cmd in pid.initCommands) {
-                // Mark dirty BEFORE the write: if we die between the write and
-                // the restore, the flag is already set and the next poll tick
-                // (or the next session's start-up restore) cleans up.
-                //
-                // Both under [headerLock] as ONE unit. The flag and the write
-                // are touched from three threads — the poll loop (IO), the
-                // settings collector that services the opt-in toggle (IO), and
-                // onDestroy (main). Without the lock this interleaving loses
-                // the header for good:
-                //   poll:   sessionHeaderDirty = true
-                //   toggle: sees dirty, writes the restore, clears the flag
-                //   poll:   writes ATSH18DA1EF1   <- adapter now on the TCM
-                //   poll:   finally -> flag is false, no restore is sent
-                synchronized(headerLock) {
-                    sessionHeaderDirty = true
-                    mgr.writeCommand(cmd + "\r")
+            var header: List<String>? = null
+            for (pid in batch) {
+                if (stateBus.status.value.phase != BridgePhase.Connected) break
+                if (pid.initCommands != header) {
+                    for (cmd in pid.initCommands) {
+                        // Mark dirty BEFORE the write, and both under
+                        // [headerLock] as ONE unit — the flag and the write are
+                        // touched from the poll loop, the opt-in toggle
+                        // collector and onDestroy. Without the lock:
+                        //   poll:   sessionHeaderDirty = true
+                        //   toggle: sees dirty, writes the restore, clears it
+                        //   poll:   writes ATSH18DA1EF1  <- adapter on the TCM
+                        //   poll:   finally -> flag false, no restore sent
+                        val mark = elmPrompts.get()
+                        synchronized(headerLock) {
+                            sessionHeaderDirty = true
+                            mgr.writeCommand(cmd + "\r")
+                        }
+                        awaitPrompt(mark, EXTENDED_AT_PROMPT_TIMEOUT_MS)
+                    }
+                    header = pid.initCommands
                 }
-                delay(EXTENDED_INIT_SETTLE_MS)
+                lastSentPid = pid
+                pendingExtended = pid
+                pendingExtendedAtMs = System.currentTimeMillis()
+                val mark = elmPrompts.get()
+                if (!mgr.writeCommand(pid.command())) break
+                awaitPrompt(mark, EXTENDED_RESPONSE_TIMEOUT_MS)
+                // Prompt seen (or timed out) and still nobody claimed the
+                // answer: charge it like a NO DATA so a DID the BLE path can
+                // never deliver drops out of the poll set (OBD-4).
+                if (pendingExtended === pid) {
+                    pendingExtended = null
+                    onNoDataForPid(pid)
+                }
             }
-            mgr.writeCommand(pid.command())
-            // Give the adapter time to emit the whole multi-frame block before
-            // the next command lands behind it. The response itself is handled
-            // asynchronously in onUartFrame; this is purely about not stepping
-            // on the adapter mid-reassembly.
-            delay(EXTENDED_RESPONSE_WINDOW_MS)
+            // Orderly restore, one prompt per line; the finally below is the
+            // fallback for when this never gets to run.
+            if (sessionHeaderDirty) {
+                var ok = true
+                for (cmd in ElmSession.DEFAULT_HEADER_RESTORE) {
+                    val mark = elmPrompts.get()
+                    if (!mgr.writeCommand(cmd + "\r")) {
+                        ok = false
+                        break
+                    }
+                    awaitPrompt(mark, EXTENDED_AT_PROMPT_TIMEOUT_MS)
+                }
+                if (ok) synchronized(headerLock) { sessionHeaderDirty = false }
+            }
         } finally {
             restoreDefaultHeaderIfDirty()
         }
+    }
+
+    /** Wait until the ELM prompt counter moves past [mark] or [timeoutMs]. */
+    private suspend fun awaitPrompt(mark: Int, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (elmPrompts.get() == mark && System.currentTimeMillis() < deadline) delay(10)
+        return elmPrompts.get() != mark
     }
 
     /**
@@ -1311,6 +1369,7 @@ class PitstopBridgeService : Service() {
         val frameText = if (terminator >= 0) {
             val out = rxBuffer.substring(0, terminator)
             rxBuffer.delete(0, terminator + 1)
+            elmPrompts.incrementAndGet()
             out
         } else if (
             pendingExtended == null &&
@@ -1345,6 +1404,28 @@ class PitstopBridgeService : Service() {
         // standard single-frame path below is reached unchanged in every case
         // that matters to it.
         if (pendingExtended != null && handleExtendedFrame(frameText)) return
+
+        // AT-command acknowledgements from the extended path ("OK", "?", or
+        // just the echo). Not OBD answers — and must not reach the parser,
+        // whose "?" branch would count as an engine-off signal.
+        val atLines = frameText.split('\r', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+        if (atLines.isNotEmpty() && atLines.all { it == "OK" || it.startsWith("AT", ignoreCase = true) }) return
+        if (atLines.isNotEmpty() && atLines.first().startsWith("AT", ignoreCase = true)) {
+            if (atLines.any { it == "?" }) {
+                logBuffer.warn("obd: ELM rejected an AT command", mapOf("cmd" to atLines.first().take(20)))
+            }
+            return
+        }
+
+        // A Mode 22 request the module had no answer for. Charge the
+        // extended PID — NOT the engine-off debounce: a module that doesn't
+        // know a DID says nothing about whether the engine is running.
+        val extPending = pendingExtended
+        if (extPending != null && frameText.uppercase().contains("NO DATA")) {
+            pendingExtended = null
+            onNoDataForPid(extPending)
+            return
+        }
 
         val parsed = ObdResponseParser.parse(frameText.toByteArray(Charsets.US_ASCII))
         if (parsed == null) {
@@ -1453,7 +1534,7 @@ class PitstopBridgeService : Service() {
         // intermittently-supported PID never accumulates toward suppression
         // across scattered no-data blips.
         noDataStreakByPid.remove(pid.name)
-        recordMetric(pid, value)
+        recordMetric(pid.name, value)
     }
 
     /**
@@ -1461,25 +1542,25 @@ class PitstopBridgeService : Service() {
      * recorder. Shared by the standard single-frame path and the extended
      * ISO-TP path so a metric can't end up on two thirds of the surfaces.
      */
-    private fun recordMetric(pid: Pid, value: Double) {
-        stateBus.publishMetric(pid.name, value)
+    private fun recordMetric(name: String, value: Double) {
+        stateBus.publishMetric(name, value)
         // Track the last time we saw real vehicle motion — the engine-off
         // debounce holds the drive open through a no-data burst if the car
         // was moving moments ago (link hiccup, not a key-off).
-        if (pid.name == "vehicle_speed" && value > motionKph) {
+        if (name == "vehicle_speed" && value > motionKph) {
             lastMotionAtMs = System.currentTimeMillis()
         }
         // Home-screen fuel widget reads from the server's /vehicles
         // endpoint — without an explicit refresh kick, it only updates
         // on Android's 30-min `updatePeriodMillis` floor (and Doze can
         // stretch even that). Rate-limited to 1 refresh per 30 s.
-        if (pid.name == "fuel_level") widgetRefresher.refreshFuelWidget()
-        val topic = "bridge/${vehicleSlug}/${pid.name}"
+        if (name == "fuel_level") widgetRefresher.refreshFuelWidget()
+        val topic = "bridge/${vehicleSlug}/${name}"
         publishOrBuffer(topic, v2Envelope(value))
         // Mirror into the drive recorder so the canonical batch
         // upload (#117) has every PID frame even when the live MQTT
         // stream drops bytes.
-        driveRecorder.current()?.addPid(System.currentTimeMillis(), pid.name, value)
+        driveRecorder.current()?.addPid(System.currentTimeMillis(), name, value)
     }
 
     /**
@@ -1555,8 +1636,8 @@ class PitstopBridgeService : Service() {
         }
         if (!pid.matchesDidEcho(payload)) return false
         pendingExtended = null
-        val value = pid.parser(payload)
-        if (value == null) {
+        val values = pid.decodeAll(payload)
+        if (values.isEmpty()) {
             // Short / truncated block, or a gear code with no known meaning.
             // Rate-limited like the standard parser-null path.
             if (parserNullLogged.add(pid.name)) {
@@ -1568,7 +1649,7 @@ class PitstopBridgeService : Service() {
             return true
         }
         noDataStreakByPid.remove(pid.name)
-        recordMetric(pid, value)
+        for ((metric, v) in values) recordMetric(metric, v)
         return true
     }
 
@@ -2072,21 +2153,19 @@ class PitstopBridgeService : Service() {
         private const val IN_CAR_BACKOFF_CAP_SEC = 30
 
         /**
-         * Pacing for the opt-in Mode 22 path. Kept deliberately small: a
-         * header change plus a request plus a restore is three writes where a
-         * standard PID is one, and the whole point of the 10 s / 2 s cadences
-         * on the extended PIDs is that they cost the round-robin almost
-         * nothing.
+         * Pacing for the opt-in Mode 22 path. Every write waits for the ELM
+         * `>` prompt (an ELM327 aborts its current operation on any new
+         * input), bounded by these ceilings so a silent adapter can't stall
+         * the standard Mode 01 round-robin for long:
          *
-         *  - [EXTENDED_INIT_SETTLE_MS]: let the adapter digest `ATSH...`
-         *    before the request rides in behind it.
-         *  - [EXTENDED_RESPONSE_WINDOW_MS]: let the multi-frame block finish
-         *    arriving before the header restore is written.
+         *  - [EXTENDED_AT_PROMPT_TIMEOUT_MS]: an `ATSH` / `ATCRA` ack.
+         *  - [EXTENDED_RESPONSE_TIMEOUT_MS]: a full multi-frame answer
+         *    (firmware 6 sends up to ~59 payload bytes = 9 CAN frames).
          *  - [EXTENDED_PENDING_TTL_MS]: after this, an unanswered request
          *    stops being able to claim an incoming frame.
          */
-        private const val EXTENDED_INIT_SETTLE_MS = 40L
-        private const val EXTENDED_RESPONSE_WINDOW_MS = 150L
+        private const val EXTENDED_AT_PROMPT_TIMEOUT_MS = 400L
+        private const val EXTENDED_RESPONSE_TIMEOUT_MS = 1_500L
         private const val EXTENDED_PENDING_TTL_MS = 2_000L
 
         /**

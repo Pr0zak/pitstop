@@ -40,6 +40,16 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /** Home's "Last drive" card. [route] is a downsampled lat/lon polyline. */
+/**
+ * Home's Tires card: the four corners (low flag applied) and the newest
+ * pressure reading's time, so the card can say how old it is — the values
+ * only move while the WiCAN or the phone is reporting.
+ */
+data class HomeTires(
+    val tires: List<com.pitstop.domain.VehicleSignals.Tire>,
+    val newestMs: Long?,
+)
+
 data class LastDrive(
     val trip: com.pitstop.http.TripDto,
     val baseline: com.pitstop.http.TripBaselineDto? = null,
@@ -115,6 +125,8 @@ data class StatusUiState(
     /** Why the last Home refresh couldn't load data, in one plain line;
      *  null once a refresh reaches the vehicle. Replaces the skeleton. */
     val loadProblem: String? = null,
+    /** Four-corner TPMS; null until any corner has ever reported. */
+    val tires: HomeTires? = null,
 ) {
     /**
      * Auto-start is ON but the WiCAN isn't paired on API 31+, so the OS will
@@ -197,6 +209,31 @@ class StatusViewModel @Inject constructor(
     private val lastRoute = MutableStateFlow<List<com.pitstop.http.RoutePointDto>>(emptyList())
     private val reminders = MutableStateFlow<List<com.pitstop.domain.ReminderItem>?>(null)
     private val loadProblem = MutableStateFlow<String?>(null)
+
+    /** `/readings/latest` for the TPMS card: metric -> (value, epoch ms). */
+    private val serverReadings = MutableStateFlow<Map<String, Pair<Double, Long>>>(emptyMap())
+
+    /**
+     * Server snapshot overlaid with live bridge samples (newest per metric
+     * wins), reduced to the Tires card. Live samples come from the phone's
+     * own Mode 22 poll or the WiCAN's MQTT, whichever is running.
+     */
+    private val homeTires: StateFlow<HomeTires?> = combine(
+        serverReadings,
+        bridgeStateBus.latestByMetric,
+    ) { server, live ->
+        val merged = HashMap(server)
+        for ((k, v) in live) {
+            val cur = merged[k]
+            if (cur == null || v.tsMs >= cur.second) merged[k] = v.value to v.tsMs
+        }
+        val tires = com.pitstop.domain.VehicleSignals.tpmsFrom(merged.mapValues { it.value.first })
+            ?: return@combine null
+        HomeTires(
+            tires = tires,
+            newestMs = com.pitstop.domain.VehicleSignals.newestPressureMs(merged.mapValues { it.value.second }),
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Read once per ViewModel, so the full pairing card doesn't collapse
      *  while it is on screen; the next visit (tab ViewModels are disposed
@@ -334,6 +371,12 @@ class StatusViewModel @Inject constructor(
             val remindersJob = async {
                 runCatching { api.getReminders(vehicleId, cacheControl) }.getOrNull()
             }
+            // Newest value of every metric — feeds the Tires card. Honours
+            // the refresh's no-cache so pull-to-refresh isn't replayed from
+            // OkHttp's 60 s cache.
+            val latestJob = async {
+                runCatching { api.getReadingsLatest(vehicleId, cacheControl) }.getOrNull()
+            }
 
             // Wait for each then publish; cards independently reactive.
             val fillups = fillupsJob.await()
@@ -345,6 +388,13 @@ class StatusViewModel @Inject constructor(
             val trips30 = tripsJob.await()
             val dtcs = dtcsJob.await()
             val rem = remindersJob.await()?.let { com.pitstop.domain.Maintenance.normalize(it) }
+            latestJob.await()?.let { rows ->
+                serverReadings.value = rows.mapNotNull { r ->
+                    val v = r.value ?: return@mapNotNull null
+                    val t = com.pitstop.util.DateLabel.epochMs(r.time) ?: return@mapNotNull null
+                    r.metric to (v to t)
+                }.toMap()
+            }
             // A quiet month still has older trips worth listing.
             val trips = trips30?.takeIf { it.size >= 6 }
                 ?: runCatching { api.getTrips(vehicleId, limit = 6, cacheControl = cacheControl) }.getOrNull()
@@ -557,6 +607,7 @@ class StatusViewModel @Inject constructor(
         lastDrive.value = null
         lastRoute.value = emptyList()
         reminders.value = null
+        serverReadings.value = emptyMap()
     }
 
     /**
@@ -674,6 +725,7 @@ class StatusViewModel @Inject constructor(
             loadProblem,
             spendYoy,
             homeFuel,
+            homeTires,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val bridge = values[0] as BridgeBundle
@@ -696,6 +748,7 @@ class StatusViewModel @Inject constructor(
             val problem = values[11] as String?
             val yoy = values[12] as com.pitstop.domain.FuelCharts.SpendYoy?
             val fuel = values[13] as HomeFuel
+            val tires = values[14] as HomeTires?
 
             StatusUiState(
                 status = bridge.status.copy(
@@ -727,6 +780,7 @@ class StatusViewModel @Inject constructor(
                 spendYoy = yoy,
                 homeMarket = fuel.market,
                 tanks = fuel.tanks,
+                tires = tires,
                 activeDtcs = dtcs,
                 range = drive.range,
                 lastDrive = drive.lastDrive,

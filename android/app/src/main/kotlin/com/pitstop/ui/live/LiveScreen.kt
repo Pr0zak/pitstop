@@ -44,6 +44,10 @@ import com.pitstop.ui.components.EmptyState
 import com.pitstop.ui.components.PillTone
 import com.pitstop.ui.components.PitstopTopAppBar
 import com.pitstop.ui.components.StatusPill
+import com.pitstop.domain.VehicleSignals
+import com.pitstop.ui.theme.ext
+import com.pitstop.ui.components.MisfireRow
+import com.pitstop.ui.components.TpmsGrid
 import com.pitstop.util.UnitFormat
 import kotlin.math.max
 
@@ -62,6 +66,17 @@ private data class TileSpec(
     val key: String,
     val quantity: UnitFormat.Quantity = UnitFormat.Quantity.None,
     val digits: Int = 1,
+    /**
+     * Text for a state rather than a quantity (gear "D3", cylinders
+     * "3 (VCM)", a grouped odometer). Null renders through [quantity].
+     * The quantity's unit is still appended unless [unitless].
+     */
+    val text: ((Double, String) -> String)? = null,
+    val unitless: Boolean = false,
+    /** Value turns green when true (VCM engaged). */
+    val good: ((Double) -> Boolean)? = null,
+    /** Small muted line under the value ("from cluster"). */
+    val caption: String? = null,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -79,6 +94,7 @@ fun LiveScreen(
     val obdAgeS by viewModel.obdAgeS.collectAsStateWithLifecycle()
     val parked by viewModel.parked.collectAsStateWithLifecycle()
     val battery by viewModel.battery.collectAsStateWithLifecycle()
+    val odometerOffsetKm by viewModel.odometerOffsetKm.collectAsStateWithLifecycle()
 
     val view = LocalView.current
     DisposableEffect(view) {
@@ -100,6 +116,7 @@ fun LiveScreen(
         onOpenBridgeStatus = onOpenBridgeStatus,
         showTopBar = showTopBar,
         parkedMetrics = parked,
+        odometerOffsetKm = odometerOffsetKm,
         battery = battery,
     )
 }
@@ -121,6 +138,8 @@ internal fun LiveContent(
     showTopBar: Boolean = true,
     /** `/readings/latest`: shown dimmed while the bridge is off and nothing is live. */
     parkedMetrics: Map<String, MetricSample> = emptyMap(),
+    /** The vehicle's (PCM − dash) odometer offset, for the PCM fallback. */
+    odometerOffsetKm: Double? = null,
     /** Resting battery voltage by day; null hides the card. */
     battery: List<BatteryDay>? = null,
     nowMs: Long = System.currentTimeMillis(),
@@ -149,6 +168,7 @@ internal fun LiveContent(
         if (metrics.isEmpty() && !parked) {
             LiveEmptyState(
                 phase = bridgeStatus.phase,
+                pairingMessage = bridgeStatus.blePairing.message(),
                 onStartBridge = onStartBridge,
                 onOpenBridgeStatus = onOpenBridgeStatus,
                 modifier = Modifier.padding(padding),
@@ -208,6 +228,7 @@ internal fun LiveContent(
                 }
             }
 
+            bridgeStatus.blePairing.message()?.let { PairingBanner(it) }
             if (stale) StaleBanner(obdAgeS)
             Column(
                 modifier = Modifier.alpha(
@@ -274,11 +295,46 @@ internal fun LiveContent(
                         "Exhaust flow", "engine_exhaust_flow",
                         UnitFormat.Quantity.MassFlowKgPerHour, 1,
                     ),
+                    // Mode 22 2615 (firmware-6 WiCAN, or the phone's opt-in
+                    // extended poll). "6", or "3 (VCM)" in green while
+                    // Variable Cylinder Management has a bank shut off.
+                    TileSpec(
+                        "Active cylinders", VehicleSignals.ACTIVE_CYLINDERS,
+                        text = { v, _ -> VehicleSignals.cylindersLabel(v) },
+                        unitless = true,
+                        good = { VehicleSignals.vcmActive(it) },
+                    ),
                 ),
                 metrics = shown,
                 parkedNowMs = if (parked) nowMs else null,
                 system = unitSystem,
+                customBody = {
+                    // Mode 22 2663: per-cylinder misfire counters.
+                    MisfireRow(
+                        counts = VehicleSignals.MISFIRE_CYLINDERS.associateWith {
+                            shown[VehicleSignals.misfireMetric(it)]?.value
+                        },
+                        modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 6.dp),
+                    )
+                },
+            )
 
+            // ── Transmission (ZF 9HP, Mode 22 on module 1E) ──────────
+            LiveSection(
+                title = "Transmission",
+                tiles = listOf(
+                    // 0 = P/N, 1-9 = D1-D9, 15 = R. Stopped in D reads D2:
+                    // the 9HP launches in second, shown as-is.
+                    TileSpec(
+                        "Gear", VehicleSignals.GEAR,
+                        text = { v, _ -> VehicleSignals.gearLabel(v) },
+                        unitless = true,
+                    ),
+                    TileSpec("ATF temp", VehicleSignals.ATF_TEMP, UnitFormat.Quantity.TempC, 0),
+                ),
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
+                system = unitSystem,
             )
 
             // ── Fuel system ───────────────────────────────────────────
@@ -286,6 +342,8 @@ internal fun LiveContent(
                 title = "Fuel system",
                 tiles = listOf(
                     TileSpec("Fuel level", "fuel_level", UnitFormat.Quantity.Percent, 0),
+                    // Mode 22 7029, the cluster's own litres; gal for US units.
+                    TileSpec("Fuel in tank", VehicleSignals.FUEL_LEVEL_L, UnitFormat.Quantity.VolumeL, 1),
                     // PID 0x9D. The metric is GRAMS PER SECOND; a mass rate
                     // means nothing at a glance, so it renders as a volume
                     // rate — L/h for metric, US gal/h for imperial, exactly
@@ -367,6 +425,57 @@ internal fun LiveContent(
 
             )
 
+            // ── Vehicle (instrument cluster, Mode 22 on module 60) ────
+            // Odometer prefers the cluster's own miles (equals the dash
+            // exactly); the PCM odometer (km, PID 0xA6) minus the vehicle's
+            // offset is only the fallback — web parity.
+            val odo = odometerTile(shown, odometerOffsetKm)
+            LiveSection(
+                title = "Vehicle",
+                tiles = listOf(
+                    TileSpec(
+                        "Odometer", ODOMETER_TILE_KEY, UnitFormat.Quantity.DistanceMi,
+                        text = { v, sys ->
+                            "%,.0f".format(UnitFormat.Quantity.DistanceMi.convert(v, sys))
+                        },
+                        caption = odo?.second,
+                    ),
+                    TileSpec("Outside air", VehicleSignals.AMBIENT_F, UnitFormat.Quantity.TempF, 0),
+                ),
+                metrics = odo?.let { shown + (ODOMETER_TILE_KEY to it.first) } ?: shown,
+                parkedNowMs = if (parked) nowMs else null,
+                system = unitSystem,
+            )
+
+            // ── Tires (TPMS, Mode 22 on module 26) ───────────────────
+            // Whole psi in both unit systems, as on the dash. Rendered even
+            // with no readings: corners say "—" (Live tiles are never hidden).
+            val tires = VehicleSignals.tpms(
+                VehicleSignals.Corner.entries.associateWith { shown[it.pressureMetric]?.value },
+                VehicleSignals.Corner.entries.associateWith { shown[it.tempMetric]?.value },
+            )
+            LiveSection(
+                title = "Tires",
+                tiles = emptyList(),
+                metrics = shown,
+                system = unitSystem,
+                customBody = {
+                    TpmsGrid(tires, unitSystem, Modifier.padding(horizontal = 4.dp))
+                    val newest = VehicleSignals.newestPressureMs(shown.mapValues { it.value.tsMs })
+                    Text(
+                        buildString {
+                            append("Highlighted: 2 psi or more below the highest tire")
+                            if (parked && newest != null) {
+                                append(" · as of ${com.pitstop.ui.status.parkedFor(nowMs - newest)} ago")
+                            }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
+                    )
+                },
+            )
+
             // ── GPS (from the phone bridge) ───────────────────────────
             // gps_speed is m/s on the wire — metric users want km/h, not
             // the raw SI value, which is why SpeedMps converts on both
@@ -433,6 +542,10 @@ private fun LiveSection(
                         quantity = spec.quantity,
                         digits = spec.digits,
                         system = system,
+                        text = sample?.value?.let { v -> spec.text?.invoke(v, system) },
+                        unitless = spec.unitless,
+                        good = sample?.value?.let { v -> spec.good?.invoke(v) } == true,
+                        caption = spec.caption,
                         modifier = Modifier.weight(1f),
                         asOf = parkedNowMs?.let { now ->
                             sample?.let { "as of ${com.pitstop.ui.status.parkedFor(now - it.tsMs)} ago" } ?: "no reading"
@@ -501,6 +614,12 @@ private fun SmallTile(
     modifier: Modifier = Modifier,
     /** "as of 16 h ago" / "no reading" under the value while parked. */
     asOf: String? = null,
+    /** Pre-formatted value for state signals (gear, cylinders); null = quantity. */
+    text: String? = null,
+    unitless: Boolean = false,
+    /** Render the value in the "good" green (VCM engaged). */
+    good: Boolean = false,
+    caption: String? = null,
 ) {
     Card(
         modifier = modifier,
@@ -512,14 +631,15 @@ private fun SmallTile(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            val display = quantity.number(value, system, digits)
-            val unit = quantity.unit(system)
+            val display = text ?: quantity.number(value, system, digits)
+            val unit = if (unitless) "" else quantity.unit(system)
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     display,
                     style = MaterialTheme.typography.titleLarge,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Medium,
+                    color = if (good) MaterialTheme.ext.good else androidx.compose.ui.graphics.Color.Unspecified,
                 )
                 if (unit.isNotEmpty() && display != "—") {
                     Text(
@@ -528,6 +648,14 @@ private fun SmallTile(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            if (caption != null) {
+                Text(
+                    caption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
             if (asOf != null) {
                 Text(
@@ -561,6 +689,21 @@ private fun ParkedBar(onStartBridge: () -> Unit) {
             }
             androidx.compose.material3.Button(onClick = onStartBridge) { Text("Start bridge") }
         }
+    }
+}
+
+/** Firmware-6 WiCAN pairing needed / in progress / failed — see BlePairing. */
+@Composable
+private fun PairingBanner(message: String) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.ext.warnContainer),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+    ) {
+        Text(
+            message,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
     }
 }
 
@@ -601,13 +744,21 @@ private fun LiveEmptyState(
     onStartBridge: () -> Unit,
     onOpenBridgeStatus: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Firmware-6 pairing problem, which beats the generic explanation. */
+    pairingMessage: String? = null,
 ) {
     val idle = phase == com.pitstop.service.BridgePhase.Idle ||
         phase == com.pitstop.service.BridgePhase.Error
     EmptyState(
         icon = Icons.Outlined.Speed,
-        title = if (idle) "Bridge isn't running" else "Waiting for the WiCAN",
-        body = if (idle) {
+        title = when {
+            pairingMessage != null -> "WiCAN pairing"
+            idle -> "Bridge isn't running"
+            else -> "Waiting for the WiCAN"
+        },
+        body = if (pairingMessage != null) {
+            pairingMessage
+        } else if (idle) {
             "Start the bridge to stream live engine data from the dongle."
         } else {
             "The bridge is running but no engine data has arrived yet. " +
@@ -733,4 +884,22 @@ private fun DriveModeContent(
             }
         }
     }
+}
+
+/** Synthetic key of the Live odometer tile (cluster miles, or the fallback). */
+private const val ODOMETER_TILE_KEY = "_odometer_display"
+
+/**
+ * The odometer tile's value in MILES plus its source caption. Prefers the
+ * cluster's `odometer_dash` (miles, equals the dash); falls back to the PCM
+ * `odometer` (km) minus the vehicle's offset. Null when neither exists.
+ */
+private fun odometerTile(
+    metrics: Map<String, MetricSample>,
+    offsetKm: Double?,
+): Pair<MetricSample, String>? {
+    metrics[VehicleSignals.ODOMETER_DASH]?.let { return it to "from cluster" }
+    val pcm = metrics["odometer"] ?: return null
+    val mi = (pcm.value - (offsetKm ?: 0.0)) * 0.621371
+    return pcm.copy(value = mi) to "PCM, offset-corrected"
 }

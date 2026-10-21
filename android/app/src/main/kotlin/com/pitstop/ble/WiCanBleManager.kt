@@ -36,13 +36,71 @@ class WiCanBleManager(
     interface UartStateCallback {
         fun onConnectionStateChange(state: ConnectionState)
         fun onDataReceived(bytes: ByteArray)
+
+        /**
+         * BLE pairing (bonding) progress. Firmware 6 WiCANs refuse the OBD
+         * characteristics until the phone has bonded with Secure Connections
+         * and the static passkey; 4.x never asks, so on 4.x this only ever
+         * reports [PairingState.NONE].
+         */
+        fun onPairingStateChange(state: PairingState) = Unit
     }
 
     enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, READY, FAILED }
 
+    /**
+     * Where the BLE bond stands, as far as the bridge can tell.
+     *
+     *  - [NONE]: nothing pairing-related is going on (4.x, or already bonded
+     *    and working).
+     *  - [BONDING]: Android is pairing right now — the system passkey dialog
+     *    (or its notification) is up and waiting for the WiCAN's passkey.
+     *  - [REQUIRED]: the WiCAN asked for pairing but the attempt ended before
+     *    it finished (dialog dismissed, timed out, or the link dropped).
+     *  - [FAILED]: pairing ran and failed — almost always a wrong passkey.
+     *  - [REJECTED]: we hold a bond but the WiCAN refused it — the dongle was
+     *    reflashed or reset and lost its half of the keys.
+     */
+    enum class PairingState { NONE, BONDING, REQUIRED, FAILED, REJECTED }
+
     private var rx: BluetoothGattCharacteristic? = null
     private var tx: BluetoothGattCharacteristic? = null
     private var stateCallback: UartStateCallback? = null
+
+    /**
+     * Sticky for the manager's (= the bridge service's) lifetime: set the
+     * first time this WiCAN asks for pairing. From then on an UNBONDED connect
+     * gets [PAIRING_CONNECT_TIMEOUT_MS] instead of [CONNECT_TIMEOUT_MS], so the
+     * user has time to type the passkey before Nordic's connect timeout tears
+     * the link (and the passkey dialog) down. A 4.x WiCAN never asks, so it
+     * keeps the short timeout forever.
+     */
+    @Volatile private var pairingExpected: Boolean = false
+
+    /** Bonding started during the current connect attempt. */
+    @Volatile private var bondingThisAttempt: Boolean = false
+
+    /** Nordic logged "Authentication required" while we were BONDED. */
+    @Volatile private var authErrorWhileBonded: Boolean = false
+
+    /** Last pairing state pushed to the callback, to avoid repeats. */
+    @Volatile private var lastPairingState: PairingState = PairingState.NONE
+
+    /**
+     * Connect timeout chosen for the attempt in flight. Nordic's connect
+     * request only completes once initialization (service discovery + the
+     * notification enable, which is where a firmware-6 WiCAN demands the
+     * bond) has finished, so this bounds the whole pairing dialog too. The
+     * bridge service reads it to size its own READY wait.
+     */
+    @Volatile var currentConnectTimeoutMs: Long = CONNECT_TIMEOUT_MS
+        private set
+
+    private fun setPairingState(state: PairingState) {
+        if (state == lastPairingState) return
+        lastPairingState = state
+        stateCallback?.onPairingStateChange(state)
+    }
 
     fun setStateCallback(cb: UartStateCallback?) {
         stateCallback = cb
@@ -56,16 +114,29 @@ class WiCanBleManager(
         // bond, NOT the GATT cache (the v0.1.195 cache-clear logged
         // "Refreshing failed" — blocked hidden API — and changed nothing).
         setBondingObserver(object : BondingObserver {
+            // Firmware 6: the WiCAN is Secure-Connections-only with a static
+            // passkey. Touching FFF1's CCCD unbonded gets "insufficient
+            // authentication"; Android then starts pairing on its own and
+            // shows the passkey dialog, and Nordic repeats the CCCD write
+            // once BOND_BONDED arrives. All we add is telling the user.
             override fun onBondingRequired(device: BluetoothDevice) {
                 logBuffer?.info("ble bonding required", mapOf("mac" to maskMac(device.address)))
+                pairingExpected = true
+                bondingThisAttempt = true
+                setPairingState(PairingState.BONDING)
             }
 
             override fun onBonded(device: BluetoothDevice) {
                 logBuffer?.info("ble bonded", mapOf("mac" to maskMac(device.address)))
+                bondingThisAttempt = false
+                authErrorWhileBonded = false
+                setPairingState(PairingState.NONE)
             }
 
             override fun onBondingFailed(device: BluetoothDevice) {
                 logBuffer?.warn("ble bonding failed", mapOf("mac" to maskMac(device.address)))
+                bondingThisAttempt = false
+                setPairingState(PairingState.FAILED)
             }
         })
 
@@ -111,6 +182,20 @@ class WiCanBleManager(
      */
     override fun log(priority: Int, message: String) {
         Log.println(priority, TAG, message)
+        // Nordic logs this (WARN) when a GATT op fails with insufficient
+        // authentication. Unbonded that is normal — pairing is about to
+        // start. BONDED it means the WiCAN no longer knows our keys (reflash
+        // / factory reset), which only the user can fix by forgetting the
+        // device; the request then hangs until the connect timeout, so this
+        // is the only place we can see the cause.
+        if (message.startsWith("Authentication required")) {
+            val bonded = runCatching {
+                @SuppressLint("MissingPermission")
+                val st = bluetoothDevice?.bondState
+                st == BluetoothDevice.BOND_BONDED
+            }.getOrDefault(false)
+            if (bonded) authErrorWhileBonded = true else pairingExpected = true
+        }
         when {
             priority >= Log.ERROR -> logBuffer?.error("ble: $message")
             priority >= Log.WARN -> logBuffer?.warn("ble: $message")
@@ -210,12 +295,25 @@ class WiCanBleManager(
     @SuppressLint("MissingPermission")
     fun connectToDevice(device: BluetoothDevice, reconnect: Boolean = false) {
         stateCallback?.onConnectionStateChange(ConnectionState.CONNECTING)
+        val bondedNow = device.bondState == BluetoothDevice.BOND_BONDED
+        bondingThisAttempt = device.bondState == BluetoothDevice.BOND_BONDING
+        authErrorWhileBonded = false
+        // Unbonded + this WiCAN has asked for pairing before (or a bond is
+        // being created right now, e.g. from the Settings "Pair" button):
+        // allow long enough to type the passkey. Everything else keeps the
+        // short timeout — the dominant failure is a WiCAN that simply isn't
+        // advertising, and that must not cost 90 s per attempt.
+        currentConnectTimeoutMs =
+            if (!bondedNow && (pairingExpected || bondingThisAttempt)) PAIRING_CONNECT_TIMEOUT_MS
+            else CONNECT_TIMEOUT_MS
+        if (bondedNow && lastPairingState == PairingState.REQUIRED) setPairingState(PairingState.NONE)
         logBuffer?.info(
             "ble connect",
             mapOf(
                 "mac" to maskMac(device.address),
-                "bonded" to (device.bondState == BluetoothDevice.BOND_BONDED),
+                "bonded" to bondedNow,
                 "reconnect" to reconnect,
+                "timeout_ms" to currentConnectTimeoutMs,
             ),
         )
         // No inner .retry(): one connect() = one attempt = one "ble connect
@@ -226,17 +324,38 @@ class WiCanBleManager(
         // and one opaque log line.
         connect(device)
             .useAutoConnect(reconnect)
-            .timeout(15_000)
+            .timeout(currentConnectTimeoutMs)
             .done {
                 logBuffer?.info("ble connected", mapOf("mac" to maskMac(device.address)))
+                bondingThisAttempt = false
+                if (lastPairingState != PairingState.NONE &&
+                    (device.bondState == BluetoothDevice.BOND_BONDED || !pairingExpected)
+                ) {
+                    setPairingState(PairingState.NONE)
+                }
                 stateCallback?.onConnectionStateChange(ConnectionState.CONNECTED)
             }
             .fail { failedDevice, status ->
                 val bonded = failedDevice.bondState == BluetoothDevice.BOND_BONDED
                 logBuffer?.warn(
                     "ble connect failed",
-                    mapOf("mac" to maskMac(failedDevice.address), "status" to status, "bonded" to bonded),
+                    mapOf(
+                        "mac" to maskMac(failedDevice.address),
+                        "status" to status,
+                        "bonded" to bonded,
+                        "bonding_this_attempt" to bondingThisAttempt,
+                        "auth_error_bonded" to authErrorWhileBonded,
+                    ),
                 )
+                // Pairing outcome of this attempt, for the UI. Order matters:
+                // a bond the WiCAN refused is the most specific diagnosis.
+                when {
+                    bonded && authErrorWhileBonded -> setPairingState(PairingState.REJECTED)
+                    lastPairingState == PairingState.FAILED -> Unit // keep "wrong passkey"
+                    !bonded && (bondingThisAttempt || pairingExpected) ->
+                        setPairingState(PairingState.REQUIRED)
+                }
+                bondingThisAttempt = false
                 // The .fail{} handler on a connect() request delivers Nordic's
                 // FailCallback.REASON_* constants (all NEGATIVE), NOT a raw HCI
                 // status. REASON_TIMEOUT (-5) is the dominant WiCAN failure
@@ -300,6 +419,16 @@ class WiCanBleManager(
 
     companion object {
         private const val TAG = "WiCanBleManager"
+
+        /** Connect + initialise budget for an ordinary attempt. */
+        const val CONNECT_TIMEOUT_MS = 15_000L
+
+        /**
+         * Budget for an unbonded attempt against a WiCAN that wants pairing:
+         * long enough to read the passkey off the WiCAN's Settings page and
+         * type it into the system dialog.
+         */
+        const val PAIRING_CONNECT_TIMEOUT_MS = 90_000L
 
         private val CANDIDATE_PROFILES = listOf(
             // WiCAN-PRO v4.49 BLE channel: 0xFFF0 service.

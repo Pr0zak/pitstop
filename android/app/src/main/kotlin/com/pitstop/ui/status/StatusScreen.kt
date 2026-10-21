@@ -328,6 +328,17 @@ internal fun StatusContent(
 
                 ui.hero?.let { HomeKpiRow(it) }
 
+                // TPMS, phone-first (the user lives in this tab). Hidden only
+                // until some corner has ever reported.
+                ui.tires?.let {
+                    com.pitstop.ui.components.TiresCard(
+                        tires = it.tires,
+                        newestMs = it.newestMs,
+                        nowMs = nowMs,
+                        system = system,
+                    )
+                }
+
                 // Long-range trends as one swipeable card. Pages only render
                 // state the ViewModel already loaded.
                 val trendPages = buildList {

@@ -72,7 +72,7 @@ data class ConfigFormState(
     val aaTilesDiag: List<String> = emptyList(),
     val unitSystem: String = "imperial",
     val manualSyncOnly: Boolean = false,
-    /** Opt-in Mode 22 extended PIDs (ZF TCM: ATF temp + gear). NOT part of the
+    /** Opt-in Mode 22 extended PIDs (gear, ATF, VCM, misfires, cluster, TPMS). NOT part of the
      *  Settings object — it has its own DataStore key, so persistForm must
      *  never write it and the loader reads it separately. */
     val extendedPidsEnabled: Boolean = false,
@@ -85,6 +85,9 @@ data class ConfigFormState(
     val uploadOnWifiSsids: List<String> = emptyList(),
     val saved: Boolean = false,
 )
+
+/** Android's bond with the picked WiCAN (firmware 6 needs one; 4.x doesn't). */
+enum class BleBond { NotBonded, Bonding, Bonded }
 
 /** Messages the Config screen surfaces in a snackbar (eg. "Sent 17 logs"). */
 sealed interface ConfigToast {
@@ -248,6 +251,68 @@ class ConfigViewModel @Inject constructor(
      *  FGS-from-background exemption actually apply (API 31+). The UI hides
      *  the pairing card below this since it buys nothing there. */
     val companionPresenceSupported: Boolean = companionManager.presenceSupported
+
+    /**
+     * Android's bond state with the picked WiCAN (firmware 6 requires a
+     * Secure Connections bond with the WiCAN's static passkey; 4.x needs
+     * none). Null = no device picked / no permission / no adapter.
+     */
+    private val _bleBond = MutableStateFlow<BleBond?>(null)
+    val bleBond: StateFlow<BleBond?> = _bleBond.asStateFlow()
+
+    private val appContext = application.applicationContext
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun bondStateOf(mac: String?): BleBond? {
+        if (mac.isNullOrBlank()) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.BLUETOOTH_CONNECT) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return null
+        val adapter = (appContext.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
+            as? android.bluetooth.BluetoothManager)?.adapter ?: return null
+        val device = runCatching { adapter.getRemoteDevice(mac) }.getOrNull() ?: return null
+        return when (device.bondState) {
+            android.bluetooth.BluetoothDevice.BOND_BONDED -> BleBond.Bonded
+            android.bluetooth.BluetoothDevice.BOND_BONDING -> BleBond.Bonding
+            else -> BleBond.NotBonded
+        }
+    }
+
+    /** Re-read the bond state (on Settings resume, and while pairing). */
+    fun refreshBleBond() {
+        _bleBond.value = bondStateOf(_form.value.bleDeviceMac)
+    }
+
+    /**
+     * Start Android pairing with the picked WiCAN. The system dialog asks for
+     * the passkey shown on the WiCAN's Settings › Bluetooth page. Only needed
+     * on firmware 6 — 4.x needs no bond, and bonding a 4.x dongle is
+     * pointless, so this is a button, never automatic. The bridge also pairs
+     * on demand when a firmware-6 WiCAN asks (see WiCanBleManager).
+     */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun pairBle() {
+        val mac = _form.value.bleDeviceMac ?: return
+        if (bondStateOf(mac) == null) {
+            _bleBond.value = null
+            return
+        }
+        val adapter = (appContext.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
+            as android.bluetooth.BluetoothManager).adapter
+        val device = adapter.getRemoteDevice(mac)
+        val started = runCatching { device.createBond() }.getOrDefault(false)
+        logBuffer.info("config: ble createBond", mapOf("started" to started))
+        viewModelScope.launch {
+            // The dialog is the system's; poll the result for up to 2 min.
+            repeat(120) {
+                val st = bondStateOf(mac)
+                _bleBond.value = st
+                if (it > 2 && st != BleBond.Bonding) return@launch
+                delay(1_000)
+            }
+        }
+    }
 
     private val _companionAssociated = MutableStateFlow(false)
     /** True when the WiCAN is associated as a companion device. */

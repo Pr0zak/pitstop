@@ -63,6 +63,7 @@ object Fixtures {
 
     val home = StatusUiState(
         status = connected,
+        tires = homeTires,
         hero = HeroCardData(
             avgConsumptionMpg = 20.4,
             latestPpg = 3.29,
@@ -152,6 +153,34 @@ object Fixtures {
         m("fuel_level", 62.0), m("stft_b1", 1.6), m("ltft_b1", -3.1), m("engine_fuel_rate", 1.4),
         m("control_module_voltage", 14.2), m("run_time_since_start", 1260.0),
         m("gps_speed", 20.0), m("gps_alt", 212.0), m("gps_lat", 40.00), m("gps_lon", -83.00),
+        // Honda Mode 22 (firmware 6). Tires are the verified 2026-10-21
+        // values: FR 28 psi lit the dash TPMS warning.
+        m("gear_position", 6.0), m("atf_temp", 72.0), m("active_cylinders", 3.0),
+        m("misfire_count_1", 0.0), m("misfire_count_2", 0.0), m("misfire_count_3", 2.0),
+        m("misfire_count_4", 0.0), m("misfire_count_5", 0.0), m("misfire_count_6", 0.0),
+        m("odometer_dash", 80_545.0), m("fuel_level_l", 46.71), m("ambient_air_temp_f", 76.0),
+        m("tire_pressure_fl", 213.0), m("tire_pressure_fr", 196.0),
+        m("tire_pressure_rl", 209.0), m("tire_pressure_rr", 205.0),
+        m("tire_temp_fl", 24.0), m("tire_temp_fr", 23.0), m("tire_temp_rl", 22.0), m("tire_temp_rr", 22.0),
+    )
+
+    /** Home's Tires card from the same verified corners, 14 minutes old. */
+    val homeTires: com.pitstop.ui.status.HomeTires get() = com.pitstop.ui.status.HomeTires(
+        tires = com.pitstop.domain.VehicleSignals.tpms(
+            mapOf(
+                com.pitstop.domain.VehicleSignals.Corner.FL to 213.0,
+                com.pitstop.domain.VehicleSignals.Corner.FR to 196.0,
+                com.pitstop.domain.VehicleSignals.Corner.RL to 209.0,
+                com.pitstop.domain.VehicleSignals.Corner.RR to 205.0,
+            ),
+            mapOf(
+                com.pitstop.domain.VehicleSignals.Corner.FL to 24.0,
+                com.pitstop.domain.VehicleSignals.Corner.FR to 23.0,
+                com.pitstop.domain.VehicleSignals.Corner.RL to 22.0,
+                com.pitstop.domain.VehicleSignals.Corner.RR to 22.0,
+            ),
+        ),
+        newestMs = NOW - 14 * 60_000L,
     )
 
     /** Same values, but the BLE link dropped 95 s ago: the screen still looks live. */

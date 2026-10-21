@@ -57,6 +57,13 @@ object UnitFormat {
 
         // ── Converted ────────────────────────────────────────────────
         TempC("°C", "°F", toImperial = { it * 9.0 / 5.0 + 32.0 }),
+
+        /**
+         * A temperature stored in °F — `ambient_air_temp_f`, the Pilot's
+         * cluster outside-air reading (Mode 22 7028), which the car reports
+         * in Fahrenheit.
+         */
+        TempF("°C", "°F", toMetric = { (it - 32.0) * 5.0 / 9.0 }),
         SpeedKph("km/h", "mph", toImperial = { it * KM_TO_MI }),
 
         /**

@@ -574,7 +574,7 @@ class LiveCarScreen(
         render: CarTileRender,
         badged: Boolean,
     ): GridItem {
-        val num = spec.quantity.number(value, system, spec.digits)
+        val num = spec.number(value, system)
         // render.text is "<num> <unit><extras>" when there is a value, or the
         // grid's empty reason ("Engine off") when there isn't.
         val caption = if (num != "—" && render.text.startsWith(num)) {

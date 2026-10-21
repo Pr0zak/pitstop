@@ -227,19 +227,37 @@ class WiCanSubscriber @Inject constructor(
             "57-ShortSecOxyTrimBank2" to "stft_sec_b2",
             "58-LongSecOxyTrimBank2" to "ltft_sec_b2",
             "67-EngineCoolantTemp1" to "coolant_temp",
-            "68-IntakeAirTempSens1" to "intake_air_temp",
+            // `68-IntakeAirTempSens1` is deliberately absent (ADR-018): the
+            // firmware's 0x68 decoder publishes the support bitmap (-39 °C).
+            // Backend removed the alias; the phone now matches, in both the
+            // 4.x and the prefix-less firmware-6 spelling.
             "66-MAFSensorA" to "maf_air_flow",
-            // Honda Pilot ATF custom PID — name comes from WiCAN's
-            // user-configured PID. Memory has it as `223083` to TCM
-            // 7E1 with formula `(B6*9/5)-40` (Fahrenheit). Whatever
-            // name the user gave it in WiCAN's UI lands here as-is;
-            // the alias below covers the common ones.
-            "atf_temp" to "atf_temp_f",
-            "ATF_Temp" to "atf_temp_f",
-            "atf_temp_f" to "atf_temp_f",
+            // Firmware 6 Mode 22 custom PIDs (atf_temp °C, gear_position,
+            // active_cylinders, misfire_count_1..6, odometer_dash, fuel_level_l,
+            // ambient_air_temp_f, tire_pressure_*/tire_temp_*) are named with
+            // their canonical names on the WiCAN and pass through unmapped.
+            // The old `atf_temp -> atf_temp_f` alias is GONE: it dated from the
+            // 136.4 °F false positive (ADR-018) and would now relabel a real °C
+            // reading as °F. The backend has no ATF alias either.
             "timestamp" to "_drop_",
             "_hdr_reset" to "_drop_",
-        )
+            // Firmware 6 event messages carry bookkeeping keys next to the
+            // reading (backend drops the same three).
+            "ts" to "_drop_",
+            "event" to "_drop_",
+            "voltage" to "_drop_",
+            // Firmware 6 spells the wide-range O2 row differently.
+            "OxySensor1_WR_FAER" to "o2_s1_lambda",
+        ).let { base ->
+            // Firmware 6 (2026-10) names the SAE rows without the `<HEX>-`
+            // prefix (`EngineRPM`, not `0C-EngineRPM`). Derive those from the
+            // map so both firmware generations land on the same canonical
+            // metric — mirrors the backend's derived update in wican_aliases.py.
+            base + base
+                .filterKeys { it.length > 3 && it[2] == '-' }
+                .mapKeys { it.key.substringAfter('-') }
+                .filterKeys { it !in base }
+        }
 
         private fun canonicalName(metric: String): String? {
             val target = WICAN_TO_CANONICAL[metric]

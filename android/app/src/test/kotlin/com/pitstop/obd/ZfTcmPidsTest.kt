@@ -126,6 +126,37 @@ class ZfTcmPidsTest {
     // ---- end to end: wire text -> metric ---------------------------------
 
     @Test
+    fun `decodes a real firmware-6 ATF answer to 37 degC`() {
+        // Captured 2026-10-21 on WiCAN 6.0.0-beta.2: 39 payload bytes,
+        // payload[17] = 0x4D = 77 -> 37 degC.
+        val p = hex(
+            "62 30 83 FF FF 80 03 00 00 00 00 00 04 02 B1 00 00 4D 8E 86 00 84 F0 80 00 1C " +
+                "00 00 00 00 00 00 00 00 00 00 00 00 00",
+        )
+        assertEquals(39, p.size)
+        assertTrue(ZfTcm.AtfTemp.matchesDidEcho(p))
+        assertEquals(37.0, ZfTcm.decodeAtfTempC(p)!!, 1e-9)
+    }
+
+    @Test
+    fun `decodes the firmware-6 ATF answer through ELM numbered multiline output`() {
+        // ATH0 form: the adapter strips PCI bytes and numbers the lines.
+        val text = "027\r" +
+            "0: 62 30 83 FF FF 80\r" +
+            "1: 03 00 00 00 00 00 04\r" +
+            "2: 02 B1 00 00 4D 8E 86\r" +
+            "3: 00 84 F0 80 00 1C 00\r" +
+            "4: 00 00 00 00 00 00 00\r" +
+            "5: 00 00 00 00 00 00 00\r>"
+        val p = IsoTp.reassemble(text)!!
+        assertEquals(39, p.size)
+        assertEquals(mapOf("atf_temp" to 37.0), ZfTcm.AtfTemp.decodeAll(p))
+    }
+
+    private fun hex(s: String): ByteArray =
+        s.trim().split(Regex("\\s+")).map { it.toInt(16).toByte() }.toByteArray()
+
+    @Test
     fun `decodes ATF straight from a raw multi-frame response block`() {
         val text =
             "18 DA F1 1E 10 18 62 30 83 00 00 00\r" +
@@ -169,7 +200,8 @@ class ZfTcmPidsTest {
         assertFalse(Pids.DEFAULT.contains(ZfTcm.AtfTemp))
         assertFalse(Pids.DEFAULT.contains(ZfTcm.GearPosition))
         assertTrue(Pids.DEFAULT.none { it.isExtended })
-        assertEquals(listOf(ZfTcm.AtfTemp, ZfTcm.GearPosition), Pids.EXTENDED)
+        assertEquals(HondaMode22.ALL, Pids.EXTENDED)
+        assertTrue(Pids.EXTENDED.containsAll(listOf(ZfTcm.AtfTemp, ZfTcm.GearPosition)))
     }
 
     @Test
@@ -182,8 +214,10 @@ class ZfTcmPidsTest {
     fun `request the measured Mode 22 DIDs on the TCM header`() {
         assertEquals("223083\r", ZfTcm.AtfTemp.command())
         assertEquals("223086\r", ZfTcm.GearPosition.command())
-        assertEquals(listOf("ATSH18DA1EF1"), ZfTcm.AtfTemp.initCommands)
-        assertEquals(listOf("ATSH18DA1EF1"), ZfTcm.GearPosition.initCommands)
+        // TX header + receive filter, as two separate ELM lines.
+        assertEquals(listOf("ATSH18DA1EF1", "ATCRA18DAF11E"), ZfTcm.AtfTemp.initCommands)
+        assertEquals(listOf("ATSH18DA1EF1", "ATCRA18DAF11E"), ZfTcm.GearPosition.initCommands)
+        assertEquals(HondaMode22.headerFor(HondaMode22.TCM), ZfTcm.AtfTemp.initCommands)
         assertTrue(ZfTcm.AtfTemp.isoTp)
         assertTrue(ZfTcm.GearPosition.isoTp)
         assertTrue(ZfTcm.AtfTemp.changesSessionHeader)
@@ -194,13 +228,15 @@ class ZfTcmPidsTest {
     fun `poll slowly enough to stay cheap on the bus`() {
         // Fluid temperature moves over minutes; gear is a state trace, not a
         // shift-quality instrument.
-        assertEquals(10_000L, ZfTcm.AtfTemp.periodMs)
+        assertEquals(30_000L, ZfTcm.AtfTemp.periodMs)
         assertEquals(2_000L, ZfTcm.GearPosition.periodMs)
     }
 
     @Test
     fun `the default-header restore is two SEPARATE ELM commands`() {
-        // ATSH7DF (broadcast TX header) + ATCRA (reset the receive filter).
+        // ATSH18DB33F1 (29-bit functional TX header — the Pilot's bus is ISO
+        // 15765-4 29-bit, ELM protocol 7, so NOT the 11-bit 7DF) + ATCRA
+        // (reset the receive filter).
         // A header is sticky for the whole session, so these are what stop one
         // Mode 22 poll from breaking every standard PID after it.
         //
@@ -208,7 +244,7 @@ class ZfTcmPidsTest {
         // CR-terminated line, so "ATSH7DFATCRA" is parsed as SH with the
         // argument "7DFATCRA" — not 3/6/8 hex digits ('T' and 'R' aren't hex)
         // — which answers "?" and leaves the header exactly where it was.
-        assertEquals(listOf("ATSH7DF", "ATCRA"), ElmSession.DEFAULT_HEADER_RESTORE)
+        assertEquals(listOf("ATSH18DB33F1", "ATCRA"), ElmSession.DEFAULT_HEADER_RESTORE)
         for (cmd in ElmSession.DEFAULT_HEADER_RESTORE) {
             assertTrue("$cmd must be a single AT command", cmd.startsWith("AT"))
             assertEquals(

@@ -55,8 +55,20 @@ data class CarTileSpec(
      * scale, an arc would only suggest a limit that doesn't exist.
      */
     val gauge: ClosedFloatingPointRange<Double>? = null,
+    /**
+     * Text for a state signal rather than a quantity — gear "D3", cylinders
+     * "3 (VCM)". Null renders through [quantity]. Shares
+     * [com.pitstop.domain.VehicleSignals] with the phone + web.
+     */
+    val format: ((Double) -> String)? = null,
 ) {
-    fun unit(system: String): String = quantity.unit(system)
+    fun unit(system: String): String = if (format != null) "" else quantity.unit(system)
+
+    /** The number (or state word) for [value], "—" when absent. */
+    fun number(value: Double?, system: String): String {
+        if (value == null || value.isNaN() || value.isInfinite()) return "—"
+        return format?.invoke(value) ?: quantity.number(value, system, digits)
+    }
 }
 
 object CarTileCatalog {
@@ -136,6 +148,26 @@ object CarTileCatalog {
         CarTileSpec(
             "commanded_evap_purge", "Evap", UnitFormat.Quantity.Percent, 0,
             icon = R.drawable.ic_metric_load,
+        ),
+        // ── Honda Mode 22 (WiCAN firmware 6 / opt-in phone poll) ─
+        CarTileSpec(
+            "gear_position", "Gear", UnitFormat.Quantity.None, 0, icon = R.drawable.ic_metric_speed,
+            format = com.pitstop.domain.VehicleSignals::gearLabel,
+        ),
+        // ZF 9HP fluid: past ~110 °C is sustained-towing territory.
+        CarTileSpec(
+            "atf_temp", "ATF", UnitFormat.Quantity.TempC, 0, icon = R.drawable.ic_metric_temp,
+            trend = true, warnHigh = 110.0, warnHighWord = "HOT", gauge = 20.0..130.0,
+        ),
+        CarTileSpec(
+            "active_cylinders", "Cylinders", UnitFormat.Quantity.None, 0, icon = R.drawable.ic_metric_tach,
+            format = com.pitstop.domain.VehicleSignals::cylindersLabel,
+        ),
+        CarTileSpec(
+            "fuel_level_l", "Fuel", UnitFormat.Quantity.VolumeL, 1, icon = R.drawable.ic_metric_fuel, trend = true,
+        ),
+        CarTileSpec(
+            "ambient_air_temp_f", "Outside", UnitFormat.Quantity.TempF, 0, icon = R.drawable.ic_metric_temp,
         ),
         // ── Electrical ────────────────────────────────────────────
         // Charging system: under 12.0 V with the engine running means the
@@ -360,7 +392,7 @@ fun renderCarTile(
     ageS: Long?,
     emptyReason: String? = null,
 ): CarTileRender {
-    val num = spec.quantity.number(value, system, spec.digits)
+    val num = spec.number(value, system)
     if (value == null || num == "—") return CarTileRender(emptyReason ?: "—", TileWarn.None, stale = false)
     val unit = spec.unit(system)
     val warn = when {

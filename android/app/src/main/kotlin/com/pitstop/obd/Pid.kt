@@ -55,7 +55,23 @@ data class Pid(
      * formatting. Null keeps the original behaviour exactly.
      */
     val request: String? = null,
+    /**
+     * Multi-metric decoder for a DID that carries several signals in one
+     * answer (TPMS: 4 pressures + 4 temps; misfires: 6 counters). When set it
+     * replaces [parser] and its keys are the published metric names; [name]
+     * then only identifies the request (scheduling, logs, suppression).
+     */
+    val outputs: ((ByteArray) -> Map<String, Double>)? = null,
 ) {
+    /**
+     * Every metric this response yields: [outputs] if set, else [parser]
+     * under [name]. Empty = nothing decodable this cycle.
+     */
+    fun decodeAll(bytes: ByteArray): Map<String, Double> {
+        outputs?.let { return it(bytes) }
+        return parser(bytes)?.let { mapOf(name to it) } ?: emptyMap()
+    }
+
     /** ELM327 ASCII command string for this PID, e.g. "010C\r" for engine RPM. */
     fun command(): String = request?.let { "$it\r" } ?: "%02X%02X\r".format(mode, pid)
 
@@ -86,16 +102,22 @@ data class Pid(
 /** ELM session-level commands that aren't tied to any one PID. */
 object ElmSession {
     /**
-     * Put the session back on the default OBD-II broadcast header.
+     * Put the session back on the default OBD-II functional header.
      *
-     * **Two commands, two lines.** `ATSH7DF` restores the functional-broadcast
-     * TX header and `ATCRA` (no argument) resets the CAN receive-address
-     * filter. They must be written as separate CR-terminated lines: an ELM327
-     * parses exactly one command per line, so the concatenated form
-     * `ATSH7DFATCRA` is read as `AT SH 7DFATCRA` — an SH argument that is
-     * neither 3, 6 nor 8 hex digits ('T' and 'R' aren't hex) — and answers
-     * `?` without changing the header at all. That silently turned the whole
-     * restore into a no-op.
+     * **`18DB33F1`, not `7DF`.** The 2019 Pilot's bus is ISO 15765-4 CAN
+     * 29-bit / 500 kbps (ELM protocol 7), where the SAE functional request
+     * ID is `18 DB 33 F1`. `ATSH7DF` is the 11-bit broadcast ID; on a 29-bit
+     * session it would leave standard Mode 01 requests addressed to nothing
+     * useful. (The extended PIDs that ever move the header are Pilot-specific
+     * Mode 22 DIDs, so the restore is this car's default, not a generic one.)
+     *
+     * **Two commands, two lines.** `ATSH18DB33F1` restores the TX header and
+     * `ATCRA` (no argument) resets the CAN receive-address filter that the
+     * Mode 22 path set with `ATCRA18DAF1xx`. They must be separate
+     * CR-terminated lines: an ELM327 parses exactly one command per line, so
+     * the concatenated `ATSH18DB33F1ATCRA` is read as SH with a malformed
+     * argument and answers `?` without changing the header at all — a restore
+     * that is a silent no-op.
      *
      * This exists because a TX header is **sticky**: once set, every
      * subsequent request inherits it. The WiCAN dongle demonstrated the
@@ -105,7 +127,7 @@ object ElmSession {
      * that only answers two of them. Any code path that sets a header owns
      * restoring it, unconditionally.
      */
-    val DEFAULT_HEADER_RESTORE: List<String> = listOf("ATSH7DF", "ATCRA")
+    val DEFAULT_HEADER_RESTORE: List<String> = listOf("ATSH18DB33F1", "ATCRA")
 }
 
 object Pids {
@@ -597,12 +619,12 @@ object Pids {
     )
 
     /**
-     * Opt-in Mode 22 PIDs on the ZF 9HP transmission controller — ATF
-     * temperature and gear position. **Never in [DEFAULT].** They only join
-     * the poll set when the user turns on `extendedPidsEnabled` in Settings,
-     * because they address a non-default module (sticky TX header) and answer
-     * with multi-frame ISO-TP. See [ZfTcm] for the measured offsets and the
-     * reasoning.
+     * Opt-in Honda Mode 22 PIDs — gear, ATF temp, active cylinders, misfire
+     * counters, cluster odometer / fuel litres / outside temp, TPMS. **Never
+     * in [DEFAULT].** They only join the poll set when the user turns on
+     * `extendedPidsEnabled` in Settings, because they address non-default
+     * modules (sticky TX header) and answer with multi-frame ISO-TP. See
+     * [HondaMode22] / [ZfTcm] for the measured offsets.
      */
-    val EXTENDED = ZfTcm.ALL
+    val EXTENDED = HondaMode22.ALL
 }

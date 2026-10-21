@@ -39,12 +39,18 @@ class LiveViewModel @Inject constructor(
     private val _battery = MutableStateFlow<List<BatteryDay>?>(null)
     val battery: StateFlow<List<BatteryDay>?> = _battery.asStateFlow()
 
+    /** The vehicle's (PCM − dash) odometer offset; null = none set. */
+    private val _odometerOffsetKm = MutableStateFlow<Double?>(null)
+    val odometerOffsetKm: StateFlow<Double?> = _odometerOffsetKm.asStateFlow()
+
     /** Pull the parked snapshot + battery history. Best-effort: a failure leaves the empty state. */
     fun loadServerSide() {
         viewModelScope.launch {
             val slug = runCatching { activeVehicle.current() }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@launch
-            val id = (directory.bySlug(slug) ?: runCatching { directory.refresh() }.getOrNull()?.firstOrNull { it.slug == slug })
-                ?.id ?: return@launch
+            val vehicle = directory.bySlug(slug)
+                ?: runCatching { directory.refresh() }.getOrNull()?.firstOrNull { it.slug == slug }
+            _odometerOffsetKm.value = vehicle?.odometerOffsetKm
+            val id = vehicle?.id ?: return@launch
             val from = java.time.Instant.now().minus(java.time.Duration.ofDays(14)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
             kotlinx.coroutines.coroutineScope {
                 val latest = async { runCatching { api.getReadingsLatest(id) }.getOrNull() }

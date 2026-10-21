@@ -109,6 +109,7 @@ internal fun BridgeControlCard(
     }
     val healthy = phase == com.pitstop.service.BridgePhase.Connected &&
         obdAge != null && obdAge < 10 && status.errorMessage == null &&
+        status.blePairing == com.pitstop.service.BlePairing.None &&
         status.offlineBufferBytes == 0L
     var expanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     if (healthy && !expanded) {
@@ -154,6 +155,13 @@ internal fun BridgeControlCard(
                 Text(
                     it,
                     color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            status.blePairing.message()?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.ext.warn,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }

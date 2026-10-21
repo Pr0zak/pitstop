@@ -91,6 +91,30 @@ class ScreenShots {
 
     @Test fun homeMetric() = shot("home_metric", units = "metric") { home(Fixtures.home) }
 
+    /** Home's Tires card: FR highlighted low (verified 2026-10-21 values). */
+    @Test fun homeTires() = shot("home_tires") {
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.padding(16.dp)) {
+            com.pitstop.ui.components.TiresCard(
+                tires = Fixtures.homeTires.tires,
+                newestMs = Fixtures.homeTires.newestMs,
+                nowMs = Fixtures.NOW,
+                system = "imperial",
+            )
+        }
+    }
+
+    /** Metric units: temps in °C, pressures still whole psi (dash parity). */
+    @Test fun homeTiresMetric() = shot("home_tires_metric", units = "metric") {
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.padding(16.dp)) {
+            com.pitstop.ui.components.TiresCard(
+                tires = Fixtures.homeTires.tires,
+                newestMs = Fixtures.homeTires.newestMs,
+                nowMs = Fixtures.NOW,
+                system = "metric",
+            )
+        }
+    }
+
     /** Nothing needs attention → no attention strip at all. */
     @Test fun homeQuiet() = shot("home_quiet") { home(Fixtures.homeQuiet) }
 
@@ -183,6 +207,15 @@ class ScreenShots {
     // ── Live ────────────────────────────────────────────────────────
     @Test fun live() = shot("live") {
         LiveContent(Fixtures.liveMetrics, Fixtures.connected, brokerConnected = true, unitSystem = "imperial", obdAgeS = 2, driveMode = false)
+    }
+
+    /** Firmware-6 WiCAN asking for its passkey: the Live pairing banner. */
+    @Test fun livePairing() = shot("live_pairing") {
+        LiveContent(
+            Fixtures.liveMetrics,
+            Fixtures.connected.copy(blePairing = com.pitstop.service.BlePairing.InProgress),
+            brokerConnected = true, unitSystem = "imperial", obdAgeS = 2, driveMode = false,
+        )
     }
 
     @Test fun liveStale() = shot("live_stale") {

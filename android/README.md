@@ -182,6 +182,36 @@ loops.
   `UNABLE TO CONNECT` / `BUS*` are whole-bus signals (engine off / ECU unreachable) and are
   deliberately excluded from this count.
 
+### WiCAN firmware 6 (6.0.0-beta.2, 2026-10-21)
+
+- **BLE now requires pairing**: Secure Connections only, bonding on, a static
+  6-digit passkey set on the WiCAN (its Settings › Bluetooth page). The device
+  is display-only (IO_CAP_OUT), so the phone types the passkey into Android's
+  system dialog. 4.49 needed no pairing and still works unbonded.
+- Same OBD characteristics as 4.49: service `0xFFF0`, `FFF2` write, `FFF1`
+  notify — but only through a `br_ble_obd` bridge (obd <-> ble, raw) that has
+  to be added on the WiCAN.
+- Pairing is on demand: enabling notifications on `FFF1` unbonded fails with
+  insufficient authentication, Android starts bonding by itself, and Nordic
+  repeats the CCCD write after `BOND_BONDED`. Nordic's connect timeout covers
+  initialisation, so `WiCanBleManager` uses 15 s normally and 90 s for an
+  unbonded attempt once this WiCAN has asked for pairing (first attempt may
+  time out mid-dialog; the retry gives the user time). Settings › Devices &
+  capture also has an explicit **Pair** button (`createBond()`).
+- A reflashed WiCAN forgets its bond keys. Nordic then logs "Authentication
+  required" while we are BONDED and the request hangs; the manager reports
+  `BlePairing.Rejected` ("forget it in Android Bluetooth settings").
+- v6 **suspends the WiCAN's WiFi while a BLE client is attached**, so its own
+  MQTT publishing stops while the phone is connected.
+- Bus is ISO 15765-4 29-bit 500 kbps (ELM protocol 7): the default functional
+  header is `18DB33F1`, so the Mode 22 header restore is `ATSH18DB33F1` then
+  `ATCRA` (two lines), not `ATSH7DF`.
+- Firmware 6 returns full multi-frame Mode 22 answers (39–59 bytes) over HTTP.
+  Whether the raw BLE bridge passes all lines through is **unverified** — the
+  phone-side Mode 22 poll (Settings › Honda extended PIDs) is opt-in, default
+  off, on a fresh DataStore key (`extended_pids_fw6_enabled`) so a stale
+  pre-v0.1.233 `true` can't re-enable it.
+
 ## Reliable background auto-start (CompanionDeviceManager)
 
 The in-car detector ([`presence/InCarDetector`](app/src/main/kotlin/com/pitstop/presence/InCarDetector.kt))

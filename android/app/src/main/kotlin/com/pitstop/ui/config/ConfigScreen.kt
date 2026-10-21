@@ -165,6 +165,7 @@ fun ConfigScreen(
     val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
     val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
     val placesKey by viewModel.placesKey.collectAsStateWithLifecycle()
+    val bleBond by viewModel.bleBond.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val nav = rememberNavController()
@@ -360,6 +361,7 @@ fun ConfigScreen(
                     onUploadOnWifiChange = { v -> viewModel.setUploadOnWifi(v) },
                     onUploadOnWifiSsidsChange = { v -> viewModel.setUploadOnWifiSsids(v) },
                 )
+                LaunchedEffect(form.bleDeviceMac) { viewModel.refreshBleBond() }
                 BleDeviceSection(
                     deviceName = form.bleDeviceName,
                     deviceMac = form.bleDeviceMac,
@@ -369,6 +371,12 @@ fun ConfigScreen(
                         if (scanning) viewModel.stopScan() else viewModel.startScan()
                     },
                     onPick = { viewModel.pickDevice(it) },
+                    bond = bleBond,
+                    onPairBle = { viewModel.pairBle() },
+                )
+                ExtendedPidsSection(
+                    enabled = form.extendedPidsEnabled,
+                    onChange = { v -> viewModel.setExtendedPidsEnabled(v) },
                 )
             }
         }
@@ -1187,6 +1195,8 @@ private fun BleDeviceSection(
     scanResults: List<ScannedDevice>,
     onToggleScan: () -> Unit,
     onPick: (ScannedDevice) -> Unit,
+    bond: BleBond? = null,
+    onPairBle: () -> Unit = {},
 ) {
     SettingsSection(
         title = "OBD device",
@@ -1206,6 +1216,41 @@ private fun BleDeviceSection(
         OutlinedButton(onClick = onToggleScan) {
             Text(if (scanning) "Stop scan" else "Scan for devices")
         }
+        // Bluetooth pairing — required by WiCAN firmware 6 (Secure
+        // Connections + a static passkey), not used by 4.x.
+        if (deviceMac != null && bond != null) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusPill(
+                    tone = when (bond) {
+                        BleBond.Bonded -> PillTone.Healthy
+                        BleBond.Bonding -> PillTone.Connecting
+                        BleBond.NotBonded -> PillTone.Neutral
+                    },
+                    label = when (bond) {
+                        BleBond.Bonded -> "Paired"
+                        BleBond.Bonding -> "Pairing…"
+                        BleBond.NotBonded -> "Not paired"
+                    },
+                    subject = "Bluetooth",
+                )
+                Spacer(Modifier.weight(1f))
+                if (bond != BleBond.Bonded) {
+                    Button(onClick = onPairBle, enabled = bond != BleBond.Bonding) { Text("Pair") }
+                }
+            }
+            Text(
+                if (bond == BleBond.Bonded) {
+                    "Bonded. If the WiCAN is reflashed or reset, forget it in Android Bluetooth " +
+                        "settings and pair again."
+                } else {
+                    "WiCAN firmware 6 needs Bluetooth pairing — tap Pair and type the passkey from " +
+                        "the WiCAN's Settings › Bluetooth page. Firmware 4.x doesn't need this."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (scanResults.isNotEmpty()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             LazyColumn(
@@ -1217,6 +1262,37 @@ private fun BleDeviceSection(
                     ScanRow(device = device, onClick = { onPick(device) })
                 }
             }
+        }
+    }
+}
+
+// ── Extended (Mode 22) PIDs ────────────────────────────────────────
+
+/**
+ * Opt-in phone-side polling of the Honda Mode 22 signals during drives —
+ * when the WiCAN is away from home WiFi only the phone can capture them.
+ * Default off: it moves the ELM session's header for every request, and
+ * whether the BLE bridge carries the multi-frame answers on firmware 6 is
+ * not yet verified on the car (ADR-022).
+ */
+@Composable
+private fun ExtendedPidsSection(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    SettingsSection(
+        title = "Honda extended PIDs",
+        description = "Experimental — unverified over Bluetooth on WiCAN firmware 6.",
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Poll Mode 22 over BLE", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Gear and active cylinders every 2 s; ATF temp, dash odometer, fuel litres, " +
+                        "outside temp and tire pressures every 30 s; misfires every 60 s. " +
+                        "Leave off if standard readings drop out while it's on.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = onChange)
         }
     }
 }
