@@ -4,7 +4,8 @@ import { RouterLink } from "vue-router";
 import FillupModal from "@/components/FillupModal.vue";
 import StateCard from "@/components/StateCard.vue";
 import TpmsGrid from "@/components/TpmsGrid.vue";
-import { TIRE_CORNERS, type TireCorner } from "@/lib/vehicleSignals";
+import { TIRE_CORNERS, vehiclePlacard, type TireCorner } from "@/lib/vehicleSignals";
+import { formatReadingAge, pickFuelDisplay } from "@/lib/fuelDisplay";
 import Sparkline from "@/components/charts/Sparkline.vue";
 import InsightChart from "@/components/charts/InsightChart.vue";
 import type uPlot from "uplot";
@@ -58,6 +59,7 @@ import { Fuel, Route, AlertTriangle, ChevronDown, Gauge } from "lucide-vue-next"
 
 const auth = useAuthStore();
 const vehicles = useVehiclesStore();
+const tirePlacard = computed(() => vehiclePlacard(vehicles.selectedVehicle));
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 
 const tripsQ = useAsync(
@@ -356,18 +358,6 @@ interface HeroFillup {
   is_missed: boolean;
 }
 
-/** Convert an ISO 8601 UTC timestamp into a short relative-time string
- *  ("live" / "Nm ago" / "Nh ago" / "Nd ago") for hero-card subtitles.
- *  Mirrors the phone-side helper in StatusViewModel.formatReadingAge. */
-function formatReadingAge(isoTime: string): string | null {
-  const ms = Date.parse(isoTime);
-  if (!Number.isFinite(ms)) return null;
-  const ageSec = Math.floor((Date.now() - ms) / 1000);
-  if (ageSec < 90) return "live";
-  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
-  if (ageSec < 86_400) return `${Math.floor(ageSec / 3600)}h ago`;
-  return `${Math.floor(ageSec / 86_400)}d ago`;
-}
 
 // Tires card: the four TPMS corners from vehicle_state.latest (WiCAN Mode 22,
 // kPa / °C). Absent until any corner has reported — a Home summary card, not a
@@ -427,15 +417,13 @@ const heroData = computed(() => {
     (f.fillup_date ?? "").startsWith(thisMonth),
   ).length;
 
-  // Fuel level + estimated gallons + reading age. Two sources, picked by
-  // availability:
+  // Fuel level + volume + reading age. Two sources, picked by availability:
   //
-  // 1. **Hybrid estimator (preferred, post-ADR-019 phase 2):** the backend's
-  //    fuel-state worker maintains `vehicles.fuel_level_estimate_l` as a
-  //    persisted state mutated by fillups (reset), trips (decrement), and
-  //    sensor-snap when engine has been off long enough for the noisy
-  //    PID 0x2F sensor to settle. Stable, monotonic between events,
-  //    immune to MAF-burst noise.
+  // 1. **Server display pick (preferred, ADR-025 amendment):**
+  //    `fuel_display_l` is the instrument cluster's own litres while that
+  //    reading is fresh (or nothing has moved the estimate since), else the
+  //    hybrid estimator's `fuel_level_estimate_l` (fillup reset, trip
+  //    decrement, parked snap). The server picks; we caption the source.
   //
   // 2. **Raw smoothed sensor (legacy fallback):** when the estimator
   //    hasn't been seeded yet (no fillup logged since the migration, no
@@ -444,23 +432,23 @@ const heroData = computed(() => {
   //    in /vehicles. Same behavior as pre-phase-2.
   const sv = vehicles.selectedVehicle;
   const estimateL = sv?.fuel_level_estimate_l ?? null;
-  const tankCapacityL = sv?.tank_capacity_l ?? null;
+  const display = pickFuelDisplay(sv);
   const tankCapacityGal = sv?.tank1_capacity ?? null;  // user-fuel-unit
   const fuelEntry = sv?.latest?.fuel_level ?? null;
 
   let fuelLevelPct: number | null;
   let fuelGallons: number | null;
   let fuelLevelAge: string | null;
-  if (estimateL != null && tankCapacityL != null && tankCapacityL > 0) {
-    fuelLevelPct = Math.max(0, Math.min(100, (estimateL / tankCapacityL) * 100));
-    // Show in user's fuel unit. tank1_capacity comes from Fuelio in the
-    // user's setting; if that's gallons, estimateL needs the L→gal
-    // conversion. If the user has fuel_unit set to L, the "gallons"
-    // variable is technically liters — name is historical.
-    fuelGallons = convVolume(estimateL, "L");
-    fuelLevelAge = sv?.fuel_level_estimate_updated_at
-      ? formatReadingAge(sv.fuel_level_estimate_updated_at)
-      : null;
+  // "from cluster" / "estimated"; null on the raw-sensor fallback.
+  let fuelSourceLabel: string | null = null;
+  let fuelFromCluster = false;
+  if (display) {
+    fuelLevelPct = display.pct;
+    // Show in user's fuel unit (the "gallons" name is historical).
+    fuelGallons = convVolume(display.liters, "L");
+    fuelLevelAge = display.at ? formatReadingAge(display.at) : null;
+    fuelSourceLabel = display.label;
+    fuelFromCluster = display.source === "cluster";
   } else {
     fuelLevelPct =
       fuelEntry?.value_num != null && Number.isFinite(fuelEntry.value_num)
@@ -482,6 +470,7 @@ const heroData = computed(() => {
   const estUpdatedAt = sv?.fuel_level_estimate_updated_at;
   const estUpdatedMs = estUpdatedAt ? Date.parse(estUpdatedAt) : NaN;
   const estimateStale =
+    !fuelFromCluster &&
     estimateL != null &&
     Number.isFinite(estUpdatedMs) &&
     Date.now() - estUpdatedMs > STALE_MS;
@@ -525,6 +514,7 @@ const heroData = computed(() => {
     fuelLevelPct,
     fuelGallons,
     fuelLevelAge,
+    fuelSourceLabel,
     estimateStale,
     estimateStaleDays,
     hasLatest: !!latest,
@@ -905,7 +895,8 @@ function onFillupSaved() {
               {{ nf(1).format(heroData.fuelGallons) }} {{ volUnitLabel() }}
             </template>
             <template v-if="heroData.fuelGallons != null && heroData.fuelLevelAge"> · </template>
-            <template v-if="heroData.fuelLevelAge">now · {{ heroData.fuelLevelAge }}</template>
+            <template v-if="heroData.fuelSourceLabel">{{ heroData.fuelSourceLabel }}<template v-if="heroData.fuelLevelAge"> · {{ heroData.fuelLevelAge }}</template></template>
+            <template v-else-if="heroData.fuelLevelAge">now · {{ heroData.fuelLevelAge }}</template>
             <template v-if="heroData.fuelGallons == null && !heroData.fuelLevelAge">no reading yet</template>
           </div>
         </div>
@@ -1215,7 +1206,7 @@ function onFillupSaved() {
             <Gauge :size="14" aria-hidden="true" /> Tires
             <span v-if="tires.age" class="muted tires-age">updated {{ tires.age }}</span>
           </h3>
-          <TpmsGrid :pressure-kpa="tires.pressure" :temp-c="tires.temp" />
+          <TpmsGrid :pressure-kpa="tires.pressure" :temp-c="tires.temp" :placard="tirePlacard" />
         </section>
 
         <section v-if="battery" class="card battery">

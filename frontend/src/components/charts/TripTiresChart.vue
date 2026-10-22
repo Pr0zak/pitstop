@@ -6,13 +6,16 @@
  * left as gaps (lib/tripTires does the carry/break). The x range is the trip
  * window, so a chart whose tire data covers only part of the drive shows it
  * where it happened. HTML legend FL / FR / RL / RR with the value under the
- * cursor (the trip's start → end at rest).
+ * cursor (the trip's start → end at rest). Optional dashed horizontal
+ * baselines (the door placard, pressure mode only) ride as constant series on
+ * the same axis, so the y range always includes them.
  */
 import { computed, ref } from "vue";
 import uPlot from "uplot";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import { TIRE_CORNERS, TIRE_CORNER_COLOR, TIRE_CORNER_LABEL, type TireCorner } from "@/lib/vehicleSignals";
 import type { TireChartData } from "@/lib/tripTires";
+import { cssVar } from "@/lib/chartTheme";
 
 const props = withDefaults(
   defineProps<{
@@ -23,9 +26,15 @@ const props = withDefaults(
     start: number;
     end: number;
     height?: number;
+    /** Horizontal reference values in the chart's unit (e.g. placard psi). */
+    baselines?: number[];
+    /** Legend text for the baselines, e.g. "placard 35 psi". */
+    baselineLabel?: string | null;
   }>(),
-  { height: 200 },
+  { height: 200, baselines: () => [], baselineLabel: null },
 );
+
+const BASELINE_COLOR = cssVar("--c-ink3", "#8b949e");
 
 const cursorIdx = ref<number | null>(null);
 const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
@@ -33,6 +42,7 @@ const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "
 const aligned = computed<uPlot.AlignedData>(() => [
   props.data.x,
   ...TIRE_CORNERS.map((c) => props.data.cols[c]),
+  ...props.baselines.map((b) => props.data.x.map(() => b)),
 ]);
 
 function firstLast(col: (number | null)[]): [number | null, number | null] {
@@ -101,6 +111,13 @@ const opts = computed<uPlot.Options>(() => ({
       paths: stepped,
       points: { show: false },
     })),
+    ...props.baselines.map((b) => ({
+      label: `baseline ${b}`,
+      stroke: BASELINE_COLOR,
+      width: 1,
+      dash: [6, 4],
+      points: { show: false },
+    })),
   ],
   hooks: {
     setCursor: [
@@ -126,6 +143,9 @@ const opts = computed<uPlot.Options>(() => ({
         <i class="sw" :style="{ background: l.color }" aria-hidden="true" />
         <span class="name">{{ l.label }}</span>
         <span class="val num">{{ l.text }}</span>
+      </span>
+      <span v-if="baselines.length && baselineLabel" class="leg baseline muted small">
+        <i class="sw dashed" aria-hidden="true" />{{ baselineLabel }}
       </span>
       <span class="unit muted small">{{ unit }}</span>
       <span v-if="cursorTime" class="time muted small num">{{ cursorTime }}</span>
@@ -157,6 +177,12 @@ const opts = computed<uPlot.Options>(() => ({
   height: 3px;
   border-radius: 2px;
   align-self: center;
+}
+.sw.dashed {
+  height: 0;
+  border-top: 1.5px dashed var(--c-ink3);
+  border-radius: 0;
+  background: none;
 }
 .name {
   color: var(--c-ink2);

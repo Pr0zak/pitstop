@@ -1,9 +1,10 @@
 """TPMS rules shared by the trip detail and /analytics/tires.
 
 Pure functions only, no DB. The web client implements the same low rule in
-frontend/src/lib/vehicleSignals.ts (tpmsReadings / TPMS_LOW_DELTA_PSI) and
-the same slow-leak threshold (TIRE_SLOW_LEAK_PSI_PER_WEEK) -- keep the
-numbers in step.
+frontend/src/lib/vehicleSignals.ts (tpmsReadings / TPMS_LOW_DELTA_PSI), the
+same slow-leak threshold (TIRE_SLOW_LEAK_PSI_PER_WEEK) and the same placard
+rules (placardKpa / belowPlacardPsi / TIRE_UNDER_INFLATED_FRACTION /
+TIRE_BELOW_SPEC_PSI) -- keep the numbers in step.
 """
 
 from __future__ import annotations
@@ -65,6 +66,88 @@ def low_tire_corners(pressure_kpa: Mapping[str, float | None]) -> list[str]:
         for c in TIRE_CORNERS
         if (p := pressure_kpa.get(c)) is not None and high - p >= threshold - 1e-6
     ]
+
+
+# ── Door-placard baseline ─────────────────────────────────────────────
+#
+# vehicles.tire_placard_{front,rear}_kpa (0025) is the manufacturer's
+# recommended COLD pressure. Two absolute rules ride on it, beside the
+# relative spread rule above; both are off when no placard is set.
+
+# "Under-inflated": at least 25 % below placard. This is the FMVSS 138 TPMS
+# warning threshold Honda's own system uses -- the dash lights at ~26 psi
+# on a 35-psi placard -- so the server's verdict matches the car's.
+TIRE_UNDER_INFLATED_FRACTION = 0.25
+# "Below spec": a softer note at >= 3 psi under placard. Judge it on a COLD
+# reading (analytics) or a trip's start pressure; a warm tire gains ~2-4 psi,
+# so a hot reading under placard by 3 is further under when cold.
+TIRE_BELOW_SPEC_PSI = 3.0
+
+FRONT_CORNERS: tuple[str, ...] = ("fl", "fr")
+REAR_CORNERS: tuple[str, ...] = ("rl", "rr")
+
+
+def placard_kpa(
+    corner: str, front_kpa: float | None, rear_kpa: float | None
+) -> float | None:
+    """The placard pressure that applies to ``corner`` (fl/fr front, rl/rr
+    rear), or None when that axle has none / the corner is unknown."""
+    if corner in FRONT_CORNERS:
+        return front_kpa
+    if corner in REAR_CORNERS:
+        return rear_kpa
+    return None
+
+
+def below_placard_psi(
+    pressure_kpa: float | None, placard: float | None
+) -> float | None:
+    """psi UNDER the placard: positive = below, negative = above. None when
+    either side is unknown. Clients render the delta as ``-below``."""
+    if pressure_kpa is None or placard is None or placard <= 0:
+        return None
+    return (placard - pressure_kpa) * PSI_PER_KPA
+
+
+def is_under_inflated(pressure_kpa: float | None, placard: float | None) -> bool:
+    """At or below placard x (1 - TIRE_UNDER_INFLATED_FRACTION)."""
+    if pressure_kpa is None or placard is None or placard <= 0:
+        return False
+    return pressure_kpa <= placard * (1 - TIRE_UNDER_INFLATED_FRACTION) + 1e-6
+
+
+def is_below_spec(pressure_kpa: float | None, placard: float | None) -> bool:
+    """At least TIRE_BELOW_SPEC_PSI under placard (1e-6 slack as the spread
+    rule, so exactly 3.0 psi after the kPa round-trip counts)."""
+    below = below_placard_psi(pressure_kpa, placard)
+    return below is not None and below >= TIRE_BELOW_SPEC_PSI - 1e-6
+
+
+def placard_verdict(
+    corner: str,
+    pressure_kpa: float | None,
+    front_kpa: float | None,
+    rear_kpa: float | None,
+) -> dict[str, Any]:
+    """Per-corner placard fields every tire payload carries."""
+    plc = placard_kpa(corner, front_kpa, rear_kpa)
+    below = below_placard_psi(pressure_kpa, plc)
+    return {
+        "placard_kpa": plc,
+        "below_placard_psi": None if below is None else round(below, 1),
+        "under_inflated": is_under_inflated(pressure_kpa, plc),
+        "below_spec": is_below_spec(pressure_kpa, plc),
+    }
+
+
+def placard_meta(front_kpa: float | None, rear_kpa: float | None) -> dict[str, Any]:
+    """Top-level placard fields + the thresholds, for both tire payloads."""
+    return {
+        "placard_front_kpa": front_kpa,
+        "placard_rear_kpa": rear_kpa,
+        "under_inflated_fraction": TIRE_UNDER_INFLATED_FRACTION,
+        "below_spec_psi": TIRE_BELOW_SPEC_PSI,
+    }
 
 
 # Physically plausible tire temperatures; outside this the signed byte is
@@ -143,6 +226,9 @@ def assemble_tire_analytics(
     cold_candidates: Iterable[
         tuple[datetime, str, float, float | None, float | None]
     ],
+    *,
+    placard_front_kpa: float | None = None,
+    placard_rear_kpa: float | None = None,
 ) -> dict[str, Any]:
     """Build the /analytics/tires body from pre-aggregated inputs.
 
@@ -152,6 +238,8 @@ def assemble_tire_analytics(
     cold_candidates (time, corner, kPa, temp °C | None, ambient °F | None):
                     each corner's first reading after a >= TIRE_COLD_PARK_HOURS
                     gap; the heat guard is applied here.
+    placard_*_kpa   door-placard cold pressure; each corner's placard verdict
+                    is judged on its current cold pressure.
     """
     cold_by_corner: dict[str, list[dict[str, Any]]] = {c: [] for c in TIRE_CORNERS}
     for t, corner, kpa, temp_c, ambient_f in sorted(cold_candidates, key=lambda r: r[0]):
@@ -223,6 +311,9 @@ def assemble_tire_analytics(
                     and slope <= TIRE_SLOW_LEAK_PSI_PER_WEEK
                 ),
                 "warmup_median_psi": _r(median(warmups), 2),
+                **placard_verdict(
+                    c, current_cold[c], placard_front_kpa, placard_rear_kpa
+                ),
             }
         )
 
@@ -241,4 +332,5 @@ def assemble_tire_analytics(
         "slow_leak_psi_per_week": TIRE_SLOW_LEAK_PSI_PER_WEEK,
         "slow_leak_min_samples": TIRE_SLOW_LEAK_MIN_SAMPLES,
         "cold_park_hours": TIRE_COLD_PARK_HOURS,
+        **placard_meta(placard_front_kpa, placard_rear_kpa),
     }

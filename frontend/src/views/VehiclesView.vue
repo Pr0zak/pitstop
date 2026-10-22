@@ -11,6 +11,7 @@ import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import StateCard from "@/components/StateCard.vue";
 import { useModalA11y } from "@/composables/useModalA11y";
 import { useToastStore, errMessage } from "@/stores/toast";
+import { PSI_PER_KPA, kpaToPsi } from "@/lib/vehicleSignals";
 
 const store = useVehiclesStore();
 const units = useUnitsStore();
@@ -127,12 +128,24 @@ const form = ref({
   // estimator (migration 0017) reads. Converted on load and save.
   tank_capacity: undefined as number | undefined,
   redline_rpm: undefined as number | undefined,
+  // Door-placard cold tire pressure in psi (stored kPa). Blank = not set.
+  placard_front_psi: undefined as number | undefined,
+  placard_rear_psi: undefined as number | undefined,
   // Odometer offset in the USER'S distance unit (see [editorImperial]) — the
   // column is km, so this is converted on load and on save. undefined = the
   // field is blank = "not calibrated" (stored as NULL), which is deliberately
   // distinct from a measured 0.
   odometer_offset: undefined as number | undefined,
 });
+
+// Placard pressure: entered in psi (as printed on the door jamb), stored kPa.
+function kpaToPsiInput(kpa: number | null | undefined): number | undefined {
+  return kpa == null ? undefined : Math.round(kpaToPsi(kpa) * 10) / 10;
+}
+function psiInputToKpa(psi: number | null | undefined | string): number | null {
+  const n = toNumOrNull(psi);
+  return n == null || !(n > 0) ? null : n / PSI_PER_KPA;
+}
 
 function slugify(s: string): string {
   return s
@@ -172,6 +185,8 @@ function openCreate() {
     epa_mpg_combined: undefined,
     tank_capacity: undefined,
     redline_rpm: undefined,
+    placard_front_psi: undefined,
+    placard_rear_psi: undefined,
     odometer_offset: undefined,
   };
   showModal.value = true;
@@ -196,6 +211,8 @@ function openEdit(v: Vehicle) {
     epa_mpg_combined: v.epa_mpg_combined ?? undefined,
     tank_capacity: litresToTankInput(v.tank_capacity_l),
     redline_rpm: v.redline_rpm ?? undefined,
+    placard_front_psi: kpaToPsiInput(v.tire_placard_front_kpa),
+    placard_rear_psi: kpaToPsiInput(v.tire_placard_rear_kpa),
     odometer_offset: kmToOffsetInput(v.odometer_offset_km),
   };
   showModal.value = true;
@@ -221,6 +238,8 @@ async function submit() {
       epa_mpg_combined: form.value.epa_mpg_combined ?? null,
       tank_capacity_l: tankInputToLitres(form.value.tank_capacity),
       redline_rpm: toNumOrNull(form.value.redline_rpm),
+      tire_placard_front_kpa: psiInputToKpa(form.value.placard_front_psi),
+      tire_placard_rear_kpa: psiInputToKpa(form.value.placard_rear_psi),
       odometer_offset_km: offsetInputToKm(form.value.odometer_offset),
     };
     if (editing.value) {
@@ -413,6 +432,16 @@ async function confirmRemove() {
                   Redline (rpm)
                   <input type="number" step="100" min="1000" max="20000" v-model.number="form.redline_rpm" placeholder="6500" />
                   <small class="muted">Scales the Live RPM gauge. Blank = 6,500.</small>
+                </label>
+                <label>
+                  Tire placard, front (psi)
+                  <input type="number" step="0.5" min="8" max="145" v-model.number="form.placard_front_psi" placeholder="e.g. 35" />
+                  <small class="muted">Door-jamb cold pressure. Baseline on tire charts; blank hides it.</small>
+                </label>
+                <label>
+                  Tire placard, rear (psi)
+                  <input type="number" step="0.5" min="8" max="145" v-model.number="form.placard_rear_psi" placeholder="e.g. 35" />
+                  <small class="muted">Usually the same as the front.</small>
                 </label>
                 <label>
                   EPA combined (US mpg)

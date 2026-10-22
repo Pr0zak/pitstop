@@ -50,6 +50,8 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "epa_mpg_combined": None,
         "odometer_offset_km": None,
         "redline_rpm": None,
+        "tire_placard_front_kpa": None,
+        "tire_placard_rear_kpa": None,
         "last_seen_at": None,
         "last_metric": None,
         "fuel_level_calibration_pct": None,

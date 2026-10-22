@@ -8,11 +8,13 @@ Runs alongside trip_deriver / ingest. Two passes per cycle:
    stamp fuel_applied_at. Idempotent via the column flag.
 
 2. **snap_pass** — for each vehicle, once the phone has been quiet for
-   PARKED_QUIET_S (no fuel_level rows from a phone source), take the
-   last SNAP_WINDOW_S of phone-captured fuel_level readings, reduce them
-   with ``services.fuel_state.summarize_snap_window`` (de-duplicated per
-   second, 75th percentile, thin/frozen gates) and snap the running
-   estimate to that target. This absorbs accumulated drift between
+   PARKED_QUIET_S (no fuel rows from a phone source), take the last
+   SNAP_WINDOW_S of phone-captured readings and snap the running estimate
+   to their target: the median of the cluster's own litres
+   (``fuel_level_l``, ``summarize_cluster_window``) when the window holds
+   at least ``CLUSTER_MIN_READINGS`` of them, else the raw ``fuel_level``
+   % reduced by ``summarize_snap_window`` (de-duplicated, 75th
+   percentile, thin/frozen gates). This absorbs accumulated drift between
    fillups. It also stamps ``fuel_applied_at`` on every trip that had
    already ended when the window closed, because the reading it just
    snapped to already includes their fuel; without that, a decrement
@@ -42,13 +44,16 @@ from uuid import UUID
 import asyncpg
 
 from ..services.fuel_state import (
+    CLUSTER_METRIC,
     LARGE_SNAP_FRACTION,
     SNAP_SOURCES,
     SNAP_WINDOW_S,
     EstimateUpdate,
     decrement_on_trip,
     persist_estimate,
+    snap_to_cluster,
     snap_to_sensor,
+    summarize_cluster_window,
     summarize_snap_window,
 )
 
@@ -56,6 +61,11 @@ if TYPE_CHECKING:
     from ..config import Settings
 
 log = logging.getLogger(__name__)
+
+# Metrics that feed the snap window and its quiet-gate anchor. The
+# cluster's litres (``fuel_level_l``) win when the window holds enough of
+# them; the % PID is the fallback (older drives, 4.x dongle firmware).
+SNAP_METRICS: tuple[str, ...] = (CLUSTER_METRIC, "fuel_level")
 
 
 CYCLE_INTERVAL_S = 60.0
@@ -216,15 +226,18 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
 
     1. Fillup quarantine — no snap until a real trip has happened since
        the latest fillup, and no sample from before it is considered.
-    2. The anchor is the newest ``SNAP_SOURCES`` fuel_level sample after
-       that fillup; it is the quiet-gate clock. The window is every such
-       sample in the ``SNAP_WINDOW_S`` before it, bounded below by the
+    2. The anchor is the newest ``SNAP_SOURCES`` sample of either
+       ``SNAP_METRICS`` metric after that fillup; it is the quiet-gate
+       clock. The window is every such sample in the ``SNAP_WINDOW_S``
+       before it, bounded below by the
        fillup too. Two statements on purpose: with the anchor bound as a
        parameter the range is an index condition and TimescaleDB excludes
        every other chunk; as a CTE join the planner walked the vehicle's
        whole fuel_level history every cycle.
-    3. ``summarize_snap_window`` de-duplicates, takes the P75, and rejects
-       thin or frozen windows.
+    3. Target: if the window holds >= ``CLUSTER_MIN_READINGS`` cluster
+       litres, their median (``source=cluster``, no calibration). Else
+       ``summarize_snap_window`` de-duplicates the % readings, takes the
+       P75, and rejects thin or frozen windows (``source=pct``).
     4. ``when`` = the anchor, or the end of the trip that contains it if
        that is later — the ADR-017 BLE-lost watchdog can seal a trip
        minutes after its last frame, and the clients show ``when`` as the
@@ -298,12 +311,12 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                 SELECT max(time)
                   FROM pid_readings
                  WHERE vehicle_id = $1
-                   AND metric = 'fuel_level'
+                   AND metric = ANY($4::text[])
                    AND value_num IS NOT NULL
                    AND source = ANY($2::text[])
                    AND ($3::timestamptz IS NULL OR time > $3)
                 """,
-                v["id"], list(SNAP_SOURCES), latest_fillup,
+                v["id"], list(SNAP_SOURCES), latest_fillup, list(SNAP_METRICS),
             )
             if anchor is None:
                 continue
@@ -314,10 +327,10 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
             # never reaching back past the fillup.
             rows = await conn.fetch(
                 """
-                SELECT time, value_num
+                SELECT time, metric, value_num
                   FROM pid_readings
                  WHERE vehicle_id = $1
-                   AND metric = 'fuel_level'
+                   AND metric = ANY($6::text[])
                    AND value_num IS NOT NULL
                    AND source = ANY($2::text[])
                    AND time >  $3::timestamptz - make_interval(secs => $4)
@@ -326,13 +339,34 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                  ORDER BY time
                 """,
                 v["id"], list(SNAP_SOURCES), anchor, SNAP_WINDOW_S, latest_fillup,
+                list(SNAP_METRICS),
             )
-            window = summarize_snap_window(
-                (r["time"], float(r["value_num"])) for r in rows
+            tank_l = float(v["tank_capacity_l"])
+            # Cluster litres first. A reading outside 0..tank+5 % is a bad
+            # decode, not a fuel level — drop it before it can vote.
+            cluster = summarize_cluster_window(
+                (r["time"], float(r["value_num"]))
+                for r in rows
+                if r["metric"] == CLUSTER_METRIC
+                and 0.0 <= float(r["value_num"]) <= tank_l * 1.05
             )
-            if window is None:
-                continue
-            if window.rejection is not None:
+            if cluster is not None and cluster.rejection is None:
+                window = None
+                source = "cluster"
+                n_readings, n_values = cluster.n_readings, 0
+                target_desc = f"{cluster.target_l:.2f}L"
+            else:
+                source = "pct"
+                window = summarize_snap_window(
+                    (r["time"], float(r["value_num"]))
+                    for r in rows
+                    if r["metric"] == "fuel_level"
+                )
+                if window is None:
+                    continue
+                n_readings, n_values = window.n_readings, window.n_values
+                target_desc = f"{window.target_pct:.1f}%"
+            if window is not None and window.rejection is not None:
                 if window.rejection == "frozen":
                     if _last_rejected_anchor.get(v["id"]) != anchor:
                         _last_rejected_anchor[v["id"]] = anchor
@@ -386,7 +420,6 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                 v["id"], when,
                 float(v["epa_mpg_combined"]) if v["epa_mpg_combined"] is not None else None,
             ) or 0.0)
-            tank_l = float(v["tank_capacity_l"])
             # Persist the snap and retire the trips it absorbed together.
             # The reading already reflects every trip that had ENDED by
             # ``when``, but those trips' own fuel_used_l decrements may
@@ -419,19 +452,29 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                     if fresh["fuel_level_estimate_l"] is not None
                     else None
                 )
-                update = snap_to_sensor(
-                    sensor_pct=window.target_pct,
-                    tank_capacity_l=tank_l,
-                    calibration_pct=float(v["cal_pct"]),
-                    empty_pct=(
-                        float(v["fuel_level_empty_pct"])
-                        if v["fuel_level_empty_pct"] is not None
-                        else None
-                    ),
-                    current_estimate_l=current_l,
-                    when=when,
-                    later_burn_l=later_burn_l,
-                )
+                if cluster is not None and source == "cluster":
+                    update = snap_to_cluster(
+                        cluster_l=cluster.target_l,
+                        tank_capacity_l=tank_l,
+                        current_estimate_l=current_l,
+                        when=when,
+                        later_burn_l=later_burn_l,
+                    )
+                else:
+                    assert window is not None
+                    update = snap_to_sensor(
+                        sensor_pct=window.target_pct,
+                        tank_capacity_l=tank_l,
+                        calibration_pct=float(v["cal_pct"]),
+                        empty_pct=(
+                            float(v["fuel_level_empty_pct"])
+                            if v["fuel_level_empty_pct"] is not None
+                            else None
+                        ),
+                        current_estimate_l=current_l,
+                        when=when,
+                        later_burn_l=later_burn_l,
+                    )
                 if update is None:
                     continue
                 if current_l is not None:
@@ -439,10 +482,10 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                     if abs(delta_l) > tank_l * LARGE_SNAP_FRACTION:
                         log.warning(
                             "fuel-estimate snap LARGE vehicle=%s %+.2fL "
-                            "(%.2fL -> %.2fL, target %.1f%% from %d readings / "
-                            "%d distinct) — applying%s",
+                            "(%.2fL -> %.2fL, target %s from %d readings / "
+                            "%d distinct) source=%s — applying%s",
                             v["id"], delta_l, current_l, update.liters,
-                            window.target_pct, window.n_readings, window.n_values,
+                            target_desc, n_readings, n_values, source,
                             "; unlogged fillup?" if delta_l > 0 else "",
                         )
                 await persist_estimate(conn, v["id"], update)
@@ -463,11 +506,11 @@ async def snap_pass(pool: asyncpg.Pool) -> int:
                 )
             snapped += 1
             log.info(
-                "fuel-estimate snap vehicle=%s target=%.1f%% liters=%.2fL %s "
-                "window=%d readings / %d distinct ending %s "
+                "fuel-estimate snap vehicle=%s source=%s target=%s "
+                "liters=%.2fL %s window=%d readings / %d distinct ending %s "
                 "absorbed_pending_trips=%d",
-                v["id"], window.target_pct, update.liters, update.reason,
-                window.n_readings, window.n_values,
+                v["id"], source, target_desc, update.liters, update.reason,
+                n_readings, n_values,
                 anchor.isoformat(timespec="seconds"), absorbed or 0,
             )
     return snapped
@@ -500,7 +543,7 @@ async def run_cycle(pool: asyncpg.Pool) -> tuple[int, int]:
     return decremented, snapped
 
 
-async def run(pool: asyncpg.Pool, cfg: "Settings") -> None:
+async def run(pool: asyncpg.Pool, cfg: Settings) -> None:
     """Forever loop. Mirrors the trip_deriver/retention pattern."""
     log.info("fuel-state worker started (cycle every %s s)", CYCLE_INTERVAL_S)
     while True:

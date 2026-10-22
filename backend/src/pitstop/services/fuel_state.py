@@ -16,6 +16,11 @@ Each function returns the new estimate + a short ``reason`` string for the
 audit trail in logs. None of these touch the DB; the caller is responsible
 for persisting via the small ``persist_estimate`` helper.
 
+Snap targets come from one of two metrics (ADR-025 amendment, 2026-10-21):
+``fuel_level_l`` — the instrument cluster's own fuel quantity in litres
+(Honda DID 7029, already damped and calibrated by the cluster) — when the
+phone captured it in the window, otherwise the raw ``fuel_level`` % PID.
+
 All math is in liters. The sensor reads percentage (0-100); convert via
 ``sensor_pct_to_liters`` which accounts for the per-vehicle calibration
 ceiling (Honda's PID 0x2F caps below 100% on a physically full tank — see
@@ -85,6 +90,85 @@ SNAP_DEDUPE_S = 0.5
 LARGE_SNAP_FRACTION = 0.25
 
 
+# ── Cluster-litres snap window (ADR-025 amendment) ────────────────────
+#
+# The cluster's fuel quantity (``fuel_level_l``, Honda DID 7029) is what
+# the dash gauge draws: litres, already damped and calibrated by the
+# cluster. Measured 2026-10-21 over a 7-min drive it held 44.46-44.94 L
+# while PID 0x2F swung 27-58 %, and the estimate built from the % path sat
+# 8.6 L above it. When the phone captured it, it is the snap target.
+
+# The metric name, shared with the vehicles API and the fill-up check.
+CLUSTER_METRIC = "fuel_level_l"
+# Three readings, not ten. The % gate needs ten because one 0x2F reading
+# can be 15 % off in a slosh dip; a cluster reading is already the damped
+# gauge value, so three agreeing readings (~1.5 min at the phone's 30 s
+# cadence) are as good as thirty. A 15-min drive window holds ~30.
+CLUSTER_MIN_READINGS = 3
+# No distinct-value gate on this path. The cluster value is damped and is
+# legitimately constant for minutes at a time, so "few distinct values"
+# says nothing about a replay here — and SNAP_SOURCES already keeps the
+# dongle's replayed frames out. (The same reason ADR-025 never had a
+# stddev gate.)
+
+
+def _dedupe_by_proximity(
+    ordered: list[tuple[datetime, float]],
+) -> list[float]:
+    """Merge samples within ``SNAP_DEDUPE_S`` of each other (bridge live +
+    phone_batch upload carry the same reading 1-2 ms apart). ``ordered``
+    must be sorted by time. Keeps the larger value of a merged pair."""
+    readings: list[float] = []
+    bucket_at: datetime | None = None
+    for when, value in ordered:
+        if (
+            bucket_at is not None
+            and (when - bucket_at).total_seconds() <= SNAP_DEDUPE_S
+        ):
+            readings[-1] = max(readings[-1], value)
+        else:
+            readings.append(value)
+            bucket_at = when
+    return readings
+
+
+@dataclass(frozen=True)
+class ClusterWindow:
+    """What the trailing window of cluster litres says."""
+
+    target_l: float
+    n_readings: int
+    anchor: datetime
+    rejection: Literal["thin"] | None
+
+
+def summarize_cluster_window(
+    samples: Iterable[tuple[datetime, float]],
+) -> ClusterWindow | None:
+    """Reduce a trailing window of ``fuel_level_l`` samples to one target.
+
+    Same contract as ``summarize_snap_window`` — the caller has already
+    restricted to ``SNAP_SOURCES`` and the window — but the statistic is
+    the plain median (the cluster has already smoothed slosh, so there is
+    no one-sided dip to correct for) and the only gate is
+    ``CLUSTER_MIN_READINGS``. For an even count the median is the mean of
+    the middle pair. Returns None for an empty input.
+    """
+    ordered = sorted(samples, key=lambda s: s[0])
+    if not ordered:
+        return None
+    values = sorted(_dedupe_by_proximity(ordered))
+    n = len(values)
+    mid = n // 2
+    median = values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0
+    return ClusterWindow(
+        target_l=median,
+        n_readings=n,
+        anchor=ordered[-1][0],
+        rejection="thin" if n < CLUSTER_MIN_READINGS else None,
+    )
+
+
 @dataclass(frozen=True)
 class SnapWindow:
     """What the trailing drive window says, before any state is touched."""
@@ -119,19 +203,8 @@ def summarize_snap_window(
     ordered = sorted(samples, key=lambda s: s[0])
     if not ordered:
         return None
-    readings: list[float] = []
-    bucket_at: datetime | None = None
-    for when, value in ordered:
-        if (
-            bucket_at is not None
-            and (when - bucket_at).total_seconds() <= SNAP_DEDUPE_S
-        ):
-            readings[-1] = max(readings[-1], value)
-        else:
-            readings.append(value)
-            bucket_at = when
     anchor = ordered[-1][0]
-    values = sorted(readings)
+    values = sorted(_dedupe_by_proximity(ordered))
     n = len(values)
     idx = min(max(math.ceil(SNAP_PERCENTILE * n) - 1, 0), n - 1)
     n_values = len({round(v, 1) for v in values})
@@ -427,6 +500,142 @@ def snap_to_sensor(
         confidence="HIGH",
         reason=f"snap_delta_{delta:.1f}L_sensor_{sensor_pct:.1f}pct{later}",
         when=when,
+    )
+
+
+def snap_to_cluster(
+    *,
+    cluster_l: float,
+    tank_capacity_l: float,
+    current_estimate_l: float | None,
+    when: datetime,
+    snap_threshold_l: float | None = None,
+    later_burn_l: float = 0.0,
+) -> EstimateUpdate | None:
+    """Snap the estimate to the cluster's own fuel quantity, in litres.
+
+    The litres-direct twin of ``snap_to_sensor``: no %->L calibration, no
+    empty point — the cluster has applied its own. Same dead-band, same
+    ``later_burn_l`` subtraction (so the snap stays idempotent against
+    trips charged after the window), same "apply in full, the caller logs
+    LARGE" rule. The target is clamped to ``[0, tank_capacity_l]``.
+    """
+    target_l = max(
+        0.0,
+        min(float(cluster_l), tank_capacity_l) - max(0.0, later_burn_l),
+    )
+    if current_estimate_l is None:
+        return EstimateUpdate(
+            liters=target_l,
+            confidence="HIGH",
+            reason="snap_initial_from_cluster",
+            when=when,
+        )
+    threshold_l = snap_threshold_for_tank(
+        tank_capacity_l, override_l=snap_threshold_l
+    )
+    delta = abs(current_estimate_l - target_l)
+    if delta < threshold_l:
+        return None
+    later = f"_less_{later_burn_l:.2f}L_later" if later_burn_l > 0 else ""
+    return EstimateUpdate(
+        liters=target_l,
+        confidence="HIGH",
+        reason=f"snap_delta_{delta:.1f}L_cluster_{cluster_l:.2f}L{later}",
+        when=when,
+    )
+
+
+# ── Display rule + fill-up check (ADR-025 amendment) ──────────────────
+
+# A cluster reading younger than this is "live": the car is on, or was a
+# moment ago, and the dash is the best number there is.
+CLUSTER_FRESH_S = 600.0
+# The fill-up check looks this far back for the cluster's pre-pump level.
+FILLUP_CLUSTER_LOOKBACK_S = 1800.0
+
+DisplaySource = Literal["cluster", "estimate"]
+
+
+@dataclass(frozen=True)
+class FuelDisplay:
+    liters: float | None
+    source: DisplaySource | None
+    at: datetime | None
+
+
+def fuel_display(
+    *,
+    cluster_l: float | None,
+    cluster_at: datetime | None,
+    estimate_l: float | None,
+    estimate_at: datetime | None,
+    now: datetime,
+) -> FuelDisplay:
+    """The one rule every client uses to pick the fuel number it shows.
+
+    ``cluster`` when the cluster reading is younger than
+    ``CLUSTER_FRESH_S`` — or when it is the newest thing known about the
+    tank: nothing (snap, trip decrement, fill-up) has moved the estimate
+    since it was taken, so no fuel has been charged that it doesn't
+    already reflect, and it is the dash's own figure. Without that second
+    clause the display would fall back to an un-snapped estimate for the
+    minute or so between "10 min parked" and the worker's next snap, and
+    for good whenever the snap lands inside its dead-band.
+
+    Otherwise ``estimate``. Both None when neither exists.
+    """
+    if cluster_l is not None and cluster_at is not None:
+        fresh = (now - cluster_at).total_seconds() < CLUSTER_FRESH_S
+        newest = estimate_at is None or cluster_at > estimate_at
+        if fresh or newest or estimate_l is None:
+            return FuelDisplay(liters=cluster_l, source="cluster", at=cluster_at)
+    if estimate_l is not None:
+        return FuelDisplay(liters=estimate_l, source="estimate", at=estimate_at)
+    return FuelDisplay(liters=None, source=None, at=None)
+
+
+@dataclass(frozen=True)
+class FillupCheck:
+    """How well each source predicted a fill-to-full.
+
+    ``implied_before_l`` = tank - pumped: what the tank actually held
+    before the pump, if the fill really was to full. ``*_err_l`` =
+    source_before - implied_before: positive means that source read HIGH.
+    Errors are None for a partial fill (no ground truth) or a missing
+    source.
+    """
+
+    pumped_l: float
+    implied_before_l: float | None
+    estimate_before_l: float | None
+    estimate_err_l: float | None
+    cluster_before_l: float | None
+    cluster_err_l: float | None
+
+
+def fillup_check(
+    *,
+    is_full: bool,
+    pumped_l: float,
+    tank_capacity_l: float,
+    estimate_before_l: float | None,
+    cluster_before_l: float | None,
+) -> FillupCheck:
+    implied = tank_capacity_l - pumped_l if is_full else None
+
+    def err(before: float | None) -> float | None:
+        if implied is None or before is None:
+            return None
+        return before - implied
+
+    return FillupCheck(
+        pumped_l=pumped_l,
+        implied_before_l=implied,
+        estimate_before_l=estimate_before_l,
+        estimate_err_l=err(estimate_before_l),
+        cluster_before_l=cluster_before_l,
+        cluster_err_l=err(cluster_before_l),
     )
 
 

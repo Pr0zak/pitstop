@@ -73,6 +73,9 @@ class VehicleBase(BaseModel):
 class VehicleCreate(VehicleBase):
     # On create only, slug is optional — we'll derive it from `name` if blank.
     slug: str | None = None  # type: ignore[assignment]
+    # Door-placard cold tire pressure, kPa (0025); optional on create.
+    tire_placard_front_kpa: float | None = Field(default=None, ge=50, le=1000)
+    tire_placard_rear_kpa: float | None = Field(default=None, ge=50, le=1000)
 
     @field_validator("slug")
     @classmethod
@@ -122,6 +125,9 @@ class VehicleUpdate(BaseModel):
     epa_mpg_combined: float | None = None
     odometer_offset_km: float | None = None
     redline_rpm: int | None = Field(default=None, ge=1000, le=20000)
+    # Door-placard cold tire pressure, kPa (0025). Range mirrors the CHECK.
+    tire_placard_front_kpa: float | None = Field(default=None, ge=50, le=1000)
+    tire_placard_rear_kpa: float | None = Field(default=None, ge=50, le=1000)
 
     @field_validator("slug")
     @classmethod
@@ -180,6 +186,25 @@ class VehicleOut(VehicleBase):
     tank_capacity_l: float | None = None
     fuel_level_estimate_l: float | None = None
     fuel_level_estimate_updated_at: datetime | None = None
+    # Instrument-cluster fuel quantity (ADR-025 amendment): newest
+    # phone-captured ``fuel_level_l`` reading (Honda DID 7029, litres —
+    # the dash gauge's own damped figure) within the last 7 days, and
+    # its capture time. NULL when the phone hasn't captured one.
+    fuel_cluster_l: float | None = None
+    fuel_cluster_at: datetime | None = None
+    # What every client shows as "fuel in tank", picked server-side so
+    # web and phone agree: 'cluster' when the cluster reading is < 10 min
+    # old or is newer than the estimate's last update, else 'estimate'
+    # (fuel_level_estimate_l). NULL source + liters when neither exists.
+    # Percent = fuel_display_l / tank_capacity_l.
+    fuel_display_l: float | None = None
+    fuel_display_source: Literal["cluster", "estimate"] | None = None
+    fuel_display_at: datetime | None = None
+    # Door-placard (manufacturer recommended, COLD) tire pressure per axle,
+    # in kPa (0025 migration). NULL = not configured: clients hide every
+    # placard baseline / verdict. Front = fl/fr, rear = rl/rr.
+    tire_placard_front_kpa: float | None = None
+    tire_placard_rear_kpa: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +355,13 @@ class TripTireCorner(BaseModel):
     pressure_max_kpa: float | None = None
     temp_start_c: float | None = None
     temp_end_c: float | None = None
+    # Door-placard verdict (pitstop/tires.py placard_verdict), judged on the
+    # START pressure. placard_kpa null = no placard for this axle; then
+    # below_placard_psi is null and both flags false.
+    placard_kpa: float | None = None
+    below_placard_psi: float | None = None  # psi UNDER placard; < 0 = above
+    under_inflated: bool = False  # >= under_inflated_fraction below placard
+    below_spec: bool = False  # >= below_spec_psi under placard
 
 
 class TripTires(BaseModel):
@@ -341,6 +373,10 @@ class TripTires(BaseModel):
     corners: list[TripTireCorner]
     low_corners: list[str] = Field(default_factory=list)
     low_delta_psi: float = 2.0
+    placard_front_kpa: float | None = None
+    placard_rear_kpa: float | None = None
+    under_inflated_fraction: float = 0.25
+    below_spec_psi: float = 3.0
 
 
 class TripDetail(TripOut):

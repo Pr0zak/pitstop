@@ -687,6 +687,16 @@ export interface TireCornerHistory {
   slope_samples: number;
   possible_slow_leak: boolean;
   warmup_median_psi: number | null;
+  /** Placard verdict on current_cold_kpa. */
+  /** Door-placard verdict (server: pitstop/tires.py placard_verdict).
+   *  placard_kpa null = no placard for this axle. */
+  placard_kpa?: number | null;
+  /** psi UNDER placard; negative = above. */
+  below_placard_psi?: number | null;
+  /** ≥ under_inflated_fraction (25 %) below placard — the car's TPMS light. */
+  under_inflated?: boolean;
+  /** ≥ below_spec_psi (3) under placard. */
+  below_spec?: boolean;
 }
 export interface TireAnalytics {
   has_data: boolean;
@@ -699,6 +709,11 @@ export interface TireAnalytics {
   slow_leak_psi_per_week: number;
   slow_leak_min_samples: number;
   cold_park_hours: number;
+  /** Door-placard cold pressure per axle, kPa; null = not set. */
+  placard_front_kpa?: number | null;
+  placard_rear_kpa?: number | null;
+  under_inflated_fraction?: number;
+  below_spec_psi?: number;
 }
 export async function getTireAnalytics(vehicleId: string, days = 90): Promise<TireAnalytics> {
   const r = await apiQuery.get<TireAnalytics>("/analytics/tires", {

@@ -21,16 +21,18 @@ import {
 import {
   MISFIRE_CYLINDERS,
   cylindersLabel,
-  fmtBrakeBar,
+  fmtBrakePsi,
   fmtTempF,
   gearLabel,
   TIRE_CORNERS,
   misfireMetric,
   vcmActive,
+  vehiclePlacard,
 } from "@/lib/vehicleSignals";
 import { useUnitsStore } from "@/stores/units";
 
 const vehicles = useVehiclesStore();
+const tirePlacard = computed(() => vehiclePlacard(vehicles.selectedVehicle));
 const auth = useAuthStore();
 const vehicleIdRef = ref<string | null>(vehicles.selectedVehicleId);
 
@@ -243,8 +245,9 @@ const throttle = computed(() => num("throttle_position"));
 const load = computed(() => num("engine_load"));
 const maf = computed(() => num("maf_air_flow"));
 const torque = computed(() => num("engine_torque_pct"));
-// Brake line pressure, bar as the ECU reports it (0 off the pedal, ~85-93 on
-// a firm press). Bar in every unit system — see fmtBrakeBar for why.
+// Brake line pressure, stored in bar as the ECU reports it (0 off the pedal,
+// ~85-93 bar on a firm press); shown in whole psi in every unit system — see
+// fmtBrakePsi.
 const brake = computed(() => num("brake_pressure"));
 const refTorque = computed(() => num("engine_reference_torque"));
 
@@ -517,7 +520,7 @@ function trimClass(v: number | null): string {
       <section>
         <h3 class="section-title">Tires</h3>
         <div class="card tpms-card">
-          <TpmsGrid :pressure-kpa="tirePressure" :temp-c="tireTemp" />
+          <TpmsGrid :pressure-kpa="tirePressure" :temp-c="tireTemp" :placard="tirePlacard" />
           <div class="muted small">highlighted: 2 psi or more below the highest tire</div>
           <div v-if="parked" class="tile-age">{{ asOf(...tireKeys) }}</div>
         </div>
@@ -557,7 +560,7 @@ function trimClass(v: number | null): string {
           </div>
           <div class="card tile">
             <h3>Brake pressure</h3>
-            <div class="big"><QtyValue :text="fmtBrakeBar(brake)" /></div>
+            <div class="big"><QtyValue :text="fmtBrakePsi(brake)" /></div>
             <div v-if="parked" class="tile-age">{{ asOf('brake_pressure') }}</div>
           </div>
         </div>

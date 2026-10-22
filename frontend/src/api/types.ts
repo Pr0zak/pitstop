@@ -67,6 +67,17 @@ export interface Vehicle {
   tank_capacity_l?: number | null;
   fuel_level_estimate_l?: number | null;
   fuel_level_estimate_updated_at?: string | null;
+  // Instrument-cluster fuel quantity (ADR-025 amendment): newest
+  // phone-captured `fuel_level_l` reading (litres, the dash gauge's own
+  // damped figure) and when it was taken. Null when none in 7 days.
+  fuel_cluster_l?: number | null;
+  fuel_cluster_at?: string | null;
+  // What to show as "fuel in tank", picked server-side: 'cluster' while
+  // the cluster reading is < 10 min old or newer than the estimate, else
+  // 'estimate'. % = fuel_display_l / tank_capacity_l. See lib/fuelDisplay.
+  fuel_display_l?: number | null;
+  fuel_display_source?: "cluster" | "estimate" | null;
+  fuel_display_at?: string | null;
   // User-measured (PCM counter − dash cluster) difference, in KILOMETRES
   // (migration 0020). The odometer we ingest over OBD comes from the PCM;
   // the odometer the user reads — and types into a fillup — comes from the
@@ -79,6 +90,11 @@ export interface Vehicle {
   odometer_offset_km?: number | null;
   /** Engine redline. Scales the Live RPM gauge; null = default 6500. */
   redline_rpm?: number | null;
+  /** Door-placard (recommended COLD) tire pressure, kPa, front = fl/fr and
+   *  rear = rl/rr (migration 0025). Null = not set → placard visuals hidden.
+   *  Entered / shown in psi on the Vehicles page. */
+  tire_placard_front_kpa?: number | null;
+  tire_placard_rear_kpa?: number | null;
   /** Server-augmented count of fillups (newer backends). */
   fillup_count?: number | null;
 }
@@ -239,6 +255,16 @@ export interface TripTireCorner {
   pressure_max_kpa: number | null;
   temp_start_c: number | null;
   temp_end_c: number | null;
+  /** Placard verdict, judged on the START pressure (coldest of the trip). */
+  /** Door-placard verdict (server: pitstop/tires.py placard_verdict).
+   *  placard_kpa null = no placard for this axle. */
+  placard_kpa?: number | null;
+  /** psi UNDER placard; negative = above. */
+  below_placard_psi?: number | null;
+  /** ≥ under_inflated_fraction (25 %) below placard — the car's TPMS light. */
+  under_inflated?: boolean;
+  /** ≥ below_spec_psi (3) under placard. */
+  below_spec?: boolean;
 }
 
 export interface TripTires {
@@ -247,6 +273,11 @@ export interface TripTires {
   /** Server-side low rule on END pressures (≥ low_delta_psi below highest). */
   low_corners: string[];
   low_delta_psi: number;
+  /** Door-placard cold pressure per axle, kPa; null = not set. */
+  placard_front_kpa?: number | null;
+  placard_rear_kpa?: number | null;
+  under_inflated_fraction?: number;
+  below_spec_psi?: number;
 }
 
 export interface Dtc {

@@ -20,6 +20,8 @@ from ..tires import (
     TIRE_METRICS,
     TPMS_LOW_DELTA_PSI,
     low_tire_corners,
+    placard_meta,
+    placard_verdict,
     valid_tire_value,
 )
 
@@ -194,10 +196,17 @@ def _bucket_seconds(
 
 def _tire_summary(
     readings: list[tuple[datetime, str, float | None]],
+    *,
+    placard_front_kpa: float | None = None,
+    placard_rear_kpa: float | None = None,
 ) -> dict[str, Any] | None:
     """Per-corner TPMS summary from raw (time, metric, value) rows inside a
     trip window. Returns None when no tire metric has a usable reading, so
     the clients can hide the whole section rather than show four dashes.
+
+    Placard verdicts (below_placard_psi / under_inflated / below_spec) are
+    judged on the START pressure: the placard is a cold figure and the start
+    of a drive is the coldest the tire is during it.
     """
     by_metric: dict[str, list[tuple[datetime, float]]] = {}
     for t, metric, value in readings:
@@ -224,12 +233,17 @@ def _tire_summary(
                 "pressure_max_kpa": max(pres) if pres else None,
                 "temp_start_c": temp[0] if temp else None,
                 "temp_end_c": temp[-1] if temp else None,
+                **placard_verdict(
+                    c, pres[0] if pres else None,
+                    placard_front_kpa, placard_rear_kpa,
+                ),
             }
         )
     return {
         "corners": corners,
         "low_corners": low_tire_corners(end_kpa),
         "low_delta_psi": TPMS_LOW_DELTA_PSI,
+        **placard_meta(placard_front_kpa, placard_rear_kpa),
     }
 
 
@@ -473,7 +487,8 @@ async def get_trip(
         #   fuel_level_calibration_pct -> normalizes fuel_level to a real 100%
         #   odometer_offset_km         -> PCM reads high vs the cluster
         veh = await conn.fetchrow(
-            "SELECT fuel_level_calibration_pct, odometer_offset_km "
+            "SELECT fuel_level_calibration_pct, odometer_offset_km, "
+            "tire_placard_front_kpa, tire_placard_rear_kpa "
             "  FROM vehicles WHERE id = $1",
             row["vehicle_id"],
         )
@@ -672,8 +687,15 @@ async def get_trip(
         return min(100.0, float(raw) / cal * 100.0)
     out["fuel_level_start_pct"] = _norm(fuel_start_raw)
     out["fuel_level_end_pct"] = _norm(fuel_end_raw)
+    def _kpa(col: str) -> float | None:
+        if veh is None or veh[col] is None:
+            return None
+        return float(veh[col])
+
     out["tires"] = _tire_summary(
-        [(r["time"], r["metric"], r["value_num"]) for r in tire_rows]
+        [(r["time"], r["metric"], r["value_num"]) for r in tire_rows],
+        placard_front_kpa=_kpa("tire_placard_front_kpa"),
+        placard_rear_kpa=_kpa("tire_placard_rear_kpa"),
     )
     out.update(
         _brake_summary([(r["time"], r["value_num"]) for r in brake_rows])

@@ -683,6 +683,36 @@ at the end of this ADR.
 liters=38.34L ... window=28 readings / 14 distinct ending 2026-09-04T23:05:45+00:00`. The
 gauge went from 79 % to 52 % in one cycle; the trip fuel accounting put the tank at ~41 L.
 
+**Amendment (2026-10-21) — cluster litres are the preferred snap target and display source.**
+The phone now captures the instrument cluster's own fuel quantity, `fuel_level_l` (Honda DID
+7029, litres) at 30 s while driving; the dongle reads it at home. It is the number the dash
+gauge draws, already damped and calibrated by the cluster: over a 7-minute drive it held
+44.46–44.94 L while PID 0x2F swung 27–58 %. The same day the estimate stood at 53.1 L against
+the cluster's 44.5 L — 8.6 L of drift the %-based snap had not removed.
+
+1. **Snap target.** When the snap window holds ≥ 3 de-duplicated phone-sourced `fuel_level_l`
+   readings, the target is their median, in litres directly — no full/empty calibration.
+   Three, not ten: the % gate needs ten because one 0x2F reading can be 15 % off in a slosh
+   dip, while a cluster reading is already the damped gauge value. No distinct-value gate on
+   this path — the cluster is legitimately constant for minutes, and `SNAP_SOURCES` already
+   keeps the dongle's replays out. Otherwise the % path above runs unchanged (older drives,
+   4.x dongle firmware). The anchor is the newest phone sample of either metric; the
+   later-burn subtraction, the lock, the absorbed-trip stamping and the `snap LARGE` warning
+   are shared. Both log lines carry `source=cluster|pct`.
+2. **Display.** `/vehicles` returns `fuel_cluster_l` / `fuel_cluster_at` (newest phone-sourced
+   reading within 7 days; dongle rows excluded for the same reason as rule 1 — one stale
+   snapshot is indistinguishable from a live row) and a server-picked `fuel_display_l` /
+   `fuel_display_source` / `fuel_display_at`: `cluster` when that reading is < 10 min old or
+   nothing has moved the estimate since it was taken, else `estimate`. Clients show
+   `fuel_display_l / tank_capacity_l` and never re-derive the rule. Existing fields unchanged.
+3. **Fill-up check.** Every fill-up logs `fuel-fillup check` with the litres pumped against the
+   estimate's and the cluster's pre-pump figures (`*_err_l` > 0 = that source read high), so a
+   few fill-ups show which source tracks the pump. Log-only: a column needs a migration, and a
+   migration must ship in a release before any deploy.
+
+The rule that only phone rows feed the snap stands, as does the absence of a stability gate and
+of a refusal cap.
+
 ## ADR-026 — Live nearby fuel prices come from Google Places, behind a server-side key and a hard monthly cap
 
 **Context.** pitstop only knew what the user had paid, at stations they had already used

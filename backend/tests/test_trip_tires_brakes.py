@@ -8,8 +8,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from pitstop.api.trips import _HARD_BRAKE_BAR, _brake_summary, _tire_summary
-from pitstop.tires import TPMS_LOW_DELTA_PSI
+from pitstop.tires import (
+    KPA_PER_PSI,
+    TIRE_BELOW_SPEC_PSI,
+    TIRE_UNDER_INFLATED_FRACTION,
+    TPMS_LOW_DELTA_PSI,
+    below_placard_psi,
+    is_below_spec,
+    is_under_inflated,
+    placard_kpa,
+)
 from pitstop.tires import low_tire_corners as _low_tire_corners
 
 T0 = datetime(2026, 10, 21, 22, 41, tzinfo=UTC)
@@ -81,7 +92,14 @@ def test_tire_summary_start_end_min_max_and_low() -> None:
         "pressure_max_kpa": None,
         "temp_start_c": None,
         "temp_end_c": None,
+        "placard_kpa": None,
+        "below_placard_psi": None,
+        "under_inflated": False,
+        "below_spec": False,
     }
+    # No placard configured -> no placard verdicts anywhere.
+    assert out["placard_front_kpa"] is None and out["placard_rear_kpa"] is None
+    assert not any(c["under_inflated"] or c["below_spec"] for c in out["corners"])
     # End pressures 214 vs 198 kPa = 2.3 psi spread -> FR low.
     assert out["low_corners"] == ["fr"]
     assert out["low_delta_psi"] == TPMS_LOW_DELTA_PSI
@@ -158,3 +176,60 @@ def test_hard_brake_threshold_is_provisional_constant() -> None:
     assert _HARD_BRAKE_BAR == 60.0
     out = _brake_summary(_series([0, _HARD_BRAKE_BAR, 0]))
     assert out["hard_brake_events"] == 1
+
+
+# ── Door-placard verdicts ────────────────────────────────────────────────
+
+PLACARD_KPA = 35 * KPA_PER_PSI  # 2019 Pilot, 35 psi front and rear
+
+
+def _psi(p: float) -> float:
+    return p * KPA_PER_PSI
+
+
+def test_placard_corner_mapping() -> None:
+    assert placard_kpa("fl", 241.0, 230.0) == 241.0
+    assert placard_kpa("fr", 241.0, 230.0) == 241.0
+    assert placard_kpa("rl", 241.0, 230.0) == 230.0
+    assert placard_kpa("rr", 241.0, None) is None
+    assert placard_kpa("spare", 241.0, 230.0) is None
+
+
+def test_below_placard_and_flags() -> None:
+    assert below_placard_psi(_psi(31), PLACARD_KPA) == pytest.approx(4.0)
+    assert below_placard_psi(_psi(36), PLACARD_KPA) == pytest.approx(-1.0)
+    assert below_placard_psi(None, PLACARD_KPA) is None
+    assert below_placard_psi(_psi(31), None) is None
+    # Below spec at >= 3 psi under, inclusive.
+    assert is_below_spec(_psi(32), PLACARD_KPA)
+    assert not is_below_spec(_psi(32.1), PLACARD_KPA)
+    # Under-inflated at >= 25 % under: 35 -> 26.25 psi, Honda's TPMS light.
+    assert TIRE_UNDER_INFLATED_FRACTION == 0.25
+    assert is_under_inflated(_psi(26.25), PLACARD_KPA)
+    assert not is_under_inflated(_psi(26.5), PLACARD_KPA)
+    assert not is_under_inflated(_psi(20), None)
+
+
+def test_tire_summary_placard_verdicts_use_start_pressure() -> None:
+    rows = [
+        (_t(0), "tire_pressure_fl", _psi(35)),
+        (_t(60), "tire_pressure_fl", _psi(38)),
+        (_t(0), "tire_pressure_fr", _psi(31)),   # 4 under, cold
+        (_t(60), "tire_pressure_fr", _psi(34)),  # warmed up
+        (_t(0), "tire_pressure_rl", _psi(26)),   # TPMS-light territory
+    ]
+    out = _tire_summary(
+        rows, placard_front_kpa=PLACARD_KPA, placard_rear_kpa=PLACARD_KPA
+    )
+    assert out is not None
+    by = {c["corner"]: c for c in out["corners"]}
+    assert by["fl"]["below_placard_psi"] == 0.0
+    assert by["fl"]["below_spec"] is False
+    assert by["fr"]["below_placard_psi"] == 4.0
+    assert by["fr"]["below_spec"] is True and by["fr"]["under_inflated"] is False
+    assert by["rl"]["under_inflated"] is True
+    assert by["rr"]["placard_kpa"] == PLACARD_KPA
+    assert by["rr"]["below_placard_psi"] is None
+    assert out["placard_front_kpa"] == PLACARD_KPA
+    assert out["under_inflated_fraction"] == TIRE_UNDER_INFLATED_FRACTION
+    assert out["below_spec_psi"] == TIRE_BELOW_SPEC_PSI

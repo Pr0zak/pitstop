@@ -73,11 +73,18 @@ export interface TireReading {
   /** °C as stored. */
   tempC: number | null;
   low: boolean;
+  /** Placard for this corner, kPa; null when none is set. */
+  placardKpa: number | null;
+  /** psi under placard (positive = below); null without placard/reading. */
+  belowPlacardPsi: number | null;
+  underInflated: boolean;
+  belowSpec: boolean;
 }
 
 export function tpmsReadings(
   pressureKpa: Partial<Record<TireCorner, number | null>>,
   tempC: Partial<Record<TireCorner, number | null>> = {},
+  placard: TirePlacard | null = null,
 ): TireReading[] {
   const known = TIRE_CORNERS.map((c) => pressureKpa[c]).filter(
     (p): p is number => p != null && Number.isFinite(p),
@@ -95,11 +102,104 @@ export function tpmsReadings(
       tempC: t,
       // 1e-6 slack so exactly 2.0 psi (after the kPa round-trip) counts as low.
       low: p != null && max != null && max - p >= threshold - 1e-6,
+      placardKpa: placardKpa(c, placard),
+      belowPlacardPsi: belowPlacardPsi(p, placardKpa(c, placard)),
+      underInflated: isUnderInflated(p, placardKpa(c, placard)),
+      belowSpec: isBelowSpec(p, placardKpa(c, placard)),
     };
   });
 }
 
-/** Tire pressure, always whole psi — what the dash's TPMS page shows — even
+// ─── Door-placard baseline ────────────────────────────────────────────────
+// vehicles.tire_placard_{front,rear}_kpa: the manufacturer's recommended COLD
+// pressure. Mirrors backend/src/pitstop/tires.py (placard_kpa /
+// below_placard_psi / is_under_inflated / is_below_spec); the trip summary and
+// /analytics/tires carry the server's verdict, these are for the live/Home
+// grid and for formatting. Every placard visual hides when none is set.
+
+/** "Under-inflated" at ≥ 25 % below placard — the FMVSS 138 TPMS warning
+ *  threshold Honda's system uses (the dash lights at ~26 psi on a 35 placard),
+ *  so our flag agrees with the car's light. */
+export const TIRE_UNDER_INFLATED_FRACTION = 0.25;
+/** Softer "below spec" note at ≥ 3 psi under placard, judged cold: a warm
+ *  tire gains 2–4 psi, so a hot reading 3 under is further under cold. */
+export const TIRE_BELOW_SPEC_PSI = 3;
+
+export interface TirePlacard {
+  frontKpa?: number | null;
+  rearKpa?: number | null;
+}
+
+/** The placard pair off a Vehicle row (null when neither axle is set). */
+export function vehiclePlacard(
+  v: { tire_placard_front_kpa?: number | null; tire_placard_rear_kpa?: number | null } | null | undefined,
+): TirePlacard | null {
+  if (!v || (v.tire_placard_front_kpa == null && v.tire_placard_rear_kpa == null)) return null;
+  return { frontKpa: v.tire_placard_front_kpa ?? null, rearKpa: v.tire_placard_rear_kpa ?? null };
+}
+
+/** Placard for a corner: fl/fr → front, rl/rr → rear. */
+export function placardKpa(corner: TireCorner, placard: TirePlacard | null | undefined): number | null {
+  if (!placard) return null;
+  const v = corner === "fl" || corner === "fr" ? placard.frontKpa : placard.rearKpa;
+  return v != null && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/** psi UNDER the placard: positive = below, negative = above; null if either
+ *  side is unknown. */
+export function belowPlacardPsi(
+  pressureKpa: number | null | undefined,
+  placard: number | null | undefined,
+): number | null {
+  if (pressureKpa == null || placard == null || !Number.isFinite(pressureKpa) || !(placard > 0)) {
+    return null;
+  }
+  return (placard - pressureKpa) * PSI_PER_KPA;
+}
+
+export function isUnderInflated(pressureKpa: number | null | undefined, placard: number | null | undefined): boolean {
+  if (pressureKpa == null || placard == null || !Number.isFinite(pressureKpa) || !(placard > 0)) return false;
+  return pressureKpa <= placard * (1 - TIRE_UNDER_INFLATED_FRACTION) + 1e-6;
+}
+
+export function isBelowSpec(pressureKpa: number | null | undefined, placard: number | null | undefined): boolean {
+  const below = belowPlacardPsi(pressureKpa, placard);
+  return below != null && below >= TIRE_BELOW_SPEC_PSI - 1e-6;
+}
+
+/** "−4" / "+1" / "±0": whole-psi delta vs placard (reading − placard). */
+export function fmtPlacardDelta(belowPsi: number | null | undefined): string | null {
+  if (belowPsi == null || !Number.isFinite(belowPsi)) return null;
+  const d = -Math.round(belowPsi);
+  if (d === 0) return "±0";
+  return d > 0 ? `+${d}` : `−${Math.abs(d)}`;
+}
+
+/** Whole psi of a placard, for "of 35" / "placard 35 psi". */
+export function placardPsiText(placard: number | null | undefined): string | null {
+  return placard != null && placard > 0 ? String(Math.round(placard * PSI_PER_KPA)) : null;
+}
+
+/** Chart baseline label: "placard 35 psi", or "placard F 35 / R 38 psi" when
+ *  the axles differ; null when no placard is set. */
+export function placardLabel(placard: TirePlacard | null | undefined): string | null {
+  const f = placardPsiText(placardKpa("fl", placard));
+  const r = placardPsiText(placardKpa("rl", placard));
+  if (f == null && r == null) return null;
+  if (f === r || r == null) return `placard ${f} psi`;
+  if (f == null) return `placard R ${r} psi`;
+  return `placard F ${f} / R ${r} psi`;
+}
+
+/** Distinct placard values in psi for chart baselines (one line per value). */
+export function placardBaselinesPsi(placard: TirePlacard | null | undefined): number[] {
+  const vals = [placardKpa("fl", placard), placardKpa("rl", placard)]
+    .filter((v): v is number => v != null)
+    .map((v) => v * PSI_PER_KPA);
+  return [...new Set(vals.map((v) => Math.round(v * 10) / 10))];
+}
+
+/** Tire pressure, always whole psi/** Tire pressure, always whole psi — what the dash's TPMS page shows — even
  *  when the rest of the UI is metric (user preference, 2026-10-21). */
 export function fmtTirePressure(kpa: number | null | undefined): string {
   return fmtPressureKpa(kpa, "imperial", 0);
@@ -175,14 +275,22 @@ export function tireSpreadPsi(
 }
 
 // ─── Brakes ───────────────────────────────────────────────────────────────
-/** `brake_pressure` is reported by the ECU in bar and shown in bar for every
- *  unit system — it's a hydraulic line pressure nobody reads off a gauge in
- *  psi, and bar is what the ABS literature and the PCM both use. Whole bar:
- *  the sensor's useful range is 0–~100. */
-export function fmtBrakeBar(bar: number | null | undefined): string {
-  if (bar == null || !Number.isFinite(bar)) return "—";
-  return `${Math.round(Math.max(0, bar))} bar`;
+/** `brake_pressure` arrives (and is stored, and served) in bar — what the VSA
+ *  modulator reports — but is DISPLAYED in whole psi in every unit system,
+ *  like tire pressure: the user reads pressures in psi (2026-10-21 request).
+ *  Convert at display only: psi = bar × 14.5038. The sensor's useful range is
+ *  0–~100 bar (0–~1,450 psi), so whole psi is plenty. */
+export const PSI_PER_BAR = 14.5038;
+export function barToPsi(bar: number): number {
+  return bar * PSI_PER_BAR;
 }
+export function fmtBrakePsi(bar: number | null | undefined): string {
+  if (bar == null || !Number.isFinite(bar)) return "—";
+  return `${Math.round(Math.max(0, bar) * PSI_PER_BAR)} psi`;
+}
+/** Server's provisional hard-press threshold (backend trips._HARD_BRAKE_BAR,
+ *  kept in bar there). Mirrored only to label it, as ≈ 870 psi. */
+export const HARD_BRAKE_BAR = 60;
 
 // ─── Misfires ─────────────────────────────────────────────────────────────
 export const MISFIRE_CYLINDERS = [1, 2, 3, 4, 5, 6] as const;

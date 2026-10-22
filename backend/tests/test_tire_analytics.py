@@ -170,3 +170,31 @@ def test_first_cold_reading_of_the_day_wins() -> None:
     rr = out["corners"][3]
     assert rr["daily"][0]["cold_pressure_kpa"] == 200.0
     assert rr["current_cold_kpa"] == 205.0  # latest cold reading overall
+
+
+def test_placard_verdict_rides_on_current_cold_pressure() -> None:
+    placard = 35 * KPA_PER_PSI
+    cold = [
+        (T0, "fl", 35 * KPA_PER_PSI, None, None),
+        (T0, "fr", 31 * KPA_PER_PSI, None, None),  # 4 psi under: below spec
+        (T0, "rl", 26 * KPA_PER_PSI, None, None),  # >= 25 % under
+    ]
+    out = assemble_tire_analytics(
+        [D0], {}, cold, placard_front_kpa=placard, placard_rear_kpa=placard
+    )
+    fl, fr, rl, rr = out["corners"]
+    assert out["placard_front_kpa"] == placard
+    assert out["placard_rear_kpa"] == placard
+    assert fl["below_placard_psi"] == 0.0 and fl["below_spec"] is False
+    assert fr["below_placard_psi"] == 4.0 and fr["below_spec"] is True
+    assert fr["under_inflated"] is False
+    assert rl["under_inflated"] is True
+    assert rr["below_placard_psi"] is None and rr["under_inflated"] is False
+
+
+def test_no_placard_no_verdicts() -> None:
+    out = assemble_tire_analytics([D0], {}, [(T0, "fl", 150.0, None, None)])
+    assert out["placard_front_kpa"] is None
+    fl = out["corners"][0]
+    assert fl["placard_kpa"] is None and fl["below_placard_psi"] is None
+    assert fl["under_inflated"] is False and fl["below_spec"] is False

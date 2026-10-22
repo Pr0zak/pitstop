@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  TIRE_BELOW_SPEC_PSI,
+  TIRE_UNDER_INFLATED_FRACTION,
+  belowPlacardPsi,
+  fmtPlacardDelta,
+  isBelowSpec,
+  isUnderInflated,
+  placardBaselinesPsi,
+  placardKpa,
+  placardLabel,
+  placardPsiText,
   TIRE_SLOW_LEAK_PSI_PER_WEEK,
-  fmtBrakeBar,
+  HARD_BRAKE_BAR,
+  barToPsi,
+  fmtBrakePsi,
   fmtPsiPerWeek,
   fmtTempRiseC,
   isSlowLeak,
@@ -103,10 +115,69 @@ describe("tire trend helpers", () => {
   });
 });
 
-describe("fmtBrakeBar", () => {
-  it("is whole bar in every unit system", () => {
-    expect(fmtBrakeBar(87.6)).toBe("88 bar");
-    expect(fmtBrakeBar(-0.2)).toBe("0 bar");
-    expect(fmtBrakeBar(null)).toBe("—");
+describe("fmtBrakePsi", () => {
+  it("converts bar to whole psi in every unit system", () => {
+    expect(fmtBrakePsi(87.6)).toBe("1271 psi");
+    expect(fmtBrakePsi(1)).toBe("15 psi");
+    expect(fmtBrakePsi(-0.2)).toBe("0 psi");
+    expect(fmtBrakePsi(null)).toBe("—");
+    expect(barToPsi(10)).toBeCloseTo(145.038);
+  });
+  it("labels the hard-press threshold as about 870 psi", () => {
+    expect(fmtBrakePsi(HARD_BRAKE_BAR)).toBe("870 psi");
+  });
+});
+
+describe("door placard", () => {
+  const KPA = 1 / 0.145038;
+  const P35 = 35 * KPA;
+  const placard = { frontKpa: P35, rearKpa: P35 };
+
+  it("maps corners to axles", () => {
+    expect(placardKpa("fl", { frontKpa: 241, rearKpa: 230 })).toBe(241);
+    expect(placardKpa("fr", { frontKpa: 241, rearKpa: 230 })).toBe(241);
+    expect(placardKpa("rr", { frontKpa: 241, rearKpa: 230 })).toBe(230);
+    expect(placardKpa("rl", { frontKpa: 241, rearKpa: null })).toBeNull();
+    expect(placardKpa("fl", null)).toBeNull();
+  });
+
+  it("measures psi under placard and flags", () => {
+    expect(belowPlacardPsi(31 * KPA, P35)).toBeCloseTo(4);
+    expect(belowPlacardPsi(36 * KPA, P35)).toBeCloseTo(-1);
+    expect(belowPlacardPsi(null, P35)).toBeNull();
+    expect(isBelowSpec(32 * KPA, P35)).toBe(true);
+    expect(isBelowSpec(32.1 * KPA, P35)).toBe(false);
+    expect(TIRE_UNDER_INFLATED_FRACTION).toBe(0.25);
+    expect(TIRE_BELOW_SPEC_PSI).toBe(3);
+    expect(isUnderInflated(26.25 * KPA, P35)).toBe(true);
+    expect(isUnderInflated(26.5 * KPA, P35)).toBe(false);
+    expect(isUnderInflated(20 * KPA, null)).toBe(false);
+  });
+
+  it("formats the delta and labels", () => {
+    expect(fmtPlacardDelta(4)).toBe("−4");
+    expect(fmtPlacardDelta(-1.2)).toBe("+1");
+    expect(fmtPlacardDelta(0.3)).toBe("±0");
+    expect(fmtPlacardDelta(null)).toBeNull();
+    expect(placardPsiText(P35)).toBe("35");
+    expect(placardLabel(placard)).toBe("placard 35 psi");
+    expect(placardLabel({ frontKpa: P35, rearKpa: 38 * KPA })).toBe("placard F 35 / R 38 psi");
+    expect(placardLabel({})).toBeNull();
+    expect(placardBaselinesPsi(placard)).toEqual([35]);
+    expect(placardBaselinesPsi(null)).toEqual([]);
+  });
+
+  it("tpmsReadings carries the placard verdict", () => {
+    const r = tpmsReadings({ fl: 35 * KPA, fr: 31 * KPA, rl: 26 * KPA }, {}, placard);
+    const by = Object.fromEntries(r.map((t) => [t.corner, t]));
+    expect(by.fr.belowSpec).toBe(true);
+    expect(by.fr.underInflated).toBe(false);
+    expect(by.rl.underInflated).toBe(true);
+    expect(by.rr.belowPlacardPsi).toBeNull();
+    expect(by.rr.placardKpa).toBeCloseTo(P35);
+    // Without a placard nothing is judged.
+    const none = tpmsReadings({ fl: 20 * KPA });
+    expect(none[0].placardKpa).toBeNull();
+    expect(none[0].underInflated).toBe(false);
   });
 });

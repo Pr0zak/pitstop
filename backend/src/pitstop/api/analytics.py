@@ -1279,6 +1279,23 @@ async def tire_history(
 
     daily: dict[tuple[date, str], tuple[float | None, float | None, float | None]] = {}
     async with pool.acquire() as conn:
+        veh = await conn.fetchrow(
+            "SELECT tire_placard_front_kpa, tire_placard_rear_kpa "
+            "FROM vehicles WHERE id = $1",
+            vehicle_id,
+        )
+        placard: tuple[float | None, float | None] = (
+            (
+                float(veh["tire_placard_front_kpa"])
+                if veh is not None and veh["tire_placard_front_kpa"] is not None
+                else None
+            ),
+            (
+                float(veh["tire_placard_rear_kpa"])
+                if veh is not None and veh["tire_placard_rear_kpa"] is not None
+                else None
+            ),
+        )
         try:
             agg_rows = await conn.fetch(
                 """
@@ -1381,7 +1398,10 @@ async def tire_history(
         )
         for r in cold_rows
     ]
-    out = assemble_tire_analytics(window_days, daily, cold)
+    out = assemble_tire_analytics(
+        window_days, daily, cold,
+        placard_front_kpa=placard[0], placard_rear_kpa=placard[1],
+    )
     out["window_days"] = days
     return out
 

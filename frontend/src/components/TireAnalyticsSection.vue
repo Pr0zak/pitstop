@@ -9,6 +9,10 @@
  *      provisional slow-leak flag, spread vs the highest tire with the shared
  *      2-psi LOW rule, median warm-up.
  *   3. Daily max tire temp per corner vs outside temp (same axis: both temps).
+ * With a door placard set on the vehicle: a dashed baseline on the cold-
+ * pressure chart ("placard 35 psi") and, per corner card, the server's
+ * verdict on the current cold pressure ("−4 psi vs placard", below spec at
+ * ≥ 3 psi under, under-inflated at ≥ 25 % under).
  * Empty state when the window has no tire data; never draws zeros.
  */
 import { computed } from "vue";
@@ -26,9 +30,12 @@ import {
   TIRE_CORNER_COLOR,
   TIRE_CORNER_LABEL,
   fToC,
+  fmtPlacardDelta,
   fmtPsiPerWeek,
   fmtTirePressure,
   isSlowLeak,
+  placardBaselinesPsi,
+  placardLabel,
   tireSpreadPsi,
   tpmsReadings,
   type TireCorner,
@@ -65,11 +72,20 @@ interface Built {
   hasOutside: boolean;
 }
 
-function build(ch: TireDailyChart, fmtV: (v: number) => string, outsideOwnAxis: boolean): Built | null {
+function build(
+  ch: TireDailyChart,
+  fmtV: (v: number) => string,
+  outsideOwnAxis: boolean,
+  baselines: number[] = [],
+): Built | null {
   if (!ch.hasCorner) return null;
   const x0 = ch.x[0] - DAY_MS / 2;
   const x1 = ch.x[ch.x.length - 1] + DAY_MS / 2;
-  const vals = TIRE_CORNERS.flatMap((c) => ch.corners[c]).filter((v): v is number => v != null);
+  // Baselines join the range so the placard line is always on the plot.
+  const vals = [
+    ...TIRE_CORNERS.flatMap((c) => ch.corners[c]).filter((v): v is number => v != null),
+    ...baselines,
+  ];
   const outsideVals = ch.outside.filter((v): v is number => v != null);
   const yVals = outsideOwnAxis ? vals : [...vals, ...outsideVals];
   let y = padRange(yVals, 0.15);
@@ -81,6 +97,17 @@ function build(ch: TireDailyChart, fmtV: (v: number) => string, outsideOwnAxis: 
   const axes = insightAxes(dayTicks(ch.days), (v) => nf(0).format(v));
   const series: uPlot.Series[] = [{}, ...TIRE_CORNERS.map(cornerSeries)];
   const data: (number | null)[][] = [ch.x, ...TIRE_CORNERS.map((c) => ch.corners[c])];
+  for (const b of baselines) {
+    series.push({
+      label: `placard ${b}`,
+      stroke: outsideColor(),
+      width: 1,
+      dash: [6, 4],
+      spanGaps: true,
+      points: { show: false },
+    });
+    data.push(ch.x.map(() => b));
+  }
   if (ch.hasOutside) {
     const outside: uPlot.Series = {
       label: "Outside",
@@ -128,10 +155,21 @@ function build(ch: TireDailyChart, fmtV: (v: number) => string, outsideOwnAxis: 
   };
 }
 
+const placard = computed(() => {
+  const a = q.data.value;
+  if (!a || (a.placard_front_kpa == null && a.placard_rear_kpa == null)) return null;
+  return { frontKpa: a.placard_front_kpa ?? null, rearKpa: a.placard_rear_kpa ?? null };
+});
+const placardText = computed(() => placardLabel(placard.value));
 const coldChart = computed(() => {
   const a = q.data.value;
   if (!a || !a.has_data) return null;
-  return build(coldPressureChart(a, fToDisplay), (v) => `${Math.round(v)} psi`, true);
+  return build(
+    coldPressureChart(a, fToDisplay),
+    (v) => `${Math.round(v)} psi`,
+    true,
+    placardBaselinesPsi(placard.value),
+  );
 });
 const tempChart = computed(() => {
   const a = q.data.value;
@@ -154,6 +192,10 @@ interface CornerCard {
   spread: string | null;
   low: boolean;
   warmup: string | null;
+  /** "−4 psi vs placard"; null without a placard / cold reading. */
+  vsPlacard: string | null;
+  underInflated: boolean;
+  belowSpec: boolean;
 }
 const cards = computed<CornerCard[]>(() => {
   const a = q.data.value;
@@ -179,6 +221,12 @@ const cards = computed<CornerCard[]>(() => {
         spread == null ? null : Math.round(spread) === 0 ? "highest" : `−${Math.abs(Math.round(spread))} psi vs highest`,
       low: r.low,
       warmup: h?.warmup_median_psi != null ? `+${nf(1).format(h.warmup_median_psi)} psi` : null,
+      vsPlacard: (() => {
+        const d = fmtPlacardDelta(h?.below_placard_psi ?? null);
+        return d == null ? null : `${d} psi vs placard`;
+      })(),
+      underInflated: !!h?.under_inflated,
+      belowSpec: !!h?.below_spec,
     };
   });
 });
@@ -203,10 +251,17 @@ const parkHours = computed(() => q.data.value?.cold_park_hours ?? 3);
     />
     <template v-else>
       <div class="corner-cards">
-        <div v-for="c in cards" :key="c.corner" class="corner-card" :class="{ low: c.low, leak: c.leak }">
+        <div
+          v-for="c in cards"
+          :key="c.corner"
+          class="corner-card"
+          :class="{ low: c.low, leak: c.leak, under: c.underInflated }"
+        >
           <div class="cc-head">
             <i class="sw" :style="{ background: TIRE_CORNER_COLOR[c.corner] }" aria-hidden="true" />
             <span class="cc-name">{{ c.label }}</span>
+            <span v-if="c.underInflated" class="flag danger">under-inflated</span>
+            <span v-else-if="c.belowSpec" class="flag warn">below spec</span>
             <span v-if="c.low" class="flag warn">low</span>
             <span v-if="c.leak" class="flag danger">possible slow leak</span>
           </div>
@@ -220,6 +275,12 @@ const parkHours = computed(() => q.data.value?.cold_park_hours ?? 3);
             </dd>
             <dt>Spread</dt>
             <dd class="num">{{ c.spread ?? "—" }}</dd>
+            <template v-if="placard">
+              <dt>Placard</dt>
+              <dd class="num" :class="{ 'warn-ink': c.belowSpec, 'danger-ink': c.underInflated }">
+                {{ c.vsPlacard ?? "—" }}
+              </dd>
+            </template>
             <dt>Warm-up</dt>
             <dd class="num">{{ c.warmup ?? "—" }}</dd>
           </dl>
@@ -230,6 +291,7 @@ const parkHours = computed(() => q.data.value?.cold_park_hours ?? 3);
       <div class="insight-legend">
         <span v-for="c in TIRE_CORNERS" :key="c"><i class="sw" :style="{ background: TIRE_CORNER_COLOR[c] }"></i>{{ TIRE_CORNER_LABEL[c] }}</span>
         <span v-if="coldChart?.hasOutside"><i class="sw outside"></i>Outside temp ({{ tempUnitLabel() }}, right axis)</span>
+        <span v-if="placardText"><i class="sw outside"></i>{{ placardText }}</span>
       </div>
       <StateCard v-if="!coldChart" state="empty" bare title="No cold readings yet." message="A tire is read cold after the car has been parked a few hours." />
       <InsightChart
@@ -309,8 +371,15 @@ const parkHours = computed(() => q.data.value?.cold_park_hours ?? 3);
   border-color: rgba(255, 176, 32, 0.55);
   background: var(--c-warn-soft);
 }
-.corner-card.leak {
+.corner-card.leak,
+.corner-card.under {
   border-color: var(--c-danger);
+}
+.warn-ink {
+  color: var(--c-warn);
+}
+.danger-ink {
+  color: var(--c-danger);
 }
 .cc-head {
   display: flex;

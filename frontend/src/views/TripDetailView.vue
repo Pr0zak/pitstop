@@ -12,12 +12,19 @@ import { buildTireChart, fillForwardWithin, hasTireData, tireWarmupC, type TireC
 import {
   TIRE_CORNERS,
   TIRE_CORNER_COLOR,
-  fmtBrakeBar,
+  HARD_BRAKE_BAR,
+  PSI_PER_BAR,
+  fmtBrakePsi,
   fmtTempRiseC,
+  fmtPlacardDelta,
   fmtTirePressure,
   kpaToPsi,
+  placardBaselinesPsi,
+  placardLabel,
+  placardPsiText,
   tpmsReadings,
   type TireCorner,
+  type TirePlacard,
 } from "@/lib/vehicleSignals";
 import {
   fmtTripTitle,
@@ -262,11 +269,11 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
     { metric: "odometer",               label: imp ? "Odometer (mi)" : "Odometer (km)", stroke: "#8b949e", scale: "odo", axisLabel: imp ? "mi" : "km",   transform: (v) => (imp ? v * 0.621371 : v), defaultVisible: false, decimals: 0 },
 
     // --- Braking --------------------------------------------------------
-    // Line pressure in bar for every unit system (what the ECU reports; see
-    // fmtBrakeBar). The API buckets it by MAX so a 1-s press keeps its
+    // Line pressure: stored/served in bar, drawn in psi for every unit
+    // system (see fmtBrakePsi). The API buckets it by MAX so a 1-s press keeps its
     // height. Carried at most 3 s: past that a dropout is a gap, not a
     // held pedal.
-    { metric: "brake_pressure",         label: "Brake (bar)",                        stroke: "#ef4444", scale: "brake",   axisLabel: "bar",                  transform: (v) => Math.max(0, v),          defaultVisible: false, decimals: 0, maxCarryS: 3 },
+    { metric: "brake_pressure",         label: "Brake (psi)",                        stroke: "#ef4444", scale: "brake",   axisLabel: "psi",                  transform: (v) => Math.max(0, v) * PSI_PER_BAR,          defaultVisible: false, decimals: 0, maxCarryS: 3 },
 
     // Derived series — computed below from successive vehicle_speed
     // samples (dv/dt → m/s², converted to g). Won't be found in
@@ -745,9 +752,22 @@ const tripWindow = computed(() => {
   return { start, end };
 });
 
+// Door placard as the server returned it with the trip (null when unset).
+const tripPlacard = computed<TirePlacard | null>(() => {
+  const t = trip.value?.tires;
+  if (!t || (t.placard_front_kpa == null && t.placard_rear_kpa == null)) return null;
+  return { frontKpa: t.placard_front_kpa ?? null, rearKpa: t.placard_rear_kpa ?? null };
+});
+// Dashed baseline(s) on the pressure chart; none in temp mode / without one.
+const tireBaselines = computed(() =>
+  tireKind.value === "pressure" ? placardBaselinesPsi(tripPlacard.value) : [],
+);
+const tireBaselineLabel = computed(() => placardLabel(tripPlacard.value));
+
 // Per-trip Tires summary card (from the API's `tires` block). LOW tags use
 // the shared rule (tpmsReadings) on the end pressures — the same rule the
-// server applies for `low_corners`.
+// server applies for `low_corners`. Placard verdicts (of 35 · −4, under,
+// below spec) are the server's, judged on the START pressure.
 interface TireSummaryRow {
   corner: TireCorner;
   label: string;
@@ -756,6 +776,10 @@ interface TireSummaryRow {
   changed: boolean;
   warmup: string | null;
   low: boolean;
+  of: string | null;
+  delta: string | null;
+  underInflated: boolean;
+  belowSpec: boolean;
 }
 const tireSummary = computed<TireSummaryRow[] | null>(() => {
   const tires = trip.value?.tires;
@@ -778,6 +802,10 @@ const tireSummary = computed<TireSummaryRow[] | null>(() => {
       changed: start !== end,
       warmup: rise != null ? fmtTempRiseC(rise, imperial.value) : null,
       low: r.low,
+      of: placardPsiText(c?.placard_kpa ?? null),
+      delta: fmtPlacardDelta(c?.below_placard_psi ?? null),
+      underInflated: !!c?.under_inflated,
+      belowSpec: !!c?.below_spec,
     };
   });
 });
@@ -789,7 +817,7 @@ const braking = computed(() => {
   return {
     events: t.brake_events,
     hard: t.hard_brake_events ?? 0,
-    max: fmtBrakeBar(t.max_brake_bar ?? null),
+    max: fmtBrakePsi(t.max_brake_bar ?? null),
     seconds: t.braking_s ?? null,
   };
 });
@@ -1455,6 +1483,8 @@ async function saveMeta() {
               :unit="tireUnit"
               :start="tripWindow.start"
               :end="tripWindow.end"
+              :baselines="tireBaselines"
+              :baseline-label="tireKind === 'pressure' ? tireBaselineLabel : null"
             />
           </div>
 
@@ -1596,7 +1626,7 @@ async function saveMeta() {
                 <dd class="num">
                   {{ braking.events }} press{{ braking.events === 1 ? "" : "es" }}
                   <span class="muted small sub">
-                    {{ braking.hard }} hard · max {{ braking.max }}<template v-if="braking.seconds != null"> · {{ fmtBucketSeconds(braking.seconds) }} on pedal</template>
+                    <span :title="`Hard = a press peaking at ≈ ${fmtBrakePsi(HARD_BRAKE_BAR)} or more (provisional)`">{{ braking.hard }} hard</span> · max {{ braking.max }}<template v-if="braking.seconds != null"> · {{ fmtBucketSeconds(braking.seconds) }} on pedal</template>
                   </span>
                 </dd>
               </template>
@@ -1632,19 +1662,26 @@ async function saveMeta() {
                 v-for="r in tireSummary"
                 :key="r.corner"
                 class="ts-cell"
-                :class="[r.corner, { low: r.low }]"
+                :class="[r.corner, { low: r.low, under: r.underInflated }]"
               >
                 <span class="ts-corner">
-                  <i class="ts-sw" :style="{ background: TIRE_CORNER_COLOR[r.corner] }" aria-hidden="true" />{{ r.label }}<span v-if="r.low" class="ts-low">low</span>
+                  <i class="ts-sw" :style="{ background: TIRE_CORNER_COLOR[r.corner] }" aria-hidden="true" />{{ r.label }}<span v-if="r.underInflated" class="ts-under">under</span><span v-else-if="r.low" class="ts-low">low</span>
                 </span>
                 <span class="ts-press num">
                   <template v-if="r.changed">{{ r.start.replace(" psi", "") }} → </template>{{ r.end }}
                 </span>
+                <span v-if="r.of" class="ts-plac muted small num"
+                  >of {{ r.of }}<template v-if="r.delta"> · <span :class="{ spec: r.belowSpec }">{{ r.delta }}</span></template></span
+                >
                 <span class="ts-warm muted small num">{{ r.warmup ?? "—" }}</span>
               </div>
             </div>
             <p class="muted small ts-note">
               Low: {{ trip.tires?.low_delta_psi ?? 2 }} psi or more below the highest tire at trip end.
+              <template v-if="tripPlacard">
+                Placard delta at trip start; amber at {{ trip.tires?.below_spec_psi ?? 3 }}+ psi under,
+                “under” at {{ Math.round((trip.tires?.under_inflated_fraction ?? 0.25) * 100) }} % under (the car's TPMS threshold).
+              </template>
             </p>
           </div>
 
@@ -2259,6 +2296,22 @@ async function saveMeta() {
 }
 .ts-cell.low .ts-press {
   color: var(--c-warn);
+}
+.ts-under {
+  margin-left: 0.2rem;
+  color: var(--c-danger);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.ts-cell.under {
+  border-color: var(--c-danger);
+}
+.ts-cell.under .ts-press {
+  color: var(--c-danger);
+}
+.ts-plac .spec {
+  color: var(--c-warn);
+  font-weight: 600;
 }
 .ts-note {
   margin: 0.5rem 0 0;

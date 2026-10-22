@@ -56,6 +56,7 @@ import {
   monthTicks,
 } from "@/lib/insightChartOpts";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
+import { pickFuelDisplay } from "@/lib/fuelDisplay";
 import { WMO_CODE } from "@/api/types";
 
 function wxIcon(code: number | null | undefined): string {
@@ -969,30 +970,32 @@ const rangeEstimate = computed<{
   miles: number | null;
   fuelLevel: number | null;
   rollingMpg: number | null;
+  fuelLabel?: string | null;
 } | null>(() => {
   const veh = vehicles.selectedVehicle;
   if (!veh) return null;
   const tankL = veh.tank1_capacity;
   if (!tankL || tankL <= 0) return null;
-  const latest = (veh.latest ?? {}) as Record<string, unknown>;
-  const lvlRaw = latest["fuel_level"];
+  // Same figure the Overview gauge shows: the server's display pick
+  // (cluster litres or the estimate, lib/fuelDisplay), else the smoothed
+  // sensor %. `latest.fuel_level` is an entry object, not a bare number.
+  const display = pickFuelDisplay(veh);
+  const sensorPct = veh.latest?.fuel_level?.value_num;
+  const fuelLabel = display?.label ?? null;
   const fuelLevel =
-    typeof lvlRaw === "number"
-      ? lvlRaw
-      : typeof lvlRaw === "string"
-        ? Number(lvlRaw) || null
-        : null;
+    display?.pct ??
+    (typeof sensorPct === "number" && Number.isFinite(sensorPct) ? sensorPct : null);
   if (fuelLevel == null) return { miles: null, fuelLevel: null, rollingMpg: summary.value.avgMpg };
   // MPG over last 6 fillups
   const mpg = summary.value.avgMpg;
   if (mpg == null || mpg <= 0) {
-    return { miles: null, fuelLevel, rollingMpg: null };
+    return { miles: null, fuelLevel, rollingMpg: null, fuelLabel };
   }
   // tank1_capacity is in the vehicle's fuel unit; → US gal for mpg math.
   const tankGal = convVolume(convVolume(tankL, volSrc.value, "metric"), "L", "imperial");
   const remainingGal = tankGal * (fuelLevel / 100);
   const miles = remainingGal * mpg;
-  return { miles, fuelLevel, rollingMpg: mpg };
+  return { miles, fuelLevel, rollingMpg: mpg, fuelLabel };
 });
 
 // MPG vs temperature: bin fillups by ambient temp at fillup time
@@ -1455,7 +1458,7 @@ const mpgVsTempChart = computed(() => {
             <template v-else-if="rangeEstimate.miles != null">
               <div class="big">{{ fmtDistance(rangeEstimate.miles, "mi", 0) }}</div>
               <div class="muted small">
-                {{ rangeEstimate.fuelLevel?.toFixed(0) }}% fuel ·
+                {{ rangeEstimate.fuelLevel?.toFixed(0) }}% fuel<template v-if="rangeEstimate.fuelLabel"> ({{ rangeEstimate.fuelLabel }})</template> ·
                 {{ fmtMpg(rangeEstimate.rollingMpg) }} avg
               </div>
             </template>

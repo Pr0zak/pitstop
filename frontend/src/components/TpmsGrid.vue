@@ -2,18 +2,35 @@
 // Four-corner tire pressure layout (FL FR / RL RR around a car outline).
 // Pressures always render in psi (as on the dash), temps in °F / °C; a tire
 // ≥ 2 psi below the highest of the four is highlighted (see tpmsReadings).
+// With a door placard set, each corner adds "of 35 · −4" (its placard and the
+// delta), the delta turns amber at ≥ 3 psi under (below spec) and the tire is
+// flagged "under" at ≥ 25 % under (the car's own TPMS threshold).
 // Corners with no reading still render, reading "—".
 import { computed } from "vue";
 import QtyValue from "@/components/QtyValue.vue";
 import { fmtTempC } from "@/composables/useFormat";
-import { fmtTirePressure, tpmsReadings, type TireCorner } from "@/lib/vehicleSignals";
+import {
+  fmtPlacardDelta,
+  fmtTirePressure,
+  placardPsiText,
+  tpmsReadings,
+  type TireCorner,
+  type TirePlacard,
+} from "@/lib/vehicleSignals";
 
 const props = defineProps<{
   pressureKpa: Partial<Record<TireCorner, number | null>>;
   tempC?: Partial<Record<TireCorner, number | null>>;
+  placard?: TirePlacard | null;
 }>();
 
-const tires = computed(() => tpmsReadings(props.pressureKpa, props.tempC ?? {}));
+const tires = computed(() =>
+  tpmsReadings(props.pressureKpa, props.tempC ?? {}, props.placard ?? null).map((t) => ({
+    ...t,
+    of: placardPsiText(t.placardKpa),
+    delta: fmtPlacardDelta(t.belowPlacardPsi),
+  })),
+);
 </script>
 
 <template>
@@ -22,11 +39,19 @@ const tires = computed(() => tpmsReadings(props.pressureKpa, props.tempC ?? {}))
       v-for="t in tires"
       :key="t.corner"
       class="tire"
-      :class="[t.corner, { low: t.low }]"
-      :aria-label="`${t.label} ${fmtTirePressure(t.pressureKpa)}${t.low ? ', low' : ''}`"
+      :class="[t.corner, { low: t.low, under: t.underInflated }]"
+      :aria-label="`${t.label} ${fmtTirePressure(t.pressureKpa)}${t.of ? ` of ${t.of} placard` : ''}${t.underInflated ? ', under-inflated' : t.low ? ', low' : ''}`"
     >
-      <span class="corner">{{ t.label }}<span v-if="t.low" class="low-tag">low</span></span>
+      <span class="corner"
+        >{{ t.label }}<span v-if="t.underInflated" class="under-tag">under</span
+        ><span v-else-if="t.low" class="low-tag">low</span></span
+      >
       <span class="press"><QtyValue :text="fmtTirePressure(t.pressureKpa)" /></span>
+      <span v-if="t.of" class="placard"
+        >of {{ t.of }}<template v-if="t.delta">
+          · <span :class="{ spec: t.belowSpec }">{{ t.delta }}</span></template
+        ></span
+      >
       <span class="temp">{{ fmtTempC(t.tempC) }}</span>
     </div>
     <div class="body" aria-hidden="true" />
@@ -96,7 +121,29 @@ const tires = computed(() => tpmsReadings(props.pressureKpa, props.tempC ?? {}))
   border-color: rgba(255, 176, 32, 0.55);
   background: var(--c-warn-soft);
 }
+.under-tag {
+  margin-left: 0.35rem;
+  color: var(--c-danger);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.placard {
+  font-size: 0.72rem;
+  color: var(--c-ink3);
+  font-variant-numeric: tabular-nums;
+}
+.placard .spec {
+  color: var(--c-warn);
+  font-weight: 600;
+}
 .tire.low .press {
   color: var(--c-warn);
+}
+/* After .low: an under-inflated tire is the stronger signal. */
+.tire.under {
+  border-color: var(--c-danger);
+}
+.tire.under .press {
+  color: var(--c-danger);
 }
 </style>

@@ -21,7 +21,15 @@ from fastapi import Path as FastAPIPath
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
 from ..schemas import FillupCreate, FillupOut, FillupUpdate
-from ..services.fuel_state import derive_empty_pct, persist_estimate, reset_on_fillup
+from ..services.fuel_state import (
+    CLUSTER_METRIC,
+    FILLUP_CLUSTER_LOOKBACK_S,
+    SNAP_SOURCES,
+    derive_empty_pct,
+    fillup_check,
+    persist_estimate,
+    reset_on_fillup,
+)
 
 log = logging.getLogger(__name__)
 
@@ -285,14 +293,20 @@ async def _apply_fillup_to_fuel_estimate(
         if body.fuel_volume:
             raw = float(body.fuel_volume)
             pumped_l = raw * 3.78541 if v["fuel_unit"] == 1 else raw
+        estimate_before_l = (
+            float(v["fuel_level_estimate_l"])
+            if v["fuel_level_estimate_l"] is not None
+            else None
+        )
+        if pumped_l is not None and pumped_l > 0:
+            await _log_fillup_check(
+                conn, body, pumped_l, float(v["tank_capacity_l"]),
+                estimate_before_l,
+            )
         update = reset_on_fillup(
             is_full=bool(body.is_full),
             pumped_liters=pumped_l,
-            current_estimate_l=(
-                float(v["fuel_level_estimate_l"])
-                if v["fuel_level_estimate_l"] is not None
-                else None
-            ),
+            current_estimate_l=estimate_before_l,
             tank_capacity_l=float(v["tank_capacity_l"]),
             when=body.fillup_date,
         )
@@ -303,6 +317,63 @@ async def _apply_fillup_to_fuel_estimate(
             "fuel-estimate reset vehicle=%s liters=%.2f reason=%s",
             body.vehicle_id, update.liters, update.reason,
         )
+
+
+async def _log_fillup_check(
+    conn: asyncpg.Connection,
+    body: FillupCreate,
+    pumped_l: float,
+    tank_l: float,
+    estimate_before_l: float | None,
+) -> None:
+    """One structured line per fill-up: how far each fuel source was from
+    what the pump says the tank held (ADR-025 amendment).
+
+    For a fill to full, the tank held ``tank - pumped`` beforehand; the
+    line reports the running estimate's and the cluster's pre-pump figures
+    against that (``*_err`` > 0 = that source read high). The cluster
+    figure is the newest phone-captured ``fuel_level_l`` in the 30 min
+    before ``fillup_date`` — the drive to the pump. Log-only by design: a
+    column would need a migration, and a migration must ship in a release
+    before any deploy. Grep ``fuel-fillup check``.
+    """
+    cluster = await conn.fetchrow(
+        """
+        SELECT time, value_num FROM pid_readings
+         WHERE vehicle_id = $1
+           AND metric = $2
+           AND value_num IS NOT NULL
+           AND source = ANY($3::text[])
+           AND time BETWEEN $4::timestamptz - make_interval(secs => $5)
+                        AND $4::timestamptz
+         ORDER BY time DESC
+         LIMIT 1
+        """,
+        body.vehicle_id, CLUSTER_METRIC, list(SNAP_SOURCES),
+        body.fillup_date, FILLUP_CLUSTER_LOOKBACK_S,
+    )
+    chk = fillup_check(
+        is_full=bool(body.is_full),
+        pumped_l=pumped_l,
+        tank_capacity_l=tank_l,
+        estimate_before_l=estimate_before_l,
+        cluster_before_l=(
+            float(cluster["value_num"]) if cluster is not None else None
+        ),
+    )
+
+    def f(x: float | None) -> str:
+        return "na" if x is None else f"{x:.2f}"
+
+    log.info(
+        "fuel-fillup check vehicle=%s is_full=%s pumped_l=%s tank_l=%.2f "
+        "implied_before_l=%s estimate_before_l=%s estimate_err_l=%s "
+        "cluster_before_l=%s cluster_err_l=%s cluster_at=%s",
+        body.vehicle_id, bool(body.is_full), f(chk.pumped_l), tank_l,
+        f(chk.implied_before_l), f(chk.estimate_before_l), f(chk.estimate_err_l),
+        f(chk.cluster_before_l), f(chk.cluster_err_l),
+        cluster["time"].isoformat(timespec="seconds") if cluster else "na",
+    )
 
 
 async def _maybe_calibrate_fuel_level(
@@ -349,6 +420,11 @@ async def _maybe_calibrate_fuel_level(
         )
 
 
+# Pre-fill level must be at or below this fraction of tank for the
+# observation to constrain the low end usefully.
+MAX_PRE_FILL_FRACTION = 0.40
+
+
 async def _maybe_calibrate_fuel_empty(
     pool: asyncpg.Pool, body: FillupCreate
 ) -> None:
@@ -365,10 +441,6 @@ async def _maybe_calibrate_fuel_empty(
     swings the extrapolated intercept wildly — so require the tank to
     have been at most MAX_PRE_FILL_FRACTION full beforehand.
     """
-    # Pre-fill level must be at or below this fraction of tank for the
-    # observation to constrain the low end usefully.
-    MAX_PRE_FILL_FRACTION = 0.40
-
     async with pool.acquire() as conn:
         v = await conn.fetchrow(
             """
