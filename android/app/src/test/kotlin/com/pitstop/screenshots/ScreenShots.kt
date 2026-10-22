@@ -159,6 +159,64 @@ class ScreenShots {
         }
     }
 
+    /** "Fuel & tires" widget (design B): 1×1, 2×1 and 2×2 — fresh, stale, never read. */
+    @Test fun comboWidget() = shot("combo_b_final") {
+        val now = Fixtures.NOW
+        fun tires(ageMs: Long) = mapOf(
+            "tire_pressure_fl" to com.pitstop.data.CachedReading(213.0, now - ageMs),
+            "tire_pressure_fr" to com.pitstop.data.CachedReading(196.0, now - ageMs),
+            "tire_pressure_rl" to com.pitstop.data.CachedReading(209.0, now - ageMs),
+            "tire_pressure_rr" to com.pitstop.data.CachedReading(205.0, now - ageMs),
+            "_tire_placard_front_kpa" to com.pitstop.data.CachedReading(241.3, now),
+            "_tire_placard_rear_kpa" to com.pitstop.data.CachedReading(241.3, now),
+        )
+        fun fuel(ageMs: Long) = com.pitstop.data.CachedFuel(44.7 / 73.8 * 100, 240.0, now - ageMs, "Cluster")
+        val fresh = com.pitstop.widget.ComboWidgetProvider.modelOf(fuel(5 * 60_000L), tires(4 * 60_000L), now, "imperial")
+        // Fuel fresh, tires a day old: the OLDER age is what shows.
+        val stale = com.pitstop.widget.ComboWidgetProvider.modelOf(fuel(5 * 60_000L), tires(26 * 3_600_000L), now, "imperial")
+        val never = com.pitstop.widget.ComboWidgetProvider.modelOf(null, emptyMap(), now, "imperial")
+        @androidx.compose.runtime.Composable
+        fun tile(m: com.pitstop.widget.ComboWidgetRender.Model, size: com.pitstop.widget.ComboWidgetRender.Size) {
+            val (wDp, hDp) = when (size) {
+                com.pitstop.widget.ComboWidgetRender.Size.Tiny -> 90 to 90
+                com.pitstop.widget.ComboWidgetRender.Size.Wide -> 190 to 88
+                com.pitstop.widget.ComboWidgetRender.Size.Large -> 180 to 180
+            }
+            androidx.compose.foundation.layout.Box(
+                Modifier
+                    .size(wDp.dp, hDp.dp)
+                    .background(androidx.compose.ui.graphics.Color(0xFF2A2F37), androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                    .padding(6.dp),
+            ) {
+                androidx.compose.foundation.Image(
+                    bitmap = com.pitstop.widget.ComboWidgetRender.render(m, size).asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(16.dp)) {
+            androidx.compose.material3.Text("Wide (2×1) never read", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onBackground)
+            tile(never, com.pitstop.widget.ComboWidgetRender.Size.Wide)
+            for (size in com.pitstop.widget.ComboWidgetRender.Size.entries) {
+                androidx.compose.material3.Text(
+                    "${size.name} (${when (size) {
+                        com.pitstop.widget.ComboWidgetRender.Size.Tiny -> "1×1"
+                        com.pitstop.widget.ComboWidgetRender.Size.Wide -> "2×1"
+                        com.pitstop.widget.ComboWidgetRender.Size.Large -> "2×2"
+                    }})   fresh · stale (tires 1d) · never read",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    tile(fresh, size)
+                    tile(stale, size)
+                    if (size == com.pitstop.widget.ComboWidgetRender.Size.Tiny) tile(never, size)
+                }
+            }
+        }
+    }
+
     /** Metric units: temps in °C, pressures still whole psi (dash parity). */
     @Test fun homeTiresMetric() = shot("home_tires_metric", units = "metric") {
         androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.padding(16.dp)) {

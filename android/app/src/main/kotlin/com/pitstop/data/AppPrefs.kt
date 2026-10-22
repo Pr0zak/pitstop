@@ -19,6 +19,10 @@ import javax.inject.Singleton
 
 private val Context.appPrefsStore by preferencesDataStore(name = "pitstop_app_prefs")
 
+/** Last fuel state shown by the combo widget (pct of tank, range miles, reading time). */
+@Serializable
+data class CachedFuel(val pct: Double?, val rangeMi: Double?, val atMs: Long?, val source: String? = null)
+
 /** One cached metric reading: value + epoch ms. */
 @Serializable
 data class CachedReading(val v: Double, val t: Long)
@@ -57,6 +61,7 @@ class AppPrefs @Inject constructor(
         fun dtcSeeded(vehicleId: String) = booleanPreferencesKey("dtc_seeded_$vehicleId")
         fun rangeBasis(slug: String) = stringPreferencesKey("range_basis_$slug")
         fun tireSnapshot(slug: String) = stringPreferencesKey("tire_snapshot_$slug")
+        fun fuelSnapshot(slug: String) = stringPreferencesKey("fuel_snapshot_$slug")
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -123,6 +128,16 @@ class AppPrefs @Inject constructor(
     }
 
     private val tireMap = MapSerializer(String.serializer(), CachedReading.serializer())
+
+    /** Last fuel figure for the combo widget, so it never goes blank offline. */
+    suspend fun fuelSnapshot(slug: String): CachedFuel? =
+        context.appPrefsStore.data.first()[Keys.fuelSnapshot(slug)]
+            ?.let { runCatching { json.decodeFromString(CachedFuel.serializer(), it) }.getOrNull() }
+
+    suspend fun setFuelSnapshot(slug: String, fuel: CachedFuel) {
+        if (slug.isBlank()) return
+        context.appPrefsStore.edit { it[Keys.fuelSnapshot(slug)] = json.encodeToString(CachedFuel.serializer(), fuel) }
+    }
 
     suspend fun setViewVehicleSlug(slug: String) {
         context.appPrefsStore.edit { it[Keys.viewVehicleSlug] = slug }

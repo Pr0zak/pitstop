@@ -292,6 +292,19 @@
                 android:resource="@xml/tire_widget_info" />
         </receiver>
 
+        <!-- "Fuel & tires" combo widget (design B: the car is the tank). -->
+        <receiver
+            android:name=".widget.ComboWidgetProvider"
+            android:exported="true"
+            android:label="@string/combo_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/combo_widget_info" />
+        </receiver>
+
         <!-- PitstopApp implements WorkManager Configuration.Provider for
              on-demand initialization, so the default startup
              WorkManagerInitializer must be removed (else lintVitalRelease

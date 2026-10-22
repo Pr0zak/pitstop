@@ -212,6 +212,8 @@ class FuelWidgetProvider : AppWidgetProvider() {
          *  (manual refresh, fillup add) so the gauge updates without
          *  waiting for the 30-minute OS tick. */
         fun refreshWidgets(context: Context) {
+            // Every fuel trigger also feeds the Fuel & tires widget.
+            ComboWidgetProvider.refreshWidgets(context)
             val manager = AppWidgetManager.getInstance(context)
             val component = android.content.ComponentName(context, FuelWidgetProvider::class.java)
             val ids = manager.getAppWidgetIds(component)

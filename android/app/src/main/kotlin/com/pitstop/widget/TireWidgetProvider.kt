@@ -204,6 +204,8 @@ class TireWidgetProvider : AppWidgetProvider() {
             )
 
         fun refreshWidgets(context: Context) {
+            // Every tire trigger also feeds the Fuel & tires widget.
+            ComboWidgetProvider.refreshWidgets(context)
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(android.content.ComponentName(context, TireWidgetProvider::class.java))
             if (ids.isEmpty()) return

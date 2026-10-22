@@ -42,4 +42,7 @@
     <string name="fuel_widget_gauge_desc">Fuel level gauge</string>
     <string name="tire_widget_description">Last tire pressures (psi) with the low tire highlighted.</string>
     <string name="tire_widget_desc">Tire pressures</string>
+    <string name="combo_widget_label">Fuel &amp; tires</string>
+    <string name="combo_widget_description">Fuel level drawn as the car\'s tank, with the four tire pressures at the wheels.</string>
+    <string name="combo_widget_desc">Fuel level and tire pressures</string>
 </resources>
