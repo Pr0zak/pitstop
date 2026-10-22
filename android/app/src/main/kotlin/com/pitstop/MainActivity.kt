@@ -38,8 +38,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.key
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocalGasStation
@@ -59,7 +59,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -80,7 +79,6 @@ import com.pitstop.ui.theme.PitstopTheme
 import com.pitstop.util.requireActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 
 /**
  * The four primary destinations, in bottom-bar order. The pager index IS
@@ -256,9 +254,19 @@ private fun PitstopRootBody(
         false -> Unit // fall through to the pager
     }
 
-    val pagerState = rememberPagerState(initialPage = initialTab.ordinal) { Tab.entries.size }
-    val scope = rememberCoroutineScope()
-    val goTo: (Tab) -> Unit = { tab -> scope.launch { pagerState.scrollToPage(tab.ordinal) } }
+    // The current tab. NOT a HorizontalPager any more (v0.1.256): swiping was
+    // already disabled, and the pager's SubcomposeLayout slot reuse crashed
+    // switching Live → Home in v0.1.255 ("Cannot disable reuse from root if
+    // it was caused by other groups"). Compose runtime 1.7–1.10 compare
+    // `reusingGroup` — a slot-table INDEX set by ReusableContent — against
+    // `rootKey` (the constant 100) in endReuseFromRoot/endReusableGroup, so a
+    // reused page whose ReusableContent group happens to sit under group
+    // index 100 trips the precondition. Which page layout lands on 100 is
+    // pure chance (0.1.255's new Home/Live content moved the indexes), so
+    // the fix is to stop reusing one tab's composition for another at all.
+    var currentTab by rememberSaveable { mutableIntStateOf(initialTab.ordinal) }
+    val tabStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+    val goTo: (Tab) -> Unit = { tab -> currentTab = tab.ordinal }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     // Where Settings should land when opened from a feature card; consumed
     // (reset to null) by ConfigScreen once it has navigated.
@@ -274,7 +282,7 @@ private fun PitstopRootBody(
         val target = pendingTab?.value
         if (target != null) {
             settingsOpen = false
-            pagerState.scrollToPage(target.ordinal)
+            currentTab = target.ordinal
             pendingTabFlow?.value = null
         }
     }
@@ -409,7 +417,7 @@ private fun PitstopRootBody(
                         contentColor = MaterialTheme.colorScheme.onSurface,
                     ) {
                         for (tab in Tab.entries) {
-                            val selected = pagerState.currentPage == tab.ordinal
+                            val selected = currentTab == tab.ordinal
                             NavigationBarItem(
                                 selected = selected,
                                 onClick = { goTo(tab) },
@@ -438,19 +446,21 @@ private fun PitstopRootBody(
                     }
                 },
             ) { padding ->
-                HorizontalPager(
-                    state = pagerState,
-                    // The bottom bar switches tabs; swiping does not. Every tab
-                    // hosts something that wants horizontal drags for itself —
-                    // maps, the trip timeline scrub, chip rails, swipe-to-tag.
-                    userScrollEnabled = false,
+                // One tab at a time, as before: the bottom bar switches tabs
+                // and swiping never did (every tab wants horizontal drags for
+                // itself — maps, the trip scrub, chip rails, swipe-to-tag).
+                // Off-screen tabs are still DISPOSED, so nothing cancellable
+                // may live on a tab-scoped ViewModel (Trips/Fuel/Car/Service
+                // use Activity scope). rememberSaveable state per tab survives
+                // the switch, as it did inside the pager.
+                val page = currentTab
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(padding),
-                    // beyondViewportPageCount stays 0: off-screen tabs are
-                    // DISPOSED, so nothing cancellable may live on a tab-scoped
-                    // ViewModel (Trips/Fuel/Car/Service use Activity scope).
-                ) { page ->
+                ) {
+                  key(page) {
+                    tabStateHolder.SaveableStateProvider(Tab.entries[page].name) {
                     // Each screen owns its own Scaffold + top bar; the shared
                     // PitstopTopAppBar reads LocalAppBarHost for the vehicle
                     // switcher, logging chip and gear.
@@ -487,11 +497,13 @@ private fun PitstopRootBody(
                         Tab.Fuel -> FuelScreen(pendingLogSheet = pendingLogSheetFlow)
                         Tab.Car -> CarScreen(onOpenBridgeStatus = { bridgeSheetOpen = true })
                     }
+                    }
+                  }
                 }
             }
         }
 
-        // Settings: full-screen over the tabs (the pager stays composed
+        // Settings: full-screen over the tabs (the tab host stays composed
         // underneath, so every tab's back stack survives a trip to the gear).
         if (settingsOpen) {
             BackHandler { settingsOpen = false }

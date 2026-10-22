@@ -1442,6 +1442,13 @@ class PitstopBridgeService : Service() {
     private fun onNoDataForPid(pid: com.pitstop.obd.Pid?) {
         val name = pid?.name ?: return
         if (name in suppressedPids) return
+        // Never suppress the core pair. A parked car whose ECUs answer NO
+        // DATA to everything used to suppress EVERY PID, leaving pidsToPoll
+        // empty — and the old `pidsToPoll.minOf { }` in runPollLoop then
+        // threw NoSuchElementException on the IO dispatcher, killing the
+        // app (the recurring Sept–Oct crash, roughly weekly). The loop now
+        // uses minOfOrNull too; this keeps the engine-on probe alive.
+        if (name in NEVER_SUPPRESS) return
         val streak = (noDataStreakByPid[name] ?: 0) + 1
         noDataStreakByPid[name] = streak
         if (streak >= NO_DATA_SUPPRESS_THRESHOLD) {
@@ -2244,6 +2251,9 @@ class PitstopBridgeService : Service() {
          * response overlap rather than genuine non-support.
          */
         private const val NO_DATA_SUPPRESS_THRESHOLD = 5
+
+        /** PIDs the OBD-4 suppression never drops: the engine-on probe. */
+        private val NEVER_SUPPRESS = setOf("engine_rpm", "vehicle_speed")
 
         /**
          * In-car BLE reconnect backoff decay (BLE-5). The first
