@@ -227,6 +227,32 @@ detection (`POST /api/autopid/vehicles/detect`): it found ISO 15765-4 29-bit 500
 | Maintenance `7060` | `7F 22 31` | **not supported** by this cluster |
 | Oil temp `2666` on `0x10` | `7F 22 31` | **not supported** on the PCM; OBDb's `0x11` variant untried |
 
+### Discovery pass on firmware 6 (2026-10-22, idling in Park)
+
+Every DID in OBDb's Pilot signalset (254 module/DID pairs) was read once at idle, then
+101 answering DIDs were re-read in a loop while the driver revved, ran the A/C, held
+the brake and turned the wheel. **Reads must be taken with the phone bridge
+disconnected** (phone Bluetooth off): while the phone polls the dongle over BLE, its
+requests cut the test endpoint's multi-frame replies short ("STOPPED" after the first
+frame, ~1 in 3 reads). Pausing AutoPID alone did not help. Indexing as above
+(`payload[0] = 0x62`).
+
+| Finding | Where | Evidence | Confidence |
+|---|---|---|---|
+| Modules absent | `0x0E`, `0x11`, `0x1D`, `0x2A`, `0x30` never answer | no reply to any DID | high — so no oil level / second oil temp (OBDb `0x11` `2666`) and no brake-pedal stroke (`0x2A` `4201`) |
+| A/C high-side pressure | `0x10` `2613`, `[18:19]` kPa | 1196 idle, 1229 with A/C on, falling to 1111 after A/C off | medium |
+| A/C clutch | `0x10` `2610`, `payload[35]` bit 1 | 3 while A/C on, 0 after it was switched off (OBDb bix 262) | medium |
+| Climate module | `0x53` `8010`, bytes 6–19 and 40 | whole block flips while A/C was switched | medium — `0x53` looks like HVAC |
+| Brake switch (PCM) | `0x10` `2664` `payload[41]` (4 → 1), `0x10` `268B` `payload[16]` (224 → 192) | both changed only while the brake was held | medium — one sample each |
+| Brake (VSA) | `0x28` `4007` `payload[12]` 0 → 4; `0x28` `4004` `payload[40]` 0 → 64 (first pass) | only while braking | medium |
+| Load/rev bytes | `0x10` `2610` `payload[9]`, `[12]`, `[24]`, `[48]` | rose only while revving | low — not decoded |
+| Generator duty | `0x10` `2610` `payload[26]` (OBDb bix 184) | 0 throughout, revving included | OBDb's offset reads nothing on this car |
+| Steering | `0x28` `4002` `payload[48]` 0 → 240 | one sample while turning | low — needs repeating |
+| Maintenance Minder candidate | `0x60` `7068` `payload[14..17]` = 30, 36, 44, 30 | dash showed "Oil Life 30 %, B12" | low — confirm when oil life drops to 29 % |
+| Counters (ignore) | `0x10` `2662` `[18]`/`[20]`, `2665` `[12]`, `2678` `[10]`, `2683` `[20]` | rise steadily and wrap | — |
+
+Raw captures: `data/probes/` (gitignored).
+
 Points of disagreement with OBDb:
 
 - **Neutral.** OBDb maps `3086` raw `14` to N; this car reads `0` in N (the D→R→N→D
