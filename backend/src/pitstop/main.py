@@ -14,6 +14,7 @@ from .api import (
     admin,
     analytics,
     api_phone,
+    dashboard,
     drive_ingest,
     dtcs,
     expenses,
@@ -204,6 +205,7 @@ app.include_router(fillups.router)
 app.include_router(expenses.router)
 app.include_router(analytics.router)
 app.include_router(maintenance.router)
+app.include_router(dashboard.router)
 app.include_router(live_ws.router)
 app.include_router(utils_api.router)
 app.include_router(logs_api.router)
