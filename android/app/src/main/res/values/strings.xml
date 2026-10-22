@@ -40,4 +40,6 @@
     <!-- Fuel-level home-screen widget -->
     <string name="fuel_widget_description">Fuel-level gauge for the configured pitstop vehicle.</string>
     <string name="fuel_widget_gauge_desc">Fuel level gauge</string>
+    <string name="tire_widget_description">Last tire pressures (psi) with the low tire highlighted.</string>
+    <string name="tire_widget_desc">Tire pressures</string>
 </resources>

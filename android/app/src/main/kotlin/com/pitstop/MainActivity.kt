@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
         // not ready, no network, etc.) and is now waiting for the next
         // 30-min OS tick, we unstick it here.
         com.pitstop.widget.FuelWidgetProvider.refreshWidgets(this)
+        com.pitstop.widget.TireWidgetProvider.refreshWidgets(this)
         val initialTab = routeIntent(intent) ?: Tab.Home
         setContent {
             PitstopTheme {
@@ -158,6 +159,7 @@ class MainActivity : ComponentActivity() {
      *   ACTION_OPEN_TRIP       → Trips → trip detail (drive summary; EXTRA_EDIT = tag sheet)
      *   ACTION_OPEN_DTC        → Car → Codes → code detail (new-code alert)
      *   ACTION_OPEN_SERVICE    → Car → Service (service reminder)
+     *   ACTION_OPEN_HOME       → Home (tire widget)
      * Returns the tab to show, or null to stay put.
      */
     private fun routeIntent(intent: Intent?): Tab? {
@@ -187,6 +189,7 @@ class MainActivity : ComponentActivity() {
                 if (code != null) history().openDtc(code, vid) else history().selectCarSection(CarSection.Codes)
                 Tab.Car
             }
+            ACTION_OPEN_HOME -> Tab.Home
             ACTION_OPEN_SERVICE -> {
                 history().selectCarSection(CarSection.Service)
                 Tab.Car
@@ -201,6 +204,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_OPEN_TRIP = "com.pitstop.action.OPEN_TRIP"
         const val ACTION_OPEN_DTC = "com.pitstop.action.OPEN_DTC"
         const val ACTION_OPEN_SERVICE = "com.pitstop.action.OPEN_SERVICE"
+        /** Tire widget tap. */
+        const val ACTION_OPEN_HOME = "com.pitstop.action.OPEN_HOME"
         const val EXTRA_TRIP_ID = "trip_id"
         const val EXTRA_EDIT = "edit"
         const val EXTRA_DTC_CODE = "dtc_code"

@@ -32,6 +32,8 @@ class FuelWidgetRefreshWorker(
 
     override suspend fun doWork(): Result {
         FuelWidgetProvider.refreshWidgets(applicationContext)
+        // Same Doze-proof tick keeps the tire widget's age honest.
+        TireWidgetProvider.refreshWidgets(applicationContext)
         return Result.success()
     }
 }

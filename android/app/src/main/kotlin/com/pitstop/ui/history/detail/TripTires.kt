@@ -49,6 +49,10 @@ internal data class TireSummaryRow(
     /** "18 → 29 °C" warm-up; null when the trip has no temps. */
     val warmUp: String?,
     val low: Boolean,
+    /** "of 35 · −4" from the server's start-pressure verdict; null = no placard. */
+    val placard: String? = null,
+    val belowSpec: Boolean = false,
+    val underInflated: Boolean = false,
 )
 
 /**
@@ -83,7 +87,24 @@ internal fun tireSummaryRows(tires: TripTiresDto, system: String): List<TireSumm
             else -> "${UnitFormat.Quantity.TempC.number(t0, system, 0)} → " +
                 UnitFormat.Quantity.TempC.format(t1, system, 0)
         }
-        TireSummaryRow(c.label, pressure, warm, k in low)
+        val plc = row?.placardKpa?.let { (it * VehicleSignals.PSI_PER_KPA).roundToInt() }
+        val placard = if (plc != null && row.belowPlacardPsi != null) {
+            val d = -Math.round(row.belowPlacardPsi).toInt()
+            val delta = when {
+                d < 0 -> "−${-d}"
+                d > 0 -> "+$d"
+                else -> "±0"
+            }
+            "of $plc · " + (if (row.underInflated) "under $delta" else delta)
+        } else {
+            null
+        }
+        TireSummaryRow(
+            c.label, pressure, warm, k in low,
+            placard = placard,
+            belowSpec = row?.belowSpec == true,
+            underInflated = row?.underInflated == true,
+        )
     }
 }
 
@@ -128,6 +149,18 @@ internal fun TripTiresSummary(tires: TripTiresDto, system: String, modifier: Mod
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        r.placard?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = if (r.belowSpec) FontWeight.SemiBold else FontWeight.Normal,
+                                color = when {
+                                    r.underInflated -> MaterialTheme.ext.bad
+                                    r.belowSpec -> MaterialTheme.ext.warn
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -169,7 +202,7 @@ internal fun TripTiresCard(
                 when {
                     v == null -> false
                     s.metric.startsWith("tire_pressure_") -> v > 0
-                    s.metric.startsWith("tire_temp_") -> v > -40
+                    s.metric.startsWith("tire_temp_") -> VehicleSignals.validTireTempC(v)
                     else -> false
                 }
             },
@@ -238,7 +271,15 @@ internal fun TripTiresCard(
                 }
                 // One axis for all four: the spread is the story. ~30 s
                 // cadence, so a gap over 3 min is a dropout, not data.
-                LineChart(series = display, height = 200.dp, sharedYAxis = true)
+                // Dashed placard baseline(s) in pressure mode; hidden with no
+                // placard. Front and rear only differ on some vehicles.
+                val refs = if (temps) emptyList() else listOfNotNull(
+                    tires?.placardFrontKpa, tires?.placardRearKpa,
+                ).distinct().map { kpa ->
+                    val psi = kpa * VehicleSignals.PSI_PER_KPA
+                    ReferenceLine(psi, "placard ${psi.roundToInt()} psi")
+                }
+                LineChart(series = display, height = 200.dp, sharedYAxis = true, referenceLines = refs)
             } else {
                 Text(
                     if (temps) "No tire temperatures on this trip" else "No tire pressure samples on this trip",

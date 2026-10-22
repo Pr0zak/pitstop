@@ -27,8 +27,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.Duration
-import java.time.Instant
 
 /**
  * Small (2×2) home-screen widget that draws a circular fuel-level gauge
@@ -148,10 +146,11 @@ class FuelWidgetProvider : AppWidgetProvider() {
         val basis = runCatching { entry.rangeRepository().ensureBasis(vehicle) }.getOrNull()
         val est = com.pitstop.domain.RangeMath.estimate(fuel, basis)
         val system = secrets.settings.unitSystem
-        val age = fuel.readingAtMs?.let { formatAgeMs(it) }
+        // "12.3 gal · from cluster · 2m ago" — source + age from the
+        // server's fuel_display_* pick (same caption as Home).
         val sub = listOfNotNull(
             fuel.usGallons?.let { com.pitstop.util.UnitFormat.volumeGal(it, system, 1) },
-            age,
+            fuel.caption(System.currentTimeMillis()),
         ).joinToString(" · ").ifEmpty { "—" }
         val range = est.rangeMi?.let { com.pitstop.ui.components.RangeFormat.range(it, system) }
         return WidgetData(fuel.pct, sub, range)
@@ -299,14 +298,3 @@ private fun renderGauge(pct: Double?): Bitmap {
 
     return bitmap
 }
-
-private fun formatAgeMs(ms: Long): String? = runCatching {
-    val ageSec = Duration.between(Instant.ofEpochMilli(ms), Instant.now()).seconds
-    when {
-        ageSec < 0 -> "live"
-        ageSec < 90 -> "live"
-        ageSec < 3600 -> "${ageSec / 60}m ago"
-        ageSec < 86_400 -> "${ageSec / 3600}h ago"
-        else -> "${ageSec / 86_400}d ago"
-    }
-}.getOrNull()

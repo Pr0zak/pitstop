@@ -44,7 +44,11 @@ fun TpmsGrid(
     tires: List<VehicleSignals.Tire>,
     system: String,
     modifier: Modifier = Modifier,
+    /** Door-placard cold pressures (kPa); null hides the "of 35 · −4" line. */
+    placardFrontKpa: Double? = null,
+    placardRearKpa: Double? = null,
 ) {
+    val placard = { c: VehicleSignals.Corner -> VehicleSignals.placardFor(c, placardFrontKpa, placardRearKpa) }
     val by = tires.associateBy { it.corner }
     Row(
         modifier = modifier
@@ -54,8 +58,8 @@ fun TpmsGrid(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TireCell(by[VehicleSignals.Corner.FL], VehicleSignals.Corner.FL, system, end = false)
-            TireCell(by[VehicleSignals.Corner.RL], VehicleSignals.Corner.RL, system, end = false)
+            TireCell(by[VehicleSignals.Corner.FL], VehicleSignals.Corner.FL, system, end = false, placard(VehicleSignals.Corner.FL))
+            TireCell(by[VehicleSignals.Corner.RL], VehicleSignals.Corner.RL, system, end = false, placard(VehicleSignals.Corner.RL))
         }
         // The car body, spanning both rows.
         Box(
@@ -69,8 +73,8 @@ fun TpmsGrid(
                 ),
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TireCell(by[VehicleSignals.Corner.FR], VehicleSignals.Corner.FR, system, end = true)
-            TireCell(by[VehicleSignals.Corner.RR], VehicleSignals.Corner.RR, system, end = true)
+            TireCell(by[VehicleSignals.Corner.FR], VehicleSignals.Corner.FR, system, end = true, placard(VehicleSignals.Corner.FR))
+            TireCell(by[VehicleSignals.Corner.RR], VehicleSignals.Corner.RR, system, end = true, placard(VehicleSignals.Corner.RR))
         }
     }
 }
@@ -81,8 +85,10 @@ private fun TireCell(
     corner: VehicleSignals.Corner,
     system: String,
     end: Boolean,
+    placardKpa: Double? = null,
 ) {
     val low = tire?.low == true
+    val verdict = VehicleSignals.placardVerdict(tire?.pressureKpa, placardKpa)
     val shape = RoundedCornerShape(10.dp)
     // Whole psi in both unit systems (dash parity); only the temp converts.
     val pressure = VehicleSignals.tirePressure(tire?.pressureKpa)
@@ -143,11 +149,25 @@ private fun TireCell(
             }
         }
         Text(
-            UnitFormat.Quantity.TempC.format(tire?.tempC, system, 0),
+            UnitFormat.Quantity.TempC.format(tire?.tempC?.takeIf { VehicleSignals.validTireTempC(it) }, system, 0),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = if (end) TextAlign.End else TextAlign.Start,
         )
+        // "of 35 · −4": amber when ≥ 3 psi under placard, red "under" when
+        // ≥ 25 % under (same thresholds as the server's trip verdict).
+        verdict?.let { v ->
+            Text(
+                "of ${v.placardPsi} · " + (if (v.underInflated) "under ${v.deltaLabel}" else v.deltaLabel),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (v.belowSpec) FontWeight.SemiBold else FontWeight.Normal,
+                color = when {
+                    v.underInflated -> MaterialTheme.ext.bad
+                    v.belowSpec -> MaterialTheme.ext.warn
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
     }
 }
 
@@ -163,6 +183,8 @@ fun TiresCard(
     nowMs: Long,
     system: String,
     modifier: Modifier = Modifier,
+    placardFrontKpa: Double? = null,
+    placardRearKpa: Double? = null,
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -185,7 +207,7 @@ fun TiresCard(
                     )
                 }
             }
-            TpmsGrid(tires, system, Modifier.padding(top = 10.dp))
+            TpmsGrid(tires, system, Modifier.padding(top = 10.dp), placardFrontKpa, placardRearKpa)
             if (tires.any { it.low }) {
                 Text(
                     "Highlighted: 2 psi or more below the highest tire",

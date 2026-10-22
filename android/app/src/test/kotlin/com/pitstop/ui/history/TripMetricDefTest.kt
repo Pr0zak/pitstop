@@ -82,15 +82,15 @@ class TripMetricDefTest {
     fun `no series hardcodes a canonical unit that ignores the toggle`() {
         // Every temp / pressure / speed / flow series must name a
         // Quantity that actually differs between systems; the deliberate
-        // exceptions are exhaust mass flow and brake pressure (bar in both,
-        // as the VSA module and the web report it).
+        // exceptions are exhaust mass flow and brake pressure (psi in both,
+        // like tire pressures — user preference, web parity).
         val convertible = TRIP_METRICS.filter {
             it.quantity != UnitFormat.Quantity.None &&
                 it.quantity != UnitFormat.Quantity.Percent &&
                 it.quantity != UnitFormat.Quantity.Volt &&
                 it.quantity != UnitFormat.Quantity.Lambda &&
                 it.quantity != UnitFormat.Quantity.MassFlowKgPerHour &&
-                it.quantity != UnitFormat.Quantity.Bar
+                it.quantity != UnitFormat.Quantity.BrakeBar
         }
         assertTrue(convertible.isNotEmpty())
         for (def in convertible) {

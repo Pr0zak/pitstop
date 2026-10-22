@@ -48,6 +48,9 @@ import javax.inject.Inject
 data class HomeTires(
     val tires: List<com.pitstop.domain.VehicleSignals.Tire>,
     val newestMs: Long?,
+    /** Door placard per axle (kPa) from the vehicle; null = none set. */
+    val placardFrontKpa: Double? = null,
+    val placardRearKpa: Double? = null,
 )
 
 data class LastDrive(
@@ -215,11 +218,24 @@ class StatusViewModel @Inject constructor(
      * wins), reduced to the Tires card. Live samples come from the phone's
      * own Mode 22 poll or the WiCAN's MQTT, whichever is running.
      */
+    /**
+     * The persisted last tire readings for the vehicle (shared with the tire
+     * widget). Loaded at the start of every refresh and NOT cleared when the
+     * server can't be reached — "last readings" must always show.
+     */
+    private val cachedTires = MutableStateFlow<Map<String, Pair<Double, Long>>>(emptyMap())
+
     private val homeTires: StateFlow<HomeTires?> = combine(
+        cachedTires,
         serverReadings,
         bridgeStateBus.latestByMetric,
-    ) { server, live ->
-        val merged = HashMap(server)
+        vehicle,
+    ) { cache, server, live, v ->
+        val merged = HashMap(cache)
+        for ((k, v) in server) {
+            val cur = merged[k]
+            if (cur == null || v.second >= cur.second) merged[k] = v
+        }
         for ((k, v) in live) {
             val cur = merged[k]
             if (cur == null || v.tsMs >= cur.second) merged[k] = v.value to v.tsMs
@@ -229,6 +245,8 @@ class StatusViewModel @Inject constructor(
         HomeTires(
             tires = tires,
             newestMs = com.pitstop.domain.VehicleSignals.newestPressureMs(merged.mapValues { it.value.second }),
+            placardFrontKpa = v?.tirePlacardFrontKpa,
+            placardRearKpa = v?.tirePlacardRearKpa,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -289,11 +307,14 @@ class StatusViewModel @Inject constructor(
             return
         }
         val slug = activeVehicle.current().ifEmpty {
+            cachedTires.value = emptyMap()
             logBuffer.warn("home refresh: vehicle slug not set in Settings; skipping")
             loadProblem.value = "No vehicle is selected"
             clearHomeData()
             return
         }
+        cachedTires.value = runCatching { appPrefs.tireSnapshot(slug) }.getOrDefault(emptyMap())
+            .mapValues { it.value.v to it.value.t }
         // Resolve slug → UUID once; every other endpoint takes vehicle_id.
         val vehicles = runCatching { directory.refresh(cacheControl) }.getOrElse { exc ->
             logBuffer.warn(
@@ -391,6 +412,10 @@ class StatusViewModel @Inject constructor(
                     val t = com.pitstop.util.DateLabel.epochMs(r.time) ?: return@mapNotNull null
                     r.metric to (v to t)
                 }.toMap()
+                // Keep the shared snapshot (tire widget + offline Home) current.
+                val tires = serverReadings.value.filterKeys { it.startsWith("tire_") }
+                    .mapValues { com.pitstop.data.CachedReading(it.value.first, it.value.second) }
+                if (tires.isNotEmpty()) runCatching { appPrefs.mergeTireSnapshot(slug, tires) }
             }
             // A quiet month still has older trips worth listing.
             val trips = trips30?.takeIf { it.size >= 6 }
@@ -509,37 +534,15 @@ class StatusViewModel @Inject constructor(
         // 2. **Raw smoothed sensor (legacy fallback):** when the estimator
         //    hasn't been seeded yet, fall back to vehicle_state.latest's
         //    fuel_level (server-side p75 smoothing).
-        val estimateL = vehicle?.fuelLevelEstimateL
-        val tankCapacityL = vehicle?.tankCapacityL?.takeIf { it > 0 }
+        // ONE fuel rule for Home, the range card and the widget: the server's
+        // fuel_display_* pick (cluster or estimate), then the estimator on an
+        // older server, then the raw sensor — see RangeMath.fuelSnapshot.
         val tankCapacityGal = vehicle?.tank1Capacity?.takeIf { it > 0 }
-        val fuelEntry = vehicle?.latest?.get("fuel_level")
-
-        val fuelLevelPct: Double?
-        val fuelGallons: Double?
-        val fuelLevelAge: String?
-        val fuelLevelTimestampMs: Long?
-        if (estimateL != null && tankCapacityL != null) {
-            fuelLevelPct = (estimateL / tankCapacityL * 100.0).coerceIn(0.0, 100.0)
-            // tank1_capacity comes from Fuelio in user's fuel_unit; if that's
-            // gallons, convert L→gal. Heuristic: tank_capacity_l >> tank1
-            // suggests user unit = gallons.
-            val isUserUnitGallons =
-                tankCapacityGal != null && tankCapacityL > tankCapacityGal * 1.5
-            fuelGallons = if (isUserUnitGallons) estimateL * 0.264172 else estimateL
-            fuelLevelAge = vehicle.fuelLevelEstimateUpdatedAt?.let { formatReadingAge(it) }
-            fuelLevelTimestampMs = vehicle.fuelLevelEstimateUpdatedAt?.let {
-                runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
-            }
-        } else {
-            fuelLevelPct = fuelEntry?.valueNum
-            fuelGallons = if (fuelLevelPct != null && tankCapacityGal != null) {
-                tankCapacityGal * fuelLevelPct / 100.0
-            } else null
-            fuelLevelAge = fuelEntry?.time?.let { formatReadingAge(it) }
-            fuelLevelTimestampMs = fuelEntry?.time?.let {
-                runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
-            }
-        }
+        val snap = vehicle?.let { com.pitstop.domain.RangeMath.fuelSnapshot(it) }
+        val fuelLevelPct: Double? = snap?.pct
+        val fuelGallons: Double? = snap?.usGallons
+        val fuelLevelTimestampMs: Long? = snap?.readingAtMs
+        val fuelLevelAge: String? = snap?.caption(System.currentTimeMillis())
 
         return HeroCardData(
             avgConsumptionMpg = avgMpg,
@@ -557,11 +560,11 @@ class StatusViewModel @Inject constructor(
             // we keep the field populated for source-compat. Empty if
             // monthly is empty.
             mpgSeries = monthly.mapNotNull { it.mpg },
-            fuelLevelIsEstimate = (estimateL != null && tankCapacityL != null),
+            fuelLevelIsEstimate = snap?.isEstimate == true,
             // FUEL-CONFIDENCE: stale when the estimate's updated-at is
             // > 7 days old (web parity). Only meaningful for the estimate
-            // path — the raw-sensor branch already shows its own age sub.
-            fuelLevelStale = (estimateL != null && tankCapacityL != null) &&
+            // source — the cluster/sensor paths show their own age.
+            fuelLevelStale = snap?.source == com.pitstop.domain.FuelSource.Estimate &&
                 fuelLevelTimestampMs != null &&
                 (System.currentTimeMillis() - fuelLevelTimestampMs) > 7L * 24 * 60 * 60 * 1000,
         )

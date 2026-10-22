@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Last tire pressures (TireWidgetProvider). The 2x2 grid or the 2x1 row is
+     drawn to a bitmap per render; the layout only hosts it. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/tire_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#15181C"
+    android:padding="4dp">
+
+    <ImageView
+        android:id="@+id/tire_widget_image"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter"
+        android:contentDescription="@string/tire_widget_desc" />
+</FrameLayout>

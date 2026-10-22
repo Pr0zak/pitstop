@@ -277,6 +277,21 @@
                 android:resource="@xml/fuel_widget_info" />
         </receiver>
 
+        <!-- Last tire pressures home-screen widget. Same refresh plumbing as
+             the fuel widget; renders from a persisted snapshot so it never
+             goes blank. -->
+        <receiver
+            android:name=".widget.TireWidgetProvider"
+            android:exported="true"
+            android:label="@string/tire_widget_desc">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/tire_widget_info" />
+        </receiver>
+
         <!-- PitstopApp implements WorkManager Configuration.Provider for
              on-demand initialization, so the default startup
              WorkManagerInitializer must be removed (else lintVitalRelease

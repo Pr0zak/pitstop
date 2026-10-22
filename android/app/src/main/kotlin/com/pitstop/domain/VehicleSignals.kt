@@ -128,6 +128,57 @@ object VehicleSignals {
 
     const val TIRE_PRESSURE_UNIT = "psi"
 
+    // ── Door placard (cold pressure) — mirrors backend tires.py ─────────
+
+    /** At least this many psi under placard → amber delta ("below spec"). */
+    const val BELOW_SPEC_PSI = 3.0
+
+    /** At or below placard × (1 − this) → red "under" (under-inflated). */
+    const val UNDER_INFLATED_FRACTION = 0.25
+
+    /** Plausible tire temperatures; outside is a sentinel / noise (tires.py). */
+    fun validTireTempC(c: Double?): Boolean = c != null && c >= -50.0 && c <= 120.0
+
+    data class PlacardVerdict(
+        /** Whole psi of the placard, e.g. 35. */
+        val placardPsi: Int,
+        /** psi UNDER placard, one decimal; negative = above. */
+        val belowPsi: Double,
+        val belowSpec: Boolean,
+        val underInflated: Boolean,
+    ) {
+        /** "−4" / "+1" / "±0" against the placard, whole psi. */
+        val deltaLabel: String
+            get() {
+                val d = -Math.round(belowPsi).toInt()
+                return when {
+                    d < 0 -> "−${-d}"
+                    d > 0 -> "+$d"
+                    else -> "±0"
+                }
+            }
+    }
+
+    /** Front placard for FL/FR, rear for RL/RR. */
+    fun placardFor(corner: Corner, frontKpa: Double?, rearKpa: Double?): Double? =
+        if (corner == Corner.FL || corner == Corner.FR) frontKpa else rearKpa
+
+    /**
+     * Client-side placard verdict for a LIVE pressure (Live, Home, widget).
+     * Same thresholds as the server's placard_verdict, which the trip card
+     * uses as given. Null without a pressure or a placard.
+     */
+    fun placardVerdict(pressureKpa: Double?, placardKpa: Double?): PlacardVerdict? {
+        if (pressureKpa == null || placardKpa == null || pressureKpa <= 0 || placardKpa <= 0) return null
+        val below = (placardKpa - pressureKpa) * PSI_PER_KPA
+        return PlacardVerdict(
+            placardPsi = (placardKpa * PSI_PER_KPA).roundToInt(),
+            belowPsi = Math.round(below * 10.0) / 10.0,
+            belowSpec = below >= BELOW_SPEC_PSI - 1e-6,
+            underInflated = pressureKpa <= placardKpa * (1 - UNDER_INFLATED_FRACTION) + 1e-6,
+        )
+    }
+
     /** "live" under 90 s, then "Nm ago" / "Nh ago" / "Nd ago" — web parity. */
     fun ageLabel(tsMs: Long, nowMs: Long): String {
         val s = ((nowMs - tsMs) / 1000L).coerceAtLeast(0L)

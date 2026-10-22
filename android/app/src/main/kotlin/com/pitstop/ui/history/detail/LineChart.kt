@@ -42,6 +42,8 @@ internal fun LineChart(
      * where the spread between them IS the story.
      */
     sharedYAxis: Boolean = false,
+    /** Dashed horizontal guides (shared-axis charts), e.g. "placard 35 psi". */
+    referenceLines: List<ReferenceLine> = emptyList(),
 ) {
     val grid = MaterialTheme.colorScheme.outlineVariant
     val axis = MaterialTheme.colorScheme.onSurfaceVariant
@@ -99,9 +101,37 @@ internal fun LineChart(
             }
 
             val shared: Pair<Double, Double>? = if (sharedYAxis) {
-                series.flatMap { it.series.points }.bounds()
+                series.flatMap { it.series.points }.bounds()?.let { (lo, hi) ->
+                    // Stretch the axis so every guide is on the canvas.
+                    val refs = referenceLines.map { it.value }
+                    (refs + lo).min() to (refs + hi).max()
+                }
             } else {
                 null
+            }
+            if (shared != null) {
+                val (yMin, yMax) = shared
+                val yRange = (yMax - yMin).coerceAtLeast(1e-6)
+                val nc = drawContext.canvas.nativeCanvas
+                for (ref in referenceLines) {
+                    val y = bottom - (((ref.value - yMin) / yRange) * plotH).toFloat()
+                    drawLine(
+                        color = axis.copy(alpha = 0.7f),
+                        start = Offset(left, y),
+                        end = Offset(right, y),
+                        strokeWidth = 2f,
+                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
+                    )
+                    nc.drawText(
+                        ref.label, right - 4f, y - 6f,
+                        android.graphics.Paint().apply {
+                            color = axis.toArgb()
+                            textSize = textPxSize
+                            isAntiAlias = true
+                            textAlign = android.graphics.Paint.Align.RIGHT
+                        },
+                    )
+                }
             }
             // Plot each series in its own y-range (or the shared one).
             for (ds in series) {
@@ -174,6 +204,9 @@ internal fun LineChart(
         }
     }
 }
+
+/** A dashed horizontal guide at [value] (display units) labelled [label]. */
+internal data class ReferenceLine(val value: Double, val label: String)
 
 /**
  * Wrapper that pairs a [MetricSeries] with the color + (optional) unit

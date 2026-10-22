@@ -95,6 +95,16 @@ data class VehicleDto(
     @SerialName("tank_capacity_l") val tankCapacityL: Double? = null,
     @SerialName("fuel_level_estimate_l") val fuelLevelEstimateL: Double? = null,
     @SerialName("fuel_level_estimate_updated_at") val fuelLevelEstimateUpdatedAt: String? = null,
+    // Instrument-cluster litres (Mode 22 7029) and the server-picked "fuel in
+    // tank" every client shows (ADR-025 amendment). The phone never re-derives
+    // the cluster-vs-estimate rule: it renders fuel_display_l / tank_capacity_l
+    // with the source as the caption. All absent on an older server.
+    @SerialName("fuel_cluster_l") val fuelClusterL: Double? = null,
+    @SerialName("fuel_cluster_at") val fuelClusterAt: String? = null,
+    @SerialName("fuel_display_l") val fuelDisplayL: Double? = null,
+    /** "cluster" | "estimate" | null */
+    @SerialName("fuel_display_source") val fuelDisplaySource: String? = null,
+    @SerialName("fuel_display_at") val fuelDisplayAt: String? = null,
     /** Measured (PCM − dash) odometer difference in KILOMETRES, backend
      *  migration 0020. The OBD `odometer` PID and `latest_odo_km` come
      *  from the PCM; fillup odometers are typed off the instrument
@@ -109,6 +119,10 @@ data class VehicleDto(
      *  than migration 0020 would blow up deserialisation of the whole
      *  vehicle list. */
     @SerialName("odometer_offset_km") val odometerOffsetKm: Double? = null,
+    // Door-placard (cold) tire pressures per axle, kPa; null = not set —
+    // every placard baseline / verdict is hidden then.
+    @SerialName("tire_placard_front_kpa") val tirePlacardFrontKpa: Double? = null,
+    @SerialName("tire_placard_rear_kpa") val tirePlacardRearKpa: Double? = null,
     /** Tachometer redline (backend migration 0023). Null = not set; the
      *  Live RPM gauge then draws no redline band. */
     @SerialName("redline_rpm") val redlineRpm: Int? = null,
@@ -862,6 +876,10 @@ data class TripTiresDto(
     /** Corners ("fl"...) >= low_delta_psi below the highest, at trip end. */
     @kotlinx.serialization.SerialName("low_corners") val lowCorners: List<String> = emptyList(),
     @kotlinx.serialization.SerialName("low_delta_psi") val lowDeltaPsi: Double? = null,
+    @kotlinx.serialization.SerialName("placard_front_kpa") val placardFrontKpa: Double? = null,
+    @kotlinx.serialization.SerialName("placard_rear_kpa") val placardRearKpa: Double? = null,
+    @kotlinx.serialization.SerialName("under_inflated_fraction") val underInflatedFraction: Double? = null,
+    @kotlinx.serialization.SerialName("below_spec_psi") val belowSpecPsi: Double? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -874,6 +892,13 @@ data class TripTireCornerDto(
     @kotlinx.serialization.SerialName("pressure_max_kpa") val pressureMaxKpa: Double? = null,
     @kotlinx.serialization.SerialName("temp_start_c") val tempStartC: Double? = null,
     @kotlinx.serialization.SerialName("temp_end_c") val tempEndC: Double? = null,
+    // Server placard verdict, judged on the START (cold) pressure. Used as
+    // given on the trip card — the phone does not re-judge it.
+    @kotlinx.serialization.SerialName("placard_kpa") val placardKpa: Double? = null,
+    /** psi UNDER placard, one decimal; negative = above. */
+    @kotlinx.serialization.SerialName("below_placard_psi") val belowPlacardPsi: Double? = null,
+    @kotlinx.serialization.SerialName("under_inflated") val underInflated: Boolean = false,
+    @kotlinx.serialization.SerialName("below_spec") val belowSpec: Boolean = false,
 )
 
 @kotlinx.serialization.Serializable

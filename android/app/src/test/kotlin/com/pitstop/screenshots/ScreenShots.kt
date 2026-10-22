@@ -12,6 +12,7 @@ import com.pitstop.drive.UploadProgress
 import com.pitstop.service.BridgePhase
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.asImageBitmap
 import com.pitstop.ui.components.CostPerMileCard
 import com.pitstop.ui.components.MonthlySpendCard
 import com.pitstop.ui.components.MpgLifetimeCard
@@ -99,7 +100,42 @@ class ScreenShots {
                 newestMs = Fixtures.homeTires.newestMs,
                 nowMs = Fixtures.NOW,
                 system = "imperial",
+                placardFrontKpa = Fixtures.homeTires.placardFrontKpa,
+                placardRearKpa = Fixtures.homeTires.placardRearKpa,
             )
+        }
+    }
+
+    /** The tire home-screen widget bitmaps (2×2, 2×1, stale + placard, empty). */
+    @Test fun tireWidget() = shot("tire_widget") {
+        val now = Fixtures.NOW
+        fun snap(ageMs: Long, placard: Boolean = false) = buildMap {
+            put("tire_pressure_fl", com.pitstop.data.CachedReading(213.0, now - ageMs))
+            put("tire_pressure_fr", com.pitstop.data.CachedReading(196.0, now - ageMs))
+            put("tire_pressure_rl", com.pitstop.data.CachedReading(209.0, now - ageMs))
+            put("tire_pressure_rr", com.pitstop.data.CachedReading(205.0, now - ageMs))
+            put("tire_temp_fl", com.pitstop.data.CachedReading(24.0, now - ageMs))
+            put("tire_temp_fr", com.pitstop.data.CachedReading(23.0, now - ageMs))
+            if (placard) {
+                put("_tire_placard_front_kpa", com.pitstop.data.CachedReading(241.3, now))
+                put("_tire_placard_rear_kpa", com.pitstop.data.CachedReading(241.3, now))
+            }
+        }
+        val fresh = com.pitstop.widget.TireWidgetProvider.modelOf(snap(5 * 60_000L), now, "imperial")
+        val stale = com.pitstop.widget.TireWidgetProvider.modelOf(snap(30 * 3_600_000L, placard = true), now, "imperial")
+        val empty = com.pitstop.widget.TireWidgetProvider.modelOf(emptyMap(), now, "imperial")
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
+            for (b in listOf(
+                com.pitstop.widget.TireWidgetRender.renderTireGrid(fresh),
+                com.pitstop.widget.TireWidgetRender.renderTireRow(fresh),
+                com.pitstop.widget.TireWidgetRender.renderTireGrid(stale),
+                com.pitstop.widget.TireWidgetRender.renderTireGrid(empty),
+            )) {
+                androidx.compose.foundation.Image(
+                    bitmap = b.asImageBitmap(),
+                    contentDescription = null,
+                )
+            }
         }
     }
 

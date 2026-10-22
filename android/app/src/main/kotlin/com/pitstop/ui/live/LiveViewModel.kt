@@ -43,6 +43,10 @@ class LiveViewModel @Inject constructor(
     private val _odometerOffsetKm = MutableStateFlow<Double?>(null)
     val odometerOffsetKm: StateFlow<Double?> = _odometerOffsetKm.asStateFlow()
 
+    /** Door placard (front, rear) kPa for the Tires grid; nulls = none set. */
+    private val _placards = MutableStateFlow<Pair<Double?, Double?>>(null to null)
+    val placards: StateFlow<Pair<Double?, Double?>> = _placards.asStateFlow()
+
     /** Pull the parked snapshot + battery history. Best-effort: a failure leaves the empty state. */
     fun loadServerSide() {
         viewModelScope.launch {
@@ -50,6 +54,7 @@ class LiveViewModel @Inject constructor(
             val vehicle = directory.bySlug(slug)
                 ?: runCatching { directory.refresh() }.getOrNull()?.firstOrNull { it.slug == slug }
             _odometerOffsetKm.value = vehicle?.odometerOffsetKm
+            _placards.value = vehicle?.tirePlacardFrontKpa to vehicle?.tirePlacardRearKpa
             val id = vehicle?.id ?: return@launch
             val from = java.time.Instant.now().minus(java.time.Duration.ofDays(14)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
             kotlinx.coroutines.coroutineScope {

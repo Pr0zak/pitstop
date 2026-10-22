@@ -95,6 +95,7 @@ fun LiveScreen(
     val parked by viewModel.parked.collectAsStateWithLifecycle()
     val battery by viewModel.battery.collectAsStateWithLifecycle()
     val odometerOffsetKm by viewModel.odometerOffsetKm.collectAsStateWithLifecycle()
+    val placards by viewModel.placards.collectAsStateWithLifecycle()
 
     val view = LocalView.current
     DisposableEffect(view) {
@@ -117,6 +118,8 @@ fun LiveScreen(
         showTopBar = showTopBar,
         parkedMetrics = parked,
         odometerOffsetKm = odometerOffsetKm,
+        placardFrontKpa = placards.first,
+        placardRearKpa = placards.second,
         battery = battery,
     )
 }
@@ -140,6 +143,9 @@ internal fun LiveContent(
     parkedMetrics: Map<String, MetricSample> = emptyMap(),
     /** The vehicle's (PCM − dash) odometer offset, for the PCM fallback. */
     odometerOffsetKm: Double? = null,
+    /** Door placard (kPa) for the Tires grid's "of 35 · −4"; null = none. */
+    placardFrontKpa: Double? = null,
+    placardRearKpa: Double? = null,
     /** Resting battery voltage by day; null hides the card. */
     battery: List<BatteryDay>? = null,
     nowMs: Long = System.currentTimeMillis(),
@@ -426,10 +432,11 @@ internal fun LiveContent(
             )
 
             // ── Brakes (VSA, Mode 22 224005 on module 28) ────────────
+            // Stored in bar, shown in whole psi in every unit system.
             LiveSection(
                 title = "Brakes",
                 tiles = listOf(
-                    TileSpec("Brake pressure", "brake_pressure", UnitFormat.Quantity.Bar, 0),
+                    TileSpec("Brake pressure", "brake_pressure", UnitFormat.Quantity.BrakeBar, 0),
                 ),
                 metrics = shown,
                 parkedNowMs = if (parked) nowMs else null,
@@ -471,7 +478,11 @@ internal fun LiveContent(
                 metrics = shown,
                 system = unitSystem,
                 customBody = {
-                    TpmsGrid(tires, unitSystem, Modifier.padding(horizontal = 4.dp))
+                    TpmsGrid(
+                        tires, unitSystem, Modifier.padding(horizontal = 4.dp),
+                        placardFrontKpa = placardFrontKpa,
+                        placardRearKpa = placardRearKpa,
+                    )
                     val newest = VehicleSignals.newestPressureMs(shown.mapValues { it.value.tsMs })
                     Text(
                         buildString {

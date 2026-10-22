@@ -17,6 +17,7 @@ private const val L_TO_USGAL = 0.264172
 private const val KM_TO_MI = 0.621371
 private const val MI_TO_KM = 1.609344
 private const val USGAL_TO_L = 3.785411784
+private const val PSI_PER_BAR = 14.5038
 
 /** 1 mpg (US) = 235.215 / (L/100 km). The conversion is an inversion,
  *  not a scale — so is the direction of "better". */
@@ -55,9 +56,18 @@ object UnitFormat {
          */
         Lambda("λ", "λ"),
 
-        /** Hydraulic brake pressure. bar in both systems — what the VSA
-         *  module reports and what the web shows (no psi conversion). */
-        Bar("bar", "bar"),
+        /**
+         * Hydraulic brake pressure, STORED in bar (what the VSA module
+         * reports and the backend keeps) and DISPLAYED in psi in both
+         * systems — user preference 2026-10-22, like tire pressures; the
+         * web does the same. psi = bar × 14.5038.
+         */
+        BrakeBar(
+            "psi",
+            "psi",
+            toMetric = { it * PSI_PER_BAR },
+            toImperial = { it * PSI_PER_BAR },
+        ),
 
         // ── Converted ────────────────────────────────────────────────
         TempC("°C", "°F", toImperial = { it * 9.0 / 5.0 + 32.0 }),

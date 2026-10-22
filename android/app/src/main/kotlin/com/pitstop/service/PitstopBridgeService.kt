@@ -1666,6 +1666,7 @@ class PitstopBridgeService : Service() {
         // on Android's 30-min `updatePeriodMillis` floor (and Doze can
         // stretch even that). Rate-limited to 1 refresh per 30 s.
         if (name == "fuel_level") widgetRefresher.refreshFuelWidget()
+        if (name.startsWith("tire_pressure_")) widgetRefresher.refreshTireWidget()
         val topic = "bridge/${vehicleSlug}/${name}"
         publishOrBuffer(topic, v2Envelope(value))
         // Mirror into the drive recorder so the canonical batch

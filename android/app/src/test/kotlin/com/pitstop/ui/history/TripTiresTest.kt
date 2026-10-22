@@ -44,6 +44,29 @@ class TripTiresTest {
     }
 
     @Test
+    fun `placard line comes from the server verdict on the start pressure`() {
+        val withPlacard = tires.copy(
+            corners = tires.corners.map {
+                when (it.corner) {
+                    "fr" -> it.copy(placardKpa = 241.3, belowPlacardPsi = 6.6, belowSpec = true)
+                    "fl" -> it.copy(placardKpa = 241.3, belowPlacardPsi = 4.1, belowSpec = true)
+                    "rl" -> it.copy(placardKpa = 241.3, belowPlacardPsi = 10.0, belowSpec = true, underInflated = true)
+                    else -> it
+                }
+            },
+            placardFrontKpa = 241.3, placardRearKpa = 241.3,
+        )
+        val rows = tireSummaryRows(withPlacard, "imperial")
+        assertEquals("of 35 · −4", rows[0].placard)
+        assertEquals("of 35 · −7", rows[1].placard)
+        assertTrue(rows[1].belowSpec)
+        assertEquals("of 35 · under −10", rows[2].placard)
+        assertTrue(rows[2].underInflated)
+        assertNull(rows[3].placard) // RR: no reading, no verdict
+        assertNull(tireSummaryRows(tires, "imperial")[0].placard) // no placard at all
+    }
+
+    @Test
     fun `falls back to the shared 2-psi rule when the server list is empty`() {
         val rows = tireSummaryRows(tires.copy(lowCorners = emptyList()), "imperial")
         assertEquals(listOf("FR"), rows.filter { it.low }.map { it.label })
@@ -58,7 +81,8 @@ class TripTiresTest {
              "brake_events":12,"hard_brake_events":1,"max_brake_bar":88.0,"braking_s":41.5,
              "tires":{"corners":[{"corner":"fl","pressure_start_kpa":213.0,"pressure_end_kpa":220.0,
                "pressure_min_kpa":212.0,"pressure_max_kpa":221.0,"temp_start_c":18.0,"temp_end_c":29.0}],
-               "low_corners":["fr"],"low_delta_psi":2.0}}
+               "low_corners":["fr"],"low_delta_psi":2.0,"placard_front_kpa":241.3,"placard_rear_kpa":null,
+               "under_inflated_fraction":0.25,"below_spec_psi":3.0}}
         """.trimIndent()
         val t = json.decodeFromString(com.pitstop.http.TripDetailDto.serializer(), body)
         assertEquals(12, t.brakeEvents)
@@ -85,10 +109,10 @@ class BrakingLineTest {
     @Test
     fun `web-parity stats row`() {
         assertEquals(
-            "12 presses · 1 hard · max 88 bar · 42s on pedal",
-            com.pitstop.ui.history.detail.brakingLine(trip(12, 1, 88.2, 41.5)),
+            "12 presses · 1 hard (≥870 psi) · max 1349 psi · 42s on pedal",
+            com.pitstop.ui.history.detail.brakingLine(trip(12, 1, 93.0, 41.5)),
         )
-        assertEquals("1 press · 0 hard · max 30 bar · 2s on pedal",
-            com.pitstop.ui.history.detail.brakingLine(trip(1, 0, 30.0, 2.0)))
+        assertEquals("1 press · 0 hard (≥870 psi) · max 1189 psi · 2s on pedal",
+            com.pitstop.ui.history.detail.brakingLine(trip(1, 0, 82.0, 2.0)))
     }
 }

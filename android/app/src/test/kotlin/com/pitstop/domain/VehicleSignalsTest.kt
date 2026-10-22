@@ -71,4 +71,22 @@ class VehicleSignalsTest {
         assertEquals("1m ago", VehicleSignals.ageLabel(now - 90_000, now))
         assertEquals("2h ago", VehicleSignals.ageLabel(now - 2 * 3_600_000L, now))
     }
+
+    @Test
+    fun `placard verdict - amber at 3 psi under, red under at 25 percent`() {
+        val placard = 35.0 / VehicleSignals.PSI_PER_KPA
+        val fr = VehicleSignals.placardVerdict(196.0, placard)!! // 28.4 psi
+        assertEquals(35, fr.placardPsi)
+        assertEquals(6.6, fr.belowPsi, 0.05)
+        assertEquals("−7", fr.deltaLabel)
+        assertTrue(fr.belowSpec)
+        assertFalse(fr.underInflated)
+        val ok = VehicleSignals.placardVerdict(placard - 2.0 / VehicleSignals.PSI_PER_KPA, placard)!!
+        assertFalse(ok.belowSpec)
+        assertEquals("−2", ok.deltaLabel)
+        val flat = VehicleSignals.placardVerdict(placard * 0.75, placard)!!
+        assertTrue(flat.underInflated)
+        assertNull(VehicleSignals.placardVerdict(200.0, null))
+        assertNull(VehicleSignals.placardVerdict(0.0, placard))
+    }
 }

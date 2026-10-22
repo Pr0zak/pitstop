@@ -27,9 +27,30 @@ data class FuelSnapshot(
     val tankUsGallons: Double?,
     /** When the fuel figure was produced (estimate update or sensor sample). */
     val readingAtMs: Long?,
-    /** True when it came from the backend's hybrid estimator (ADR-019). */
+    /**
+     * True when the figure is server-picked and deliberately stable (the
+     * cluster reading or the hybrid estimator) — a live BLE slosh sample
+     * must never overlay it ([RangeMath.withLiveLevel]).
+     */
     val isEstimate: Boolean = false,
-)
+    val source: FuelSource = if (isEstimate) FuelSource.Estimate else FuelSource.Sensor,
+) {
+    /** "from cluster · 2m ago" / "estimated · 3h ago" / "2h ago"; null when unknown. */
+    fun caption(nowMs: Long): String? = listOfNotNull(
+        source.label,
+        readingAtMs?.let { VehicleSignals.ageLabel(it, nowMs) },
+    ).joinToString(" · ").ifEmpty { null }
+}
+
+/** Where "fuel in tank" came from; the server picks Cluster vs Estimate. */
+enum class FuelSource(val label: String?) {
+    /** Instrument-cluster litres (the dash gauge's own figure). */
+    Cluster("from cluster"),
+    /** The backend's hybrid estimator (ADR-019). */
+    Estimate("estimated"),
+    /** Raw smoothed fuel_level % — old servers / nothing else available. */
+    Sensor(null),
+}
 
 data class RangeEstimate(
     val fuel: FuelSnapshot,
@@ -86,6 +107,26 @@ object RangeMath {
         val tankGal = tankUsGallons(v.tank1Capacity, v.fuelUnit, v.tankCapacityL)
         val estimateL = v.fuelLevelEstimateL
         val tankL = v.tankCapacityL?.takeIf { it > 0 }
+        // 1) The server's display pick (cluster or estimate) — rendered as
+        //    given, never re-derived here (web parity).
+        val displayL = v.fuelDisplayL
+        val displaySource = when (v.fuelDisplaySource) {
+            "cluster" -> FuelSource.Cluster
+            "estimate" -> FuelSource.Estimate
+            else -> null
+        }
+        if (displayL != null && displaySource != null) {
+            return FuelSnapshot(
+                pct = tankL?.let { (displayL / it * 100.0).coerceIn(0.0, 100.0) },
+                usGallons = (displayL * L_TO_US_GAL).coerceAtLeast(0.0),
+                tankUsGallons = tankGal,
+                readingAtMs = v.fuelDisplayAt?.let(::isoToMs),
+                isEstimate = true,
+                source = displaySource,
+            )
+        }
+        // 2) Older server (no fuel_display_*): the estimator as before.
+        // 3) Nothing server-picked: the raw-sensor path.
         if (estimateL != null && tankL != null) {
             return FuelSnapshot(
                 pct = (estimateL / tankL * 100.0).coerceIn(0.0, 100.0),

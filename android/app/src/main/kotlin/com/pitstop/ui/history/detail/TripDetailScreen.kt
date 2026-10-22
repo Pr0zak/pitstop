@@ -1251,11 +1251,12 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
         "fuel_rail_pressure", "Fuel rail", ChartPalette.fuelRail,
         UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Emissions,
     ),
-    // Brake pressure (VSA, Mode 22 224005), bar in both systems. 1 Hz,
+    // Brake pressure (VSA, Mode 22 224005): bar on the wire, "Brake (psi)"
+    // on the chart in both systems. 1 Hz,
     // and absent on any trip without the Mode 22 brake poll.
     TripMetricDef(
         "brake_pressure", "Brake", ChartPalette.brake,
-        UnitFormat.Quantity.Bar, 0, carryMs = 3_000L,
+        UnitFormat.Quantity.BrakeBar, 0, carryMs = 3_000L,
     ),
     // ── Distance ──────────────────────────────────────────────────
     // Absolute odometer. The API already subtracted the vehicle's
@@ -1273,13 +1274,18 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
 )
 
 /**
- * "12 presses · 1 hard · max 88 bar · 42s on pedal" — web parity. Only
+ * "12 presses · 1 hard · max 1276 psi · 42s on pedal" — web parity. Only
  * called when brake_events is non-null (null = not measured).
  */
 internal fun brakingLine(trip: TripDetailDto): String = buildList {
     val n = trip.brakeEvents ?: 0
     add("$n press${if (n == 1) "" else "es"}")
-    trip.hardBrakeEvents?.let { add("$it hard") }
-    trip.maxBrakeBar?.let { add("max ${it.roundToInt()} bar") }
+    // Hard = a press peaking at or above the server's 60 bar ≈ 870 psi.
+    trip.hardBrakeEvents?.let { add("$it hard (≥$HARD_BRAKE_PSI psi)") }
+    // max_brake_bar arrives in bar; shown in whole psi like the tiles.
+    trip.maxBrakeBar?.let { add("max ${UnitFormat.Quantity.BrakeBar.number(it, "imperial", 0)} psi") }
     trip.brakingS?.let { add("${it.roundToInt()}s on pedal") }
 }.joinToString(" · ")
+
+/** Backend _HARD_BRAKE_BAR (60 bar) in whole psi, for the braking label. */
+internal const val HARD_BRAKE_PSI = 870

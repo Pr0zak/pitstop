@@ -201,6 +201,8 @@ object Fixtures {
             ),
         ),
         newestMs = NOW - 14 * 60_000L,
+        placardFrontKpa = 241.3,
+        placardRearKpa = 241.3,
     )
 
     /** Same values, but the BLE link dropped 95 s ago: the screen still looks live. */
@@ -378,13 +380,15 @@ object Fixtures {
     val tripTires: com.pitstop.http.TripTiresDto
         get() = com.pitstop.http.TripTiresDto(
             corners = listOf(
-                com.pitstop.http.TripTireCornerDto("fl", 213.0, 219.8, 213.0, 220.0, 18.0, 29.0),
-                com.pitstop.http.TripTireCornerDto("fr", 196.0, 202.8, 196.0, 203.0, 18.0, 30.0),
-                com.pitstop.http.TripTireCornerDto("rl", 209.0, 215.1, 209.0, 215.3, 17.0, 27.0),
-                com.pitstop.http.TripTireCornerDto("rr", 205.0, 211.1, 205.0, 211.3, 17.0, 27.0),
+                com.pitstop.http.TripTireCornerDto("fl", 213.0, 219.8, 213.0, 220.0, 18.0, 29.0, 241.3, 4.1, false, true),
+                com.pitstop.http.TripTireCornerDto("fr", 196.0, 202.8, 196.0, 203.0, 18.0, 30.0, 241.3, 6.6, false, true),
+                com.pitstop.http.TripTireCornerDto("rl", 209.0, 215.1, 209.0, 215.3, 17.0, 27.0, 241.3, 4.7, false, true),
+                com.pitstop.http.TripTireCornerDto("rr", 205.0, 211.1, 205.0, 211.3, 17.0, 27.0, 241.3, 5.3, false, true),
             ),
             lowCorners = listOf("fr"),
             lowDeltaPsi = 2.0,
+            placardFrontKpa = 241.3,
+            placardRearKpa = 241.3,
         )
 
     val baseline = TripBaselineDto(

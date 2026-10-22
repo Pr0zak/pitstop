@@ -132,6 +132,7 @@ class WiCanSubscriber @Inject constructor(
             // between Android's 30-min updatePeriodMillis ticks. Rate
             // limit lives in WidgetRefresher itself.
             if (canonical == "fuel_level") widgetRefresher.refreshFuelWidget()
+            if (canonical.startsWith("tire_pressure_")) widgetRefresher.refreshTireWidget()
         }
     }
 

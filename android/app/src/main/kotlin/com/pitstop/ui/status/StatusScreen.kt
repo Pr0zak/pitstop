@@ -339,6 +339,8 @@ internal fun StatusContent(
                         newestMs = it.newestMs,
                         nowMs = nowMs,
                         system = system,
+                        placardFrontKpa = it.placardFrontKpa,
+                        placardRearKpa = it.placardRearKpa,
                     )
                 }
 
@@ -470,6 +472,14 @@ private fun RangeHeroCard(range: RangeEstimate, nowMs: Long, stale: Boolean) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // Where the fuel figure came from + its age (server-picked).
+            range.fuel.caption(nowMs)?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             val age = RangeFormat.readingAge(range.fuel.readingAtMs, nowMs)
             if (age != null || stale) {
                 Text(

@@ -166,6 +166,16 @@ class HondaMode22Test {
     }
 
     @Test
+    fun `brake pressure is published in bar and displayed in whole psi in both unit systems`() {
+        val q = com.pitstop.util.UnitFormat.Quantity.BrakeBar
+        assertEquals("1349", q.number(93.0, "imperial", 0))
+        assertEquals("1349", q.number(93.0, "metric", 0))
+        assertEquals("1189", q.number(82.0, "metric", 0))
+        assertEquals("psi", q.unit("metric"))
+        assertEquals("psi", q.unit("imperial"))
+    }
+
+    @Test
     fun `brake pressure polls VSA every second`() {
         assertEquals(listOf("ATSH18DA28F1", "ATCRA18DAF128"), HondaMode22.BrakePressure.initCommands)
         assertEquals("224005\r", HondaMode22.BrakePressure.command())

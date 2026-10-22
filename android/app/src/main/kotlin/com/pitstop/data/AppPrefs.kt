@@ -19,6 +19,10 @@ import javax.inject.Singleton
 
 private val Context.appPrefsStore by preferencesDataStore(name = "pitstop_app_prefs")
 
+/** One cached metric reading: value + epoch ms. */
+@Serializable
+data class CachedReading(val v: Double, val t: Long)
+
 /** The range basis a widget / car tile can use without refetching 30 days of trips. */
 @Serializable
 data class CachedRangeBasis(
@@ -52,6 +56,7 @@ class AppPrefs @Inject constructor(
         fun seenDtcs(vehicleId: String) = stringSetPreferencesKey("seen_dtcs_$vehicleId")
         fun dtcSeeded(vehicleId: String) = booleanPreferencesKey("dtc_seeded_$vehicleId")
         fun rangeBasis(slug: String) = stringPreferencesKey("range_basis_$slug")
+        fun tireSnapshot(slug: String) = stringPreferencesKey("tire_snapshot_$slug")
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -87,6 +92,37 @@ class AppPrefs @Inject constructor(
     suspend fun setVehicleNames(names: Map<String, String>) {
         context.appPrefsStore.edit { it[Keys.vehicleNames] = json.encodeToString(stateMap, names) }
     }
+
+    /**
+     * Last tire readings per vehicle (metric → value + epoch ms), persisted
+     * so the tire widget and Home's Tires card never go blank — offline,
+     * after a reboot, or between a parked car's rare WiCAN reports. Only
+     * ever merged forward (newest per metric wins), never cleared.
+     */
+    suspend fun tireSnapshot(slug: String): Map<String, CachedReading> =
+        context.appPrefsStore.data.first()[Keys.tireSnapshot(slug)]
+            ?.let { runCatching { json.decodeFromString(tireMap, it) }.getOrNull() }
+            .orEmpty()
+
+    suspend fun mergeTireSnapshot(slug: String, fresh: Map<String, CachedReading>): Map<String, CachedReading> {
+        if (slug.isBlank()) return fresh
+        var out: Map<String, CachedReading> = fresh
+        context.appPrefsStore.edit { p ->
+            val cur = p[Keys.tireSnapshot(slug)]
+                ?.let { runCatching { json.decodeFromString(tireMap, it) }.getOrNull() }
+                .orEmpty()
+            val merged = HashMap(cur)
+            for ((k, v) in fresh) {
+                val old = merged[k]
+                if (old == null || v.t >= old.t) merged[k] = v
+            }
+            out = merged
+            p[Keys.tireSnapshot(slug)] = json.encodeToString(tireMap, merged)
+        }
+        return out
+    }
+
+    private val tireMap = MapSerializer(String.serializer(), CachedReading.serializer())
 
     suspend fun setViewVehicleSlug(slug: String) {
         context.appPrefsStore.edit { it[Keys.viewVehicleSlug] = slug }
