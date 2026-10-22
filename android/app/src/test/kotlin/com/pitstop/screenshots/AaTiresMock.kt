@@ -90,6 +90,46 @@ class AaTiresMock {
         }
     }
 
+    /** Cylinders tab image: all six, VCM eco with a cyl-6 misfire, engine off. */
+    @Test fun cylinders() = paparazzi.snapshot {
+        val six = com.pitstop.car.CylinderModel.of(6.0, now, emptyMap(), now, null)
+        val eco = com.pitstop.car.CylinderModel.of(3.0, now, mapOf(6 to 1), now, null)
+        val off = com.pitstop.car.CylinderModel.of(null, null, emptyMap(), now, "Engine off")
+        Row(
+            Modifier.fillMaxSize().background(Color(0xFF202124)).padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            for (m in listOf(six, eco, off)) {
+                Image(com.pitstop.car.CylinderBitmap.render(m).asImageBitmap(), null, Modifier.size(240.dp))
+            }
+        }
+    }
+
+    /** Temps tab image: normal drive, coolant hot, cold morning. */
+    @Test fun temps() = paparazzi.snapshot {
+        fun live(vararg kv: Pair<String, Double>) =
+            kv.associate { (k, v) -> k to com.pitstop.service.MetricSample(k, v, now - 2_000L) }
+        val normal = com.pitstop.car.TempModel.of(
+            live("coolant_temp" to 90.0, "atf_temp" to 72.0, "intake_air_temp" to 24.0, "ambient_air_temp_f" to 68.0), now, "imperial", null,
+        )
+        val hot = com.pitstop.car.TempModel.of(
+            live("coolant_temp" to 108.0, "atf_temp" to 112.0, "intake_air_temp" to 41.0, "ambient_air_temp_f" to 98.0), now, "imperial", null,
+        )
+        val cold = com.pitstop.car.TempModel.of(
+            live("coolant_temp" to 35.0, "atf_temp" to 12.0, "intake_air_temp" to 1.0, "ambient_air_temp_f" to 33.0), now, "imperial", null,
+        )
+        Row(
+            Modifier.fillMaxSize().background(Color(0xFF202124)).padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            for (m in listOf(normal, hot, cold)) {
+                Image(com.pitstop.car.TempBitmap.render(m).asImageBitmap(), null, Modifier.size(240.dp))
+            }
+        }
+    }
+
     private fun frame(s: Map<String, CachedReading>) = paparazzi.snapshot {
         val model = TireWidgetProvider.modelOf(s, now, "imperial")
         val rows = TirePane.rows(model, "imperial")

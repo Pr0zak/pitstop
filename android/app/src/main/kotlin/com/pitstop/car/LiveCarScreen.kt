@@ -106,7 +106,10 @@ class LiveCarScreen(
         // flowing, which had never happened on a head unit.
         observerJob = scope.launch {
             launch {
-                stateBus.latestByMetric.collect { snapshot -> trends.ingest(snapshot) }
+                stateBus.latestByMetric.collect { snapshot ->
+                    trends.ingest(snapshot)
+                    snapshot[ACTIVE_CYLINDERS]?.let { vcm.ingest(it.value, it.tsMs) }
+                }
             }
             launch {
                 settingsRepository.settings.collect { cachedSettings = it }
@@ -156,6 +159,18 @@ class LiveCarScreen(
             val tab = activeTab ?: return@buildString
             append(tab.id)
             append(obdDown(status, now))
+            if (tab == CarTileCatalog.CarScreenKind.Temps) {
+                val m = tempModel(status, settings, now)
+                append(m)
+                for ((_, v) in tempRows(m, settings)) append('|').append(v)
+                return@buildString
+            }
+            if (tab == CarTileCatalog.CarScreenKind.Cylinders) {
+                val m = cylinderModel(status, now)
+                append(m)
+                for ((_, v) in CylinderPane.rows(m, vcm.share())) append('|').append(v)
+                return@buildString
+            }
             if (tab == CarTileCatalog.CarScreenKind.Tires) {
                 // The model carries every number, flag and the age bucket the
                 // image draws, so it changing is exactly "the screen changed".
@@ -257,6 +272,77 @@ class LiveCarScreen(
         const val REFRESH_INTERVAL_MS = 2_000L
 
         const val TIRE_SNAPSHOT_INTERVAL_MS = 60_000L
+
+        const val ACTIVE_CYLINDERS = "active_cylinders"
+    }
+
+    // ── Temps tab ─────────────────────────────────────────────────────
+
+    private fun tempModel(status: BridgeStatus, settings: com.pitstop.data.Settings, now: Long): TempModel =
+        TempModel.of(stateBus.latestByMetric.value, now, settings.unitSystem, idleReason(status))
+
+    private fun tempRows(m: TempModel, settings: com.pitstop.data.Settings): List<Pair<String, String>> {
+        val live = stateBus.latestByMetric.value
+        val now = System.currentTimeMillis()
+        fun fresh(key: String) = live[key]?.takeIf { now - it.tsMs <= TempModel.FRESH_MS }?.value
+        return TempPane.rows(m, fresh("catalyst_temp_b1"), fresh("catalyst_temp_b2"), settings.unitSystem)
+    }
+
+    /** Same shape as [tiresPane]: the 2×2 as the pane image, two rows. */
+    private fun tempsPane(status: BridgeStatus, settings: com.pitstop.data.Settings): Template {
+        val m = tempModel(status, settings, System.currentTimeMillis())
+        val pane = androidx.car.app.model.Pane.Builder()
+        for ((label, value) in tempRows(m, settings)) {
+            pane.addRow(androidx.car.app.model.Row.Builder().setTitle(label).addText(value).build())
+        }
+        if (carContext.carAppApiLevel >= 4) {
+            pane.setImage(
+                CarIcon.Builder(
+                    androidx.core.graphics.drawable.IconCompat.createWithBitmap(TempBitmap.render(m)),
+                ).build(),
+            )
+        }
+        return androidx.car.app.model.PaneTemplate.Builder(pane.build()).build()
+    }
+
+    /** Why a live-only tab has nothing to show; the grid's empty reasons. */
+    private fun idleReason(status: BridgeStatus): String = when {
+        status.engineState == EngineState.Off -> "Engine off"
+        status.phase == BridgePhase.Idle -> "Bridge off"
+        status.phase == BridgePhase.Error -> "Bridge error"
+        status.phase == BridgePhase.Connected -> "Waiting for data"
+        else -> "Connecting…"
+    }
+
+    // ── Cylinders tab ─────────────────────────────────────────────────
+
+    private val vcm = VcmTracker()
+
+    private fun cylinderModel(status: BridgeStatus, now: Long): CylinderModel {
+        val live = stateBus.latestByMetric.value
+        val misfires = (1..CylinderModel.CYLINDERS).mapNotNull { n ->
+            live["misfire_count_$n"]?.value?.let { n to it.toInt() }
+        }.toMap()
+        val idle = idleReason(status)
+        val sample = live[ACTIVE_CYLINDERS]
+        return CylinderModel.of(sample?.value, sample?.tsMs, misfires, now, idle)
+    }
+
+    /** Same shape as [tiresPane]: the banks as the pane image, two rows. */
+    private fun cylindersPane(status: BridgeStatus): Template {
+        val m = cylinderModel(status, System.currentTimeMillis())
+        val pane = androidx.car.app.model.Pane.Builder()
+        for ((label, value) in CylinderPane.rows(m, vcm.share())) {
+            pane.addRow(androidx.car.app.model.Row.Builder().setTitle(label).addText(value).build())
+        }
+        if (carContext.carAppApiLevel >= 4) {
+            pane.setImage(
+                CarIcon.Builder(
+                    androidx.core.graphics.drawable.IconCompat.createWithBitmap(CylinderBitmap.render(m)),
+                ).build(),
+            )
+        }
+        return androidx.car.app.model.PaneTemplate.Builder(pane.build()).build()
     }
 
     // ── Tires tab ─────────────────────────────────────────────────────
@@ -445,6 +531,8 @@ class LiveCarScreen(
                 .build()
         }
         kind == CarTileCatalog.CarScreenKind.Tires -> tiresPane(settings)
+        kind == CarTileCatalog.CarScreenKind.Cylinders -> cylindersPane(status)
+        kind == CarTileCatalog.CarScreenKind.Temps -> tempsPane(status, settings)
         else -> paneOf(sessionRows(status, settings, System.currentTimeMillis()))
     }
 

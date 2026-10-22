@@ -284,6 +284,16 @@ object CarTileCatalog {
          *  parked) it shows the last known readings, never dashes. */
         Tires("tires", "Tires", null, R.drawable.ic_metric_pressure),
 
+        /** The V6's two banks with which cylinders are firing (VCM drops to
+         *  3 on the rear bank) and any misfires, from the phone's Mode 22
+         *  poll; rows: the mode and the share of time on 3 cylinders. */
+        Cylinders("cyl", "Cylinders", null, R.drawable.ic_metric_load),
+
+        /** Coolant, transmission fluid, intake and outside as a 2×2 of big
+         *  numbers; rows: a status line (HOT / warming up / ice) and the
+         *  catalyst temps. */
+        Temps("temps", "Temps", null, R.drawable.ic_metric_temp),
+
         /** Live bridge/session state from the in-process bus. No network.
          *  A PaneTemplate: OBD link, engine, upload, device — plus a
          *  permanent Reconnect action. */
