@@ -132,3 +132,86 @@ export function monthTicks(t0: number, t1: number, every: number): { v: number; 
 export function stepVertices(pts: readonly { x: number; y: number }[], eps = 1e-3): { x: number; y: number }[] {
   return pts.flatMap((p, i) => (i ? [{ x: p.x - eps, y: pts[i - 1].y }, p] : [p]));
 }
+
+/**
+ * Background bands + changeover markers for the gasoline volatility seasons
+ * (lib/fuelSeasons.ts). Drawn in `drawClear`, i.e. under the grid and every
+ * series, so the MPG dots and line stay on top. Colours come from the theme
+ * tokens (--c-warn for summer, --c-info for the winter changeover), so the
+ * bands follow whatever palette :root defines.
+ *
+ * Labels are drawn only where they fit: at "All" span on a phone-width card a
+ * summer band is a few dozen pixels wide, and the legend above the chart
+ * already names the bands.
+ */
+export function fuelSeasonPlugin(
+  bands: readonly { kind: "transition" | "summer"; start: number; end: number }[],
+): uPlot.Plugin {
+  const summer = cssVar("--c-warn", "#ffb020");
+  const winter = cssVar("--c-info", "#60a5fa");
+  const ink = cssVar("--c-ink2", "#9aa0aa");
+  return {
+    hooks: {
+      drawClear: (u: uPlot) => {
+        if (!bands.length) return;
+        const ctx = u.ctx;
+        const { left, top, width, height } = u.bbox;
+        const right = left + width;
+        const pr = typeof devicePixelRatio === "number" && devicePixelRatio > 0 ? devicePixelRatio : 1;
+        const pad = 4 * pr;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, width, height);
+        ctx.clip();
+        ctx.font = `${10 * pr}px Geist, -apple-system, system-ui, sans-serif`;
+        ctx.textBaseline = "top";
+        const vline = (px: number, color: string) => {
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.55;
+          ctx.lineWidth = pr;
+          ctx.setLineDash([3 * pr, 3 * pr]);
+          ctx.beginPath();
+          ctx.moveTo(Math.round(px) + 0.5, top);
+          ctx.lineTo(Math.round(px) + 0.5, top + height);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        };
+        const label = (text: string, x: number, room: number, color: string) => {
+          if (ctx.measureText(text).width + 2 * pad > room) return;
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.9;
+          ctx.fillText(text, x + pad, top + pad);
+          ctx.globalAlpha = 1;
+        };
+        bands.forEach((b, i) => {
+          const x0 = Math.max(u.valToPos(b.start, "x", true), left);
+          const x1 = Math.min(u.valToPos(b.end, "x", true), right);
+          if (x1 <= left || x0 >= right) return;
+          // globalAlpha rather than withAlpha(): a token given as rgb()/hsl()
+          // would come back from withAlpha unchanged, i.e. fully opaque.
+          ctx.fillStyle = summer;
+          ctx.globalAlpha = b.kind === "summer" ? 0.13 : 0.05;
+          ctx.fillRect(x0, top, x1 - x0, height);
+          ctx.globalAlpha = 1;
+          if (b.kind === "summer") {
+            vline(u.valToPos(b.start, "x", true), summer);
+            label("Summer gas", x0, x1 - x0, summer);
+            // Winter changeover: line at the band's end, label in the gap up
+            // to the next band (or the plot edge).
+            const wx = u.valToPos(b.end, "x", true);
+            if (wx > left && wx < right) {
+              vline(wx, winter);
+              const next = bands[i + 1];
+              const nx = next ? Math.min(u.valToPos(next.start, "x", true), right) : right;
+              label("Winter gas", wx, nx - wx, winter);
+            }
+          } else {
+            label("Changeover", x0, x1 - x0, ink);
+          }
+        });
+        ctx.restore();
+      },
+    },
+  };
+}

@@ -41,7 +41,12 @@ import {
   type TireCorner,
 } from "@/lib/vehicleSignals";
 
-const props = defineProps<{ vehicleId: string; days: number }>();
+const props = defineProps<{
+  vehicleId: string;
+  days: number;
+  /** Window tag next to the heading (the page's window name, or a cap note). */
+  tag?: string;
+}>();
 
 const q = useAsync(
   () => api.getTireAnalytics(props.vehicleId, props.days),
@@ -237,7 +242,7 @@ const parkHours = computed(() => q.data.value?.cold_park_hours ?? 3);
 <template>
   <section class="card wide tires-section">
     <header class="head-inline">
-      <h3>Tires</h3>
+      <h3>Tires <span v-if="tag" class="tag-fixed">{{ tag }}</span></h3>
       <span class="muted small">cold = first reading after parked ≥ {{ parkHours }} h · pressure in psi</span>
     </header>
     <StateCard v-if="q.loading.value && !q.data.value" state="loading" bare />

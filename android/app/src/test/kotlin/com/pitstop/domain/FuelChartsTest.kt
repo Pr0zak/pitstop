@@ -72,6 +72,7 @@ class FuelChartsTest {
             MpgPointDto(ym.toString(), 18.0, fillupCount = 1)
         } // 2022-10 .. 2026-09
         assertEquals(12, FuelCharts.mpgOverTime(pts, MpgSpan.Year)!!.months.size)
+        assertEquals(24, FuelCharts.mpgOverTime(pts, MpgSpan.TwoYears)!!.months.size)
         assertEquals(36, FuelCharts.mpgOverTime(pts, MpgSpan.ThreeYears)!!.months.size)
         assertEquals(48, FuelCharts.mpgOverTime(pts, MpgSpan.All)!!.months.size)
     }

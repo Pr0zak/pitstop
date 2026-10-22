@@ -150,14 +150,19 @@ const limit = ref(50);
 const offset = ref(0);
 
 // Stats-tab user controls — persisted to localStorage so the
-// view survives reload. Window applies to spend / cost-per-mile /
-// fillup-history charts. Chart-visibility toggles are per-chart.
-type StatsWindow = "30d" | "3m" | "12m" | "all";
-const STATS_WINDOWS = ["30d", "3m", "12m", "all"] as const;
+// view survives reload. The window applies to EVERY chart on the tab
+// except the ones tagged otherwise ("last 6 fillups", "now").
+// "12m" keeps its stored id (saved choices and ?window= links) but reads
+// "1 year" next to the 2- and 3-year options.
+// Chart-visibility toggles are per-chart.
+type StatsWindow = "30d" | "3m" | "12m" | "2y" | "3y" | "all";
+const STATS_WINDOWS = ["30d", "3m", "12m", "2y", "3y", "all"] as const;
 const STATS_WINDOW_OPTIONS = [
   { value: "30d" as const, label: "30 days" },
   { value: "3m" as const, label: "3 months" },
-  { value: "12m" as const, label: "12 months" },
+  { value: "12m" as const, label: "1 year" },
+  { value: "2y" as const, label: "2 years" },
+  { value: "3y" as const, label: "3 years" },
   { value: "all" as const, label: "All time" },
 ];
 const STATS_WINDOW_KEY = "pitstop_stats_window";
@@ -166,7 +171,7 @@ const STATS_CHARTS_KEY = "pitstop_stats_charts";
 function loadStatsWindow(): StatsWindow {
   try {
     const v = localStorage.getItem(STATS_WINDOW_KEY) as StatsWindow | null;
-    if (v === "30d" || v === "3m" || v === "12m" || v === "all") return v;
+    if (v != null && (STATS_WINDOWS as readonly string[]).includes(v)) return v;
   } catch {
     /* ignore */
   }
@@ -227,6 +232,8 @@ const statsWindowMonths = computed<number>(() => {
     case "30d": return 1;
     case "3m": return 3;
     case "12m": return 12;
+    case "2y": return 24;
+    case "3y": return 36;
     // Backend monthlySpend caps months at 120 (10 years), which is
     // plenty for the user's Fuelio history. Anything above triggers a
     // 422 and the chart goes empty.
@@ -235,9 +242,27 @@ const statsWindowMonths = computed<number>(() => {
 });
 const statsCutoffMs = computed<number | null>(() => {
   if (statsWindow.value === "all") return null;
-  const days = { "30d": 30, "3m": 90, "12m": 365 }[statsWindow.value];
+  const days = { "30d": 30, "3m": 90, "12m": 365, "2y": 730, "3y": 1095 }[statsWindow.value];
   return Date.now() - days * 86_400_000;
 });
+/** Start of the month containing the cutoff: monthly buckets ("YYYY-MM")
+ *  parse to their first day, so the bucket holding the cutoff stays in. */
+const statsCutoffMonthMs = computed<number | null>(() => {
+  const c = statsCutoffMs.value;
+  if (c == null) return null;
+  const d = new Date(c);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+});
+/** Weeks of EIA history the market chart covers for the window. */
+const statsWindowWeeks = computed<number>(() =>
+  ({ "30d": 5, "3m": 13, "12m": 52, "2y": 104, "3y": 156, all: 520 })[statsWindow.value],
+);
+/** Lower-case window name for chart tags and the spend KPI. */
+const statsWindowLabel = computed<string>(() =>
+  ({ "30d": "30 days", "3m": "3 months", "12m": "1 year", "2y": "2 years", "3y": "3 years", all: "all time" })[
+    statsWindow.value
+  ],
+);
 
 const fillupsQ = useAsync(
   () =>
@@ -282,13 +307,16 @@ const cpmQ = useAsync(
     vehicleId.value && tab.value === "stats"
       ? api.costPerMile(
           vehicleId.value,
+          // The window only sets bucket size — the endpoint returns the
+          // whole history either way, so cpmPoints filters to the window.
+          // 2y / 3y keep monthly buckets ("year"); "all" is yearly.
           statsWindow.value === "30d"
             ? "month"
             : statsWindow.value === "3m"
               ? "3m"
-              : statsWindow.value === "12m"
-                ? "year"
-                : "all",
+              : statsWindow.value === "all"
+                ? "all"
+                : "year",
         )
       : Promise.resolve({ points: [] }),
   [vehicleId, tab, statsWindow],
@@ -308,7 +336,7 @@ const overlayQ = useAsync(
 const statsFillupsQ = useAsync(
   () =>
     vehicleId.value && tab.value === "stats"
-      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 500 })
+      ? api.listFillups({ vehicle_id: vehicleId.value, limit: 1000 })
       : Promise.resolve({ items: [], total: 0 }),
   [vehicleId, tab],
 );
@@ -331,15 +359,16 @@ watch([vehicleId], () => {
 });
 
 // ── What you paid vs the market ──────────────────────────────────────
-// Fixed 52-week window (independent of the stats window): each fillup's
+// Follows the stats window (statsWindowWeeks; "all" = the 520 weeks
+// fetched): each fillup's
 // price per unit against the EIA US weekly retail average for the week
 // containing / preceding it. Maths is canonical $/US gal in
 // lib/fuelInsights; display converts to the user's volume unit.
 // One EIA fetch (the backend's full 520-week cap, newest first) serves the
-// chart's last 52 weeks and the per-fillup "vs US avg" chip in the list.
+// chart and the per-fillup "vs US avg" chip in the list.
 const eiaQ = useAsync(() => api.eiaWeekly("us", 520), []);
 const market = computed(() => {
-  const eia = (eiaQ.data.value?.points ?? []).slice(0, 52);
+  const eia = (eiaQ.data.value?.points ?? []).slice(0, statsWindowWeeks.value);
   if (eia.length === 0) return null;
   const src = volSrc.value;
   const fills = ((statsFillupsQ.data.value?.items ?? []) as Fillup[]).flatMap((f) => {
@@ -725,8 +754,15 @@ const cpmOpts = computed<uPlot.Options>(() => ({
   axes: [{}, { label: `$/${distUnitLabel()}` }],
   series: [{}, { label: `$/${distUnitLabel()}`, stroke: PAL[1], width: 2 }],
 }));
-const cpmData = computed<uPlot.AlignedData | null>(() => {
+/** Cost-per-distance buckets inside the stats window (the endpoint
+ *  returns every period regardless of window). */
+const cpmPoints = computed(() => {
   const points = cpmQ.data.value?.points ?? [];
+  const from = statsCutoffMonthMs.value;
+  return from == null ? points : points.filter((p) => (Date.parse(p.period) || 0) >= from);
+});
+const cpmData = computed<uPlot.AlignedData | null>(() => {
+  const points = cpmPoints.value;
   if (points.length === 0) return null;
   const t = points.map((p) => Math.round((Date.parse(p.period) || 0) / 1000));
   // cost_per_mi is $ per MILE; per-km for metric = ÷ 1.609.
@@ -747,8 +783,11 @@ const overlayOpts = computed<uPlot.Options>(() => ({
   ],
 }));
 const overlayData = computed<uPlot.AlignedData | null>(() => {
-  const obd = overlayQ.data.value?.obd_mpg ?? [];
-  const fillup = overlayQ.data.value?.fillup_mpg ?? [];
+  // The endpoint returns all history; trim to the stats window here.
+  const cutoff = statsCutoffMs.value;
+  const inWindow = (p: { time: string }) => cutoff == null || (Date.parse(p.time) || 0) >= cutoff;
+  const obd = (overlayQ.data.value?.obd_mpg ?? []).filter(inWindow);
+  const fillup = (overlayQ.data.value?.fillup_mpg ?? []).filter(inWindow);
   if (obd.length === 0 && fillup.length === 0) return null;
   const tsSet = new Set<number>();
   for (const p of obd) tsSet.add(Math.round((Date.parse(p.time) || 0) / 1000));
@@ -787,7 +826,7 @@ const summary = computed(() => {
       ? allMonths.filter((m) => (Date.parse(m.month) || 0) >= cutoff)
       : allMonths;
   const totalSpendWindow = windowMonths.reduce((sum, m) => sum + (m.total ?? 0), 0);
-  const totalMiles = (cpmQ.data.value?.points ?? []).reduce(
+  const totalMiles = cpmPoints.value.reduce(
     (sum, p) => sum + (p.miles ?? 0),
     0,
   );
@@ -799,12 +838,7 @@ const summary = computed(() => {
 });
 
 // Label for the spend KPI tracks the selected window.
-const spendWindowLabel = computed<string>(
-  () =>
-    ({ "30d": "30 days", "3m": "3 months", "12m": "12 months", all: "all time" })[
-      statsWindow.value
-    ],
-);
+const spendWindowLabel = statsWindowLabel;
 
 // ── New stats panels (#46): $/gal trend, fillup-frequency histogram,
 //    tank-fill volume distribution, range-to-empty estimator. All four
@@ -1440,7 +1474,7 @@ const mpgVsTempChart = computed(() => {
             <UPlotChart v-else :data="cpmData" :options="cpmOpts" />
           </div>
           <div v-if="chartVisible.overlay" class="card chart-card wide">
-            <h3>OBD vs fillup economy <span class="tag-fixed">all time</span></h3>
+            <h3>OBD vs fillup economy <span class="tag-fixed">{{ statsWindowLabel }}</span></h3>
             <StateCard v-if="overlayQ.loading.value" state="loading" bare />
             <StateCard v-else-if="overlayQ.error.value" state="error" bare :message="overlayQ.error.value" @retry="overlayQ.reload()" />
             <StateCard v-else-if="!overlayData" state="empty" bare title="No OBD data yet" message="Drive with the WiCAN connected to populate this chart." />
@@ -1473,7 +1507,7 @@ const mpgVsTempChart = computed(() => {
           </div>
 
           <section v-if="chartVisible.market && marketChart && marketHeadline" class="card chart-card wide">
-            <h3>What you paid vs the market <span class="tag-fixed">last 52 weeks</span></h3>
+            <h3>What you paid vs the market <span class="tag-fixed">{{ statsWindowLabel }}</span></h3>
             <div class="insight-head">
               <span class="insight-big">{{ marketHeadline.cents }}<small>{{ marketHeadline.dir }}</small></span>
               <span class="insight-sub">{{ marketHeadline.sub }}</span>

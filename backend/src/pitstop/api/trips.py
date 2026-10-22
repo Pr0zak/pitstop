@@ -130,6 +130,45 @@ _TRIP_SAMPLE_METRICS: tuple[str, ...] = (
     # press would read as a 10-minute brake hold, so the clients carry it a
     # few seconds at most.
     "brake_pressure",
+    # --- Drivetrain (Honda Mode 22, WiCAN firmware-6 profile) -------------
+    # °C, TCM. Warms far slower than coolant, so it is the series that says
+    # whether the transmission was ever fully warm on a short hop.
+    "atf_temp",
+    # TCM gear code: 0 = P/N, 1..9 forward, 15 = R. Discrete -- see
+    # _TRIP_SAMPLE_LAST_METRICS: an AVG over a shift reads as "gear 4.5".
+    "gear_position",
+    # 6 normally, 3 while Variable Cylinder Management has a bank off. The
+    # eco story on a highway cruise; discrete, bucketed by last value.
+    "active_cylinders",
+    # Cumulative per-cylinder misfire counters (PCM DID 2663). Flat on a
+    # healthy drive; a step on one cylinder is the diagnostic. Six series
+    # because *which* cylinder matters (coil/plug swap tests).
+    "misfire_count_1",
+    "misfire_count_2",
+    "misfire_count_3",
+    "misfire_count_4",
+    "misfire_count_5",
+    "misfire_count_6",
+    # --- Cluster (dash) readings ------------------------------------------
+    # Litres, the dash's own damped reading (DID 7029) -- what the fuel snap
+    # prefers since v0.1.257. Kept alongside the raw fuel_level % because the
+    # gap between the two is the slosh the cluster filters out.
+    "fuel_level_l",
+    # °F as published (cluster DID 7028); clients convert. Outside air is
+    # context for intake/coolant and for the cold-weather MPG dip.
+    "ambient_air_temp_f",
+    # --- Fuel trims -------------------------------------------------------
+    # %, both banks short + long. Same reasoning as the catalyst pair: the
+    # bank-to-bank *gap* is the diagnostic (vacuum leak or injector on one
+    # side), so both banks or neither.
+    "stft_b1",
+    "stft_b2",
+    "ltft_b1",
+    "ltft_b2",
+    # %, EVAP purge duty. Was on the denylist as "not drive telemetry"; the
+    # clients now file it under an Emissions chip group, default hidden,
+    # which is the diagnostics home that note asked for.
+    "commanded_evap_purge",
 )
 
 
@@ -137,6 +176,23 @@ _TRIP_SAMPLE_METRICS: tuple[str, ...] = (
 # two; averaged into a 3-8 s bucket a 90 bar stab reads as 30 bar and a
 # light tap disappears. Max keeps every press at its real height.
 _TRIP_SAMPLE_PEAK_METRICS: tuple[str, ...] = ("brake_pressure",)
+
+# Discrete / counter metrics bucketed by their LAST value in the bucket.
+# AVG invents states that never existed (gear 4.5, 4.5 cylinders, a
+# fractional misfire count); MAX would turn a P/N->R->P/N move into a
+# bucket of "R" (15) and hide a VCM drop. Last is a true sample of the
+# signal. Written as array_agg(... ORDER BY time DESC)[1] rather than
+# Timescale's last() so the vanilla-Postgres fallback arm runs it too.
+_TRIP_SAMPLE_LAST_METRICS: tuple[str, ...] = (
+    "gear_position",
+    "active_cylinders",
+    "misfire_count_1",
+    "misfire_count_2",
+    "misfire_count_3",
+    "misfire_count_4",
+    "misfire_count_5",
+    "misfire_count_6",
+)
 
 # Metrics that are live in pid_readings but deliberately NOT charted, kept
 # here as a documented denylist so they don't get re-added by inspection of
@@ -151,10 +207,6 @@ _TRIP_SAMPLE_EXCLUDED: tuple[str, ...] = (
     # Constant 0.00 over every row this PCM has ever answered — the Pilot
     # exposes no EGR command. A flat zero line reads as "EGR failed".
     "commanded_egr",
-    # Real variation, but it's an emissions-actuator duty cycle with no
-    # bearing on the drive story; belongs on a diagnostics view, not on a
-    # speed/RPM timeline.
-    "commanded_evap_purge",
     # Post-cat O2 pair. Cat-efficiency diagnostics rather than drive
     # telemetry, four series for one narrow story, and o2_s2_stft carries
     # the 99.0 % "sensor not used" sentinel rather than a trim value.
@@ -165,6 +217,13 @@ _TRIP_SAMPLE_EXCLUDED: tuple[str, ...] = (
     # Tracks coolant temp and RPM almost exactly (it is largely a function
     # of both) — no independent signal, just a fourth warm-up curve.
     "friction_torque_pct",
+    # Dash odometer in miles (cluster DID 7022). The same number the
+    # offset-corrected `odometer` series already shows, at a 30 s cadence;
+    # within one trip it is a ramp that the distance stat already states.
+    "odometer_dash",
+    # Seconds since engine start: a straight line with slope 1 over every
+    # drive. The x axis already is this.
+    "run_time_since_start",
     # Near-duplicates of throttle_position: the same pedal/plate seen
     # through three raw sensor channels, each offset by a fixed bias.
     # Three extra series to redraw a line already on the chart.
@@ -509,6 +568,8 @@ async def get_trip(
                        metric,
                        CASE WHEN metric = ANY($6::text[])
                             THEN max(value_num)
+                            WHEN metric = ANY($7::text[])
+                            THEN (array_agg(value_num ORDER BY time DESC))[1]
                             ELSE avg(value_num)
                        END AS value_num
                   FROM pid_readings
@@ -521,6 +582,7 @@ async def get_trip(
                 """,
                 row["vehicle_id"], started, ended, bucket_s, metrics,
                 list(_TRIP_SAMPLE_PEAK_METRICS),
+                list(_TRIP_SAMPLE_LAST_METRICS),
             )
         except asyncpg.UndefinedFunctionError:
             # Same shape, same allowlist, same bucket width — floor the epoch
@@ -538,6 +600,8 @@ async def get_trip(
                        metric,
                        CASE WHEN metric = ANY($6::text[])
                             THEN max(value_num)
+                            WHEN metric = ANY($7::text[])
+                            THEN (array_agg(value_num ORDER BY time DESC))[1]
                             ELSE avg(value_num)
                        END AS value_num
                   FROM pid_readings
@@ -550,6 +614,7 @@ async def get_trip(
                 """,
                 row["vehicle_id"], started, ended, bucket_s, metrics,
                 list(_TRIP_SAMPLE_PEAK_METRICS),
+                list(_TRIP_SAMPLE_LAST_METRICS),
             )
 
     out = _row_to_trip(row)

@@ -115,7 +115,8 @@ object FuelCharts {
     // ── A: MPG over time ─────────────────────────────────────────────
 
     enum class MpgSpan(val months: Int?, val label: String) {
-        Year(12, "12 mo"),
+        Year(12, "1 yr"),
+        TwoYears(24, "2 yr"),
         ThreeYears(36, "3 yr"),
         All(null, "All"),
     }
@@ -142,6 +143,7 @@ object FuelCharts {
         val spanPhrase: String
             get() = when (span) {
                 MpgSpan.Year -> "the last 12 months"
+                MpgSpan.TwoYears -> "the last 2 years"
                 MpgSpan.ThreeYears -> "the last 3 years"
                 MpgSpan.All -> "all ${months.size} months"
             }

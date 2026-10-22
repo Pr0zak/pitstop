@@ -83,7 +83,10 @@ def test_low_signal_metrics_stay_excluded() -> None:
         "o2_s1_voltage",
         # Constant 0.00 on this PCM.
         "commanded_egr",
-        "commanded_evap_purge",
+        # The dash odometer duplicates the offset-corrected `odometer`; run
+        # time is a slope-1 line that the x axis already draws.
+        "odometer_dash",
+        "run_time_since_start",
         # Post-cat O2 block; o2_s2_stft is the 99 % "not used" sentinel.
         "o2_s2_voltage",
         "o2_s2_stft",
@@ -175,9 +178,15 @@ def test_payload_ceiling_is_bounded() -> None:
     Raised from 10 000 to 15 000 for the eight TPMS series + brake pressure.
     Phone-polled TPMS (~30 s) only reaches the per-metric budget on drives
     over ~4 h, but the WiCAN publishes it every ~2.5 s, so a WiCAN-covered
-    trip can spend the full budget on all nine new series."""
+    trip can spend the full budget on all nine new series.
+
+    Raised to 22 000 for the sixteen Mode 22 / trim / EVAP series (ATF,
+    gear, cylinders, six misfire counters, dash fuel litres, ambient, four
+    trims, EVAP purge). The cluster DIDs (fuel litres, ambient) poll every
+    30 s and so stay far under budget; it is the 1-2 s ones (gear, trims,
+    cylinders) that can actually spend it."""
     ceiling = len(_TRIP_SAMPLE_METRICS) * _TRIP_SAMPLE_TARGET_POINTS
-    assert ceiling <= 15_000
+    assert ceiling <= 22_000
 
 
 def test_sql_bucket_expressions_use_the_same_width_param() -> None:
@@ -198,3 +207,37 @@ def test_brake_pressure_bucketed_by_peak_in_both_arms() -> None:
     src = _TRIPS_SRC.read_text()
     assert src.count("CASE WHEN metric = ANY($6::text[])") == 2
     assert src.count("list(_TRIP_SAMPLE_PEAK_METRICS)") == 2
+
+
+def test_new_drivetrain_and_trim_metrics_charted() -> None:
+    for metric in (
+        "atf_temp",
+        "gear_position",
+        "active_cylinders",
+        *(f"misfire_count_{n}" for n in range(1, 7)),
+        "fuel_level_l",
+        "ambient_air_temp_f",
+        "stft_b1",
+        "stft_b2",
+        "ltft_b1",
+        "ltft_b2",
+        "commanded_evap_purge",
+    ):
+        assert metric in _TRIP_SAMPLE_METRICS, metric
+
+
+def test_discrete_metrics_bucketed_by_last_value_in_both_arms() -> None:
+    """Gear / cylinder count / misfire counters are discrete: AVG invents
+    gear 4.5, MAX turns a bucket that touched Reverse (15) into R. Both
+    sample queries must take the bucket's last value for them."""
+    from pitstop.api.trips import _TRIP_SAMPLE_LAST_METRICS, _TRIP_SAMPLE_PEAK_METRICS
+
+    assert {"gear_position", "active_cylinders"} <= set(_TRIP_SAMPLE_LAST_METRICS)
+    for n in range(1, 7):
+        assert f"misfire_count_{n}" in _TRIP_SAMPLE_LAST_METRICS
+    assert set(_TRIP_SAMPLE_LAST_METRICS) <= set(_TRIP_SAMPLE_METRICS)
+    assert not set(_TRIP_SAMPLE_LAST_METRICS) & set(_TRIP_SAMPLE_PEAK_METRICS)
+    src = _TRIPS_SRC.read_text()
+    assert src.count("WHEN metric = ANY($7::text[])") == 2
+    assert src.count("(array_agg(value_num ORDER BY time DESC))[1]") == 2
+    assert src.count("list(_TRIP_SAMPLE_LAST_METRICS)") == 2

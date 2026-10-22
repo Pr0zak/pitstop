@@ -27,6 +27,15 @@ export interface Lane {
   values: (number | null)[];
   /** Fixed decimals for ticks and the readout (λ series need 3). */
   decimals?: number;
+  /** Text for a value (readout + y ticks), e.g. gear codes → "D3". Return ""
+   *  to leave a tick unlabelled. */
+  format?: (v: number) => string;
+  /** Step line instead of a straight interpolation (discrete states). */
+  step?: boolean;
+  /** Lanes with the same key share one y range (union of their data). */
+  rangeKey?: string;
+  /** Fixed y range; wins over rangeKey and auto-scaling. */
+  range?: [number, number];
 }
 
 const props = withDefaults(
@@ -54,6 +63,8 @@ const cursorIdx = ref<number | null>(null);
 let zoom: { min: number; max: number } | null = null;
 
 const X_AXIS_H = 26;
+// Hold each value until the next sample (discrete states never ramp).
+const stepped = uPlot.paths?.stepped?.({ align: 1 });
 
 const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const clockSecFmt = new Intl.DateTimeFormat(undefined, {
@@ -66,6 +77,7 @@ const clockSecFmt = new Intl.DateTimeFormat(undefined, {
  *  "0–44" doesn't render as "0.0–44"). */
 function fmtVal(lane: Lane, v: number | null | undefined, scale = v): string {
   if (v == null || !Number.isFinite(v)) return "—";
+  if (lane.format) return lane.format(Math.round(v * 1000) / 1000) || v.toFixed(lane.decimals ?? 0);
   const dp = lane.decimals ?? (Math.abs(scale ?? v) >= 10 ? 0 : 1);
   return v.toFixed(dp);
 }
@@ -82,6 +94,19 @@ const ranges = computed(() =>
     return Number.isFinite(lo) ? { lo, hi } : null;
   }),
 );
+
+/** Union data range per rangeKey, so e.g. both fuel-trim banks are drawn
+ *  against one axis and the gap between them stays visible. */
+const sharedRanges = computed(() => {
+  const out = new Map<string, { lo: number; hi: number }>();
+  props.lanes.forEach((l, i) => {
+    const r = ranges.value[i];
+    if (!l.rangeKey || !r) return;
+    const cur = out.get(l.rangeKey);
+    out.set(l.rangeKey, cur ? { lo: Math.min(cur.lo, r.lo), hi: Math.max(cur.hi, r.hi) } : { ...r });
+  });
+  return out;
+});
 
 function readout(i: number): { text: string; live: boolean } {
   const lane = props.lanes[i];
@@ -114,6 +139,7 @@ function laneOpts(lane: Lane, i: number, width: number): uPlot.Options {
   const last = i === props.lanes.length - 1;
   const c = chartColors();
   const dp = lane.decimals;
+  const fmt = lane.format;
   const markers = props.markers;
   const markerPlugin: uPlot.Plugin = {
     hooks: {
@@ -154,6 +180,12 @@ function laneOpts(lane: Lane, i: number, width: number): uPlot.Options {
       x: { time: true },
       y: {
         range: (_u, lo, hi) => {
+          if (lane.range) return [...lane.range];
+          const shared = lane.rangeKey ? sharedRanges.value.get(lane.rangeKey) : undefined;
+          if (shared) {
+            lo = shared.lo;
+            hi = shared.hi;
+          }
           if (lo == null || hi == null) return [0, 1];
           if (lo === hi) return [lo - 1, hi + 1];
           const pad = (hi - lo) * 0.08;
@@ -177,7 +209,7 @@ function laneOpts(lane: Lane, i: number, width: number): uPlot.Options {
         space: Math.max(18, Math.floor(props.laneHeight / 2.4)),
         ticks: { show: false },
         values: (_u: uPlot, splits: number[]) =>
-          splits.map((v) => (dp != null ? v.toFixed(dp) : Math.abs(v) >= 1000 ? `${Math.round(v / 100) / 10}k` : String(+v.toFixed(2)))),
+          splits.map((v) => (fmt ? fmt(Math.round(v * 1000) / 1000) : dp != null ? v.toFixed(dp) : Math.abs(v) >= 1000 ? `${Math.round(v / 100) / 10}k` : String(+v.toFixed(2)))),
       },
     ],
     series: [
@@ -188,6 +220,7 @@ function laneOpts(lane: Lane, i: number, width: number): uPlot.Options {
         width: 1.4,
         fill: withAlpha(lane.color, 0.08),
         points: { show: false },
+        ...(lane.step && stepped ? { paths: stepped } : {}),
       },
     ],
     hooks: {

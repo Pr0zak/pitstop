@@ -14,6 +14,10 @@ import {
   TIRE_CORNER_COLOR,
   HARD_BRAKE_BAR,
   PSI_PER_BAR,
+  MISFIRE_CYLINDERS,
+  fToC,
+  gearLabel,
+  misfireMetric,
   fmtBrakePsi,
   fmtTempRiseC,
   fmtPlacardDelta,
@@ -191,6 +195,17 @@ interface TripSeries {
    *  would lie across a dropout — a brake press carried for minutes reads as
    *  the pedal held down. */
   maxCarryS?: number;
+  /** Text for one (display-unit) value, used for the readout and the axis
+   *  ticks. For discrete codes that read as words, not numbers (gear). */
+  format?: (v: number) => string;
+  /** Draw as a step line (discrete states: gear, cylinder count, counters). */
+  step?: boolean;
+  /** Lanes sharing a rangeKey share ONE y range. Each lane is its own chart,
+   *  so without this a bank-to-bank gap (fuel trims) or a misfire step on one
+   *  cylinder would be auto-scaled away — every lane fills its own height. */
+  rangeKey?: string;
+  /** Fixed y range in display units (overrides auto-scaling). */
+  range?: [number, number];
 }
 
 // Rebuilt when the resolved unit system flips. `visibleSeries` → `chartOpts`
@@ -212,6 +227,16 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
   // g/s → L/h is ×3600 ÷ 749.9 g/L (gasoline density); L → US gal ×0.264172.
   const GASOLINE_G_PER_L = 749.9;
   const L_PER_US_GAL = 0.264172;
+  const litresToDisp = (l: number) => (imp ? l * L_PER_US_GAL : l);
+  // gear_position: 0 = P/N, 1..9 forward, 15 = R. Reverse is redrawn at -1 so
+  // the axis reads R · P/N · D1…D9 in order instead of parking R far above
+  // ninth gear and squashing the forward gears into the bottom half.
+  const GEAR_R_CODE = 15;
+  const GEAR_R_LANE = -1;
+  const gearToLane = (v: number) => (Math.round(v) === GEAR_R_CODE ? GEAR_R_LANE : v);
+  const gearText = (v: number) =>
+    !Number.isInteger(v) ? "" : gearLabel(v === GEAR_R_LANE ? GEAR_R_CODE : v);
+  const intText = (v: number) => (Number.isInteger(v) ? String(v) : "");
   const fuelRate = (gPerS: number) => {
     const litresPerHour = (gPerS * 3600) / GASOLINE_G_PER_L;
     return imp ? litresPerHour * L_PER_US_GAL : litresPerHour;
@@ -275,6 +300,48 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
     // held pedal.
     { metric: "brake_pressure",         label: "Brake (psi)",                        stroke: "#ef4444", scale: "brake",   axisLabel: "psi",                  transform: (v) => Math.max(0, v) * PSI_PER_BAR,          defaultVisible: false, decimals: 0, maxCarryS: 3 },
 
+    // --- Honda Mode 22 (WiCAN firmware-6 profile / phone Mode 22 poll) ---
+    // ATF shares the coolant/intake "temp" family: same unit, same warm-up
+    // story, and the lag between ATF and coolant is the point.
+    { metric: "atf_temp",               label: `ATF (${degUnit})`,                   stroke: "#fbbf24", scale: "temp",    axisLabel: degUnit,                transform: cToDisp,                        defaultVisible: false },
+    // Discrete gear code, step-drawn. The API buckets it by last value (an
+    // average over a shift would read "gear 4.5"). Readout/axis go through
+    // vehicleSignals.gearLabel, the same text Live shows.
+    { metric: "gear_position",          label: "Gear",                               stroke: "#818cf8", scale: "gear",    axisLabel: "gear",                 transform: gearToLane,                     defaultVisible: false, format: gearText, step: true },
+    // 6, or 3 while VCM has a bank off. Pinned to 0..6 so a trip that never
+    // drops to 3 doesn't auto-scale a flat 6 into the middle of the lane.
+    { metric: "active_cylinders",       label: "Cylinders",                          stroke: "#4ade80", scale: "cyl",     axisLabel: "cyl",                  transform: (v) => v,                       defaultVisible: false, format: intText, step: true, range: [0, 6] },
+    // Cumulative per-cylinder counters on one shared range: a step on one
+    // lane only stands out if the other five are drawn against the same
+    // axis. Pastel ramp so six lanes stay apart on the dark surface.
+    ...MISFIRE_CYLINDERS.map((n, i): TripSeries => ({
+      metric: misfireMetric(n),
+      label: `Misfire cyl ${n}`,
+      stroke: ["#fda4af", "#fdba74", "#fde047", "#86efac", "#93c5fd", "#c4b5fd"][i],
+      scale: "misfire",
+      axisLabel: "count",
+      transform: (v) => v,
+      defaultVisible: false,
+      decimals: 0,
+      step: true,
+      rangeKey: "misfire",
+    })),
+    // The cluster's own damped litres (what the fuel snap prefers), next to
+    // the raw % series above — the gap between them is tank slosh.
+    { metric: "fuel_level_l",           label: imp ? "Dash fuel (gal)" : "Dash fuel (L)", stroke: "#fdba74", scale: "fuelvol", axisLabel: imp ? "gal" : "L",  transform: litresToDisp,                   defaultVisible: false, decimals: 1 },
+    // Arrives in °F from the cluster; normalise to °C first so it goes
+    // through the same cToDisp as every other temperature.
+    { metric: "ambient_air_temp_f",     label: `Outside (${degUnit})`,               stroke: "#67e8f9", scale: "temp",    axisLabel: degUnit,                transform: (v) => cToDisp(fToC(v)),        defaultVisible: false },
+    // Fuel trims, %. One shared range across all four: the bank-to-bank gap
+    // is the diagnostic, which separately auto-scaled lanes would hide.
+    { metric: "stft_b1",                label: "STFT B1 (%)",                        stroke: "#34d399", scale: "trim",    axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false, decimals: 1, rangeKey: "trim" },
+    { metric: "stft_b2",                label: "STFT B2 (%)",                        stroke: "#a7f3d0", scale: "trim",    axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false, decimals: 1, rangeKey: "trim" },
+    { metric: "ltft_b1",                label: "LTFT B1 (%)",                        stroke: "#f9a8d4", scale: "trim",    axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false, decimals: 1, rangeKey: "trim" },
+    { metric: "ltft_b2",                label: "LTFT B2 (%)",                        stroke: "#fbcfe8", scale: "trim",    axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false, decimals: 1, rangeKey: "trim" },
+    // EVAP purge duty. commanded_egr stays off the chart: this PCM answers
+    // it as a constant 0, which reads as "EGR failed" (see trips.py).
+    { metric: "commanded_evap_purge",   label: "EVAP purge (%)",                     stroke: "#bef264", scale: "pct",     axisLabel: "%",                    transform: (v) => v,                       defaultVisible: false },
+
     // Derived series — computed below from successive vehicle_speed
     // samples (dv/dt → m/s², converted to g). Won't be found in
     // pid_readings; the chart loop synthesises the column.
@@ -284,8 +351,8 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
 
 // Chip groups for the metric picker. Lane order follows TRIP_SERIES within
 // the group order below, so Speed and RPM always sit on top.
-type SeriesGroup = "Drive" | "Engine" | "Fuel" | "Air" | "Emissions";
-const SERIES_GROUPS: SeriesGroup[] = ["Drive", "Engine", "Fuel", "Air", "Emissions"];
+type SeriesGroup = "Drive" | "Transmission" | "Engine" | "Fuel" | "Air" | "Emissions";
+const SERIES_GROUPS: SeriesGroup[] = ["Drive", "Transmission", "Engine", "Fuel", "Air", "Emissions"];
 const GROUP_OF: Record<string, SeriesGroup> = {
   vehicle_speed: "Drive",
   engine_rpm: "Drive",
@@ -307,6 +374,17 @@ const GROUP_OF: Record<string, SeriesGroup> = {
   catalyst_temp_b1: "Emissions",
   catalyst_temp_b2: "Emissions",
   engine_exhaust_flow: "Emissions",
+  atf_temp: "Transmission",
+  gear_position: "Transmission",
+  active_cylinders: "Engine",
+  ...Object.fromEntries(MISFIRE_CYLINDERS.map((n) => [misfireMetric(n), "Engine" as const])),
+  fuel_level_l: "Fuel",
+  stft_b1: "Fuel",
+  stft_b2: "Fuel",
+  ltft_b1: "Fuel",
+  ltft_b2: "Fuel",
+  ambient_air_temp_f: "Air",
+  commanded_evap_purge: "Emissions",
 };
 function groupOf(metric: string): SeriesGroup {
   return GROUP_OF[metric] ?? "Engine";
@@ -711,6 +789,10 @@ const lanes = computed<Lane[]>(() => {
       color: sr.stroke,
       values: data[i + 1] as (number | null)[],
       decimals: sr.decimals,
+      format: sr.format,
+      step: sr.step,
+      rangeKey: sr.rangeKey,
+      range: sr.range,
     };
   });
 });
