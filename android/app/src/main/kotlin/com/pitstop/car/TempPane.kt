@@ -89,31 +89,43 @@ internal data class TempModel(val cells: List<Cell>, val idleReason: String?) {
 
 internal object TempPane {
 
-    /** Two rows, fixed titles — same no-scroll rule as [TirePane]. */
+    /**
+     * Two rows, fixed titles, and text that changes only with the STATE:
+     * the numbers are in the image. A row whose text moves with a reading
+     * ("Warming up · 104°F") is a new template every degree, and while
+     * driving the host blocks the app after about five (see [TirePane]).
+     */
     val TITLES = listOf("Status", "Catalyst")
 
-    fun rows(m: TempModel, catB1C: Double?, catB2C: Double?, system: String): List<Pair<String, String>> = listOf(
+    /** Catalyst light-off: under this (°C) the converter is still warming. */
+    const val CAT_WARM_C = 250.0
+
+    /** Above this (°C) a catalyst is overheating (misfire, rich running). */
+    const val CAT_HOT_C = 900.0
+
+    fun rows(m: TempModel, catB1C: Double?, catB2C: Double?, @Suppress("UNUSED_PARAMETER") system: String): List<Pair<String, String>> = listOf(
         TITLES[0] to status(m),
-        TITLES[1] to catalyst(catB1C, catB2C, system),
+        TITLES[1] to catalyst(catB1C, catB2C),
     )
 
     /** Worst first: severe, caution, warming up, ice, else normal. */
     fun status(m: TempModel): String {
         m.idleReason?.let { return it }
         val live = m.cells.filter { !it.stale }
-        live.firstOrNull { it.warn == TileWarn.Severe }?.let { return "${it.label} HOT · ${it.number}${it.unit}" }
-        live.firstOrNull { it.warn == TileWarn.Caution }?.let { return "${it.label} HOT · ${it.number}${it.unit}" }
-        live.firstOrNull { it.key == "coolant_temp" && it.cold }?.let { return "Warming up · ${it.number}${it.unit}" }
-        live.firstOrNull { it.key == "ambient_air_temp_f" && it.cold }?.let { return "Ice possible · ${it.number}${it.unit} outside" }
+        live.firstOrNull { it.warn == TileWarn.Severe }?.let { return "${it.label} HOT" }
+        live.firstOrNull { it.warn == TileWarn.Caution }?.let { return "${it.label} HOT" }
+        live.firstOrNull { it.key == "coolant_temp" && it.cold }?.let { return "Warming up" }
+        live.firstOrNull { it.key == "ambient_air_temp_f" && it.cold }?.let { return "Ice possible" }
         return "All normal"
     }
 
-    fun catalyst(b1C: Double?, b2C: Double?, system: String): String {
-        if (b1C == null && b2C == null) return "—"
-        val q = UnitFormat.Quantity.TempC
-        return listOfNotNull(
-            b1C?.let { "B1 ${q.number(it, system, 0)}°" },
-            b2C?.let { "B2 ${q.number(it, system, 0)}°" },
-        ).joinToString(" · ")
+    /** The hotter bank, as a state. */
+    fun catalyst(b1C: Double?, b2C: Double?): String {
+        val hot = listOfNotNull(b1C, b2C).maxOrNull() ?: return "—"
+        return when {
+            hot > CAT_HOT_C -> "HOT"
+            hot < CAT_WARM_C -> "Warming up"
+            else -> "Normal"
+        }
     }
 }

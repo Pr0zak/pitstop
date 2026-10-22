@@ -25,33 +25,42 @@ class TirePaneTest {
             put(TireWidgetProvider.PLACARD_REAR, CachedReading(placard, now))
         }
 
+    private val utc = java.time.ZoneOffset.UTC
+
+    // now = 2027-01-15 08:00 UTC
     private fun rows(s: Map<String, CachedReading>, system: String = "imperial") =
-        TirePane.rows(TireWidgetProvider.modelOf(s, now, system), system).toMap()
+        TirePane.rows(TireWidgetProvider.modelOf(s, now, system), system, utc, now).toMap()
 
     @Test fun titlesNeverChange() {
-        val a = TirePane.rows(TireWidgetProvider.modelOf(emptyMap(), now, "imperial"), "imperial")
-        val b = TirePane.rows(TireWidgetProvider.modelOf(snap(240.0, 200.0, 240.0, 240.0), now, "imperial"), "imperial")
+        val a = TirePane.rows(TireWidgetProvider.modelOf(emptyMap(), now, "imperial"), "imperial", utc, now)
+        val b = TirePane.rows(TireWidgetProvider.modelOf(snap(240.0, 200.0, 240.0, 240.0), now, "imperial"), "imperial", utc, now)
         assertEquals(TirePane.TITLES, a.map { it.first })
         assertEquals(TirePane.TITLES, b.map { it.first })
     }
 
-    @Test fun liveAndTemps() {
+    @Test fun liveAndAllOk() {
         val r = rows(snap(241.0, 240.0, 242.0, 241.0))
         assertEquals("Live", r["Updated"])
-        assertEquals("54–61°F", r["Temps"])
+        assertEquals("All OK", r["Pressure"])
     }
 
-    @Test fun parkedShowsTheLastReadingsAge() {
-        assertEquals("3h ago", rows(snap(241.0, 240.0, 242.0, 241.0, ageMs = 3 * 3_600_000L))["Updated"])
+    @Test fun parkedShowsTheClockTimeNotAnAge() {
+        // An age ("3h ago") would change the row every minute and spend a template each time.
+        assertEquals("At 5:00 AM", rows(snap(241.0, 240.0, 242.0, 241.0, ageMs = 3 * 3_600_000L))["Updated"])
+        assertEquals("Jan 13, 8:00 AM", rows(snap(241.0, 240.0, 242.0, 241.0, ageMs = 2 * 86_400_000L))["Updated"])
     }
 
-    @Test fun metricTempsAndNoTemps() {
-        assertEquals("12–16°C", rows(snap(241.0, 240.0, 242.0, 241.0), system = "metric")["Temps"])
-        assertEquals("—", rows(snap(241.0, 240.0, 242.0, 241.0, temps = false))["Temps"])
+    @Test fun lowAndUnderInflated() {
+        assertEquals("FR low", rows(snap(240.0, 200.0, 240.0, 240.0))["Pressure"])
+        assertEquals("FR under-inflated", rows(snap(240.0, 170.0, 240.0, 240.0))["Pressure"])
+    }
+
+    @Test fun rowTextIgnoresTemperatures() {
+        assertEquals(rows(snap(241.0, 240.0, 242.0, 241.0)), rows(snap(241.0, 240.0, 242.0, 241.0, temps = false)))
     }
 
     @Test fun empty() {
         assertEquals("No readings yet", rows(emptyMap())["Updated"])
-        assertEquals("—", rows(emptyMap())["Temps"])
+        assertEquals("—", rows(emptyMap())["Pressure"])
     }
 }

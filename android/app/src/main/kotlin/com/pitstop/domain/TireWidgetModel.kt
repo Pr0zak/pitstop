@@ -17,6 +17,8 @@ data class TireWidgetModel(
     /** "of 35" when the vehicle has a placard (front = rear); else null. */
     val placardLabel: String?,
     val empty: Boolean,
+    /** Time of the newest pressure reading, epoch ms; null when none. */
+    val newestMs: Long? = null,
 ) {
     data class Cell(
         val corner: VehicleSignals.Corner,
@@ -85,6 +87,7 @@ data class TireWidgetModel(
                 stale = newest != null && nowMs - newest > STALE_AFTER_MS,
                 placardLabel = placardLabel,
                 empty = newest == null,
+                newestMs = newest,
             )
         }
     }

@@ -33,7 +33,8 @@ internal object CylinderBitmap {
         typeface = Typeface.create("sans-serif-condensed", if (bold) Typeface.BOLD else Typeface.NORMAL)
     }
 
-    fun render(m: CylinderModel): Bitmap {
+    /** [ecoPct]: share of this drive on 3 cylinders, drawn top right; null hides it. */
+    fun render(m: CylinderModel, ecoPct: Int? = null): Bitmap {
         val s = SIZE_PX.toFloat()
         val bmp = Bitmap.createBitmap(SIZE_PX, SIZE_PX, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -54,6 +55,12 @@ internal object CylinderBitmap {
             else -> "ALL"
         }
         c.drawText(tag, s * 0.50f, s * 0.28f, Paint(text(s * 0.085f, if (m.eco) ECO else MUTED, bold = true)).apply { textAlign = Paint.Align.LEFT })
+
+        if (ecoPct != null) {
+            val right = Paint(text(s * 0.10f, ECO, bold = true)).apply { textAlign = Paint.Align.RIGHT }
+            c.drawText("$ecoPct%", s * 0.98f, s * 0.17f, right)
+            c.drawText("eco", s * 0.98f, s * 0.28f, Paint(text(s * 0.075f, MUTED, bold = false)).apply { textAlign = Paint.Align.RIGHT })
+        }
 
         // Two banks of three.
         val r = s * 0.105f

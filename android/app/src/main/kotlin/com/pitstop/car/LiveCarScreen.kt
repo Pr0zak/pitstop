@@ -168,7 +168,8 @@ class LiveCarScreen(
             if (tab == CarTileCatalog.CarScreenKind.Cylinders) {
                 val m = cylinderModel(status, now)
                 append(m)
-                for ((_, v) in CylinderPane.rows(m, vcm.share())) append('|').append(v)
+                append(CylinderPane.sharePct(vcm.share()))
+                for ((_, v) in CylinderPane.rows(m)) append('|').append(v)
                 return@buildString
             }
             if (tab == CarTileCatalog.CarScreenKind.Tires) {
@@ -332,13 +333,13 @@ class LiveCarScreen(
     private fun cylindersPane(status: BridgeStatus): Template {
         val m = cylinderModel(status, System.currentTimeMillis())
         val pane = androidx.car.app.model.Pane.Builder()
-        for ((label, value) in CylinderPane.rows(m, vcm.share())) {
+        for ((label, value) in CylinderPane.rows(m)) {
             pane.addRow(androidx.car.app.model.Row.Builder().setTitle(label).addText(value).build())
         }
         if (carContext.carAppApiLevel >= 4) {
             pane.setImage(
                 CarIcon.Builder(
-                    androidx.core.graphics.drawable.IconCompat.createWithBitmap(CylinderBitmap.render(m)),
+                    androidx.core.graphics.drawable.IconCompat.createWithBitmap(CylinderBitmap.render(m, CylinderPane.sharePct(vcm.share()))),
                 ).build(),
             )
         }

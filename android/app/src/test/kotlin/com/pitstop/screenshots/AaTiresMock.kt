@@ -101,7 +101,7 @@ class AaTiresMock {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             for (m in listOf(six, eco, off)) {
-                Image(com.pitstop.car.CylinderBitmap.render(m).asImageBitmap(), null, Modifier.size(240.dp))
+                Image(com.pitstop.car.CylinderBitmap.render(m, if (m.eco) 42 else null).asImageBitmap(), null, Modifier.size(240.dp))
             }
         }
     }

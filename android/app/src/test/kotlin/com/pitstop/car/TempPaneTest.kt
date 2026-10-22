@@ -26,18 +26,18 @@ class TempPaneTest {
     @Test fun coolantHotIsSevere() {
         val m = model("coolant_temp" to 108.0, "atf_temp" to 70.0)
         assertEquals(TileWarn.Severe, m.cells[0].warn)
-        assertEquals("Coolant HOT · 226°F", TempPane.status(m))
+        assertEquals("Coolant HOT", TempPane.status(m))
     }
 
     @Test fun transHotIsCaution() {
         val m = model("coolant_temp" to 90.0, "atf_temp" to 115.0)
         assertEquals(TileWarn.Caution, m.cells[1].warn)
-        assertEquals("Trans HOT · 239°F", TempPane.status(m))
+        assertEquals("Trans HOT", TempPane.status(m))
     }
 
     @Test fun warmingUpThenIce() {
-        assertEquals("Warming up · 104°F", TempPane.status(model("coolant_temp" to 40.0)))
-        assertEquals("Ice possible · 34°F outside", TempPane.status(model("coolant_temp" to 90.0, "ambient_air_temp_f" to 34.0)))
+        assertEquals("Warming up", TempPane.status(model("coolant_temp" to 40.0)))
+        assertEquals("Ice possible", TempPane.status(model("coolant_temp" to 90.0, "ambient_air_temp_f" to 34.0)))
     }
 
     @Test fun staleReadingsShowTheIdleReason() {
@@ -47,9 +47,10 @@ class TempPaneTest {
     }
 
     @Test fun catalystRow() {
-        assertEquals("B1 1202° · B2 1184°", TempPane.catalyst(650.0, 640.0, "imperial"))
-        assertEquals("B1 650°", TempPane.catalyst(650.0, null, "metric"))
-        assertEquals("—", TempPane.catalyst(null, null, "imperial"))
+        assertEquals("Normal", TempPane.catalyst(650.0, 640.0))
+        assertEquals("Warming up", TempPane.catalyst(200.0, null))
+        assertEquals("HOT", TempPane.catalyst(950.0, 640.0))
+        assertEquals("—", TempPane.catalyst(null, null))
     }
 
     @Test fun titlesNeverChange() {

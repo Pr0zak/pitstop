@@ -59,27 +59,32 @@ internal data class CylinderModel(
 internal object CylinderPane {
 
     /**
-     * TWO rows, fixed titles — the same refresh and no-scroll rules as
-     * [TirePane]: a third row scrolls the image off screen at 800×480.
+     * Two rows, fixed titles, and text that changes only with the state: the
+     * firing count and the eco share are in the image. VCM switches banks
+     * every few seconds on a highway, so "3 of 6 · VCM eco" in a row was a
+     * new template per switch, and the host blocks the app after about five
+     * while driving (see [TirePane]).
      */
-    val TITLES = listOf("Mode", "Eco share")
+    val TITLES = listOf("Status", "Misfires")
 
-    fun rows(m: CylinderModel, share: VcmTracker.Share?): List<Pair<String, String>> = listOf(
-        TITLES[0] to mode(m),
-        TITLES[1] to share(share),
+    fun rows(m: CylinderModel, @Suppress("UNUSED_PARAMETER") share: VcmTracker.Share? = null): List<Pair<String, String>> = listOf(
+        TITLES[0] to status(m),
+        TITLES[1] to misfires(m),
     )
 
-    fun mode(m: CylinderModel): String = when {
-        m.active == null -> m.idleReason ?: "—"
-        m.eco -> "${m.active} of 6 · VCM eco"
-        else -> "All 6 firing"
+    fun status(m: CylinderModel): String = if (m.active == null) m.idleReason ?: "—" else "Live"
+
+    /** Cylinders with misfires, without the counts (those are in the image). */
+    fun misfires(m: CylinderModel): String {
+        if (m.misfires.isEmpty()) return "—"
+        val bad = m.misfires.filterValues { it > 0 }.keys.sorted()
+        return if (bad.isEmpty()) "None" else "Cyl " + bad.joinToString(", ")
     }
 
-    fun share(s: VcmTracker.Share?): String {
-        if (s == null || s.totalMs < 60_000L) return "—"
-        val pct = (100.0 * s.ecoMs / s.totalMs).roundToInt()
-        val min = (s.totalMs / 60_000L).toInt()
-        return "$pct % on 3 cyl · last $min min"
+    /** "50 %" eco over the last [VcmTracker] window, or null under a minute. */
+    fun sharePct(s: VcmTracker.Share?): Int? {
+        if (s == null || s.totalMs < 60_000L) return null
+        return (100.0 * s.ecoMs / s.totalMs).roundToInt()
     }
 }
 
