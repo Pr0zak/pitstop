@@ -190,8 +190,8 @@ class TireWidgetProvider : AppWidgetProvider() {
     }
 
     companion object {
-        private const val PLACARD_FRONT = "_tire_placard_front_kpa"
-        private const val PLACARD_REAR = "_tire_placard_rear_kpa"
+        internal const val PLACARD_FRONT = "_tire_placard_front_kpa"
+        internal const val PLACARD_REAR = "_tire_placard_rear_kpa"
 
         /** The widget model from a cached snapshot — shared with the preview test. */
         internal fun modelOf(snapshot: Map<String, CachedReading>, nowMs: Long, system: String): TireWidgetModel =

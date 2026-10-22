@@ -413,7 +413,20 @@ class StatusViewModel @Inject constructor(
                 // Keep the shared snapshot (tire widget + offline Home) current.
                 val tires = serverReadings.value.filterKeys { it.startsWith("tire_") }
                     .mapValues { com.pitstop.data.CachedReading(it.value.first, it.value.second) }
+                    .toMutableMap()
                 if (tires.isNotEmpty()) {
+                    // The placard rides along so the car's Tires tab can show
+                    // the spec without the tire widget ever having run.
+                    // From this refresh's vehicle list: `vehicle` is only set
+                    // further down, so on a first load it is still null here.
+                    val now = System.currentTimeMillis()
+                    val v = vehicles.firstOrNull { it.id == vehicleId }
+                    v?.tirePlacardFrontKpa?.let {
+                        tires[com.pitstop.widget.TireWidgetProvider.PLACARD_FRONT] = com.pitstop.data.CachedReading(it, now)
+                    }
+                    v?.tirePlacardRearKpa?.let {
+                        tires[com.pitstop.widget.TireWidgetProvider.PLACARD_REAR] = com.pitstop.data.CachedReading(it, now)
+                    }
                     runCatching { appPrefs.mergeTireSnapshot(slug, tires) }
                     // The widget renders from the same snapshot.
                     com.pitstop.widget.TireWidgetProvider.refreshWidgets(getApplication())

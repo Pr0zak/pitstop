@@ -72,6 +72,7 @@ class LiveCarScreen(
     private val settingsRepository: SettingsRepository,
     private val rangeRepository: com.pitstop.data.RangeRepository? = null,
     private val driveRecorder: com.pitstop.drive.DriveRecorder? = null,
+    private val appPrefs: com.pitstop.data.AppPrefs? = null,
 ) : Screen(carContext), DefaultLifecycleObserver {
 
     /** Live metrics plus the synthetic range and this-trip tiles. */
@@ -111,6 +112,16 @@ class LiveCarScreen(
                 settingsRepository.settings.collect { cachedSettings = it }
             }
             launch {
+                // The last known tires (widget snapshot: server readings +
+                // placard), re-read once a minute. Live bus samples are merged
+                // on top at render time, so this only has to cover parked /
+                // between-poll values and needs no faster cadence.
+                while (isActive) {
+                    tireSnapshot = loadTireSnapshot()
+                    delay(TIRE_SNAPSHOT_INTERVAL_MS)
+                }
+            }
+            launch {
                 while (isActive) {
                     delay(REFRESH_INTERVAL_MS)
                     // Only repaint when the RENDERED TEXT would actually
@@ -145,6 +156,14 @@ class LiveCarScreen(
             val tab = activeTab ?: return@buildString
             append(tab.id)
             append(obdDown(status, now))
+            if (tab == CarTileCatalog.CarScreenKind.Tires) {
+                // The model carries every number, flag and the age bucket the
+                // image draws, so it changing is exactly "the screen changed".
+                val m = tireModel(settings, now)
+                append(m.cells).append(m.age).append(m.stale)
+                for ((_, v) in tireRows(m, settings)) append('|').append(v)
+                return@buildString
+            }
             if (!tab.isMetricGrid) {
                 for ((_, v) in sessionRows(status, settings, now)) append('|').append(v)
                 return@buildString
@@ -236,6 +255,60 @@ class LiveCarScreen(
          * at coolant or fuel sees a current number.
          */
         const val REFRESH_INTERVAL_MS = 2_000L
+
+        const val TIRE_SNAPSHOT_INTERVAL_MS = 60_000L
+    }
+
+    // ── Tires tab ─────────────────────────────────────────────────────
+
+    @Volatile
+    private var tireSnapshot: Map<String, com.pitstop.data.CachedReading> = emptyMap()
+
+    private suspend fun loadTireSnapshot(): Map<String, com.pitstop.data.CachedReading> {
+        val prefs = appPrefs ?: return emptyMap()
+        return runCatching {
+            val s = settingsRepository.settings.first()
+            prefs.tireSnapshot(com.pitstop.data.effectiveVehicleSlug(prefs.viewVehicleSlug.first(), s.vehicleSlug))
+        }.getOrDefault(tireSnapshot)
+    }
+
+    /** Snapshot + live bus samples, newest per metric — the widget's model. */
+    private fun tireModel(settings: com.pitstop.data.Settings, now: Long): com.pitstop.domain.TireWidgetModel {
+        val merged = HashMap(tireSnapshot)
+        for ((k, v) in stateBus.latestByMetric.value) {
+            if (!k.startsWith("tire_")) continue
+            if (k.startsWith("tire_pressure_") && v.value <= 0) continue
+            val cur = merged[k]
+            if (cur == null || v.tsMs >= cur.t) merged[k] = com.pitstop.data.CachedReading(v.value, v.tsMs)
+        }
+        return com.pitstop.widget.TireWidgetProvider.modelOf(merged, now, settings.unitSystem)
+    }
+
+    private fun tireRows(m: com.pitstop.domain.TireWidgetModel, settings: com.pitstop.data.Settings) =
+        TirePane.rows(m, settings.unitSystem)
+
+    /**
+     * The car diagram as the pane's large image, rows beside it. The image is
+     * not part of PaneTemplate's refresh predicate (row count + titles), so a
+     * new bitmap every poll is an in-place refresh. Pane images need Car API
+     * 4; an older host gets the rows alone.
+     */
+    private fun tiresPane(settings: com.pitstop.data.Settings): Template {
+        val m = tireModel(settings, System.currentTimeMillis())
+        val pane = androidx.car.app.model.Pane.Builder()
+        for ((label, value) in tireRows(m, settings)) {
+            pane.addRow(androidx.car.app.model.Row.Builder().setTitle(label).addText(value).build())
+        }
+        if (carContext.carAppApiLevel >= 4) {
+            pane.setImage(
+                CarIcon.Builder(
+                    androidx.core.graphics.drawable.IconCompat.createWithBitmap(
+                        TireCarBitmap.render(m),
+                    ),
+                ).build(),
+            )
+        }
+        return androidx.car.app.model.PaneTemplate.Builder(pane.build()).build()
     }
 
     /** Which tab the head unit is showing. Survives invalidate(); reset only
@@ -371,6 +444,7 @@ class LiveCarScreen(
                 )
                 .build()
         }
+        kind == CarTileCatalog.CarScreenKind.Tires -> tiresPane(settings)
         else -> paneOf(sessionRows(status, settings, System.currentTimeMillis()))
     }
 

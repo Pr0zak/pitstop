@@ -278,6 +278,12 @@ object CarTileCatalog {
          *  a Link tile so it can replace Status in the default set. */
         Trip("trip", "Trip", DEFAULT_TRIP, R.drawable.ic_metric_clock),
 
+        /** The four tire pressures + temps on a line drawing of the car,
+         *  as the PaneTemplate's image, with Updated and Temps rows.
+         *  Live from the phone's Mode 22 TPMS poll; between polls (and
+         *  parked) it shows the last known readings, never dashes. */
+        Tires("tires", "Tires", null, R.drawable.ic_metric_pressure),
+
         /** Live bridge/session state from the in-process bus. No network.
          *  A PaneTemplate: OBD link, engine, upload, device — plus a
          *  permanent Reconnect action. */
