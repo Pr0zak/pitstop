@@ -219,6 +219,34 @@ export interface TripDetail extends Trip {
   // DTCs that fired during the trip's open window (from
   // dtc_events.seen_at, ascending).
   dtcs?: TripDtcRef[];
+  /** TPMS summary over the trip window; null when no tire sensor reported. */
+  tires?: TripTires | null;
+  /** Braking from raw brake_pressure (bar). All null — not 0 — when the
+   *  trip has no brake samples. Press = rising edge above 5 bar (re-presses
+   *  within 1 s merged); hard = press peak ≥ 60 bar (provisional). */
+  brake_events?: number | null;
+  hard_brake_events?: number | null;
+  max_brake_bar?: number | null;
+  braking_s?: number | null;
+}
+
+/** One wheel's readings inside a trip. kPa / °C as stored. */
+export interface TripTireCorner {
+  corner: "fl" | "fr" | "rl" | "rr";
+  pressure_start_kpa: number | null;
+  pressure_end_kpa: number | null;
+  pressure_min_kpa: number | null;
+  pressure_max_kpa: number | null;
+  temp_start_c: number | null;
+  temp_end_c: number | null;
+}
+
+export interface TripTires {
+  /** Always the four corners, FL, FR, RL, RR. */
+  corners: TripTireCorner[];
+  /** Server-side low rule on END pressures (≥ low_delta_psi below highest). */
+  low_corners: string[];
+  low_delta_psi: number;
 }
 
 export interface Dtc {

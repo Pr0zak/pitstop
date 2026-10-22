@@ -354,6 +354,9 @@ class MqttIngest:
         self._batch_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._unparsed_warns: set[tuple[UUID, str]] = set()
+        # Last WiCAN AutoPID snapshot per vehicle, minus its timestamp; see
+        # _is_frozen_wican_snapshot.
+        self._last_wican_snapshot: dict[UUID, str] = {}
         # wican_lwt debounce state: per vehicle, last RECORDED (state, time).
         # WiCAN's LWT message conflates broker-connection state with
         # engine state. On flaky cellular, the broker can fire LWT
@@ -465,6 +468,31 @@ class MqttIngest:
             except (OverflowError, OSError, ValueError):
                 pass  # fall back to default_when
         return float(v), when
+
+    def _is_frozen_wican_snapshot(self, vehicle_id: UUID, payload: str) -> bool:
+        """True when a WiCAN snapshot repeats the previous one exactly.
+
+        Firmware 6's MQTT destination republishes the last AutoPID values
+        every period whether or not anything was polled: after key-off, and
+        while AutoPID is paused for a BLE client (2026-10-21). Live polling
+        always moves RPM / trims / sensor voltages, so a snapshot identical
+        to the previous one (ignoring its ``timestamp``) is a replay, and
+        storing it would put frozen values on fresh timestamps.
+        Timestamp-only heartbeats carry no readings and pass through.
+        """
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        data.pop("timestamp", None)
+        if len(data) < 2:
+            return False
+        key = json.dumps(data, sort_keys=True)
+        frozen = self._last_wican_snapshot.get(vehicle_id) == key
+        self._last_wican_snapshot[vehicle_id] = key
+        return frozen
 
     def _fanout_json_payload(
         self,
@@ -628,6 +656,9 @@ class MqttIngest:
         # their keys out into pid_readings.
         if parsed.source == "wican" and parsed.metric == "events":
             log.info("wican event: %s", payload[:300])
+            return
+
+        if parsed.source == "wican" and self._is_frozen_wican_snapshot(vehicle_id, payload):
             return
 
         # Bridge v2 envelope: {"v": <num>, "t": <unix_ms>}. Honors the

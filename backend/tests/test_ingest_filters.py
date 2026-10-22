@@ -133,3 +133,22 @@ def test_firmware6_event_bookkeeping_keys_are_dropped():
 
     for key in ("ts", "event", "voltage", "MonitorStatus"):
         assert normalise(key) is None
+
+
+def test_frozen_wican_snapshot_is_dropped_after_first():
+    import json
+    from uuid import uuid4
+
+    from pitstop.workers.ingest import MqttIngest
+
+    w = MqttIngest.__new__(MqttIngest)
+    w._last_wican_snapshot = {}
+    vid = uuid4()
+    snap = {"EngineRPM": 719, "VehicleSpeed": 0, "timestamp": 1}
+    assert not w._is_frozen_wican_snapshot(vid, json.dumps(snap))
+    # Same values, new timestamp: a firmware-6 replay.
+    assert w._is_frozen_wican_snapshot(vid, json.dumps({**snap, "timestamp": 2}))
+    # Live polling moves a value: stored again.
+    assert not w._is_frozen_wican_snapshot(vid, json.dumps({**snap, "EngineRPM": 722}))
+    # Timestamp-only heartbeat is never treated as frozen.
+    assert not w._is_frozen_wican_snapshot(vid, json.dumps({"timestamp": 3}))

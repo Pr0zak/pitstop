@@ -7,6 +7,18 @@ import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
 import TripLanes, { type Lane } from "@/components/charts/TripLanes.vue";
 import MapLibreMap from "@/components/charts/MapLibreMap.vue";
+import TripTiresChart from "@/components/charts/TripTiresChart.vue";
+import { buildTireChart, fillForwardWithin, hasTireData, tireWarmupC, type TireChartKind } from "@/lib/tripTires";
+import {
+  TIRE_CORNERS,
+  TIRE_CORNER_COLOR,
+  fmtBrakeBar,
+  fmtTempRiseC,
+  fmtTirePressure,
+  kpaToPsi,
+  tpmsReadings,
+  type TireCorner,
+} from "@/lib/vehicleSignals";
 import {
   fmtTripTitle,
   fmtClockTime,
@@ -167,6 +179,11 @@ interface TripSeries {
    *  (commanded_afr_ratio / o2_s1_lambda live in 0.98–1.02), which otherwise
    *  render as a column of identical "1"s on both the axis and the legend. */
   decimals?: number;
+  /** Forward-fill limit in seconds. Omit for the default unlimited carry
+   *  (right for slow metrics like fuel or coolant); set it where a held value
+   *  would lie across a dropout — a brake press carried for minutes reads as
+   *  the pedal held down. */
+  maxCarryS?: number;
 }
 
 // Rebuilt when the resolved unit system flips. `visibleSeries` → `chartOpts`
@@ -244,6 +261,13 @@ const TRIP_SERIES = computed<TripSeries[]>(() => {
     // the chip dims like any other unpolled metric.
     { metric: "odometer",               label: imp ? "Odometer (mi)" : "Odometer (km)", stroke: "#8b949e", scale: "odo", axisLabel: imp ? "mi" : "km",   transform: (v) => (imp ? v * 0.621371 : v), defaultVisible: false, decimals: 0 },
 
+    // --- Braking --------------------------------------------------------
+    // Line pressure in bar for every unit system (what the ECU reports; see
+    // fmtBrakeBar). The API buckets it by MAX so a 1-s press keeps its
+    // height. Carried at most 3 s: past that a dropout is a gap, not a
+    // held pedal.
+    { metric: "brake_pressure",         label: "Brake (bar)",                        stroke: "#ef4444", scale: "brake",   axisLabel: "bar",                  transform: (v) => Math.max(0, v),          defaultVisible: false, decimals: 0, maxCarryS: 3 },
+
     // Derived series — computed below from successive vehicle_speed
     // samples (dv/dt → m/s², converted to g). Won't be found in
     // pid_readings; the chart loop synthesises the column.
@@ -262,6 +286,7 @@ const GROUP_OF: Record<string, SeriesGroup> = {
   engine_load: "Drive",
   acceleration: "Drive",
   odometer: "Drive",
+  brake_pressure: "Drive",
   coolant_temp: "Engine",
   control_module_voltage: "Engine",
   fuel_rail_pressure: "Engine",
@@ -647,6 +672,10 @@ const chartData = computed<uPlot.AlignedData | null>(() => {
   // every timestamp anyway so the no-op fill is harmless for them.
   visible.forEach((s, i) => {
     if (s.metric === "acceleration") return; // already null where expected
+    if (s.maxCarryS != null) {
+      arrays[i] = fillForwardWithin(t, arrays[i], s.maxCarryS);
+      return;
+    }
     let prev: number | null = null;
     const arr = arrays[i];
     for (let k = 0; k < arr.length; k++) {
@@ -679,6 +708,91 @@ const lanes = computed<Lane[]>(() => {
   });
 });
 const laneX = computed<number[]>(() => (chartData.value?.[0] as number[] | undefined) ?? []);
+
+// ── Tires ──────────────────────────────────────────────────────────────
+// Its own chart rather than four more lanes: the story is the spread between
+// the corners, which only reads with all four on one axis. Offered as a
+// "Tires" chip in the metric picker (persisted, on by default) and hidden
+// outright when the trip has no tire data — most phone-only drives don't.
+const tripSamples = computed(
+  () => (trip.value?.samples ?? []) as Array<{ time: string; metric?: string; value_num?: number | null }>,
+);
+const tripHasTires = computed(() => hasTireData(tripSamples.value));
+const TIRES_VIS_KEY = "pitstop_trip_tires_visible";
+const tiresVisible = ref<boolean>(localStorage.getItem(TIRES_VIS_KEY) !== "false");
+watch(tiresVisible, (v) => {
+  try { localStorage.setItem(TIRES_VIS_KEY, String(v)); } catch { /* ignore */ }
+});
+const tireKind = ref<TireChartKind>("pressure");
+const tireChart = computed(() => {
+  if (!tripHasTires.value) return null;
+  const imp = imperial.value;
+  // Pressure is always psi (the dash's TPMS page), temps follow the setting.
+  const transform =
+    tireKind.value === "pressure" ? kpaToPsi : (c: number) => (imp ? (c * 9) / 5 + 32 : c);
+  return buildTireChart(tripSamples.value, tireKind.value, transform);
+});
+const tireTempAvailable = computed(() =>
+  buildTireChart(tripSamples.value, "temp", (v) => v) != null,
+);
+const tireUnit = computed(() =>
+  tireKind.value === "pressure" ? "psi" : imperial.value ? "°F" : "°C",
+);
+const tripWindow = computed(() => {
+  const t = trip.value;
+  const start = t ? Math.round(Date.parse(t.started_at) / 1000) : 0;
+  const end = t?.ended_at ? Math.round(Date.parse(t.ended_at) / 1000) : start;
+  return { start, end };
+});
+
+// Per-trip Tires summary card (from the API's `tires` block). LOW tags use
+// the shared rule (tpmsReadings) on the end pressures — the same rule the
+// server applies for `low_corners`.
+interface TireSummaryRow {
+  corner: TireCorner;
+  label: string;
+  start: string;
+  end: string;
+  changed: boolean;
+  warmup: string | null;
+  low: boolean;
+}
+const tireSummary = computed<TireSummaryRow[] | null>(() => {
+  const tires = trip.value?.tires;
+  if (!tires) return null;
+  const byCorner = new Map(tires.corners.map((c) => [c.corner, c]));
+  const endKpa = Object.fromEntries(
+    TIRE_CORNERS.map((c) => [c, byCorner.get(c)?.pressure_end_kpa ?? null]),
+  ) as Record<TireCorner, number | null>;
+  const readings = tpmsReadings(endKpa);
+  return readings.map((r) => {
+    const c = byCorner.get(r.corner);
+    const start = fmtTirePressure(c?.pressure_start_kpa ?? null);
+    const end = fmtTirePressure(c?.pressure_end_kpa ?? null);
+    const rise = c ? tireWarmupC(c) : null;
+    return {
+      corner: r.corner,
+      label: r.label,
+      start,
+      end,
+      changed: start !== end,
+      warmup: rise != null ? fmtTempRiseC(rise, imperial.value) : null,
+      low: r.low,
+    };
+  });
+});
+
+// Braking row in the Stats card — present only when the trip had brake data.
+const braking = computed(() => {
+  const t = trip.value;
+  if (!t || t.brake_events == null) return null;
+  return {
+    events: t.brake_events,
+    hard: t.hard_brake_events ?? 0,
+    max: fmtBrakeBar(t.max_brake_bar ?? null),
+    seconds: t.braking_s ?? null,
+  };
+});
 
 // Vertical rules for DTC fire events (#110).
 const dtcMarkers = computed<{ ts: number; code: string }[]>(() =>
@@ -1285,6 +1399,21 @@ async function saveMeta() {
                   >{{ splitLabel(s.label).name }}</button>
                 </div>
               </div>
+              <div class="series-group">
+                <span class="group-name">Tires</span>
+                <div class="series-chips">
+                  <button
+                    class="chip"
+                    :class="{ active: tiresVisible && tripHasTires, empty: !tripHasTires }"
+                    :style="tiresVisible && tripHasTires ? { borderColor: TIRE_CORNER_COLOR.fl, color: TIRE_CORNER_COLOR.fl } : {}"
+                    :title="tripHasTires ? 'Four-corner tire chart below the timeline' : 'No tire data for this trip'"
+                    :aria-pressed="tiresVisible && tripHasTires"
+                    :disabled="!tripHasTires"
+                    type="button"
+                    @click="tiresVisible = !tiresVisible"
+                  >Tires</button>
+                </div>
+              </div>
             </div>
             <StateCard v-if="!chartData || lanes.length === 0" state="empty" bare title="No metrics selected (or no samples in this trip)." />
             <TripLanes
@@ -1297,6 +1426,36 @@ async function saveMeta() {
               @cursor="onLaneCursor"
             />
             <p class="muted small lanes-hint">Drag across any lane to zoom all lanes · double-click to reset.</p>
+          </div>
+
+          <div v-if="tripHasTires && tiresVisible && tireChart" class="card">
+            <header class="chart-head">
+              <h3>Tires</h3>
+              <div class="seg" role="group" aria-label="Tire chart quantity">
+                <button
+                  type="button"
+                  class="chip toggle-chip"
+                  :class="{ active: tireKind === 'pressure' }"
+                  :aria-pressed="tireKind === 'pressure'"
+                  @click="tireKind = 'pressure'"
+                >Pressure</button>
+                <button
+                  type="button"
+                  class="chip toggle-chip"
+                  :class="{ active: tireKind === 'temp' }"
+                  :aria-pressed="tireKind === 'temp'"
+                  :disabled="!tireTempAvailable"
+                  :title="tireTempAvailable ? '' : 'No tire temperatures for this trip'"
+                  @click="tireKind = 'temp'"
+                >Temp</button>
+              </div>
+            </header>
+            <TripTiresChart
+              :data="tireChart"
+              :unit="tireUnit"
+              :start="tripWindow.start"
+              :end="tripWindow.end"
+            />
           </div>
 
           <div v-if="stops.length" class="card">
@@ -1432,6 +1591,15 @@ async function saveMeta() {
                 <dt>Coolant peak</dt>
                 <dd class="num">{{ fmtTempC(coolantPeakC) }}</dd>
               </template>
+              <template v-if="braking">
+                <dt>Braking</dt>
+                <dd class="num">
+                  {{ braking.events }} press{{ braking.events === 1 ? "" : "es" }}
+                  <span class="muted small sub">
+                    {{ braking.hard }} hard · max {{ braking.max }}<template v-if="braking.seconds != null"> · {{ fmtBucketSeconds(braking.seconds) }} on pedal</template>
+                  </span>
+                </dd>
+              </template>
               <dt>Ended</dt>
               <dd class="num">{{ trip.ended_at ? fmtClock(trip.ended_at) : "open" }}</dd>
               <template v-if="trip.samples?.length">
@@ -1452,6 +1620,32 @@ async function saveMeta() {
                 <span v-if="d.description" class="muted small">{{ d.description }}</span>
               </li>
             </ul>
+          </div>
+
+          <div v-if="tireSummary" class="card">
+            <header class="chart-head">
+              <h3>Tires</h3>
+              <span class="muted small">start → end · warm-up</span>
+            </header>
+            <div class="tire-sum" role="group" aria-label="Tire pressures this trip">
+              <div
+                v-for="r in tireSummary"
+                :key="r.corner"
+                class="ts-cell"
+                :class="[r.corner, { low: r.low }]"
+              >
+                <span class="ts-corner">
+                  <i class="ts-sw" :style="{ background: TIRE_CORNER_COLOR[r.corner] }" aria-hidden="true" />{{ r.label }}<span v-if="r.low" class="ts-low">low</span>
+                </span>
+                <span class="ts-press num">
+                  <template v-if="r.changed">{{ r.start.replace(" psi", "") }} → </template>{{ r.end }}
+                </span>
+                <span class="ts-warm muted small num">{{ r.warmup ?? "—" }}</span>
+              </div>
+            </div>
+            <p class="muted small ts-note">
+              Low: {{ trip.tires?.low_delta_psi ?? 2 }} psi or more below the highest tire at trip end.
+            </p>
           </div>
 
           <div v-if="baselineRows.length" class="card">
@@ -2003,6 +2197,71 @@ async function saveMeta() {
 }
 .lanes-hint {
   margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+}
+.seg {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.seg .toggle-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.tire-sum {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+}
+.ts-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--c-line1);
+  border-radius: var(--r-md);
+  min-width: 0;
+}
+.ts-cell.fr,
+.ts-cell.rr {
+  text-align: right;
+  align-items: flex-end;
+}
+.ts-corner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--c-ink3);
+  letter-spacing: 0.04em;
+}
+.ts-sw {
+  display: inline-block;
+  width: 8px;
+  height: 3px;
+  border-radius: 2px;
+}
+.ts-low {
+  margin-left: 0.2rem;
+  color: var(--c-warn);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.ts-press {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--c-ink0);
+  white-space: nowrap;
+}
+.ts-cell.low {
+  border-color: rgba(255, 176, 32, 0.55);
+  background: var(--c-warn-soft);
+}
+.ts-cell.low .ts-press {
+  color: var(--c-warn);
+}
+.ts-note {
+  margin: 0.5rem 0 0;
   font-size: 0.72rem;
 }
 .series-chips .chip.empty {

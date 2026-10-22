@@ -19,6 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import require_query_token
 from ..db.deps import get_pool
+from ..tires import (
+    TIRE_COLD_PARK_HOURS,
+    TIRE_METRICS,
+    TIRE_PRESSURE_METRICS,
+    assemble_tire_analytics,
+    valid_tire_value,
+)
 from .fillups import compute_recomputed_mpg
 
 log = logging.getLogger(__name__)
@@ -1235,6 +1242,150 @@ async def fuel_trim_history(
     return {"series": series, "window_days": days}
 
 
+_TIRE_DAILY_METRICS: tuple[str, ...] = TIRE_METRICS + ("ambient_air_temp_f",)
+
+
+@router.get("/tires", dependencies=[Depends(require_query_token)])
+async def tire_history(
+    vehicle_id: UUID = Query(...),
+    days: int = Query(default=90, ge=7, le=365),
+    pool: asyncpg.Pool = Depends(get_pool),
+) -> dict[str, Any]:
+    """TPMS history: daily pressure/temp per corner, cold pressure, slow-leak
+    trend and warm-up, with the day's outside temperature alongside.
+
+    Days are UTC days, the same buckets as the pid_daily continuous
+    aggregate. Every day in the window is present; a day with no reading is
+    nulls, never zeros. Shape and rules: pitstop/tires.py
+    assemble_tire_analytics.
+
+    Cold detection (documented choice): a corner's first pressure reading
+    after >= 3 h with NO reading for that corner, rejected when its tire temp
+    is > 8 °C above the outside temp at that moment (the WiCAN only publishes
+    on home WiFi, so arriving home from an un-logged drive also ends a long
+    gap -- with hot tires). Readings-based rather than engine_events because
+    engine_events carries WiCAN LWT on/off, which flips on WiFi
+    reconnects as well as on key cycles.
+    """
+    now = datetime.now(UTC)
+    today = now.date()
+    first_day = today - timedelta(days=days - 1)
+    cutoff = datetime(first_day.year, first_day.month, first_day.day, tzinfo=UTC)
+    # pid_daily is refreshed with end_offset 1 day, so only buckets before
+    # yesterday are materialized; yesterday + today come from raw rows.
+    raw_from = datetime(today.year, today.month, today.day, tzinfo=UTC) - timedelta(days=1)
+    raw_from = max(raw_from, cutoff)
+    metrics = list(_TIRE_DAILY_METRICS)
+
+    daily: dict[tuple[date, str], tuple[float | None, float | None, float | None]] = {}
+    async with pool.acquire() as conn:
+        try:
+            agg_rows = await conn.fetch(
+                """
+                SELECT bucket, metric, avg_value, min_value, max_value
+                  FROM pid_daily
+                 WHERE vehicle_id = $1
+                   AND metric = ANY($2::text[])
+                   AND bucket >= $3 AND bucket < $4
+                """,
+                vehicle_id, metrics, cutoff, raw_from,
+            )
+            raw_daily_from = raw_from
+        except asyncpg.UndefinedTableError:
+            # No continuous aggregate (test DB without TimescaleDB): raw
+            # aggregation over the whole window instead.
+            agg_rows = []
+            raw_daily_from = cutoff
+        # Sentinel-free aggregation for the raw part (0 kPa / -40 °C are a
+        # sensor not answering; see tires.valid_tire_value). pid_daily can't
+        # filter, so its rows are only trusted when min is above the floor.
+        raw_rows = await conn.fetch(
+            """
+            SELECT date_trunc('day', time AT TIME ZONE 'UTC') AS bucket,
+                   metric,
+                   avg(value_num) AS avg_value,
+                   min(value_num) AS min_value,
+                   max(value_num) AS max_value
+              FROM pid_readings
+             WHERE vehicle_id = $1
+               AND metric = ANY($2::text[])
+               AND time >= $3
+               AND value_num IS NOT NULL
+               AND NOT (metric LIKE 'tire_pressure_%' AND value_num <= 0)
+               AND NOT (metric LIKE 'tire_temp_%' AND value_num <= -40)
+             GROUP BY 1, 2
+            """,
+            vehicle_id, metrics, raw_daily_from,
+        )
+        cold_rows = await conn.fetch(
+            """
+            WITH p AS (
+                SELECT time, metric, value_num,
+                       lag(time) OVER (PARTITION BY metric ORDER BY time) AS prev_time
+                  FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = ANY($2::text[])
+                   AND time >= $3::timestamptz - make_interval(hours => $4)
+                   AND value_num IS NOT NULL AND value_num > 0
+            )
+            SELECT p.time, p.metric, p.value_num,
+                   (SELECT t.value_num FROM pid_readings t
+                     WHERE t.vehicle_id = $1
+                       AND t.metric = replace(p.metric, 'tire_pressure_', 'tire_temp_')
+                       AND t.time BETWEEN p.time - interval '2 minutes'
+                                      AND p.time + interval '2 minutes'
+                       AND t.value_num IS NOT NULL AND t.value_num > -40
+                     ORDER BY abs(extract(epoch FROM (t.time - p.time)))
+                     LIMIT 1) AS temp_c,
+                   (SELECT a.value_num FROM pid_readings a
+                     WHERE a.vehicle_id = $1
+                       AND a.metric = 'ambient_air_temp_f'
+                       AND a.time BETWEEN p.time - interval '10 minutes'
+                                      AND p.time + interval '10 minutes'
+                       AND a.value_num IS NOT NULL
+                     ORDER BY abs(extract(epoch FROM (a.time - p.time)))
+                     LIMIT 1) AS ambient_f
+              FROM p
+             WHERE p.time >= $3
+               AND (p.prev_time IS NULL
+                    OR p.time - p.prev_time >= make_interval(hours => $4))
+             ORDER BY p.time ASC
+            """,
+            vehicle_id, list(TIRE_PRESSURE_METRICS), cutoff, TIRE_COLD_PARK_HOURS,
+        )
+
+    def _day(b: Any) -> date:
+        return b.date() if isinstance(b, datetime) else b
+
+    for r in agg_rows:
+        m = r["metric"]
+        mn = r["min_value"]
+        # A materialized day that includes a sentinel would drag min/mean;
+        # skip it rather than chart a 0 kPa dip.
+        if mn is not None and not valid_tire_value(m, float(mn)):
+            continue
+        daily[(_day(r["bucket"]), m)] = (r["avg_value"], mn, r["max_value"])
+    for r in raw_rows:
+        daily[(_day(r["bucket"]), r["metric"])] = (
+            r["avg_value"], r["min_value"], r["max_value"],
+        )
+
+    window_days = [first_day + timedelta(days=i) for i in range(days)]
+    cold = [
+        (
+            r["time"],
+            r["metric"].removeprefix("tire_pressure_"),
+            float(r["value_num"]),
+            float(r["temp_c"]) if r["temp_c"] is not None else None,
+            float(r["ambient_f"]) if r["ambient_f"] is not None else None,
+        )
+        for r in cold_rows
+    ]
+    out = assemble_tire_analytics(window_days, daily, cold)
+    out["window_days"] = days
+    return out
+
+
 @router.get("/odometer", dependencies=[Depends(require_query_token)])
 async def odometer_history(
     vehicle_id: UUID = Query(...),
@@ -1407,8 +1558,16 @@ async def trip_baseline(
         "sample_size": n,
         "sufficient": sufficient,
         "avg_distance_km": float(row["avg_km"]) if sufficient and row["avg_km"] else None,
-        "avg_duration_s": int(row["avg_duration_s"]) if sufficient and row["avg_duration_s"] else None,
-        "avg_speed_kph": float(row["avg_speed_kph"]) if sufficient and row["avg_speed_kph"] else None,
-        "avg_max_speed_kph": float(row["avg_max_speed_kph"]) if sufficient and row["avg_max_speed_kph"] else None,
+        "avg_duration_s": (
+            int(row["avg_duration_s"]) if sufficient and row["avg_duration_s"] else None
+        ),
+        "avg_speed_kph": (
+            float(row["avg_speed_kph"]) if sufficient and row["avg_speed_kph"] else None
+        ),
+        "avg_max_speed_kph": (
+            float(row["avg_max_speed_kph"])
+            if sufficient and row["avg_max_speed_kph"]
+            else None
+        ),
         "avg_mpg": float(row["avg_mpg"]) if sufficient and row["avg_mpg"] else None,
     }

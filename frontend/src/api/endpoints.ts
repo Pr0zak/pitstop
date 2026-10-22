@@ -658,6 +658,55 @@ export async function getFuelTrimHistory(
   return r.data;
 }
 
+/** GET /analytics/tires — see backend pitstop/tires.py assemble_tire_analytics.
+ *  Days are UTC days; every day of the window is present (nulls when empty). */
+export interface TireDaily {
+  day: string;
+  pressure_min_kpa: number | null;
+  pressure_mean_kpa: number | null;
+  pressure_max_kpa: number | null;
+  temp_mean_c: number | null;
+  temp_max_c: number | null;
+  /** First cold reading of that day (parked ≥ cold_park_hours). */
+  cold_pressure_kpa: number | null;
+  /** Day max − day cold, psi. */
+  warmup_psi: number | null;
+}
+export interface TireColdReading {
+  time: string;
+  pressure_kpa: number;
+  temp_c: number | null;
+}
+export interface TireCornerHistory {
+  corner: "fl" | "fr" | "rl" | "rr";
+  daily: TireDaily[];
+  cold_readings: TireColdReading[];
+  current_cold_kpa: number | null;
+  current_cold_at: string | null;
+  slope_psi_per_week: number | null;
+  slope_samples: number;
+  possible_slow_leak: boolean;
+  warmup_median_psi: number | null;
+}
+export interface TireAnalytics {
+  has_data: boolean;
+  window_days: number;
+  days: string[];
+  ambient: { day: string; ambient_mean_f: number | null }[];
+  corners: TireCornerHistory[];
+  low_corners: string[];
+  low_delta_psi: number;
+  slow_leak_psi_per_week: number;
+  slow_leak_min_samples: number;
+  cold_park_hours: number;
+}
+export async function getTireAnalytics(vehicleId: string, days = 90): Promise<TireAnalytics> {
+  const r = await apiQuery.get<TireAnalytics>("/analytics/tires", {
+    params: { vehicle_id: vehicleId, days },
+  });
+  return r.data;
+}
+
 export interface CostBreakdownMonth {
   month: string;
   total: number;

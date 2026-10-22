@@ -21,6 +21,7 @@ import {
 import {
   MISFIRE_CYLINDERS,
   cylindersLabel,
+  fmtBrakeBar,
   fmtTempF,
   gearLabel,
   TIRE_CORNERS,
@@ -242,6 +243,9 @@ const throttle = computed(() => num("throttle_position"));
 const load = computed(() => num("engine_load"));
 const maf = computed(() => num("maf_air_flow"));
 const torque = computed(() => num("engine_torque_pct"));
+// Brake line pressure, bar as the ECU reports it (0 off the pedal, ~85-93 on
+// a firm press). Bar in every unit system — see fmtBrakeBar for why.
+const brake = computed(() => num("brake_pressure"));
 const refTorque = computed(() => num("engine_reference_torque"));
 
 // Fuel + economy
@@ -550,6 +554,11 @@ function trimClass(v: number | null): string {
             <h3>Speed</h3>
             <div class="big"><QtyValue :text="fmtSpeedKph(speed)" /></div>
             <div v-if="parked" class="tile-age">{{ asOf('vehicle_speed') }}</div>
+          </div>
+          <div class="card tile">
+            <h3>Brake pressure</h3>
+            <div class="big"><QtyValue :text="fmtBrakeBar(brake)" /></div>
+            <div v-if="parked" class="tile-age">{{ asOf('brake_pressure') }}</div>
           </div>
         </div>
       </section>

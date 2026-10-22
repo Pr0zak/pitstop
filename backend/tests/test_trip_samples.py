@@ -151,11 +151,33 @@ def test_bucket_seconds_degenerate_inputs() -> None:
     assert _bucket_seconds(600, target_points=0) == 1
 
 
+def test_tire_and_brake_metrics_charted() -> None:
+    """TPMS (all four corners, pressure + temp) and brake pressure."""
+    for corner in ("fl", "fr", "rl", "rr"):
+        assert f"tire_pressure_{corner}" in _TRIP_SAMPLE_METRICS
+        assert f"tire_temp_{corner}" in _TRIP_SAMPLE_METRICS
+    assert "brake_pressure" in _TRIP_SAMPLE_METRICS
+
+
+def test_sparse_tire_readings_get_their_own_bucket() -> None:
+    """Phone-polled tires arrive every ~30 s. As long as the bucket is no wider than
+    that, each reading survives as its own sample row (and a bucket with no
+    reading emits no row, so dropouts stay gaps). Holds for trips up to
+    30 s * the point budget (~4 h)."""
+    assert _bucket_seconds(30 * _TRIP_SAMPLE_TARGET_POINTS) <= 30
+    assert _bucket_seconds(2 * 3600) <= 30
+
+
 def test_payload_ceiling_is_bounded() -> None:
     """Worst-case row count for the whole response, stated as a test so a
-    future list extension has to look at the number it is moving."""
+    future list extension has to look at the number it is moving.
+
+    Raised from 10 000 to 15 000 for the eight TPMS series + brake pressure.
+    Phone-polled TPMS (~30 s) only reaches the per-metric budget on drives
+    over ~4 h, but the WiCAN publishes it every ~2.5 s, so a WiCAN-covered
+    trip can spend the full budget on all nine new series."""
     ceiling = len(_TRIP_SAMPLE_METRICS) * _TRIP_SAMPLE_TARGET_POINTS
-    assert ceiling <= 10_000
+    assert ceiling <= 15_000
 
 
 def test_sql_bucket_expressions_use_the_same_width_param() -> None:
@@ -164,3 +186,15 @@ def test_sql_bucket_expressions_use_the_same_width_param() -> None:
     src = _TRIPS_SRC.read_text()
     assert "make_interval(secs => $4)" in src
     assert re.search(r"floor\(extract\(epoch FROM time\) / \$4::int\)", src)
+
+
+def test_brake_pressure_bucketed_by_peak_in_both_arms() -> None:
+    """A 1-2 s brake press averaged into a wider bucket loses its height;
+    both sample queries must take max() for the peak metrics."""
+    from pitstop.api.trips import _TRIP_SAMPLE_PEAK_METRICS
+
+    assert "brake_pressure" in _TRIP_SAMPLE_PEAK_METRICS
+    assert set(_TRIP_SAMPLE_PEAK_METRICS) <= set(_TRIP_SAMPLE_METRICS)
+    src = _TRIPS_SRC.read_text()
+    assert src.count("CASE WHEN metric = ANY($6::text[])") == 2
+    assert src.count("list(_TRIP_SAMPLE_PEAK_METRICS)") == 2

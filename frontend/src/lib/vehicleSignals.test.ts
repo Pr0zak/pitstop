@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  TIRE_SLOW_LEAK_PSI_PER_WEEK,
+  fmtBrakeBar,
+  fmtPsiPerWeek,
+  fmtTempRiseC,
+  isSlowLeak,
+  tireSpreadPsi,
   cylindersLabel,
   fmtTempF,
   fmtTirePressure,
@@ -66,5 +72,41 @@ describe("tpmsReadings", () => {
     // Always psi, whatever the unit system.
     expect(fmtTirePressure(241.3)).toBe("35 psi");
     expect(fmtTirePressure(196)).toBe("28 psi");
+  });
+});
+
+describe("tire trend helpers", () => {
+  it("formats psi/week with a true minus", () => {
+    expect(fmtPsiPerWeek(-0.42)).toBe("−0.4 psi/week");
+    expect(fmtPsiPerWeek(0.26)).toBe("+0.3 psi/week");
+    expect(fmtPsiPerWeek(0.01)).toBe("0.0 psi/week");
+    expect(fmtPsiPerWeek(null)).toBe("—");
+  });
+  it("flags a slow leak only on enough samples", () => {
+    expect(isSlowLeak(TIRE_SLOW_LEAK_PSI_PER_WEEK, 4)).toBe(true);
+    expect(isSlowLeak(-0.8, 3)).toBe(false);
+    expect(isSlowLeak(-0.4, 10)).toBe(false);
+    expect(isSlowLeak(null, 10)).toBe(false);
+  });
+  it("formats a temperature rise as a delta, not a reading", () => {
+    expect(fmtTempRiseC(10, true)).toBe("+18 °F");
+    expect(fmtTempRiseC(10, false)).toBe("+10 °C");
+    expect(fmtTempRiseC(-2, false)).toBe("−2 °C");
+    expect(fmtTempRiseC(0, true)).toBe("±0 °F");
+    expect(fmtTempRiseC(null, true)).toBe("—");
+  });
+  it("measures spread below the highest tire", () => {
+    const p = { fl: 213, fr: 196, rl: 209, rr: 205 };
+    expect(Math.round(tireSpreadPsi(p, "fr")!)).toBe(-2);
+    expect(tireSpreadPsi(p, "fl")).toBe(0);
+    expect(tireSpreadPsi({ fl: 213 }, "fl")).toBeNull();
+  });
+});
+
+describe("fmtBrakeBar", () => {
+  it("is whole bar in every unit system", () => {
+    expect(fmtBrakeBar(87.6)).toBe("88 bar");
+    expect(fmtBrakeBar(-0.2)).toBe("0 bar");
+    expect(fmtBrakeBar(null)).toBe("—");
   });
 });

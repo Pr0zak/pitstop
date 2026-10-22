@@ -8,13 +8,20 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import Path as FastAPIPath
 from pydantic import BaseModel, Field
 
 from ..auth import require_ingest_token, require_query_token
 from ..db.deps import get_pool
 from ..schemas import TripDetail, TripOut, TripUpdate
+from ..tires import (
+    TIRE_CORNERS,
+    TIRE_METRICS,
+    TPMS_LOW_DELTA_PSI,
+    low_tire_corners,
+    valid_tire_value,
+)
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +97,44 @@ _TRIP_SAMPLE_METRICS: tuple[str, ...] = (
     # it), so on a cellular-only trip this series is simply absent and the
     # clients drop the toggle -- they filter to metrics that have data.
     "odometer",
+    # --- Tires (TPMS) -----------------------------------------------------
+    # kPa / °C per corner, Honda Mode 22 (WiCAN firmware-6 profile, or the
+    # phone's optional Mode 22 polling during a drive). Four corners on
+    # purpose: the story is the *spread* between them (a slow leak on one
+    # wheel) and the warm-up curve (pressure climbs with tire temp), and
+    # either needs all four on one axis. Cadence varies by source: the
+    # phone's Mode 22 poll is ~30 s, the WiCAN profile was seen publishing
+    # every ~2.5 s (2026-10-21), so a WiCAN-covered trip costs up to the
+    # full per-metric budget like speed does. Sparse is safe under the
+    # bucketing below: buckets are <= 30 s wide for any trip under ~4 h, so
+    # each 30-s reading lands in its own bucket, and a bucket with no
+    # reading emits no row, so a span with no tire data stays a gap (never a
+    # zero).
+    # Absent on most phone-only trips; clients hide the Tires chart then.
+    "tire_pressure_fl",
+    "tire_pressure_fr",
+    "tire_pressure_rl",
+    "tire_pressure_rr",
+    "tire_temp_fl",
+    "tire_temp_fr",
+    "tire_temp_rl",
+    "tire_temp_rr",
+    # --- Braking ----------------------------------------------------------
+    # bar, >= 0 (0 off the pedal, ~85-93 on a firm press, verified in Park
+    # 2026-10-21). The one input no other series shows: speed falling can be
+    # a coast, a climb or the brakes, and only this says which. 1 Hz, so it
+    # costs a full metric budget on long trips like speed does. Gaps matter
+    # here more than anywhere: carried forward across a dropout a single
+    # press would read as a 10-minute brake hold, so the clients carry it a
+    # few seconds at most.
+    "brake_pressure",
 )
+
+
+# Metrics bucketed by MAX instead of AVG. A brake press lasts a second or
+# two; averaged into a 3-8 s bucket a 90 bar stab reads as 30 bar and a
+# light tap disappears. Max keeps every press at its real height.
+_TRIP_SAMPLE_PEAK_METRICS: tuple[str, ...] = ("brake_pressure",)
 
 # Metrics that are live in pid_readings but deliberately NOT charted, kept
 # here as a documented denylist so they don't get re-added by inspection of
@@ -146,6 +190,142 @@ def _bucket_seconds(
     if duration_s <= 0 or target_points <= 0:
         return 1
     return max(-(-duration_s // target_points), 1)
+
+
+def _tire_summary(
+    readings: list[tuple[datetime, str, float | None]],
+) -> dict[str, Any] | None:
+    """Per-corner TPMS summary from raw (time, metric, value) rows inside a
+    trip window. Returns None when no tire metric has a usable reading, so
+    the clients can hide the whole section rather than show four dashes.
+    """
+    by_metric: dict[str, list[tuple[datetime, float]]] = {}
+    for t, metric, value in readings:
+        if metric not in TIRE_METRICS or not valid_tire_value(metric, value):
+            continue
+        by_metric.setdefault(metric, []).append((t, float(value)))  # type: ignore[arg-type]
+    if not by_metric:
+        return None
+    for seq in by_metric.values():
+        seq.sort(key=lambda tv: tv[0])
+
+    corners: list[dict[str, Any]] = []
+    end_kpa: dict[str, float | None] = {}
+    for c in TIRE_CORNERS:
+        pres = [v for _, v in by_metric.get(f"tire_pressure_{c}", [])]
+        temp = [v for _, v in by_metric.get(f"tire_temp_{c}", [])]
+        end_kpa[c] = pres[-1] if pres else None
+        corners.append(
+            {
+                "corner": c,
+                "pressure_start_kpa": pres[0] if pres else None,
+                "pressure_end_kpa": pres[-1] if pres else None,
+                "pressure_min_kpa": min(pres) if pres else None,
+                "pressure_max_kpa": max(pres) if pres else None,
+                "temp_start_c": temp[0] if temp else None,
+                "temp_end_c": temp[-1] if temp else None,
+            }
+        )
+    return {
+        "corners": corners,
+        "low_corners": low_tire_corners(end_kpa),
+        "low_delta_psi": TPMS_LOW_DELTA_PSI,
+    }
+
+
+# Braking stats (brake_pressure, bar). A press starts on a rising edge above
+# _BRAKE_ON_BAR -- above sensor noise at rest (0 bar) and far below a light
+# stop (~15-30 bar). Two presses separated by less than _BRAKE_DEBOUNCE_S of
+# release are one press (a pumped pedal or a single noisy sample dipping
+# under the threshold).
+_BRAKE_ON_BAR = 5.0
+_BRAKE_DEBOUNCE_S = 1.0
+# PROVISIONAL: a press peaking at or above this is a "hard brake". Chosen
+# from the 85-93 bar firm presses measured in Park on 2026-10-21, not from
+# real deceleration; recalibrate against vehicle_speed dv/dt (~0.4 g) once
+# drives with brake data exist.
+_HARD_BRAKE_BAR = 60.0
+# A sample spacing beyond this is a dropout, not a held pedal: time across
+# it is not counted as braking and it ends any press in progress.
+_BRAKE_MAX_GAP_S = 5.0
+
+
+def _brake_summary(
+    readings: list[tuple[datetime, float | None]],
+) -> dict[str, Any]:
+    """brake_events / hard_brake_events / max_brake_bar / braking_s from raw
+    (time, bar) rows. All four are None when the trip has no brake_pressure
+    sample -- "not measured" must never read as "never braked"."""
+    pts = sorted(
+        ((t, float(v)) for t, v in readings if v is not None and v >= 0),
+        key=lambda tv: tv[0],
+    )
+    if not pts:
+        return {
+            "brake_events": None,
+            "hard_brake_events": None,
+            "max_brake_bar": None,
+            "braking_s": None,
+        }
+
+    events = 0
+    hard = 0
+    braking_s = 0.0
+    in_press = False
+    peak = 0.0
+    # Time of the first below-threshold sample after a press; None while the
+    # pedal is held. The press only ends once the pedal has stayed released
+    # for _BRAKE_DEBOUNCE_S, so a pumped pedal is one event with one peak.
+    release_t: datetime | None = None
+    prev_t: datetime | None = None
+    prev_on = False
+
+    def finish() -> None:
+        nonlocal in_press, hard, release_t
+        if in_press and peak >= _HARD_BRAKE_BAR:
+            hard += 1
+        in_press = False
+        release_t = None
+
+    for t, v in pts:
+        if prev_t is not None:
+            gap = (t - prev_t).total_seconds()
+            if gap > _BRAKE_MAX_GAP_S:
+                # Dropout: close whatever was in progress, count no time.
+                finish()
+                prev_on = False
+            elif prev_on:
+                braking_s += gap
+        on = v > _BRAKE_ON_BAR
+        if on:
+            if (
+                in_press
+                and release_t is not None
+                and (t - release_t).total_seconds() >= _BRAKE_DEBOUNCE_S
+            ):
+                finish()
+            if not in_press:
+                events += 1
+                in_press = True
+                peak = v
+            else:
+                peak = max(peak, v)
+            release_t = None
+        elif in_press:
+            if release_t is None:
+                release_t = t
+            elif (t - release_t).total_seconds() >= _BRAKE_DEBOUNCE_S:
+                finish()
+        prev_on = on
+        prev_t = t
+    finish()
+
+    return {
+        "brake_events": events,
+        "hard_brake_events": hard,
+        "max_brake_bar": max(v for _, v in pts),
+        "braking_s": round(braking_s, 1),
+    }
 
 
 def _row_to_trip(row: asyncpg.Record) -> dict[str, Any]:
@@ -312,7 +492,10 @@ async def get_trip(
                 """
                 SELECT time_bucket(make_interval(secs => $4), time) AS time,
                        metric,
-                       avg(value_num) AS value_num
+                       CASE WHEN metric = ANY($6::text[])
+                            THEN max(value_num)
+                            ELSE avg(value_num)
+                       END AS value_num
                   FROM pid_readings
                  WHERE vehicle_id = $1
                    AND time >= $2 AND time <= $3
@@ -322,6 +505,7 @@ async def get_trip(
                  ORDER BY 1 ASC
                 """,
                 row["vehicle_id"], started, ended, bucket_s, metrics,
+                list(_TRIP_SAMPLE_PEAK_METRICS),
             )
         except asyncpg.UndefinedFunctionError:
             # Same shape, same allowlist, same bucket width — floor the epoch
@@ -337,7 +521,10 @@ async def get_trip(
                            * $4::int
                        ) AS time,
                        metric,
-                       avg(value_num) AS value_num
+                       CASE WHEN metric = ANY($6::text[])
+                            THEN max(value_num)
+                            ELSE avg(value_num)
+                       END AS value_num
                   FROM pid_readings
                  WHERE vehicle_id = $1
                    AND time >= $2 AND time <= $3
@@ -347,6 +534,7 @@ async def get_trip(
                  ORDER BY 1 ASC
                 """,
                 row["vehicle_id"], started, ended, bucket_s, metrics,
+                list(_TRIP_SAMPLE_PEAK_METRICS),
             )
 
     out = _row_to_trip(row)
@@ -387,7 +575,8 @@ async def get_trip(
             """
             SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1 AND metric = 'odometer'
-               AND time BETWEEN $2::timestamptz - interval '15 minutes' AND $2::timestamptz + interval '15 minutes'
+               AND time BETWEEN $2::timestamptz - interval '15 minutes'
+                            AND $2::timestamptz + interval '15 minutes'
              ORDER BY abs(extract(epoch FROM (time - $2::timestamptz)))
              LIMIT 1
             """,
@@ -397,7 +586,8 @@ async def get_trip(
             """
             SELECT value_num FROM pid_readings
              WHERE vehicle_id = $1 AND metric = 'odometer'
-               AND time BETWEEN $2::timestamptz - interval '15 minutes' AND $2::timestamptz + interval '15 minutes'
+               AND time BETWEEN $2::timestamptz - interval '15 minutes'
+                            AND $2::timestamptz + interval '15 minutes'
              ORDER BY abs(extract(epoch FROM (time - $2::timestamptz)))
              LIMIT 1
             """,
@@ -424,6 +614,35 @@ async def get_trip(
              ORDER BY time DESC LIMIT 1
             """,
             row["vehicle_id"], ended,
+        )
+        # TPMS summary. Raw rows rather than the bucketed samples: the
+        # first/last reading is the start/end pressure, and bucket averaging
+        # would blur exactly the boundary values the summary reports. Cheap
+        # -- ~30 s cadence, 8 metrics.
+        tire_rows = await conn.fetch(
+            """
+            SELECT time, metric, value_num FROM pid_readings
+             WHERE vehicle_id = $1
+               AND time >= $2 AND time <= $3
+               AND metric = ANY($4::text[])
+               AND value_num IS NOT NULL
+             ORDER BY time ASC
+            """,
+            row["vehicle_id"], started, ended, list(TIRE_METRICS),
+        )
+        # Raw 1 Hz brake pressure for the braking stats -- edge counting
+        # needs every sample, not bucket averages (an average smears a
+        # 1-second stab under the threshold).
+        brake_rows = await conn.fetch(
+            """
+            SELECT time, value_num FROM pid_readings
+             WHERE vehicle_id = $1
+               AND time >= $2 AND time <= $3
+               AND metric = 'brake_pressure'
+               AND value_num IS NOT NULL
+             ORDER BY time ASC
+            """,
+            row["vehicle_id"], started, ended,
         )
         # DTCs that fired during the trip window (Task #110).
         dtc_rows = await conn.fetch(
@@ -453,6 +672,12 @@ async def get_trip(
         return min(100.0, float(raw) / cal * 100.0)
     out["fuel_level_start_pct"] = _norm(fuel_start_raw)
     out["fuel_level_end_pct"] = _norm(fuel_end_raw)
+    out["tires"] = _tire_summary(
+        [(r["time"], r["metric"], r["value_num"]) for r in tire_rows]
+    )
+    out.update(
+        _brake_summary([(r["time"], r["value_num"]) for r in brake_rows])
+    )
     out["dtcs"] = [
         {
             "id": str(d["id"]),
@@ -627,66 +852,65 @@ async def merge_trips(
     `manual_merge` row can be merged again (chains are allowed).
     """
     target_ids = body.target_ids(trip_id)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            rows = await conn.fetch(
-                f"SELECT {_TRIP_COLS} FROM trips WHERE id = ANY($1::uuid[]) FOR UPDATE",
-                target_ids,
-            )
-            if len(rows) != len(target_ids):
-                raise HTTPException(status_code=404, detail="one or more trips not found")
-            vehicle_ids = {r["vehicle_id"] for r in rows}
-            if len(vehicle_ids) != 1:
-                raise HTTPException(status_code=400, detail="trips belong to different vehicles")
-            # Order by started_at — earliest leg absorbs the rest.
-            legs = sorted(rows, key=lambda r: r["started_at"])
-            kept = legs[0]
-            new_started = kept["started_at"]
-            new_ended = max((r["ended_at"] or r["started_at"]) for r in legs)
-            new_duration_s = int((new_ended - new_started).total_seconds())
+    async with pool.acquire() as conn, conn.transaction():
+        rows = await conn.fetch(
+            f"SELECT {_TRIP_COLS} FROM trips WHERE id = ANY($1::uuid[]) FOR UPDATE",
+            target_ids,
+        )
+        if len(rows) != len(target_ids):
+            raise HTTPException(status_code=404, detail="one or more trips not found")
+        vehicle_ids = {r["vehicle_id"] for r in rows}
+        if len(vehicle_ids) != 1:
+            raise HTTPException(status_code=400, detail="trips belong to different vehicles")
+        # Order by started_at — earliest leg absorbs the rest.
+        legs = sorted(rows, key=lambda r: r["started_at"])
+        kept = legs[0]
+        new_started = kept["started_at"]
+        new_ended = max((r["ended_at"] or r["started_at"]) for r in legs)
+        new_duration_s = int((new_ended - new_started).total_seconds())
 
-            def _sum(col: str):
-                vals = [r[col] for r in legs if r[col] is not None]
-                return sum(vals) if vals else None
+        def _sum(col: str):
+            vals = [r[col] for r in legs if r[col] is not None]
+            return sum(vals) if vals else None
 
-            def _max(col: str):
-                vals = [r[col] for r in legs if r[col] is not None]
-                return max(vals) if vals else None
+        def _max(col: str):
+            vals = [r[col] for r in legs if r[col] is not None]
+            return max(vals) if vals else None
 
-            def _wavg(col: str):
-                # Duration-weighted mean over legs with both a value and
-                # a positive duration. Falls back to a plain mean of the
-                # values if no leg carries a usable duration.
-                num = den = 0.0
-                plain: list[float] = []
-                for r in legs:
-                    v = r[col]
-                    if v is None:
-                        continue
-                    plain.append(float(v))
-                    d = r["duration_s"] or 0
-                    if d > 0:
-                        num += float(v) * d
-                        den += d
-                if den > 0:
-                    return num / den
-                if plain:
-                    return sum(plain) / len(plain)
-                return None
+        def _wavg(col: str):
+            # Duration-weighted mean over legs with both a value and
+            # a positive duration. Falls back to a plain mean of the
+            # values if no leg carries a usable duration.
+            num = den = 0.0
+            plain: list[float] = []
+            for r in legs:
+                v = r[col]
+                if v is None:
+                    continue
+                plain.append(float(v))
+                d = r["duration_s"] or 0
+                if d > 0:
+                    num += float(v) * d
+                    den += d
+            if den > 0:
+                return num / den
+            if plain:
+                return sum(plain) / len(plain)
+            return None
 
-            distance_km = _sum("distance_km")
-            fuel_used_l = _sum("fuel_used_l")
-            dtc_count = sum((r["dtc_count"] or 0) for r in legs)
-            idle_s = _sum("idle_s")
-            max_rpm = _max("max_rpm")
-            max_speed_kph = _max("max_speed_kph")
-            avg_speed_kph = _wavg("avg_speed_kph")
-            avg_coolant_c = _wavg("avg_coolant_c")
-            # Delete every absorbed leg, then update the kept row.
-            drop_ids = [r["id"] for r in legs if r["id"] != kept["id"]]
-            await conn.execute("DELETE FROM trips WHERE id = ANY($1::uuid[])", drop_ids)
-            updated = await conn.fetchrow(
-                f"""
+        distance_km = _sum("distance_km")
+        fuel_used_l = _sum("fuel_used_l")
+        dtc_count = sum((r["dtc_count"] or 0) for r in legs)
+        idle_s = _sum("idle_s")
+        max_rpm = _max("max_rpm")
+        max_speed_kph = _max("max_speed_kph")
+        avg_speed_kph = _wavg("avg_speed_kph")
+        avg_coolant_c = _wavg("avg_coolant_c")
+        # Delete every absorbed leg, then update the kept row.
+        drop_ids = [r["id"] for r in legs if r["id"] != kept["id"]]
+        await conn.execute("DELETE FROM trips WHERE id = ANY($1::uuid[])", drop_ids)
+        updated = await conn.fetchrow(
+            f"""
                 UPDATE trips SET
                     ended_at = $2,
                     duration_s = $3,
@@ -702,23 +926,23 @@ async def merge_trips(
                   WHERE id = $1
                 RETURNING {_TRIP_COLS}
                 """,
-                kept["id"], new_ended, new_duration_s,
-                distance_km, max_rpm, max_speed_kph,
-                avg_speed_kph, avg_coolant_c, fuel_used_l,
-                dtc_count, idle_s,
-            )
-            log.info(
-                "trips merged",
-                extra={
-                    "kept_id": str(kept["id"]),
-                    "dropped_ids": [str(i) for i in drop_ids],
-                    "leg_count": len(legs),
-                    "vehicle_id": str(kept["vehicle_id"]),
-                    "new_started_at": new_started.isoformat(),
-                    "new_ended_at": new_ended.isoformat(),
-                    "new_duration_s": new_duration_s,
-                },
-            )
+            kept["id"], new_ended, new_duration_s,
+            distance_km, max_rpm, max_speed_kph,
+            avg_speed_kph, avg_coolant_c, fuel_used_l,
+            dtc_count, idle_s,
+        )
+        log.info(
+            "trips merged",
+            extra={
+                "kept_id": str(kept["id"]),
+                "dropped_ids": [str(i) for i in drop_ids],
+                "leg_count": len(legs),
+                "vehicle_id": str(kept["vehicle_id"]),
+                "new_started_at": new_started.isoformat(),
+                "new_ended_at": new_ended.isoformat(),
+                "new_duration_s": new_duration_s,
+            },
+        )
     if updated is None:
         raise HTTPException(status_code=500, detail="merge produced no row")
     return _row_to_trip(updated)

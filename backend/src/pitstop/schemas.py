@@ -318,8 +318,44 @@ class TripSamplePoint(BaseModel):
     value_num: float | None
 
 
+class TripTireCorner(BaseModel):
+    """One wheel's TPMS readings inside a trip window. Pressures are kPa and
+    temps °C as stored -- clients convert (pressure always to whole psi).
+    Every field is null when that sensor reported nothing in the window."""
+
+    corner: str  # "fl" | "fr" | "rl" | "rr"
+    pressure_start_kpa: float | None = None
+    pressure_end_kpa: float | None = None
+    pressure_min_kpa: float | None = None
+    pressure_max_kpa: float | None = None
+    temp_start_c: float | None = None
+    temp_end_c: float | None = None
+
+
+class TripTires(BaseModel):
+    """Per-trip TPMS summary. `corners` is always the four wheels in
+    FL, FR, RL, RR order. `low_corners` applies the shared low rule (a tire
+    >= low_delta_psi below the highest of the four, needs >= 2 reporting) to
+    each corner's END pressure -- the latest reading within the trip."""
+
+    corners: list[TripTireCorner]
+    low_corners: list[str] = Field(default_factory=list)
+    low_delta_psi: float = 2.0
+
+
 class TripDetail(TripOut):
     samples: list[TripSamplePoint] = Field(default_factory=list)
+    # TPMS summary over the trip window; null when no tire sensor reported
+    # during the trip (most phone-only drives without Mode 22 polling).
+    tires: TripTires | None = None
+    # Braking, from raw brake_pressure (bar). All null -- not 0 -- when the
+    # trip has no brake_pressure samples. A press = rising edge above 5 bar,
+    # re-presses within 1 s of release merged; hard = press peak >= 60 bar
+    # (provisional threshold); braking_s = time spent above 5 bar.
+    brake_events: int | None = None
+    hard_brake_events: int | None = None
+    max_brake_bar: float | None = None
+    braking_s: float | None = None
     # Closest odometer reading within ±15 min of trip start / end.
     # Null when WiCAN didn't publish during the window. (Task #99)
     odo_start_km: float | None = None

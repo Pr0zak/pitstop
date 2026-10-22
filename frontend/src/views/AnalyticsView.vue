@@ -11,6 +11,7 @@ import * as api from "@/api/endpoints";
 import type uPlot from "uplot";
 import UPlotChart from "@/components/charts/UPlotChart.vue";
 import InsightChart from "@/components/charts/InsightChart.vue";
+import TireAnalyticsSection from "@/components/TireAnalyticsSection.vue";
 import { mpgOverSpan, niceTicks, padRange } from "@/lib/fuelInsights";
 import {
   MONTH_ABBR,
@@ -73,6 +74,12 @@ const fromIso = computed(() => {
   }
   return new Date(now - ms).toISOString();
 });
+
+// Tires section window: the page window in days. /analytics/tires caps at
+// 365, so "All time" reads the last year.
+const tireDays = computed(() =>
+  window.value === "month" ? 30 : window.value === "3m" ? 90 : 365,
+);
 
 // Monthly MPG for the "MPG over time" panel. Always monthly buckets: the
 // panel has its own 12 mo / 3 yr / All span (synced to ?mpgspan=), so the
@@ -574,6 +581,8 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
             </InsightChart>
           </template>
         </section>
+
+        <TireAnalyticsSection :vehicle-id="vehicleId" :days="tireDays" />
 
         <section class="card">
           <h3>Engine RPM (daily avg)</h3>
