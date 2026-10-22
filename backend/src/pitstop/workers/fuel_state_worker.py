@@ -82,6 +82,14 @@ PARKED_QUIET_S = 600.0
 _last_rejected_anchor: dict[UUID, datetime] = {}
 
 
+def trip_predates_full_fillup(
+    trip_ended_at: datetime, last_full_fillup_at: datetime | None
+) -> bool:
+    """True when the latest full fillup is at or after the trip's end, i.e.
+    the fillup's absolute tank level already accounts for the trip."""
+    return last_full_fillup_at is not None and trip_ended_at <= last_full_fillup_at
+
+
 async def decrement_pass(pool: asyncpg.Pool) -> int:
     """Process all unapplied settled trips. Returns count of trips applied.
 
@@ -137,6 +145,28 @@ async def decrement_pass(pool: asyncpg.Pool) -> int:
                     row["vehicle_id"],
                 )
                 if veh is None:
+                    continue
+                # A full fillup sets the estimate to an absolute level. A trip
+                # that ended before it (typically the drive to the pump,
+                # derived and settled after the fillup was logged) is already
+                # inside that level, so debiting it would take its burn off
+                # the freshly filled tank. Partial fillups add litres, which
+                # commutes with the debit, so they need no special case.
+                last_full = await conn.fetchval(
+                    "SELECT max(fillup_date) FROM fillups "
+                    "WHERE vehicle_id = $1 AND is_full",
+                    row["vehicle_id"],
+                )
+                if trip_predates_full_fillup(row["ended_at"], last_full):
+                    await conn.execute(
+                        "UPDATE trips SET fuel_applied_at = now() WHERE id = $1",
+                        row["id"],
+                    )
+                    log.info(
+                        "fuel-estimate skip trip=%s vehicle=%s reason=before_full_fillup "
+                        "trip_end=%s fillup=%s",
+                        row["id"], row["vehicle_id"], row["ended_at"], last_full,
+                    )
                     continue
                 current_l = (
                     float(veh["fuel_level_estimate_l"])
