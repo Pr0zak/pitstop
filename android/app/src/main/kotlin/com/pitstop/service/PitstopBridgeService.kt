@@ -843,6 +843,7 @@ class PitstopBridgeService : Service() {
         val s = stateBus.status.value
         if (s.engineState != EngineState.On) {
             logBuffer.info("engine on")
+            reprobeSuppressedPids()
             val tMs = System.currentTimeMillis()
             // BLE-derived On — flip the merge input. The
             // engine-state listener in onCreate opens the drive
@@ -851,6 +852,32 @@ class PitstopBridgeService : Service() {
             stateBus.setBleEngineState(EngineState.On, tMs)
             publishEngineState("on", tMs)
         }
+    }
+
+    /**
+     * Give every suppressed PID another chance when the engine comes on.
+     *
+     * The bridge session outlives a key cycle: with the car off, or between
+     * key-off and the next start, the Honda modules answer NO DATA to every
+     * Mode 22 request, and five of those used to drop TPMS, ATF, gear,
+     * cylinders and the cluster readings for the rest of the session, so
+     * the next drive captured none of them (seen 2026-10-22: key-off at
+     * 17:45, suppression at 17:45-17:47, a whole drive from 17:49 without
+     * tire pressure). [onNoDataForPid] no longer counts NO DATA while the
+     * engine is off; this also clears what an earlier off-period left, and
+     * lifts the per-session desync suspension of extended polling.
+     */
+    private fun reprobeSuppressedPids() {
+        if (suppressedPids.isEmpty() && !extendedSuspended) return
+        val dropped = suppressedPids.toList()
+        suppressedPids.clear()
+        noDataStreakByPid.clear()
+        extendedSuspended = false
+        applyExtendedPidToggle()
+        logBuffer.info(
+            "obd suppressed pids re-probed on engine on",
+            mapOf("pids" to dropped.joinToString(","), "active_pids" to pidsToPoll.size),
+        )
     }
 
     private fun onEngineOffSignal() {
@@ -1449,6 +1476,9 @@ class PitstopBridgeService : Service() {
         // app (the recurring Sept–Oct crash, roughly weekly). The loop now
         // uses minOfOrNull too; this keeps the engine-on probe alive.
         if (name in NEVER_SUPPRESS) return
+        // NO DATA with the engine off says nothing about whether the car
+        // supports the PID: every Honda module goes quiet at key-off.
+        if (stateBus.status.value.engineState != EngineState.On) return
         val streak = (noDataStreakByPid[name] ?: 0) + 1
         noDataStreakByPid[name] = streak
         if (streak >= NO_DATA_SUPPRESS_THRESHOLD) {
