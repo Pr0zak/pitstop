@@ -13,6 +13,9 @@ import com.pitstop.service.BridgePhase
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
 import com.pitstop.ui.components.CostPerMileCard
 import com.pitstop.ui.components.MonthlySpendCard
 import com.pitstop.ui.components.MpgLifetimeCard
@@ -121,20 +124,37 @@ class ScreenShots {
                 put("_tire_placard_rear_kpa", com.pitstop.data.CachedReading(241.3, now))
             }
         }
-        val fresh = com.pitstop.widget.TireWidgetProvider.modelOf(snap(5 * 60_000L), now, "imperial")
+        val fresh = com.pitstop.widget.TireWidgetProvider.modelOf(snap(5 * 60_000L, placard = true), now, "imperial")
         val stale = com.pitstop.widget.TireWidgetProvider.modelOf(snap(30 * 3_600_000L, placard = true), now, "imperial")
         val empty = com.pitstop.widget.TireWidgetProvider.modelOf(emptyMap(), now, "imperial")
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
-            for (b in listOf(
-                com.pitstop.widget.TireWidgetRender.renderTireGrid(fresh),
-                com.pitstop.widget.TireWidgetRender.renderTireRow(fresh),
-                com.pitstop.widget.TireWidgetRender.renderTireGrid(stale),
-                com.pitstop.widget.TireWidgetRender.renderTireGrid(empty),
-            )) {
+        // Each size on the widget's own background, at roughly launcher scale.
+        @androidx.compose.runtime.Composable
+        fun cell(m: com.pitstop.domain.TireWidgetModel, size: com.pitstop.widget.TireWidgetRender.Size, wDp: Int, hDp: Int) {
+            androidx.compose.foundation.layout.Box(
+                Modifier
+                    .size(wDp.dp, hDp.dp)
+                    .background(androidx.compose.ui.graphics.Color(0xFF2A2F37), androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                    .padding(6.dp),
+            ) {
                 androidx.compose.foundation.Image(
-                    bitmap = b.asImageBitmap(),
+                    bitmap = com.pitstop.widget.TireWidgetRender.render(m, size).asImageBitmap(),
                     contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
                 )
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(16.dp)) {
+            androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                cell(fresh, com.pitstop.widget.TireWidgetRender.Size.Tiny, 80, 80)
+                cell(stale, com.pitstop.widget.TireWidgetRender.Size.Tiny, 80, 80)
+                cell(empty, com.pitstop.widget.TireWidgetRender.Size.Tiny, 80, 80)
+            }
+            cell(fresh, com.pitstop.widget.TireWidgetRender.Size.Wide, 176, 80)
+            cell(stale, com.pitstop.widget.TireWidgetRender.Size.Wide, 176, 80)
+            androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                cell(fresh, com.pitstop.widget.TireWidgetRender.Size.Large, 176, 176)
+                cell(stale, com.pitstop.widget.TireWidgetRender.Size.Large, 176, 176)
             }
         }
     }

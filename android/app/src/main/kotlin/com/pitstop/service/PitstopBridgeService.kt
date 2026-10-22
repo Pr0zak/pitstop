@@ -586,9 +586,9 @@ class PitstopBridgeService : Service() {
         mqttPublisher.disconnect()
         presence.stop()
         wicanSubscriber.stop()
-        // Final flush: don't wait — the shipper job dies with the singleton scope only
-        // when the process dies. Stopping it lets the buffer accrue until the next start.
-        logShipper.stop()
+        // The log shipper is NOT stopped here any more: PitstopApp starts it
+        // for the process lifetime, so widget / Home / Settings logs ship
+        // while parked too (v0.1.257 sent none with the bridge off).
         runCatching { wakeLock?.release() }
         wakeLock = null
         super.onDestroy()

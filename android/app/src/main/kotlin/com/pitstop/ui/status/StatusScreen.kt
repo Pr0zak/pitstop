@@ -333,7 +333,9 @@ internal fun StatusContent(
 
                 // TPMS, phone-first (the user lives in this tab). Hidden only
                 // until some corner has ever reported.
-                ui.tires?.let {
+                // Always present once a vehicle is picked: last known value
+                // per corner with its age (user requirement 2026-10-22).
+                (ui.tires ?: if (ui.hasVehicle) HomeTires(emptyTiresList(), null) else null)?.let {
                     com.pitstop.ui.components.TiresCard(
                         tires = it.tires,
                         newestMs = it.newestMs,
@@ -1025,3 +1027,5 @@ private fun UpdateAvailableCard(
         }
     }
 }
+
+private fun emptyTiresList() = com.pitstop.domain.VehicleSignals.tpms(emptyMap())

@@ -21,6 +21,7 @@ class PitstopApp : Application(), Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var logBuffer: LogBuffer
+    @Inject lateinit var logShipper: com.pitstop.log.LogShipper
     @Inject lateinit var syncReminderManager: SyncReminderManager
     @Inject lateinit var inCarDetector: InCarDetector
     @Inject lateinit var companionManager: WicanCompanionManager
@@ -38,6 +39,11 @@ class PitstopApp : Application(), Configuration.Provider {
         // in-memory LogBuffer dies with the process, so a crash only reaches
         // the depot if we re-enqueue it on the next launch.
         replayPersistedCrash()
+        // Ship client logs for the whole process lifetime, not only while
+        // the bridge service runs — parked-at-home diagnosis (widget, Home)
+        // relies on them. start() is idempotent; the bridge's own start()
+        // call is then a no-op.
+        logShipper.start()
         createNotificationChannels()
         // Periodic update check (every ~6 h). KEEP policy means a
         // re-launch doesn't reset the cadence — the existing periodic

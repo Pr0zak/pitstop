@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -199,15 +200,21 @@ fun TiresCard(
                         .weight(1f)
                         .semantics { heading() },
                 )
-                newestMs?.let {
-                    Text(
-                        "updated ${VehicleSignals.ageLabel(it, nowMs)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                val stale = newestMs != null && nowMs - newestMs > 24L * 3_600_000L
+                Text(
+                    newestMs?.let { "updated ${VehicleSignals.ageLabel(it, nowMs)}" } ?: "no readings yet",
+                    style = MaterialTheme.typography.labelSmall,
+                    // Over a day old: still shown, flagged amber, values dimmed.
+                    color = if (stale) MaterialTheme.ext.warn else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            TpmsGrid(tires, system, Modifier.padding(top = 10.dp), placardFrontKpa, placardRearKpa)
+            TpmsGrid(
+                tires, system,
+                Modifier
+                    .padding(top = 10.dp)
+                    .alpha(if (newestMs != null && nowMs - newestMs > 24L * 3_600_000L) 0.6f else 1f),
+                placardFrontKpa, placardRearKpa,
+            )
             if (tires.any { it.low }) {
                 Text(
                     "Highlighted: 2 psi or more below the highest tire",

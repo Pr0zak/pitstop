@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Last tire pressures (TireWidgetProvider). The 2x2 grid or the 2x1 row is
-     drawn to a bitmap per render; the layout only hosts it. -->
+<!-- Last tire pressures (TireWidgetProvider). The diagram is drawn to a
+     transparent bitmap per size; this layout supplies the system-style
+     background. @android:id/background lets Android 12+ clip the corners. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/tire_widget_root"
+    android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#15181C"
-    android:padding="4dp">
+    android:background="@drawable/tire_widget_bg"
+    android:clipToOutline="true"
+    android:padding="6dp">
 
     <ImageView
         android:id="@+id/tire_widget_image"

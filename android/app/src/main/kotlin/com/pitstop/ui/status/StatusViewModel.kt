@@ -231,17 +231,15 @@ class StatusViewModel @Inject constructor(
         bridgeStateBus.latestByMetric,
         vehicle,
     ) { cache, server, live, v ->
-        val merged = HashMap(cache)
-        for ((k, v) in server) {
-            val cur = merged[k]
-            if (cur == null || v.second >= cur.second) merged[k] = v
-        }
-        for ((k, v) in live) {
-            val cur = merged[k]
-            if (cur == null || v.tsMs >= cur.second) merged[k] = v.value to v.tsMs
-        }
-        val tires = com.pitstop.domain.VehicleSignals.tpmsFrom(merged.mapValues { it.value.first })
-            ?: return@combine null
+        val merged = com.pitstop.domain.TireReadings.merge(
+            cache, server, live.mapValues { it.value.value to it.value.tsMs },
+        )
+        // ALWAYS a Tires section on Home: four corners from whatever is
+        // known (dashes only if nothing was ever read for this vehicle).
+        val tires = com.pitstop.domain.VehicleSignals.tpms(
+            com.pitstop.domain.VehicleSignals.Corner.entries.associateWith { merged[it.pressureMetric]?.first },
+            com.pitstop.domain.VehicleSignals.Corner.entries.associateWith { merged[it.tempMetric]?.first },
+        )
         HomeTires(
             tires = tires,
             newestMs = com.pitstop.domain.VehicleSignals.newestPressureMs(merged.mapValues { it.value.second }),
@@ -415,7 +413,11 @@ class StatusViewModel @Inject constructor(
                 // Keep the shared snapshot (tire widget + offline Home) current.
                 val tires = serverReadings.value.filterKeys { it.startsWith("tire_") }
                     .mapValues { com.pitstop.data.CachedReading(it.value.first, it.value.second) }
-                if (tires.isNotEmpty()) runCatching { appPrefs.mergeTireSnapshot(slug, tires) }
+                if (tires.isNotEmpty()) {
+                    runCatching { appPrefs.mergeTireSnapshot(slug, tires) }
+                    // The widget renders from the same snapshot.
+                    com.pitstop.widget.TireWidgetProvider.refreshWidgets(getApplication())
+                }
             }
             // A quiet month still has older trips worth listing.
             val trips = trips30?.takeIf { it.size >= 6 }

@@ -103,7 +103,17 @@ class TireWidgetProvider : AppWidgetProvider() {
         }
         val settings = entry.settings().current().settings
         if (settings.apiBaseUrl.isNotBlank()) {
-            val vehicle = entry.api().getVehicles(cacheControl = "no-cache").firstOrNull { it.slug == slug }
+            // The SELECTED vehicle — /api/vehicles lists the Truck first.
+            val vehicle = com.pitstop.domain.TireReadings.pickVehicle(
+                entry.api().getVehicles(cacheControl = "no-cache"),
+                { it.slug },
+                entry.appPrefs().viewVehicleSlug.first(),
+                settings.vehicleSlug,
+            )
+            entry.logBuffer().info(
+                "tire widget vehicle",
+                mapOf("slug" to slug, "picked" to (vehicle?.slug ?: "none")),
+            )
             if (vehicle != null) {
                 val now = System.currentTimeMillis()
                 vehicle.tirePlacardFrontKpa?.let { fresh[PLACARD_FRONT] = CachedReading(it, now) }
@@ -134,15 +144,32 @@ class TireWidgetProvider : AppWidgetProvider() {
         }
     }
 
-    private fun buildViews(context: Context, manager: AppWidgetManager, id: Int, m: TireWidgetModel): RemoteViews {
-        val minHeightDp = manager.getAppWidgetOptions(id).getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
-        // ~2×1 cells is under ~100 dp tall: the one-row layout fits there.
-        val bitmap = if (minHeightDp in 1 until 100) TireWidgetRender.renderTireRow(m) else TireWidgetRender.renderTireGrid(m)
-        return RemoteViews(context.packageName, R.layout.tire_widget).apply {
-            setImageViewBitmap(R.id.tire_widget_image, bitmap)
+    private fun viewsFor(context: Context, m: TireWidgetModel, size: TireWidgetRender.Size): RemoteViews =
+        RemoteViews(context.packageName, R.layout.tire_widget).apply {
+            setImageViewBitmap(R.id.tire_widget_image, TireWidgetRender.render(m, size))
             setContentDescription(R.id.tire_widget_image, describe(m))
-            setOnClickPendingIntent(R.id.tire_widget_root, openHome(context))
+            setOnClickPendingIntent(android.R.id.background, openHome(context))
         }
+
+    /**
+     * Android 12+: one RemoteViews per size bucket and the launcher picks the
+     * largest that fits — 1×1 diagram, 2×1 with deltas, 2×2 with temps.
+     * Older: pick from the widget's reported size.
+     */
+    private fun buildViews(context: Context, manager: AppWidgetManager, id: Int, m: TireWidgetModel): RemoteViews {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            return RemoteViews(
+                mapOf(
+                    android.util.SizeF(40f, 40f) to viewsFor(context, m, TireWidgetRender.Size.Tiny),
+                    android.util.SizeF(110f, 40f) to viewsFor(context, m, TireWidgetRender.Size.Wide),
+                    android.util.SizeF(110f, 110f) to viewsFor(context, m, TireWidgetRender.Size.Large),
+                ),
+            )
+        }
+        val o = manager.getAppWidgetOptions(id)
+        val wDp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 110)
+        val hDp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 40)
+        return viewsFor(context, m, TireWidgetRender.sizeFor(wDp, hDp))
     }
 
     private fun describe(m: TireWidgetModel): String =

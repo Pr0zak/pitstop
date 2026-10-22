@@ -4,145 +4,175 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import com.pitstop.domain.TireWidgetModel
 import com.pitstop.domain.VehicleSignals
 
 /**
- * Draws the tire widget to a bitmap (RemoteViews can't host Compose). Two
- * shapes, picked from the widget's size:
- *  - [renderTireGrid]: 2×2 — FL FR / RL RR around a car outline, title + age.
- *  - [renderTireRow]: 2×1 — the four corners in one row, age at the end.
- * Same colours as the app: corner labels FL blue, FR orange, RL green,
- * RR magenta (the trip Tires chart); LOW in amber with an amber border.
+ * Draws the tire widget's content (RemoteViews can't host Compose): a
+ * top-down car outline with the four pressures at its corners — the shape
+ * a TPMS display uses, readable at a glance. The widget background (system
+ * corner radius, dynamic neutral colour on API 31+) comes from the layout;
+ * this bitmap is transparent and only carries the diagram.
+ *
+ * Three sizes, picked by the launcher (size-mapped RemoteViews on API 31+):
+ *  - [Size.Tiny]  1×1: diagram + four big numbers, nothing else; a small
+ *    age only when the reading is over a day old.
+ *  - [Size.Wide]  2×1 (primary): wider spacing, placard deltas ("−4") next
+ *    to the numbers when the vehicle has a placard, small age at the bottom.
+ *  - [Size.Large] 2×2: adds tire temps and an "of 35 psi" line.
+ * Colour carries meaning only: LOW (2 psi under the highest) and below-spec
+ * (≥ 3 psi under placard) amber, under-inflated (≥ 25 % under) red.
  */
 internal object TireWidgetRender {
 
-    private val CORNER_ARGB = mapOf(
-        VehicleSignals.Corner.FL to Color.parseColor("#2F81F7"),
-        VehicleSignals.Corner.FR to Color.parseColor("#F97316"),
-        VehicleSignals.Corner.RL to Color.parseColor("#3FB950"),
-        VehicleSignals.Corner.RR to Color.parseColor("#D946EF"),
-    )
-    private val BG = Color.parseColor("#15181C")
-    private val CELL = Color.parseColor("#1E2228")
-    private val LINE = Color.parseColor("#2F343C")
-    private val MUTED = Color.parseColor("#9CA3AF")
-    private val WARN = Color.parseColor("#FFB020")
-    private val BAD = Color.parseColor("#EF4444")
+    enum class Size(val w: Int, val h: Int) {
+        Tiny(240, 240),
+        Wide(480, 220),
+        Large(440, 440),
+    }
 
-    private fun paint(size: Float, color: Int, bold: Boolean = false, mono: Boolean = false, align: Paint.Align = Paint.Align.LEFT) =
+    /** Size bucket for a widget of [wDp] × [hDp] (pre-Android-12 path). */
+    fun sizeFor(wDp: Int, hDp: Int): Size = when {
+        wDp < 100 -> Size.Tiny
+        hDp < 100 -> Size.Wide
+        else -> Size.Large
+    }
+
+    private const val TEXT = Color.WHITE
+    private val MUTED = Color.parseColor("#A8B0BA")
+    private val OUTLINE = Color.parseColor("#5B636E")
+    private val WARN = Color.parseColor("#FFB020")
+    private val BAD = Color.parseColor("#FF5A4E")
+
+    private fun paint(size: Float, color: Int, bold: Boolean = false, align: Paint.Align = Paint.Align.CENTER) =
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = size
             this.color = color
             textAlign = align
-            typeface = Typeface.create(if (mono) Typeface.MONOSPACE else Typeface.SANS_SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
+            typeface = Typeface.create("sans-serif-condensed", if (bold) Typeface.BOLD else Typeface.NORMAL)
         }
 
-    /** Fade everything when the newest reading is over a day old. */
-    private fun Int.dim(stale: Boolean): Int = if (!stale) this else Color.argb(150, Color.red(this), Color.green(this), Color.blue(this))
+    private fun Int.dim(stale: Boolean) =
+        if (!stale) this else Color.argb(140, Color.red(this), Color.green(this), Color.blue(this))
 
-    fun renderTireGrid(m: TireWidgetModel, w: Int = 440, h: Int = 320): Bitmap {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        c.drawColor(BG)
-        val pad = 14f
-        // Header: "TIRES  of 35" left, age right.
-        c.drawText("TIRES", pad, 34f, paint(22f, MUTED.dim(m.stale), bold = true).apply { letterSpacing = 0.15f })
-        m.placardLabel?.let { c.drawText("psi $it", pad + 92f, 34f, paint(20f, MUTED.dim(m.stale))) }
-        c.drawText(
-            m.age ?: "no readings yet",
-            w - pad, 34f,
-            paint(20f, (if (m.stale) WARN else MUTED), align = Paint.Align.RIGHT),
-        )
-        val top = 50f
-        val carW = 46f
-        val cellW = (w - 2 * pad - carW - 2 * 10f) / 2f
-        val cellH = (h - top - pad - 10f) / 2f
-        // Car outline between the columns, spanning both rows.
-        val carLeft = pad + cellW + 10f
-        c.drawRoundRect(
-            RectF(carLeft, top + 4f, carLeft + carW, h - pad - 4f), 16f, 16f,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = LINE },
-        )
-        val byCorner = m.cells.associateBy { it.corner }
-        val slots = listOf(
-            VehicleSignals.Corner.FL to RectF(pad, top, pad + cellW, top + cellH),
-            VehicleSignals.Corner.FR to RectF(w - pad - cellW, top, w - pad, top + cellH),
-            VehicleSignals.Corner.RL to RectF(pad, top + cellH + 10f, pad + cellW, top + 2 * cellH + 10f),
-            VehicleSignals.Corner.RR to RectF(w - pad - cellW, top + cellH + 10f, w - pad, top + 2 * cellH + 10f),
-        )
-        for ((corner, r) in slots) drawCell(c, r, byCorner[corner], corner, m.stale, big = true)
-        return bmp
+    /**
+     * Number + wheel colour: red under-inflated, amber LOW (2 psi under the
+     * highest tire). Below-spec vs placard colours only its "−4" delta — on
+     * a car where all four sit a few psi under placard, painting every number
+     * amber would hide the one tire that actually stands out.
+     */
+    private fun toneOf(c: TireWidgetModel.Cell?): Int = when {
+        c == null -> TEXT
+        c.underInflated -> BAD
+        c.low -> WARN
+        else -> TEXT
     }
 
-    fun renderTireRow(m: TireWidgetModel, w: Int = 560, h: Int = 150): Bitmap {
+    fun render(m: TireWidgetModel, size: Size): Bitmap {
+        val w = size.w
+        val h = size.h
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        c.drawColor(BG)
-        val pad = 10f
-        c.drawText(
-            m.age ?: "no readings yet",
-            w - pad, 26f,
-            paint(18f, (if (m.stale) WARN else MUTED), align = Paint.Align.RIGHT),
-        )
-        c.drawText("TIRES" + (m.placardLabel?.let { "  psi $it" } ?: ""), pad, 26f, paint(18f, MUTED.dim(m.stale), bold = true))
-        val top = 36f
-        val gap = 8f
-        val cellW = (w - 2 * pad - 3 * gap) / 4f
-        val byCorner = m.cells.associateBy { it.corner }
-        VehicleSignals.Corner.entries.forEachIndexed { i, corner ->
-            val l = pad + i * (cellW + gap)
-            drawCell(c, RectF(l, top, l + cellW, h - pad), byCorner[corner], corner, m.stale, big = false)
+        val stale = m.stale
+        val footer = when (size) {
+            Size.Tiny -> if (stale) 30f else 0f
+            Size.Wide -> 30f
+            Size.Large -> 40f
         }
-        return bmp
-    }
+        val areaH = h - footer
 
-    private fun drawCell(c: Canvas, r: RectF, cell: TireWidgetModel.Cell?, corner: VehicleSignals.Corner, stale: Boolean, big: Boolean) {
-        val low = cell?.low == true
-        c.drawRoundRect(r, 14f, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (low) Color.argb(46, 255, 176, 32) else CELL
-        })
-        c.drawRoundRect(r, 14f, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        // Car, top-down, nose up: body + windscreen line + four wheels.
+        val carW = when (size) {
+            Size.Tiny -> w * 0.22f
+            Size.Wide -> w * 0.13f
+            Size.Large -> w * 0.17f
+        }
+        val carH = areaH * 0.78f
+        val cx = w / 2f
+        val cy = areaH / 2f
+        val body = RectF(cx - carW / 2, cy - carH / 2, cx + carW / 2, cy + carH / 2)
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = if (low) 3f else 1.5f
-            color = if (low) WARN else LINE
-        })
-        val ix = r.left + 12f
-        val labelSize = if (big) 20f else 17f
-        c.drawText(corner.label, ix, r.top + labelSize + 6f, paint(labelSize, CORNER_ARGB.getValue(corner).dim(stale), bold = true))
-        if (low) {
-            c.drawText("LOW", ix + labelSize * 1.6f, r.top + labelSize + 6f, paint(labelSize * 0.85f, WARN, bold = true))
+            strokeWidth = if (size == Size.Tiny) 4f else 5f
+            color = OUTLINE.dim(stale)
         }
-        val psi = cell?.psi ?: "—"
-        val numSize = if (big) 56f else 40f
-        val numPaint = paint(numSize, (if (low) WARN else Color.WHITE).dim(stale), bold = true, mono = true)
-        val numY = r.top + labelSize + 10f + numSize * 0.9f
-        c.drawText(psi, ix, numY, numPaint)
-        if (psi != "—") {
-            val unitX = ix + numPaint.measureText(psi) + 6f
-            c.drawText("psi", unitX, numY, paint(numSize * 0.32f, MUTED.dim(stale)))
+        c.drawRoundRect(body, carW * 0.45f, carW * 0.45f, stroke)
+        val wsY = body.top + carH * 0.28f
+        c.drawPath(
+            Path().apply {
+                moveTo(body.left + carW * 0.18f, wsY)
+                quadTo(cx, wsY - carH * 0.06f, body.right - carW * 0.18f, wsY)
+            },
+            stroke,
+        )
+        val byCorner = m.cells.associateBy { it.corner }
+        val wheelW = carW * 0.22f
+        val wheelH = carH * 0.17f
+        for (corner in VehicleSignals.Corner.entries) {
+            val left = corner == VehicleSignals.Corner.FL || corner == VehicleSignals.Corner.RL
+            val front = corner == VehicleSignals.Corner.FL || corner == VehicleSignals.Corner.FR
+            val wx = if (left) body.left - wheelW * 0.55f else body.right - wheelW * 0.45f
+            val wy = if (front) body.top + carH * 0.14f else body.bottom - carH * 0.14f - wheelH
+            val cell = byCorner[corner]
+            val tone = toneOf(cell)
+            c.drawRoundRect(
+                RectF(wx, wy, wx + wheelW, wy + wheelH), wheelW / 2, wheelW / 2,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = (if (tone == TEXT) OUTLINE else tone).dim(stale)
+                },
+            )
         }
-        // Top-right detail: tire temp (2×2 only) and the placard delta —
-        // amber when ≥ 3 psi under, red "under" when ≥ 25 % under.
-        val y = r.top + labelSize + 6f
-        var x = r.right - 10f
-        if (big) {
-            cell?.temp?.let {
-                val p = paint(18f, MUTED.dim(stale), align = Paint.Align.RIGHT)
-                c.drawText(it, x, y, p)
-                x -= p.measureText(it) + 8f
+
+        // Numbers, one per quadrant beside the car.
+        val numSize = when (size) {
+            Size.Tiny -> 64f
+            Size.Wide -> 60f
+            Size.Large -> 84f
+        }
+        val sideW = (w - carW) / 2f - wheelW
+        for (corner in VehicleSignals.Corner.entries) {
+            val left = corner == VehicleSignals.Corner.FL || corner == VehicleSignals.Corner.RL
+            val front = corner == VehicleSignals.Corner.FL || corner == VehicleSignals.Corner.FR
+            val cell = byCorner[corner]
+            val tone = toneOf(cell).dim(stale)
+            val colX = if (left) sideW / 2f else w - sideW / 2f
+            val rowMid = if (front) areaH * 0.27f else areaH * 0.73f
+            val num = cell?.psi ?: "—"
+            val baseline = rowMid + numSize * 0.35f
+            c.drawText(num, colX, baseline, paint(numSize, tone, bold = true))
+            // Detail under the number: placard delta (Wide/Large), temp (Large).
+            if (size != Size.Tiny) {
+                val bits = listOfNotNull(
+                    cell?.vsPlacard?.let { if (cell.underInflated) "under $it" else it },
+                    if (size == Size.Large) cell?.temp else null,
+                )
+                if (bits.isNotEmpty()) {
+                    val detailColor = when {
+                        cell?.underInflated == true -> BAD
+                        cell?.belowSpec == true -> WARN
+                        else -> MUTED
+                    }.dim(stale)
+                    val detailSize = numSize * (if (size == Size.Wide) 0.4f else 0.3f)
+                    c.drawText(bits.joinToString("  "), colX, baseline + detailSize * 1.25f, paint(detailSize, detailColor))
+                }
             }
         }
-        cell?.vsPlacard?.let { d ->
-            val text = if (cell.underInflated) "under $d" else d
-            val color = when {
-                cell.underInflated -> BAD
-                cell.belowSpec -> WARN
-                else -> MUTED
+
+        // Footer: age (and "of 35 psi" on Large). Tiny shows it only when stale.
+        if (footer > 0f) {
+            val age = m.age ?: "no readings yet"
+            val text = when (size) {
+                Size.Large -> listOfNotNull(m.placardLabel?.let { "psi $it" } ?: "psi", age).joinToString(" · ")
+                else -> age
             }
-            c.drawText(text, x, y, paint(if (big) 18f else 15f, color.dim(stale), bold = cell.belowSpec, align = Paint.Align.RIGHT))
+            c.drawText(
+                text, cx, h - footer * 0.3f,
+                paint(if (size == Size.Large) 26f else 22f, if (stale) WARN else MUTED),
+            )
         }
+        return bmp
     }
 }

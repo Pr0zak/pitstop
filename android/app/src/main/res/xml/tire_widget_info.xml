@@ -1,14 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tire-pressure widget: 2x2 by default (FL FR / RL RR), resizable down to
-     2x1 where TireWidgetProvider switches to a one-row layout. -->
+<!-- Tire-pressure widget. Primary size 2x1 (two cells wide, one tall);
+     resizes down to 1x1 (just the diagram) and up to 2x2 (+ temps and the
+     placard line). On Android 12+ TireWidgetProvider hands the launcher a
+     size-mapped RemoteViews so each size gets its own drawing. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:initialLayout="@layout/tire_widget"
     android:minWidth="110dp"
-    android:minHeight="110dp"
+    android:minHeight="40dp"
     android:targetCellWidth="2"
-    android:targetCellHeight="2"
-    android:minResizeWidth="110dp"
+    android:targetCellHeight="1"
+    android:minResizeWidth="40dp"
     android:minResizeHeight="40dp"
+    android:maxResizeWidth="250dp"
+    android:maxResizeHeight="250dp"
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen"

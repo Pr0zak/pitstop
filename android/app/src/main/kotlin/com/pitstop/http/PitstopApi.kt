@@ -187,6 +187,14 @@ data class MpgPointDto(
 @Serializable
 data class MetricLatestDto(
     @SerialName("metric") val metric: String = "",
+    /**
+     * Numeric value, or null. The backend sends `value_num` when there is
+     * one and otherwise the TEXT value — e.g. a stray `{"metric":"tire",
+     * "value":"fr"}` row on 2026-10-22. A plain `Double?` made the whole
+     * /readings/latest list fail to decode, which blanked the tire widget,
+     * Home's Tires card and Live's parked tiles. Text values decode to null.
+     */
+    @Serializable(with = LenientDoubleSerializer::class)
     @SerialName("value") val value: Double? = null,
     @SerialName("time") val time: String = "",
     @SerialName("source") val source: String? = null,
@@ -993,3 +1001,27 @@ data class FillupUpdateRequest(
     @kotlinx.serialization.SerialName("fuel_type") val fuelType: Int? = null,
     val notes: String? = null,
 )
+
+/**
+ * `Double?` that tolerates a JSON string (or any non-numeric) by decoding it
+ * as null instead of failing the whole payload. Numeric strings ("1.5")
+ * still parse.
+ */
+object LenientDoubleSerializer : kotlinx.serialization.KSerializer<Double?> {
+    override val descriptor = kotlinx.serialization.descriptors.PrimitiveSerialDescriptor(
+        "LenientDouble", kotlinx.serialization.descriptors.PrimitiveKind.DOUBLE,
+    )
+
+    override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): Double? {
+        val json = decoder as? kotlinx.serialization.json.JsonDecoder
+            ?: return runCatching { decoder.decodeDouble() }.getOrNull()
+        val el = json.decodeJsonElement()
+        val prim = el as? kotlinx.serialization.json.JsonPrimitive ?: return null
+        if (prim is kotlinx.serialization.json.JsonNull) return null
+        return prim.content.toDoubleOrNull()?.takeIf { it.isFinite() }
+    }
+
+    override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: Double?) {
+        if (value == null) encoder.encodeNull() else encoder.encodeDouble(value)
+    }
+}
