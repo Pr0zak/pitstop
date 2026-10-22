@@ -35,11 +35,19 @@ class TripMetricDefTest {
         "o2_s1_lambda",
         "fuel_rail_pressure",
         "odometer",
+        "brake_pressure",
+        "tire_pressure_fl", "tire_pressure_fr", "tire_pressure_rl", "tire_pressure_rr",
+        "tire_temp_fl", "tire_temp_fr", "tire_temp_rl", "tire_temp_rr",
     )
+
+    /** Charted by the dedicated Tires card (one shared axis), not the timeline. */
+    private val tiresCard = com.pitstop.domain.VehicleSignals.Corner.entries
+        .flatMap { listOf(it.pressureMetric, it.tempMetric) }.toSet()
 
     @Test
     fun `charts exactly the metrics the trip endpoint returns`() {
-        assertEquals(backendWhitelist, TRIP_METRICS.map { it.metric }.toSet())
+        assertEquals(backendWhitelist, TRIP_METRICS.map { it.metric }.toSet() + tiresCard)
+        assertTrue(TRIP_METRICS.none { it.metric in tiresCard })
     }
 
     @Test
@@ -73,14 +81,16 @@ class TripMetricDefTest {
     @Test
     fun `no series hardcodes a canonical unit that ignores the toggle`() {
         // Every temp / pressure / speed / flow series must name a
-        // Quantity that actually differs between systems; the only
-        // deliberate exception is exhaust mass flow.
+        // Quantity that actually differs between systems; the deliberate
+        // exceptions are exhaust mass flow and brake pressure (bar in both,
+        // as the VSA module and the web report it).
         val convertible = TRIP_METRICS.filter {
             it.quantity != UnitFormat.Quantity.None &&
                 it.quantity != UnitFormat.Quantity.Percent &&
                 it.quantity != UnitFormat.Quantity.Volt &&
                 it.quantity != UnitFormat.Quantity.Lambda &&
-                it.quantity != UnitFormat.Quantity.MassFlowKgPerHour
+                it.quantity != UnitFormat.Quantity.MassFlowKgPerHour &&
+                it.quantity != UnitFormat.Quantity.Bar
         }
         assertTrue(convertible.isNotEmpty())
         for (def in convertible) {

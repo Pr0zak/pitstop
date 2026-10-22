@@ -31,6 +31,7 @@ object ChartPalette {
     val o2 = Color(0xFF818CF8)
     val fuelRail = Color(0xFF34D399)
     val odometer = Color(0xFF8B949E)
+    val brake = Color(0xFFEF4444)
 
     /** Single-series accent for stat-strip bars / sparklines. */
     val accent = Color(0xFFF97316)

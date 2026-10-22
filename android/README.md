@@ -212,6 +212,32 @@ loops.
   off, on a fresh DataStore key (`extended_pids_fw6_enabled`) so a stale
   pre-v0.1.233 `true` can't re-enable it.
 
+- **2026-10-21 on-car fixes (after v0.1.254):**
+  - *Mode 22 desync.* Enabling extended PIDs broke capture in ~10 s: the
+    standard poller wrote a PID every ≥50 ms without waiting for `>`, and
+    the Mode 22 path counted prompts instead of matching them, so each step
+    took the previous command's late prompt. A real ELM327 answers a byte
+    arriving mid-answer with `STOPPED` (and a mangled command with `?`).
+    Now every write goes through `elmSend` (one command in flight, released
+    only by the frame whose echo is that command — `obd/ElmLink.kt`), the
+    rx path yields every `>` in a notification, the toggle collector no
+    longer writes, and 4 `STOPPED`/`?` in 30 s suspend Mode 22 for the
+    session.
+  - *Stale bond.* A bond from before a reflash makes every connect stall 15 s
+    with Nordic `-5`, bonded, link up, no "Authentication required" log.
+    Three such attempts in a row → `BlePairing.Rejected` → "Reconnect
+    WiCAN" (removeBond + createBond, user-initiated; never automatic,
+    because a re-bond costs a passkey entry and, on Android, the CDM
+    association).
+  - *Flood before first command.* The dongle's own AutoPID output can fan
+    into FFF1 before the phone speaks; MTU is requested first and the
+    service drops everything up to the `>` that answers an `ATI`.
+  - *Rotating address.* The WiCAN was seen as two different MACs on two
+    connects; still connected (bonded identity resolves). Watch for it.
+  - *One vocabulary.* Bluetooth bond + CDM auto-start are one state machine
+    (`domain/WicanSetup.kt`, `companion/WicanSetupTracker.kt`) rendered by
+    the pill, bridge sheet, Home, Settings and the wizard. "Pair" is gone.
+
 ## Reliable background auto-start (CompanionDeviceManager)
 
 The in-car detector ([`presence/InCarDetector`](app/src/main/kotlin/com/pitstop/presence/InCarDetector.kt))

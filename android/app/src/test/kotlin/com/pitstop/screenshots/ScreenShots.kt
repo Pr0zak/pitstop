@@ -199,7 +199,11 @@ class ScreenShots {
 
     @Test fun bridgeSheet() = shot("bridge_sheet") {
         BridgeSheetContent(
-            state = BridgeSheetState(status = Fixtures.staleStatus, needsPairing = true, configured = true),
+            state = BridgeSheetState(
+                status = Fixtures.staleStatus,
+                wican = com.pitstop.domain.WicanSetup.State.AutoStartOff,
+                configured = true,
+            ),
             onStart = {}, onStop = {}, onOpenSettings = {},
         )
     }
@@ -216,6 +220,30 @@ class ScreenShots {
             Fixtures.connected.copy(blePairing = com.pitstop.service.BlePairing.InProgress),
             brokerConnected = true, unitSystem = "imperial", obdAgeS = 2, driveMode = false,
         )
+    }
+
+    /** Stale bond after a reflash: the loud "Connect WiCAN" sheet card. */
+    @Test fun bridgeSheetRejected() = shot("bridge_sheet_rejected") {
+        BridgeSheetContent(
+            state = BridgeSheetState(
+                status = Fixtures.staleStatus,
+                wican = com.pitstop.domain.WicanSetup.State.BluetoothRejected,
+                configured = true,
+            ),
+            onStart = {}, onStop = {}, onOpenSettings = {},
+        )
+    }
+
+    /** The unified WiCAN card in each state the user can meet. */
+    @Test fun wicanSetupStates() = shot("wican_setup_states") {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(16.dp),
+        ) {
+            for (ui in Fixtures.wicanStates) {
+                com.pitstop.ui.components.WicanSetupCard(ui = ui, onAction = {})
+            }
+        }
     }
 
     @Test fun liveStale() = shot("live_stale") {
@@ -342,6 +370,17 @@ class ScreenShots {
         unitSystem = units, storedSeries = StoredSeries(loaded = true, metrics = null),
         onPersistSeries = {}, onOpenDtc = { _, _ -> }, onOpenMap = {}, onEdit = {},
     )
+
+    /** Trip-detail Tires card: shared-axis psi chart + start→end summary, FR LOW. */
+    @Test fun tripTires() = shot("trip_tires") {
+        androidx.compose.foundation.layout.Box(Modifier.padding(16.dp)) {
+            com.pitstop.ui.history.detail.TripTiresCard(
+                samples = Fixtures.tripDetail.samples,
+                tires = Fixtures.tripTires,
+                system = "imperial",
+            )
+        }
+    }
 
     @Test fun fillupDetail() = shot("fillup_detail") {
         FillupDetailContent(fillup = Fixtures.fillups[0], context = Fixtures.fillups)

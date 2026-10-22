@@ -142,6 +142,7 @@ fun StatusScreen(
     onOpenMpgHistory: () -> Unit = {},
     onOpenFuel: () -> Unit = {},
     onOpenFillup: (String) -> Unit = {},
+    onWicanAction: () -> Unit = onOpenSettings,
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
@@ -164,6 +165,7 @@ fun StatusScreen(
         onOpenFuel = onOpenFuel,
         onOpenFillup = onOpenFillup,
         onNavigate = { spot -> navigateTo(context, spot) },
+        onWicanAction = onWicanAction,
         pairCardCompact = pairCardCompact,
         onPairCardShown = viewModel::onPairCardShown,
         onCollapsePairCard = viewModel::collapsePairCard,
@@ -206,6 +208,8 @@ internal fun StatusContent(
     onOpenFuel: () -> Unit = {},
     onOpenFillup: (String) -> Unit = {},
     onNavigate: (ParkedSpot) -> Unit = {},
+    /** Settings, on the WiCAN card, running its primary action. */
+    onWicanAction: () -> Unit = onOpenSettings,
     nowMs: Long = System.currentTimeMillis(),
     pairCardCompact: Boolean = false,
     onPairCardShown: () -> Unit = {},
@@ -265,17 +269,16 @@ internal fun StatusContent(
                 if (!ui.configured) {
                     val serverIncomplete = !ui.hasServer || !ui.hasVehicle
                     if (!serverIncomplete && pairCardCompact) {
-                        // The top-bar "Pair WiCAN" pill is the persistent
-                        // reminder; after the first visit this is one line.
-                        PairWicanLine(onPair = onOpenSettings)
+                        // The top-bar pill is the persistent reminder; after
+                        // the first visit this is one line.
+                        WicanLine(state = ui.wican, onAction = onWicanAction)
                     } else {
                         if (!serverIncomplete) LaunchedEffect(Unit) { onPairCardShown() }
                         SetupPromptCard(
                             hasServer = ui.hasServer,
                             hasVehicle = ui.hasVehicle,
-                            autoStartOn = ui.autoStartOn,
-                            needsPairing = ui.captureNeedsPairing,
-                            onSetUp = onOpenSettings,
+                            wican = ui.wican,
+                            onSetUp = if (serverIncomplete) onOpenSettings else onWicanAction,
                             onCollapse = if (serverIncomplete) null else onCollapsePairCard,
                         )
                     }
@@ -787,8 +790,7 @@ private fun Kpi(
 private fun SetupPromptCard(
     hasServer: Boolean,
     hasVehicle: Boolean,
-    autoStartOn: Boolean,
-    needsPairing: Boolean,
+    wican: com.pitstop.domain.WicanSetup.State,
     onSetUp: () -> Unit,
     onCollapse: (() -> Unit)? = null,
 ) {
@@ -816,7 +818,11 @@ private fun SetupPromptCard(
                 modifier = Modifier.size(36.dp),
             )
             Text(
-                if (serverIncomplete) "Finish setup to see your data" else "One step from auto-logging",
+                when {
+                    serverIncomplete -> "Finish setup to see your data"
+                    wican == com.pitstop.domain.WicanSetup.State.AutoStartOff -> "One step from auto-logging"
+                    else -> "Connect your WiCAN"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center,
             )
@@ -824,7 +830,7 @@ private fun SetupPromptCard(
                 if (serverIncomplete) {
                     "Connect pitstop to your server to load fuel, MPG and trips."
                 } else {
-                    "Pair the WiCAN so drives start logging on their own — even when the app is closed."
+                    com.pitstop.domain.WicanSetup.message(wican).orEmpty()
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -836,28 +842,33 @@ private fun SetupPromptCard(
             ) {
                 SetupChecklistRow(done = hasServer, label = "Server", missing = "not set")
                 SetupChecklistRow(done = hasVehicle, label = "Vehicle", missing = "not picked")
-                // The auto-start row only appears when the user wants auto-start;
-                // a deliberate manual-start user isn't shown a "not armed" nag.
-                if (autoStartOn) {
+                // One WiCAN row, worded like the top-bar pill.
+                if (!serverIncomplete) {
                     SetupChecklistRow(
-                        done = !needsPairing,
-                        label = "Auto-start",
-                        missing = "pair the WiCAN",
+                        done = com.pitstop.domain.WicanSetup.action(wican) == null,
+                        label = "WiCAN",
+                        missing = com.pitstop.domain.WicanSetup.pill(wican)?.first?.lowercase() ?: "ready",
                     )
                 }
             }
             Button(
                 onClick = onSetUp,
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            ) { Text(if (serverIncomplete) "Set up now" else "Pair WiCAN") }
+            ) {
+                Text(
+                    if (serverIncomplete) "Set up now"
+                    else com.pitstop.domain.WicanSetup.action(wican) ?: "Open settings",
+                )
+            }
         }
       }
     }
 }
 
-/** Collapsed pairing reminder: one line, one action. */
+/** Collapsed WiCAN reminder: one line, one action — same words as the pill. */
 @Composable
-private fun PairWicanLine(onPair: () -> Unit) {
+private fun WicanLine(state: com.pitstop.domain.WicanSetup.State, onAction: () -> Unit) {
+    val action = com.pitstop.domain.WicanSetup.action(state) ?: return
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
@@ -871,11 +882,15 @@ private fun PairWicanLine(onPair: () -> Unit) {
                 modifier = Modifier.size(20.dp),
             )
             Text(
-                "Drives won't auto-log until the WiCAN is paired",
+                if (state == com.pitstop.domain.WicanSetup.State.AutoStartOff) {
+                    "Drives won't start logging on their own"
+                } else {
+                    "The WiCAN can't connect yet"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onPair) { Text("Pair") }
+            TextButton(onClick = onAction) { Text(action) }
         }
     }
 }

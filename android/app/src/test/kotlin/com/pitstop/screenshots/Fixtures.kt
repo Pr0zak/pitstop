@@ -164,6 +164,26 @@ object Fixtures {
         m("tire_temp_fl", 24.0), m("tire_temp_fr", 23.0), m("tire_temp_rl", 22.0), m("tire_temp_rr", 22.0),
     )
 
+    private val wicanBase = com.pitstop.domain.WicanSetup.Inputs(
+        deviceKnown = true,
+        bond = com.pitstop.domain.WicanSetup.Bond.Bonded,
+        bondRequired = true,
+        autoStartOn = true,
+        cdmSupported = true,
+        cdmAssociated = true,
+    )
+
+    /** Firmware 6 needs a bond / stale bond / passkey dialog up / only
+     *  auto-start missing / 4.x with no bond needed and all set. */
+    val wicanStates: List<com.pitstop.ui.components.WicanSetupUi>
+        get() = listOf(
+            wicanBase.copy(bond = com.pitstop.domain.WicanSetup.Bond.None, cdmAssociated = false),
+            wicanBase.copy(linkPairing = com.pitstop.domain.WicanSetup.LinkPairing.Rejected),
+            wicanBase.copy(bond = com.pitstop.domain.WicanSetup.Bond.Bonding),
+            wicanBase.copy(cdmAssociated = false),
+            wicanBase.copy(bond = com.pitstop.domain.WicanSetup.Bond.None, bondRequired = false),
+        ).map { com.pitstop.ui.components.WicanSetupUi(it) }
+
     /** Home's Tires card from the same verified corners, 14 minutes old. */
     val homeTires: com.pitstop.ui.status.HomeTires get() = com.pitstop.ui.status.HomeTires(
         tires = com.pitstop.domain.VehicleSignals.tpms(
@@ -324,6 +344,19 @@ object Fixtures {
             add("engine_rpm", 1700.0 + 900 * sin(PI * f))
             add("coolant_temp", 62.0 + 28 * f)
             add("engine_fuel_rate", 0.5 + 1.1 * sin(PI * f))
+            // Tires every ~30 s (every 3rd/4th sample): warm-up climb, FR low.
+            if (i % 4 == 0) {
+                val warm = 7.0 * (1 - kotlin.math.exp(-3 * f))
+                add("tire_pressure_fl", 213.0 + warm)
+                add("tire_pressure_fr", 196.0 + warm)
+                add("tire_pressure_rl", 209.0 + warm * 0.9)
+                add("tire_pressure_rr", 205.0 + warm * 0.9)
+                add("tire_temp_fl", 18.0 + 11 * f)
+                add("tire_temp_fr", 18.0 + 12 * f)
+                add("tire_temp_rl", 17.0 + 10 * f)
+                add("tire_temp_rr", 17.0 + 10 * f)
+            }
+            add("brake_pressure", if (i % 23 in 0..2) 40.0 + 15 * sin(i.toDouble()) else 0.0)
         }
         TripDetailDto(
             id = "t2", vehicleId = "v1", startedAt = "2026-09-23T17:42:00Z",
@@ -336,8 +369,23 @@ object Fixtures {
             weatherTempC = 21.0, weatherCode = 2, dtcCount = 1,
             samples = samples,
             dtcs = listOf(TripDtcDto("e1", "P0420", "2026-09-23T17:58:00Z", "Catalyst system efficiency below threshold (bank 1)")),
+            brakeEvents = 9, hardBrakeEvents = 1, maxBrakeBar = 64.0, brakingS = 41.5,
+            tires = tripTires,
         )
     }
+
+    /** Per-trip TPMS summary in the backend `_tire_summary` shape. */
+    val tripTires: com.pitstop.http.TripTiresDto
+        get() = com.pitstop.http.TripTiresDto(
+            corners = listOf(
+                com.pitstop.http.TripTireCornerDto("fl", 213.0, 219.8, 213.0, 220.0, 18.0, 29.0),
+                com.pitstop.http.TripTireCornerDto("fr", 196.0, 202.8, 196.0, 203.0, 18.0, 30.0),
+                com.pitstop.http.TripTireCornerDto("rl", 209.0, 215.1, 209.0, 215.3, 17.0, 27.0),
+                com.pitstop.http.TripTireCornerDto("rr", 205.0, 211.1, 205.0, 211.3, 17.0, 27.0),
+            ),
+            lowCorners = listOf("fr"),
+            lowDeltaPsi = 2.0,
+        )
 
     val baseline = TripBaselineDto(
         bucketLabel = "10–30 mi", sampleSize = 42, sufficient = true,

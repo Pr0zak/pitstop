@@ -26,6 +26,7 @@ package com.pitstop.obd
  *                        227028 outside °F = 12-bit signed ((p[19]&0x0F)<<8 | p[20])
  *   module 26 (TPMS)     226001 kPa FR=[11..12] FL=[13..14] RR=[15..16] RL=[17..18]
  *                               °C (signed) FR=[27] FL=[28] RR=[29] RL=[30]
+ *   module 28 (VSA)      224005 brake pressure bar = p[10..11] BE − 25
  * ```
  */
 object HondaMode22 {
@@ -34,6 +35,7 @@ object HondaMode22 {
     const val TCM = 0x1E
     const val CLUSTER = 0x60
     const val TPMS = 0x26
+    const val VSA = 0x28
 
     /** TX header + RX filter that address [module]; two separate ELM lines. */
     fun headerFor(module: Int): List<String> = listOf(
@@ -109,6 +111,16 @@ object HondaMode22 {
         return out
     }
 
+    /**
+     * Brake (master-cylinder) pressure, bar: big-endian p[10..11] − 25.
+     * Verified on the car 2026-10-21: 0 off the pedal, 85–93 bar on firm
+     * presses. A hair below the 25 offset reads as 0, not a negative bar.
+     */
+    fun decodeBrakeBar(p: ByteArray): Double? {
+        val raw = u16(p, 10) ?: return null
+        return (raw - 25).coerceAtLeast(0).toDouble()
+    }
+
     // ---- PIDs -------------------------------------------------------------
 
     private fun did(did: Int, module: Int, name: String, periodMs: Long, parser: (ByteArray) -> Double?) = Pid(
@@ -144,6 +156,13 @@ object HondaMode22 {
     val FuelLevelLitres = did(0x7029, CLUSTER, "fuel_level_l", 30_000, ::decodeFuelLitres)
     val AmbientAirTempF = did(0x7028, CLUSTER, "ambient_air_temp_f", 30_000, ::decodeAmbientF)
 
+    /**
+     * 1 s: a brake application lasts a second or two, so anything slower
+     * misses presses. VSA is alone on its module, so each batch pays one
+     * header set/restore for it. The answer is a 59-byte multi-frame block.
+     */
+    val BrakePressure = did(0x4005, VSA, "brake_pressure", 1_000, ::decodeBrakeBar)
+
     /** One DID, eight metrics: tire_pressure_* (kPa) + tire_temp_* (°C). */
     val Tpms = multi(0x6001, TPMS, "tpms", 30_000, ::decodeTpms)
 
@@ -156,5 +175,6 @@ object HondaMode22 {
         ActiveCylinders, Misfires,
         OdometerDash, FuelLevelLitres, AmbientAirTempF,
         Tpms,
+        BrakePressure,
     )
 }

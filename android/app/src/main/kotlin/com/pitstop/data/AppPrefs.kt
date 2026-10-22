@@ -46,6 +46,7 @@ class AppPrefs @Inject constructor(
         val serviceReminderNotif = booleanPreferencesKey("notif_service_reminder")
         val vehicleAlertNotif = booleanPreferencesKey("notif_vehicle_alert")
         val pairCardSeen = booleanPreferencesKey("home_pair_card_seen")
+        val wicanNeedsBond = booleanPreferencesKey("wican_needs_bluetooth_bond")
         val vehicleNames = stringPreferencesKey("vehicle_names_by_slug")
         fun reminderStates(vehicleId: String) = stringPreferencesKey("notified_reminder_states_$vehicleId")
         fun seenDtcs(vehicleId: String) = stringSetPreferencesKey("seen_dtcs_$vehicleId")
@@ -64,6 +65,18 @@ class AppPrefs @Inject constructor(
     val pairCardSeen: Flow<Boolean> = context.appPrefsStore.data.map { it[Keys.pairCardSeen] ?: false }
 
     suspend fun setPairCardSeen() = context.appPrefsStore.edit { it[Keys.pairCardSeen] = true }
+
+    /**
+     * Learned, not configured: true once the bridge has seen this WiCAN ask
+     * for a Bluetooth bond (firmware 6 — Secure Connections + passkey) or a
+     * bond to it has existed. A 4.x WiCAN never asks, so its setup never
+     * shows a Bluetooth step. Cleared when a different dongle is picked.
+     */
+    val wicanNeedsBond: Flow<Boolean> = context.appPrefsStore.data.map { it[Keys.wicanNeedsBond] ?: false }
+
+    suspend fun setWicanNeedsBond(value: Boolean) {
+        context.appPrefsStore.edit { it[Keys.wicanNeedsBond] = value }
+    }
 
     /** slug → display name from the last /vehicles fetch, so the top bar
      *  can name the vehicle before this launch's fetch lands. */

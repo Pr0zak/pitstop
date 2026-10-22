@@ -118,10 +118,10 @@ data class StatusUiState(
     val distInMiles: Boolean = true,
     /** Auto-start master toggle ([com.pitstop.data.Settings.bridgeAutoTrigger]). */
     val autoStartOn: Boolean = false,
-    /** WiCAN is paired as a CompanionDeviceManager companion — read from the
-     *  live CDM association list (WicanCompanionManager.hasAssociation()), the
-     *  same source Settings uses, so the two screens can't disagree. */
-    val companionPaired: Boolean = false,
+    /** Unified WiCAN setup state (Bluetooth bond + auto-start link), from the
+     *  same [com.pitstop.companion.WicanSetupTracker] the top-bar pill,
+     *  bridge sheet and Settings read — so no two screens can disagree. */
+    val wican: com.pitstop.domain.WicanSetup.State = com.pitstop.domain.WicanSetup.State.Ready,
     /** Why the last Home refresh couldn't load data, in one plain line;
      *  null once a refresh reaches the vehicle. Replaces the skeleton. */
     val loadProblem: String? = null,
@@ -129,22 +129,18 @@ data class StatusUiState(
     val tires: HomeTires? = null,
 ) {
     /**
-     * Auto-start is ON but the WiCAN isn't paired on API 31+, so the OS will
-     * block the background service start and drives silently never auto-log —
-     * the recurring CDM trap. Mirrors ConfigViewModel's AutoStartVerdict
-     * NeedsPairing branch (bridgeAutoTrigger && companionPresenceSupported &&
-     * !companionAssociated); companionPresenceSupported is SDK_INT >= S.
+     * The WiCAN needs something from the user: a Bluetooth connection
+     * (firmware 6) or the auto-start link (API 31+ background start). A
+     * deliberate manual-start user (auto-start off) is never nagged about
+     * the latter — [com.pitstop.domain.WicanSetup.evaluate] handles that.
      */
-    val captureNeedsPairing: Boolean
-        get() = autoStartOn &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            !companionPaired
+    val wicanNeedsAction: Boolean
+        get() = com.pitstop.domain.WicanSetup.action(wican) != null
 
-    /** Show the Home setup card until server + vehicle are set AND (if the user
-     *  wants auto-start) the WiCAN is paired — so a "configured but never
-     *  paired" install stops looking healthy while drives silently don't log.
-     *  A deliberate manual-start user (auto-start off) is never nagged. */
-    val configured: Boolean get() = hasServer && hasVehicle && !captureNeedsPairing
+    /** Show the Home setup card until server + vehicle are set AND the WiCAN
+     *  needs nothing — so a half-set-up install stops looking healthy while
+     *  drives silently don't log. */
+    val configured: Boolean get() = hasServer && hasVehicle && !wicanNeedsAction
 }
 
 @HiltViewModel
@@ -166,6 +162,7 @@ class StatusViewModel @Inject constructor(
     private val rangeRepository: com.pitstop.data.RangeRepository,
     private val alerts: com.pitstop.notif.VehicleAlerts,
     private val appPrefs: com.pitstop.data.AppPrefs,
+    private val wicanSetup: com.pitstop.companion.WicanSetupTracker,
     private val parkedStore: com.pitstop.drive.ParkedStore,
 ) : AndroidViewModel(application) {
 
@@ -726,6 +723,7 @@ class StatusViewModel @Inject constructor(
             spendYoy,
             homeFuel,
             homeTires,
+            wicanSetup.state,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val bridge = values[0] as BridgeBundle
@@ -791,16 +789,7 @@ class StatusViewModel @Inject constructor(
                 hasServer = bridge.settings.apiBaseUrl.isNotBlank(),
                 hasVehicle = bridge.settings.vehicleSlug.isNotBlank(),
                 autoStartOn = bridge.settings.bridgeAutoTrigger,
-                // Read the SAME live source the rest of the app uses
-                // (WicanCompanionManager.hasAssociation() → CDM myAssociations on
-                // API 31+), NOT the persisted companionAssociationId — otherwise
-                // Home and Settings can disagree about "paired" (e.g. the OS
-                // association removed externally while the id lingers), and Home
-                // would stay silent in exactly the background-start-broken case
-                // this nudge exists to catch. The combine re-fires on settings /
-                // status changes (incl. companionAssociationId on pair/unpair),
-                // so this is re-read on every relevant event.
-                companionPaired = companionManager.hasAssociation(),
+                wican = values[15] as com.pitstop.domain.WicanSetup.State,
                 loadProblem = problem,
             )
         }.stateIn(

@@ -6,6 +6,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pitstop.companion.WicanCompanionManager
+import com.pitstop.companion.WicanSetupTracker
+import com.pitstop.domain.WicanSetup
+import com.pitstop.service.BridgePhase
 import com.pitstop.data.ActiveVehicle
 import com.pitstop.data.SettingsRepository
 import com.pitstop.data.VehicleDirectory
@@ -29,7 +32,8 @@ import javax.inject.Inject
 /** The bridge sheet's inputs (the old Home bridge card, now behind the top-bar chip). */
 data class BridgeSheetState(
     val status: BridgeStatus = BridgeStatus(),
-    val needsPairing: Boolean = false,
+    /** The unified WiCAN setup state (Bluetooth bond + auto-start). */
+    val wican: WicanSetup.State = WicanSetup.State.Ready,
     val configured: Boolean = false,
 )
 
@@ -49,14 +53,17 @@ class AppBarViewModel @Inject constructor(
     private val activeVehicle: ActiveVehicle,
     private val companionManager: WicanCompanionManager,
     private val mqttPublisher: MqttPublisher,
+    wicanSetup: WicanSetupTracker,
 ) : AndroidViewModel(application) {
 
-    val bridge: StateFlow<BridgeSheetState> = combine(stateBus.status, settingsRepository.settings) { status, s ->
+    val bridge: StateFlow<BridgeSheetState> = combine(
+        stateBus.status,
+        settingsRepository.settings,
+        wicanSetup.state,
+    ) { status, s, wican ->
         BridgeSheetState(
             status = status.copy(brokerConnected = mqttPublisher.isConnected()),
-            needsPairing = s.bridgeAutoTrigger &&
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                !companionManager.hasAssociation(),
+            wican = wican,
             configured = s.apiBaseUrl.isNotBlank() && s.vehicleSlug.isNotBlank(),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BridgeSheetState())
@@ -97,9 +104,20 @@ class AppBarViewModel @Inject constructor(
     }
 }
 
-/** Chip text + tone: setup and pairing problems outrank the bridge phase. */
-fun loggingChip(b: BridgeSheetState, manualSyncOnly: Boolean): Pair<String, PillTone> = when {
-    !b.configured -> "Set up" to PillTone.Neutral
-    b.needsPairing -> "Pair WiCAN" to PillTone.Degraded
-    else -> bridgePillOf(b.status.phase, b.status.brokerConnected, b.status.engineState, manualSyncOnly)
+/**
+ * Chip text + tone. Server setup first, then a WiCAN that can't link
+ * ("Connect WiCAN"), then the bridge phase. A missing auto-start link only
+ * shows as the soft "Auto-start off" while the bridge isn't actively
+ * logging — a running capture is the more useful thing to say then.
+ */
+fun loggingChip(b: BridgeSheetState, manualSyncOnly: Boolean): Pair<String, PillTone> {
+    if (!b.configured) return "Set up" to PillTone.Neutral
+    val wicanPill = WicanSetup.pill(b.wican)
+    if (wicanPill != null && WicanSetup.blocksLink(b.wican)) return wicanPill.first to com.pitstop.ui.components.toneOf(wicanPill.second)
+    if (b.wican == WicanSetup.State.BluetoothInProgress) return wicanPill!!.first to PillTone.Connecting
+    val phase = b.status.phase
+    if (wicanPill != null && (phase == BridgePhase.Idle || phase == BridgePhase.Error)) {
+        return wicanPill.first to com.pitstop.ui.components.toneOf(wicanPill.second)
+    }
+    return bridgePillOf(b.status.phase, b.status.brokerConnected, b.status.engineState, manualSyncOnly)
 }

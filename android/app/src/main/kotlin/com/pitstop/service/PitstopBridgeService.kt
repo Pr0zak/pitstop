@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 /**
@@ -85,7 +86,8 @@ class PitstopBridgeService : Service() {
     // Buffer for incoming TX bytes — assembled across notify packets until a terminator
     // ('>' from ELM, or natural pause). We also keep a rolling in-memory copy long enough
     // to parse one frame.
-    private val rxBuffer = StringBuilder()
+    /** Splits the BLE byte stream into ELM frames, every `>` in a notify. */
+    private val framer = com.pitstop.obd.ElmFramer()
 
     @Volatile private var pidsToPoll: List<Pid> = Pids.DEFAULT
     @Volatile private var vehicleSlug: String = ""
@@ -153,8 +155,30 @@ class PitstopBridgeService : Service() {
      */
     @Volatile private var pendingExtended: Pid? = null
 
-    /** Count of ELM `>` prompts seen; the extended path waits on it. */
-    private val elmPrompts = java.util.concurrent.atomic.AtomicInteger(0)
+    /** True from link-ready until the first `>` after our `ATI`; see [syncElmPrompt]. */
+    @Volatile private var rxSyncPending: Boolean = false
+    @Volatile private var rxSyncDiscarded: Int = 0
+
+    /**
+     * One ELM command in flight at a time — see [elmSend] and
+     * [com.pitstop.obd.ElmLink] for the 2026-10-21 desync this prevents.
+     */
+    private val elmMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var awaitedCmd: String? = null
+    @Volatile private var awaitedDone: Boolean = false
+
+    /** Last few commands written, so a late answer to one of them is not
+     *  mistaken for the answer to the current one ([com.pitstop.obd.ElmEcho]). */
+    private val recentCmds = ArrayDeque<String>()
+
+    /**
+     * Extended (Mode 22) polling switched off for THIS session after
+     * repeated ELM desyncs (`STOPPED` / `?`), so standard capture heals by
+     * itself instead of staying broken until the user finds the toggle.
+     * Reset on the next bridge start.
+     */
+    @Volatile private var extendedSuspended: Boolean = false
+    private val desyncTimesMs = ArrayDeque<Long>()
     @Volatile private var pendingExtendedAtMs: Long = 0L
 
     /**
@@ -609,6 +633,8 @@ class PitstopBridgeService : Service() {
             extendedNrcLogged.clear()
             suppressedPids.clear()
             pendingExtended = null
+            extendedSuspended = false
+            synchronized(desyncTimesMs) { desyncTimesMs.clear() }
 
             // Both collectors off → the bridge would do nothing useful.
             // Self-stop and surface a notification so the user sees why.
@@ -1133,7 +1159,93 @@ class PitstopBridgeService : Service() {
         }
     }
 
+    /**
+     * Discard anything the WiCAN pushed before we asked for it, then line the
+     * rx buffer up on a real ELM prompt.
+     *
+     * 2026-10-21: the dongle's own AutoPID output fanned out to the BLE pipe
+     * and flooded FFF1 with 20-byte notifications before the phone's first
+     * command. Those bytes have no `>` terminator, so they sat in the rx buffer
+     * and garbled the first real answers until the 1 KiB overflow cleared it.
+     * Firmware rules now pause AutoPID while a BLE client is attached, but
+     * the bridge must not depend on that: we drop everything until the `>`
+     * that answers a harmless `ATI` (version query — changes no ELM state,
+     * unlike ATZ/ATE0, so the 4.x path is unaffected). Bounded: after
+     * [RX_SYNC_TIMEOUT_MS] we proceed as before.
+     */
+    private suspend fun syncElmPrompt() {
+        framer.clear()
+        rxSyncPending = true
+        rxSyncDiscarded = 0
+        val ok = elmSend("ATI", RX_SYNC_TIMEOUT_MS)
+        rxSyncPending = false
+        if (ok) {
+            logBuffer.info("obd: rx synced on ELM prompt", mapOf("discarded_bytes" to rxSyncDiscarded))
+        } else {
+            framer.clear()
+            logBuffer.warn("obd: no ELM prompt after ATI — continuing unsynced")
+        }
+    }
+
+    /**
+     * Write ONE ELM command and wait for ITS prompt — the only way anything
+     * is written while the poll loop runs.
+     *
+     * A real ELM327 (firmware 6 bridges to the chip) aborts its current
+     * answer with `STOPPED` the moment another byte arrives, and a command
+     * written mid-answer comes back as `?`. So nothing goes out until the
+     * previous command's `>` has been seen, and the `>` is attributed by the
+     * echo ([com.pitstop.obd.ElmEcho]) rather than counted: a late prompt
+     * of an earlier command must not release this one. The frame itself is
+     * processed by [onUartFrame] before [awaitedDone] flips, so callers can
+     * inspect the result (e.g. [pendingExtended]) as soon as this returns.
+     *
+     * @return true when the answer arrived within [timeoutMs].
+     */
+    private suspend fun elmSend(command: String, timeoutMs: Long): Boolean = elmMutex.withLock {
+        val mgr = bleManager ?: return@withLock false
+        val cmd = command.trimEnd('\r', '\n')
+        awaitedDone = false
+        awaitedCmd = cmd
+        synchronized(recentCmds) {
+            recentCmds.addLast(cmd)
+            while (recentCmds.size > 8) recentCmds.removeFirst()
+        }
+        if (!mgr.writeCommand(cmd + "\r")) {
+            awaitedCmd = null
+            return@withLock false
+        }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!awaitedDone && System.currentTimeMillis() < deadline) delay(5)
+        val ok = awaitedDone
+        awaitedCmd = null
+        ok
+    }
+
+    /** Record an ELM `STOPPED` / `?`; too many with Mode 22 on → suspend it. */
+    private fun noteDesync() {
+        if (!extendedPidsEnabled || extendedSuspended) return
+        val now = System.currentTimeMillis()
+        synchronized(desyncTimesMs) {
+            desyncTimesMs.addLast(now)
+            while (desyncTimesMs.isNotEmpty() && now - desyncTimesMs.first() > EXTENDED_DESYNC_WINDOW_MS) {
+                desyncTimesMs.removeFirst()
+            }
+            if (desyncTimesMs.size < EXTENDED_DESYNC_LIMIT) return
+            desyncTimesMs.clear()
+        }
+        extendedSuspended = true
+        pendingExtended = null
+        pidsToPoll = Pids.DEFAULT.filter { it.name !in suppressedPids }
+        // The poll loop restores the header (paced) before its next PID.
+        logBuffer.warn(
+            "obd: extended (mode 22) polling suspended for this session — ELM desync",
+            mapOf("desyncs" to EXTENDED_DESYNC_LIMIT, "window_s" to EXTENDED_DESYNC_WINDOW_MS / 1000),
+        )
+    }
+
     private suspend fun runPollLoop() {
+        syncElmPrompt()
         // Round-robin scheduler: each PID has a periodMs; we maintain a "next due" timestamp
         // per PID, and at every tick we send the most-overdue one.
         val nextDue = HashMap<String, Long>()
@@ -1147,7 +1259,7 @@ class PitstopBridgeService : Service() {
         // header command at all and the wire traffic is exactly what it was.
         if (extendedPidsEnabled) {
             sessionHeaderDirty = true
-            restoreDefaultHeaderIfDirty()
+            restoreDefaultHeaderPaced()
         }
 
         while (scope.isActive) {
@@ -1182,15 +1294,20 @@ class PitstopBridgeService : Service() {
                     // module-specific TX header. Normally already clean (the
                     // extended path restores in a finally); this catches the
                     // case where that restore write itself couldn't be sent.
-                    restoreDefaultHeaderIfDirty()
-                    bleManager?.writeCommand(due.command())
+                    restoreDefaultHeaderPaced()
+                    elmSend(due.command(), STANDARD_RESPONSE_TIMEOUT_MS)
                 }
                 nextDue[due.name] = t + due.periodMs
+            } else {
+                // Header left dirty by a toggle-off / auto-suspend with no
+                // PID due right now: clean it on the loop, the one writer.
+                restoreDefaultHeaderPaced()
             }
 
-            // Tight loop, but bounded — sleep until the next due PID.
-            val nextWake = pidsToPoll.minOf { nextDue[it.name] ?: t }
-            val sleep = (nextWake - System.currentTimeMillis()).coerceIn(50L, 1_000L)
+            // elmSend already paced us by the answer; just sleep until the
+            // next due PID (bounded so a toggle is noticed promptly).
+            val nextWake = pidsToPoll.minOfOrNull { nextDue[it.name] ?: t } ?: (t + 1_000L)
+            val sleep = (nextWake - System.currentTimeMillis()).coerceIn(5L, 1_000L)
             delay(sleep)
         }
     }
@@ -1215,68 +1332,53 @@ class PitstopBridgeService : Service() {
      * so it still runs during cancellation.
      */
     private suspend fun sendExtendedBatch(batch: List<Pid>) {
-        val mgr = bleManager ?: return
         try {
             var header: List<String>? = null
             for (pid in batch) {
                 if (stateBus.status.value.phase != BridgePhase.Connected) break
+                if (extendedSuspended || !extendedPidsEnabled) break
                 if (pid.initCommands != header) {
                     for (cmd in pid.initCommands) {
-                        // Mark dirty BEFORE the write, and both under
-                        // [headerLock] as ONE unit — the flag and the write are
-                        // touched from the poll loop, the opt-in toggle
-                        // collector and onDestroy. Without the lock:
-                        //   poll:   sessionHeaderDirty = true
-                        //   toggle: sees dirty, writes the restore, clears it
-                        //   poll:   writes ATSH18DA1EF1  <- adapter on the TCM
-                        //   poll:   finally -> flag false, no restore sent
-                        val mark = elmPrompts.get()
-                        synchronized(headerLock) {
-                            sessionHeaderDirty = true
-                            mgr.writeCommand(cmd + "\r")
-                        }
-                        awaitPrompt(mark, EXTENDED_AT_PROMPT_TIMEOUT_MS)
+                        // Mark dirty BEFORE the write: if we die between the
+                        // write and the restore, the flag is already set and
+                        // the next tick / next session cleans up.
+                        synchronized(headerLock) { sessionHeaderDirty = true }
+                        elmSend(cmd, EXTENDED_AT_PROMPT_TIMEOUT_MS)
                     }
                     header = pid.initCommands
                 }
                 lastSentPid = pid
                 pendingExtended = pid
                 pendingExtendedAtMs = System.currentTimeMillis()
-                val mark = elmPrompts.get()
-                if (!mgr.writeCommand(pid.command())) break
-                awaitPrompt(mark, EXTENDED_RESPONSE_TIMEOUT_MS)
-                // Prompt seen (or timed out) and still nobody claimed the
-                // answer: charge it like a NO DATA so a DID the BLE path can
-                // never deliver drops out of the poll set (OBD-4).
+                elmSend(pid.command(), EXTENDED_RESPONSE_TIMEOUT_MS)
+                // Its own answer (matched by echo) has been processed by now;
+                // still pending = nothing decodable came back. Charge it like
+                // a NO DATA so a DID the BLE path can't deliver drops out.
                 if (pendingExtended === pid) {
                     pendingExtended = null
                     onNoDataForPid(pid)
                 }
             }
-            // Orderly restore, one prompt per line; the finally below is the
-            // fallback for when this never gets to run.
-            if (sessionHeaderDirty) {
-                var ok = true
-                for (cmd in ElmSession.DEFAULT_HEADER_RESTORE) {
-                    val mark = elmPrompts.get()
-                    if (!mgr.writeCommand(cmd + "\r")) {
-                        ok = false
-                        break
-                    }
-                    awaitPrompt(mark, EXTENDED_AT_PROMPT_TIMEOUT_MS)
-                }
-                if (ok) synchronized(headerLock) { sessionHeaderDirty = false }
-            }
+            restoreDefaultHeaderPaced()
         } finally {
+            // Cancellation / BLE drop: unpaced fallback (no suspending work).
             restoreDefaultHeaderIfDirty()
         }
     }
 
-    /** Wait until the ELM prompt counter moves past [mark] or [timeoutMs]. */
-    private suspend fun awaitPrompt(mark: Int, timeoutMs: Long): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (elmPrompts.get() == mark && System.currentTimeMillis() < deadline) delay(10)
-        return elmPrompts.get() != mark
+    /**
+     * Restore the default header from the poll loop, one paced command at a
+     * time. The only restore that runs while the loop is live — the toggle
+     * collector no longer writes (it raced the loop: two writers on one
+     * characteristic).
+     */
+    private suspend fun restoreDefaultHeaderPaced() {
+        if (!sessionHeaderDirty) return
+        for (cmd in ElmSession.DEFAULT_HEADER_RESTORE) {
+            if (bleManager == null) return
+            elmSend(cmd, EXTENDED_AT_PROMPT_TIMEOUT_MS)
+        }
+        synchronized(headerLock) { sessionHeaderDirty = false }
     }
 
     /**
@@ -1317,13 +1419,16 @@ class PitstopBridgeService : Service() {
      * ECU refuses doesn't come back just because an unrelated toggle moved.
      */
     private fun applyExtendedPidToggle() {
-        val base = if (extendedPidsEnabled) Pids.DEFAULT + Pids.EXTENDED else Pids.DEFAULT
+        val on = extendedPidsEnabled && !extendedSuspended
+        val base = if (on) Pids.DEFAULT + Pids.EXTENDED else Pids.DEFAULT
         pidsToPoll = base.filter { it.name !in suppressedPids }
         if (!extendedPidsEnabled) {
             pendingExtended = null
             // Turning the feature off mid-request must not leave the session
-            // pointed at the transmission controller.
-            restoreDefaultHeaderIfDirty()
+            // pointed at a module: the dirty flag stays set and the poll loop
+            // — the only writer while it runs — restores before its next PID.
+            // With no loop running (no link) stopBridge's restore covers it.
+            if (pollJob?.isActive != true) restoreDefaultHeaderIfDirty()
         }
     }
 
@@ -1350,59 +1455,58 @@ class PitstopBridgeService : Service() {
     }
 
     private fun onUartFrame(bytes: ByteArray) {
-        // Append, then attempt to parse. ELM-style frames terminate with '>' (the prompt);
-        // raw CAN frames are usually one notify packet. If we don't find a terminator
-        // within ~256 bytes, drop the buffer (corrupt stream).
-        rxBuffer.append(String(bytes, Charsets.US_ASCII))
-        if (rxBuffer.length > 1024) {
-            rxBuffer.clear()
-            return
-        }
-
         // Before anything reads [pendingExtended] — the raw-CAN branch below
         // is gated on it being null, so a request that aged out unanswered
         // must be retired here rather than only inside handleExtendedFrame,
         // which that branch can never reach.
         expireStaleExtendedRequest()
 
-        val terminator = rxBuffer.indexOf('>')
-        val frameText = if (terminator >= 0) {
-            val out = rxBuffer.substring(0, terminator)
-            rxBuffer.delete(0, terminator + 1)
-            elmPrompts.incrementAndGet()
-            out
-        } else if (
-            pendingExtended == null &&
-            bytes.size in 8..16 &&
-            bytes[0].toInt() and 0xF0 == 0
-        ) {
-            // Looks like a raw single-frame CAN response — don't wait for '>'.
-            //
-            // Suppressed while a multi-frame request is outstanding: this
-            // branch DISCARDS the accumulated rxBuffer, and a notify packet in
-            // the middle of an ISO-TP block that happens to start with '\r'
-            // (0x0D — high nibble 0, so it matches) would tear the block in
-            // half and lose the frames already buffered.
-            //
-            // The suppression is BOUNDED, never a latch: an unanswered request
-            // is retired by expireStaleExtendedRequest() above on a wall clock
-            // and charged as a NO DATA, so an adapter that speaks only raw CAN
-            // (and therefore can never reach the '>' branch, nor answer a Mode
-            // 22 request at all) drops the extended PIDs from the poll set
-            // after NO_DATA_SUPPRESS_THRESHOLD tries and this path reopens for
-            // good. Without that, the first extended request would stop every
-            // standard reading for the rest of the session.
-            rxBuffer.clear()
-            String(bytes, Charsets.US_ASCII)
-        } else {
+        // EVERY frame this notification completes, in order — with a 247-byte
+        // MTU one notify can carry two answers, and taking only the first
+        // left the second waiting for the next notify (2026-10-21).
+        val frames = framer.feed(bytes)
+        if (frames.isEmpty()) {
+            if (!rxSyncPending &&
+                pendingExtended == null &&
+                bytes.size in 8..16 &&
+                bytes[0].toInt() and 0xF0 == 0 &&
+                framer.pendingLength == bytes.size
+            ) {
+                // Looks like a raw single-frame CAN response — don't wait for
+                // '>'. Only when this packet is ALL that's buffered: the old
+                // version discarded whatever was accumulated, which could tear
+                // an ISO-TP block in half on a packet starting with '\r'.
+                framer.clear()
+                processFrame(String(bytes, Charsets.US_ASCII))
+                markAnswered(String(bytes, Charsets.US_ASCII))
+            } else if (rxSyncPending) {
+                rxSyncDiscarded += bytes.size
+            }
             return
         }
+        for (f in frames) {
+            if (rxSyncPending) {
+                // Pre-sync: unsolicited data (the WiCAN's own AutoPID output
+                // fanned into the BLE pipe) is dropped until the ATI answer.
+                rxSyncDiscarded += f.length + 1
+            } else {
+                processFrame(f)
+            }
+            markAnswered(f)
+        }
+    }
 
-        // Extended (Mode 22 / multi-frame ISO-TP) responses first, and ONLY
-        // while such a request is outstanding. handleExtendedFrame returns
-        // false for anything that isn't the answer we're waiting on, so the
-        // standard single-frame path below is reached unchanged in every case
-        // that matters to it.
+    /** Release [elmSend] if [frame] is the answer to the command in flight. */
+    private fun markAnswered(frame: String) {
+        val cmd = awaitedCmd ?: return
+        val recent = synchronized(recentCmds) { recentCmds.toList() }
+        if (com.pitstop.obd.ElmEcho.answers(frame, cmd, recent)) awaitedDone = true
+    }
+
+    /** One complete ELM frame (text before its `>`). */
+    private fun processFrame(frameText: String) {
+        if (com.pitstop.obd.ElmEcho.isDesync(frameText)) noteDesync()
+
         if (pendingExtended != null && handleExtendedFrame(frameText)) return
 
         // AT-command acknowledgements from the extended path ("OK", "?", or
@@ -2165,6 +2269,19 @@ class PitstopBridgeService : Service() {
          *    stops being able to claim an incoming frame.
          */
         private const val EXTENDED_AT_PROMPT_TIMEOUT_MS = 400L
+
+        /** Ceiling on one standard Mode 01 answer (two ECUs answer on the Pilot). */
+        private const val STANDARD_RESPONSE_TIMEOUT_MS = 1_500L
+
+        /**
+         * `STOPPED` / `?` answers within [EXTENDED_DESYNC_WINDOW_MS] that
+         * suspend Mode 22 polling for the session (see [noteDesync]).
+         */
+        private const val EXTENDED_DESYNC_LIMIT = 4
+        private const val EXTENDED_DESYNC_WINDOW_MS = 30_000L
+
+        /** Longest we wait for the `ATI` prompt that ends the rx sync. */
+        private const val RX_SYNC_TIMEOUT_MS = 2_000L
         private const val EXTENDED_RESPONSE_TIMEOUT_MS = 1_500L
         private const val EXTENDED_PENDING_TTL_MS = 2_000L
 

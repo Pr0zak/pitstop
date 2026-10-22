@@ -9,6 +9,7 @@ import android.util.Log
 import com.pitstop.log.LogBuffer
 import com.pitstop.log.maskMac
 import no.nordicsemi.android.ble.BleManager
+import no.nordicsemi.android.ble.callback.FailCallback
 import no.nordicsemi.android.ble.data.Data
 import no.nordicsemi.android.ble.observer.BondingObserver
 import no.nordicsemi.android.ble.observer.ConnectionObserver
@@ -83,6 +84,20 @@ class WiCanBleManager(
     /** Nordic logged "Authentication required" while we were BONDED. */
     @Volatile private var authErrorWhileBonded: Boolean = false
 
+    /** The GATT link came up during the current attempt (as opposed to the
+     *  WiCAN simply not advertising — the dominant, harmless timeout). */
+    @Volatile private var linkUpThisAttempt: Boolean = false
+
+    /**
+     * Consecutive attempts that were BONDED, got a link, and then timed out
+     * before READY. That is the stale-bond signature seen on the car on
+     * 2026-10-21 (v0.1.254): the phone kept a bond from before a reflash, the
+     * WiCAN silently ignored it, and every connect stalled 15 s with Nordic
+     * -5 / bonded=true / no "Authentication required" log — so the
+     * auth-error detection never fired. Reset on READY.
+     */
+    @Volatile private var bondedSetupTimeouts: Int = 0
+
     /** Last pairing state pushed to the callback, to avoid repeats. */
     @Volatile private var lastPairingState: PairingState = PairingState.NONE
 
@@ -154,7 +169,9 @@ class WiCanBleManager(
         // re-pairing on a flap is exactly the regression we're avoiding.
         setConnectionObserver(object : ConnectionObserver {
             override fun onDeviceConnecting(device: BluetoothDevice) = Unit
-            override fun onDeviceConnected(device: BluetoothDevice) = Unit
+            override fun onDeviceConnected(device: BluetoothDevice) {
+                linkUpThisAttempt = true
+            }
             override fun onDeviceReady(device: BluetoothDevice) = Unit
             override fun onDeviceDisconnecting(device: BluetoothDevice) = Unit
             override fun onDeviceDisconnected(device: BluetoothDevice, reason: Int) = Unit
@@ -248,6 +265,11 @@ class WiCanBleManager(
     override fun initialize() {
         // Best-effort MTU bump; the WiCAN can fragment, so even MTU=23 works. Larger MTU
         // means fewer notify packets per OBD response.
+        // MTU FIRST, before the CCCD write: a WiCAN that fans its own
+        // AutoPID output into the BLE pipe floods 20-byte notifications at
+        // MTU 23, and the bigger MTU shortens that storm. Unsolicited data
+        // before the app's first command is discarded by the service's rx
+        // sync (see PitstopBridgeService.syncElmPrompt).
         requestMtu(247).enqueue()
         setNotificationCallback(tx).with { _, data: Data ->
             val raw = data.value ?: return@with
@@ -298,6 +320,7 @@ class WiCanBleManager(
         val bondedNow = device.bondState == BluetoothDevice.BOND_BONDED
         bondingThisAttempt = device.bondState == BluetoothDevice.BOND_BONDING
         authErrorWhileBonded = false
+        linkUpThisAttempt = false
         // Unbonded + this WiCAN has asked for pairing before (or a bond is
         // being created right now, e.g. from the Settings "Pair" button):
         // allow long enough to type the passkey. Everything else keeps the
@@ -328,6 +351,7 @@ class WiCanBleManager(
             .done {
                 logBuffer?.info("ble connected", mapOf("mac" to maskMac(device.address)))
                 bondingThisAttempt = false
+                bondedSetupTimeouts = 0
                 if (lastPairingState != PairingState.NONE &&
                     (device.bondState == BluetoothDevice.BOND_BONDED || !pairingExpected)
                 ) {
@@ -345,12 +369,27 @@ class WiCanBleManager(
                         "bonded" to bonded,
                         "bonding_this_attempt" to bondingThisAttempt,
                         "auth_error_bonded" to authErrorWhileBonded,
+                        "link_up" to linkUpThisAttempt,
                     ),
                 )
+                // Stale-bond heuristic: bonded, the link DID come up, and
+                // setup still timed out. A sleeping/out-of-range WiCAN never
+                // gets a link, so it can't trip this.
+                if (bonded && linkUpThisAttempt && status == FailCallback.REASON_TIMEOUT) {
+                    bondedSetupTimeouts += 1
+                    logBuffer?.warn(
+                        "ble: bonded setup timed out after link-up",
+                        mapOf("streak" to bondedSetupTimeouts),
+                    )
+                } else if (!bonded || !linkUpThisAttempt) {
+                    bondedSetupTimeouts = 0
+                }
                 // Pairing outcome of this attempt, for the UI. Order matters:
                 // a bond the WiCAN refused is the most specific diagnosis.
                 when {
                     bonded && authErrorWhileBonded -> setPairingState(PairingState.REJECTED)
+                    bonded && bondedSetupTimeouts >= STALE_BOND_TIMEOUTS ->
+                        setPairingState(PairingState.REJECTED)
                     lastPairingState == PairingState.FAILED -> Unit // keep "wrong passkey"
                     !bonded && (bondingThisAttempt || pairingExpected) ->
                         setPairingState(PairingState.REQUIRED)
@@ -429,6 +468,16 @@ class WiCanBleManager(
          * type it into the system dialog.
          */
         const val PAIRING_CONNECT_TIMEOUT_MS = 90_000L
+
+        /**
+         * Bonded link-up-then-timeout attempts in a row before the bond is
+         * reported as rejected. Not 1: a single slow setup (e.g. the WiCAN's
+         * own AutoPID flooding the pipe at MTU 23) mustn't send the user off
+         * to re-enter the passkey. Never removes the bond on its own — that
+         * would cost a passkey entry and (on Android) the auto-start
+         * association; the user-initiated "Reconnect WiCAN" does it.
+         */
+        const val STALE_BOND_TIMEOUTS = 3
 
         private val CANDIDATE_PROFILES = listOf(
             // WiCAN-PRO v4.49 BLE channel: 0xFFF0 service.

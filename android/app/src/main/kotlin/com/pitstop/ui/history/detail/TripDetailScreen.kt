@@ -392,6 +392,8 @@ internal fun TripDetailContent(
                                         color = def.color,
                                         unitLabel = def.quantity.unit(unitSystem),
                                         digits = def.digits,
+                                        step = def.carryMs != null,
+                                        carryMs = def.carryMs,
                                     )
                                 }
                             }
@@ -399,6 +401,11 @@ internal fun TripDetailContent(
                     LineChart(series = display, height = 260.dp)
                 }
             }
+        }
+
+        // Tires: hidden only when the trip has no tire data at all.
+        if (tripHasTires(trip)) {
+            TripTiresCard(samples = trip.samples, tires = trip.tires, system = unitSystem)
         }
 
         if (trip.dtcs.isNotEmpty()) {
@@ -787,6 +794,10 @@ private fun SecondaryStatsCard(trip: TripDetailDto, unitSystem: String) {
         trip.avgCoolantC?.let {
             add("Avg coolant" to UnitFormat.Quantity.TempC.format(it, unitSystem, 0))
         }
+        // Braking (brake_pressure). The backend sends all four as null when
+        // the trip has no brake samples, so nothing shows rather than a
+        // misleading "0 presses".
+        trip.brakeEvents?.let { add("Braking" to brakingLine(trip)) }
         if (trip.weatherTempC != null) {
             val t = UnitFormat.Quantity.TempC.format(trip.weatherTempC, unitSystem, 0)
             val wmo = wmoLabel(trip.weatherCode)
@@ -1158,6 +1169,12 @@ internal data class TripMetricDef(
      * unreadable 17-line chart on a phone.
      */
     val defaultVisible: Boolean = false,
+    /**
+     * Carry a value at most this long, then break the line (and draw steps).
+     * Brake pressure only: carried across a dropout, one press would read as
+     * a long brake hold. Null = the old always-connected line.
+     */
+    val carryMs: Long? = null,
 ) {
     /** "Speed (mph)" / "Speed (km/h)" — unit resolved at render time. */
     fun chipLabel(system: String): String {
@@ -1234,6 +1251,12 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
         "fuel_rail_pressure", "Fuel rail", ChartPalette.fuelRail,
         UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Emissions,
     ),
+    // Brake pressure (VSA, Mode 22 224005), bar in both systems. 1 Hz,
+    // and absent on any trip without the Mode 22 brake poll.
+    TripMetricDef(
+        "brake_pressure", "Brake", ChartPalette.brake,
+        UnitFormat.Quantity.Bar, 0, carryMs = 3_000L,
+    ),
     // ── Distance ──────────────────────────────────────────────────
     // Absolute odometer. The API already subtracted the vehicle's
     // odometer_offset_km, so this line reads the same as the dash and
@@ -1248,3 +1271,15 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
         UnitFormat.Quantity.DistanceKm, 0, group = MetricGroup.Distance,
     ),
 )
+
+/**
+ * "12 presses · 1 hard · max 88 bar · 42s on pedal" — web parity. Only
+ * called when brake_events is non-null (null = not measured).
+ */
+internal fun brakingLine(trip: TripDetailDto): String = buildList {
+    val n = trip.brakeEvents ?: 0
+    add("$n press${if (n == 1) "" else "es"}")
+    trip.hardBrakeEvents?.let { add("$it hard") }
+    trip.maxBrakeBar?.let { add("max ${it.roundToInt()} bar") }
+    trip.brakingS?.let { add("${it.roundToInt()}s on pedal") }
+}.joinToString(" · ")

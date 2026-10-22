@@ -36,6 +36,12 @@ internal fun LineChart(
     series: List<DisplaySeries>,
     modifier: Modifier = Modifier,
     height: Dp = 220.dp,
+    /**
+     * One Y range for every series (with tick labels), instead of each
+     * auto-fitting its own. For like-for-like lines — four tire pressures —
+     * where the spread between them IS the story.
+     */
+    sharedYAxis: Boolean = false,
 ) {
     val grid = MaterialTheme.colorScheme.outlineVariant
     val axis = MaterialTheme.colorScheme.onSurfaceVariant
@@ -92,26 +98,49 @@ internal fun LineChart(
                 )
             }
 
-            // Plot each series in its own y-range.
+            val shared: Pair<Double, Double>? = if (sharedYAxis) {
+                series.flatMap { it.series.points }.bounds()
+            } else {
+                null
+            }
+            // Plot each series in its own y-range (or the shared one).
             for (ds in series) {
                 if (ds.series.points.size < 2) continue
-                val ybounds = ds.series.points.bounds() ?: continue
+                val ybounds = shared ?: ds.series.points.bounds() ?: continue
                 val (yMin, yMax) = ybounds
                 val yRange = (yMax - yMin).coerceAtLeast(1e-6)
 
                 val path = Path()
                 var started = false
+                var prevT = 0L
+                var prevY = 0f
+                val carry = ds.carryMs
+                fun xAt(t: Double) = left + (((t - tMin) / tRange) * plotW).toFloat()
                 for (p in ds.series.points) {
-                    val xN = (p.tMillis - tMin) / tRange
+                    val x = xAt(p.tMillis.toDouble())
                     val yN = (p.value - yMin) / yRange
-                    val x = left + (xN * plotW).toFloat()
                     val y = bottom - (yN * plotH).toFloat()
-                    if (!started) {
-                        path.moveTo(x, y)
-                        started = true
-                    } else {
-                        path.lineTo(x, y)
+                    val gap = carry != null && started && p.tMillis - prevT > carry
+                    when {
+                        !started -> {
+                            path.moveTo(x, y)
+                            started = true
+                        }
+                        gap -> {
+                            // Carry the last value for [carry] at most, then
+                            // lift the pen: a dropout is a gap, never a line
+                            // through data that doesn't exist (and never 0).
+                            if (ds.step) path.lineTo(xAt((prevT + carry!!).toDouble()), prevY)
+                            path.moveTo(x, y)
+                        }
+                        ds.step -> {
+                            path.lineTo(x, prevY)
+                            path.lineTo(x, y)
+                        }
+                        else -> path.lineTo(x, y)
                     }
+                    prevT = p.tMillis
+                    prevY = y
                 }
                 drawPath(
                     path = path,
@@ -123,9 +152,9 @@ internal fun LineChart(
             // If exactly one series is visible, draw its Y-axis labels
             // — gives a sense of scale that's otherwise lost when each
             // series is auto-fit to its own range.
-            if (series.size == 1) {
+            if (series.size == 1 || shared != null) {
                 val s = series.first()
-                val bounds = s.series.points.bounds()
+                val bounds = shared ?: s.series.points.bounds()
                 if (bounds != null) {
                     val (yMin, yMax) = bounds
                     val ticks = listOf(yMin, (yMin + yMax) / 2, yMax)
@@ -160,6 +189,10 @@ internal data class DisplaySeries(
      * a constant "1.0" — hence the explicit override.
      */
     val digits: Int? = null,
+    /** Draw as steps (hold each value until the next sample). */
+    val step: Boolean = false,
+    /** Carry a value forward at most this long, then break the line. */
+    val carryMs: Long? = null,
 )
 
 private fun Color.toArgb(): Int {

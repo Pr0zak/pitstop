@@ -42,6 +42,8 @@ internal fun BridgeSheetContent(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** Opens Settings on the WiCAN card and runs its primary action. */
+    onWicanAction: () -> Unit = onOpenSettings,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -52,7 +54,9 @@ internal fun BridgeSheetContent(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Logging", style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
-        if (!state.configured || state.needsPairing) {
+        val wicanMsg = com.pitstop.domain.WicanSetup.message(state.wican)
+        val wicanAction = com.pitstop.domain.WicanSetup.action(state.wican)
+        if (!state.configured || wicanMsg != null) {
             Card {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -61,12 +65,16 @@ internal fun BridgeSheetContent(
                     Icon(Icons.Outlined.Bluetooth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.size(12.dp))
                     Text(
-                        if (!state.configured) "Finish setup to start logging drives."
-                        else "Pair the WiCAN so drives start logging on their own.",
+                        if (!state.configured) "Finish setup to start logging drives." else wicanMsg!!,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f),
                     )
-                    Button(onClick = onOpenSettings) { Text(if (!state.configured) "Set up" else "Pair") }
+                    // Same label as the action it runs (Settings opens on the
+                    // WiCAN card and starts it); nothing to tap mid-passkey.
+                    val label = if (!state.configured) "Set up" else wicanAction
+                    if (label != null) {
+                        Button(onClick = if (!state.configured) onOpenSettings else onWicanAction) { Text(label) }
+                    }
                 }
             }
         }

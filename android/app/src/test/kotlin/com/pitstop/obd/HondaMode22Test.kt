@@ -148,6 +148,31 @@ class HondaMode22Test {
 
     private fun ByteArray.hex() = joinToString(" ") { "%02X".format(it) }
 
+    // ---- module 28 (VSA) ---------------------------------------------------------
+
+    private fun hex(s: String): ByteArray =
+        s.trim().split(Regex("\\s+")).map { it.toInt(16).toByte() }.toByteArray()
+
+    @Test
+    fun `brake pressure is big-endian 10-11 minus 25 bar`() {
+        // Verified on the car: a firm press.
+        val firm = hex("62 40 05 00 00 DB 3D 80 00 00 00 76 19 00 7D 7D 00")
+        assertEquals(93.0, HondaMode22.decodeBrakeBar(firm)!!, 0.0)
+        // Off the pedal: raw 0x0019 = 25 -> 0.
+        val off = hex("62 40 05 00 00 DB 3D 80 00 00 00 19 19 00 7D 7D 00")
+        assertEquals(0.0, HondaMode22.decodeBrakeBar(off)!!, 0.0)
+        assertTrue(HondaMode22.BrakePressure.matchesDidEcho(firm))
+        assertNull(HondaMode22.decodeBrakeBar(firm.copyOfRange(0, 11)))
+    }
+
+    @Test
+    fun `brake pressure polls VSA every second`() {
+        assertEquals(listOf("ATSH18DA28F1", "ATCRA18DAF128"), HondaMode22.BrakePressure.initCommands)
+        assertEquals("224005\r", HondaMode22.BrakePressure.command())
+        assertEquals(1_000L, HondaMode22.BrakePressure.periodMs)
+        assertEquals("brake_pressure", HondaMode22.BrakePressure.name)
+    }
+
     // ---- wiring ---------------------------------------------------------------
 
     @Test

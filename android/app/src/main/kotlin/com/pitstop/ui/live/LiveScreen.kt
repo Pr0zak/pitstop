@@ -425,6 +425,17 @@ internal fun LiveContent(
 
             )
 
+            // ── Brakes (VSA, Mode 22 224005 on module 28) ────────────
+            LiveSection(
+                title = "Brakes",
+                tiles = listOf(
+                    TileSpec("Brake pressure", "brake_pressure", UnitFormat.Quantity.Bar, 0),
+                ),
+                metrics = shown,
+                parkedNowMs = if (parked) nowMs else null,
+                system = unitSystem,
+            )
+
             // ── Vehicle (instrument cluster, Mode 22 on module 60) ────
             // Odometer prefers the cluster's own miles (equals the dash
             // exactly); the PCM odometer (km, PID 0xA6) minus the vehicle's

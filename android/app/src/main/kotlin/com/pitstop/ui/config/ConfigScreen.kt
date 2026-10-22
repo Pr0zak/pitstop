@@ -48,6 +48,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -165,10 +166,14 @@ fun ConfigScreen(
     val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
     val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
     val placesKey by viewModel.placesKey.collectAsStateWithLifecycle()
-    val bleBond by viewModel.bleBond.collectAsStateWithLifecycle()
+    val wicanUi by viewModel.wicanSetupUi.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val nav = rememberNavController()
+    val openDevicesAndScan: () -> Unit = {
+        nav.navigate(ROUTE_DEVICES) { launchSingleTop = true }
+        viewModel.startScan()
+    }
 
     // Persist any unsaved edits when the user leaves Settings (tab switch /
     // back). Without this, the form lives in viewModelScope and swiping away
@@ -260,6 +265,15 @@ fun ConfigScreen(
                 focusPlaces = true
                 onTargetConsumed()
             }
+            SettingsTarget.WicanAction -> {
+                // Wait for the first real state before deciding what to run.
+                viewModel.refreshWicanSetup()
+                kotlinx.coroutines.withTimeoutOrNull(3_000) {
+                    viewModel.wicanSetupUi.first { ui -> ui != null }
+                }
+                viewModel.runWicanAction(onNeedDevice = openDevicesAndScan)
+                onTargetConsumed()
+            }
             null -> Unit
         }
     }
@@ -271,7 +285,8 @@ fun ConfigScreen(
                 autoStartStatus = autoStartStatus,
                 pairing = pairingInProgress,
                 snackbarHostState = snackbarHostState,
-                onPair = { viewModel.pairCompanion() },
+                wican = wicanUi,
+                onWicanAction = { viewModel.runWicanAction(onNeedDevice = openDevicesAndScan) },
                 onCopyDiagnostics = copyDiagnostics,
                 onOpen = { route -> nav.navigate(route) },
                 onClose = onClose,
@@ -336,12 +351,20 @@ fun ConfigScreen(
                     },
                 )
                 if (viewModel.companionPresenceSupported) {
-                    CompanionPairingSection(
-                        associated = companionAssociated,
-                        pairing = pairingInProgress,
-                        onPair = { viewModel.pairCompanion() },
-                        onUnpair = { viewModel.unpairCompanion() },
-                    )
+                    wicanUi?.let {
+                        com.pitstop.ui.components.WicanSetupCard(
+                            ui = it,
+                            onAction = { viewModel.runWicanAction(onNeedDevice = openDevicesAndScan) },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                    if (companionAssociated) {
+                        TextButton(
+                            onClick = { viewModel.unpairCompanion() },
+                            enabled = !pairingInProgress,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        ) { Text("Remove the auto-start link") }
+                    }
                 }
             }
         }
@@ -361,7 +384,14 @@ fun ConfigScreen(
                     onUploadOnWifiChange = { v -> viewModel.setUploadOnWifi(v) },
                     onUploadOnWifiSsidsChange = { v -> viewModel.setUploadOnWifiSsids(v) },
                 )
-                LaunchedEffect(form.bleDeviceMac) { viewModel.refreshBleBond() }
+                LaunchedEffect(form.bleDeviceMac) { viewModel.refreshWicanSetup() }
+                wicanUi?.let {
+                    com.pitstop.ui.components.WicanSetupCard(
+                        ui = it,
+                        onAction = { viewModel.runWicanAction(onNeedDevice = { viewModel.startScan() }) },
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
                 BleDeviceSection(
                     deviceName = form.bleDeviceName,
                     deviceMac = form.bleDeviceMac,
@@ -371,8 +401,6 @@ fun ConfigScreen(
                         if (scanning) viewModel.stopScan() else viewModel.startScan()
                     },
                     onPick = { viewModel.pickDevice(it) },
-                    bond = bleBond,
-                    onPairBle = { viewModel.pairBle() },
                 )
                 ExtendedPidsSection(
                     enabled = form.extendedPidsEnabled,
@@ -450,10 +478,12 @@ private fun toastMessage(t: ConfigToast): String = when (t) {
     is ConfigToast.UpdateUpToDate -> "You're on the latest (v${t.current})"
     is ConfigToast.UpdateAvailable -> "v${t.latest} available — update from Google Play"
     is ConfigToast.UpdateCheckError -> "Couldn't check for updates"
-    ConfigToast.CompanionPaired -> "WiCAN paired for reliable auto-start"
-    ConfigToast.BridgePausedForPairing -> "Stopping bridge so the WiCAN can be discovered…"
-    ConfigToast.CompanionUnpaired -> "WiCAN unpaired"
-    is ConfigToast.CompanionError -> "Pairing failed: ${t.message}"
+    ConfigToast.CompanionPaired -> "Auto-start is on — drives will start logging on their own"
+    ConfigToast.BridgePausedForPairing -> "Stopping the bridge so the WiCAN can be found…"
+    ConfigToast.CompanionUnpaired -> "Auto-start link removed"
+    is ConfigToast.CompanionError -> "Couldn't turn on auto-start: ${t.message}"
+    ConfigToast.WicanBluetoothFailed ->
+        "The WiCAN didn't connect — check the passkey on its Settings › Bluetooth page and try again"
     is ConfigToast.SetupImported ->
         if (t.fields.isEmpty()) "Setup link imported" else "Imported ${t.fields.joinToString(", ")}"
     ConfigToast.SetupLinkInvalid -> "Clipboard isn't a pitstop setup link"
@@ -468,6 +498,11 @@ private fun toastMessage(t: ConfigToast): String = when (t) {
 enum class SettingsTarget {
     /** Connection → Live fuel prices (the Google Places API key). */
     PlacesKey,
+
+    /** Root WiCAN card, running its one primary action on arrival — what
+     *  "Connect WiCAN" / "Reconnect WiCAN" / "Turn on auto-start" do from
+     *  the top-bar sheet, Home and the wizard. */
+    WicanAction,
 }
 
 /** "Saving…" while a write is pending or running; "All changes saved" once
@@ -513,8 +548,8 @@ internal fun settingsRows(
     }
     val (autoState, autoLabel) = when (autoStartStatus.verdict) {
         AutoStartVerdict.Armed -> PillTone.Healthy to "Armed"
-        AutoStartVerdict.NeedsPairing -> PillTone.Degraded to "Needs pairing"
-        AutoStartVerdict.Off -> PillTone.Neutral to "Off"
+        AutoStartVerdict.NeedsPairing -> PillTone.Degraded to "Off"
+        AutoStartVerdict.Off -> PillTone.Neutral to "Switched off"
     }
     val captureLabel = when {
         form.bridgeBleEnabled && form.bridgeGpsEnabled -> "OBD + GPS"
@@ -558,7 +593,9 @@ internal fun ConfigRootContent(
     autoStartStatus: AutoStartStatus,
     pairing: Boolean,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
-    onPair: () -> Unit = {},
+    /** Unified WiCAN setup; the card shows only while something is missing. */
+    wican: com.pitstop.ui.components.WicanSetupUi? = null,
+    onWicanAction: () -> Unit = {},
     onCopyDiagnostics: () -> Unit = {},
     onOpen: (String) -> Unit = {},
     onClose: (() -> Unit)? = null,
@@ -580,10 +617,15 @@ internal fun ConfigRootContent(
                 .verticalScroll(rememberScrollState())
                 .padding(vertical = 4.dp),
         ) {
+            if (wican != null && wican.state != com.pitstop.domain.WicanSetup.State.Ready) {
+                com.pitstop.ui.components.WicanSetupCard(
+                    ui = wican,
+                    onAction = onWicanAction,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
             AutoStartStrip(
                 status = autoStartStatus,
-                pairing = pairing,
-                onPair = onPair,
                 onCopyDiagnostics = onCopyDiagnostics,
             )
             for (row in rows) {
@@ -949,71 +991,27 @@ private fun AutoStartSection(
     }
 }
 
-// ── Reliable background auto-start (CompanionDeviceManager) ──────────
-
-@Composable
-private fun CompanionPairingSection(
-    associated: Boolean,
-    pairing: Boolean,
-    onPair: () -> Unit,
-    onUnpair: () -> Unit,
-) {
-    SettingsSection(
-        title = "Reliable background auto-start",
-        description = "Pairing the WiCAN as a companion device lets pitstop start " +
-            "logging automatically the moment the dongle is in range — even from " +
-            "the background. This is what makes auto-start reliable.",
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusPill(tone = if (associated) PillTone.Healthy else PillTone.Neutral,
-                label = if (associated) "Associated" else "Not paired",
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                if (associated) "WiCAN companion active" else "Pair to enable reliable auto-start",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.weight(1f))
-            if (associated) {
-                OutlinedButton(onClick = onUnpair, enabled = !pairing) { Text("Unpair") }
-            } else {
-                Button(onClick = onPair, enabled = !pairing) { Text("Pair") }
-            }
-        }
-        if (pairing) {
-            Text(
-                "Freeing the dongle for pairing — stopping the live link so it " +
-                    "starts advertising, then the system pairing dialog will appear…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
 // ── Auto-start status strip (task #18 + IA move #1) ─────────────────
 
 /**
  * The always-pinned strip above the accordion that answers "will a drive start
  * on its own, and why isn't it?" at zero taps — the #1 recurring reason to open
- * Settings. Leads with an armed / needs-pairing / off verdict. When it needs
- * pairing it opens up: the Pair CTA + a live ledger of each in-car signal so a
- * missed auto-start is diagnosable in place. When armed (or off) it collapses to
+ * Settings. Leads with an armed / auto-start-off / switched-off verdict. When
+ * the auto-start link is missing it opens up the live ledger of each in-car
+ * signal so a missed auto-start is diagnosable in place; the action that fixes
+ * it lives on the WiCAN card pinned above (one action, one vocabulary). When armed (or off) it collapses to
  * one quiet line so the landing view stays short. A "Copy diagnostics" shortcut
  * sits with the verdict so a red state is one tap from a shareable snapshot.
  */
 @Composable
 private fun AutoStartStrip(
     status: AutoStartStatus,
-    pairing: Boolean,
-    onPair: () -> Unit,
     onCopyDiagnostics: () -> Unit,
 ) {
     val (verdictState, verdictLabel) = when (status.verdict) {
         AutoStartVerdict.Armed -> PillTone.Healthy to "Armed"
-        AutoStartVerdict.NeedsPairing -> PillTone.Degraded to "Needs pairing"
-        AutoStartVerdict.Off -> PillTone.Neutral to "Off"
+        AutoStartVerdict.NeedsPairing -> PillTone.Neutral to "Auto-start off"
+        AutoStartVerdict.Off -> PillTone.Neutral to "Switched off"
     }
     val needsPairing = status.verdict == AutoStartVerdict.NeedsPairing
     Card(
@@ -1036,7 +1034,7 @@ private fun AutoStartStrip(
                             if (status.inCarNow) "In the car now — ready to log."
                             else "Auto-start armed."
                         AutoStartVerdict.NeedsPairing ->
-                            "Pair the WiCAN so drives can start from the background."
+                            "Not linked to the WiCAN yet — use Turn on auto-start on the WiCAN card."
                         AutoStartVerdict.Off ->
                             "Off — start drives manually from Home."
                     },
@@ -1046,17 +1044,6 @@ private fun AutoStartStrip(
             }
 
             if (needsPairing) {
-                Button(onClick = onPair, enabled = !pairing) {
-                    if (pairing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text("Pair WiCAN")
-                }
                 // Live signal ledger — shown only when there's a problem to
                 // diagnose (needs-pairing); when armed/off it stays collapsed.
                 HorizontalDivider(Modifier.padding(vertical = 2.dp))
@@ -1195,12 +1182,10 @@ private fun BleDeviceSection(
     scanResults: List<ScannedDevice>,
     onToggleScan: () -> Unit,
     onPick: (ScannedDevice) -> Unit,
-    bond: BleBond? = null,
-    onPairBle: () -> Unit = {},
 ) {
     SettingsSection(
         title = "OBD device",
-        description = "WiCAN-Pro pairs over BLE. Power the dongle by plugging it in, then Scan and pick.",
+        description = "The WiCAN-Pro talks over Bluetooth LE. Plug the dongle in, then Scan and pick it.",
     ) {
         Text(
             text = deviceName ?: deviceMac ?: "(none picked)",
@@ -1215,41 +1200,6 @@ private fun BleDeviceSection(
         }
         OutlinedButton(onClick = onToggleScan) {
             Text(if (scanning) "Stop scan" else "Scan for devices")
-        }
-        // Bluetooth pairing — required by WiCAN firmware 6 (Secure
-        // Connections + a static passkey), not used by 4.x.
-        if (deviceMac != null && bond != null) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusPill(
-                    tone = when (bond) {
-                        BleBond.Bonded -> PillTone.Healthy
-                        BleBond.Bonding -> PillTone.Connecting
-                        BleBond.NotBonded -> PillTone.Neutral
-                    },
-                    label = when (bond) {
-                        BleBond.Bonded -> "Paired"
-                        BleBond.Bonding -> "Pairing…"
-                        BleBond.NotBonded -> "Not paired"
-                    },
-                    subject = "Bluetooth",
-                )
-                Spacer(Modifier.weight(1f))
-                if (bond != BleBond.Bonded) {
-                    Button(onClick = onPairBle, enabled = bond != BleBond.Bonding) { Text("Pair") }
-                }
-            }
-            Text(
-                if (bond == BleBond.Bonded) {
-                    "Bonded. If the WiCAN is reflashed or reset, forget it in Android Bluetooth " +
-                        "settings and pair again."
-                } else {
-                    "WiCAN firmware 6 needs Bluetooth pairing — tap Pair and type the passkey from " +
-                        "the WiCAN's Settings › Bluetooth page. Firmware 4.x doesn't need this."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         if (scanResults.isNotEmpty()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -1285,7 +1235,7 @@ private fun ExtendedPidsSection(enabled: Boolean, onChange: (Boolean) -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Poll Mode 22 over BLE", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Gear and active cylinders every 2 s; ATF temp, dash odometer, fuel litres, " +
+                    "Brake pressure every second; gear and active cylinders every 2 s; ATF temp, dash odometer, fuel litres, " +
                         "outside temp and tire pressures every 30 s; misfires every 60 s. " +
                         "Leave off if standard readings drop out while it's on.",
                     style = MaterialTheme.typography.bodySmall,

@@ -86,9 +86,6 @@ data class ConfigFormState(
     val saved: Boolean = false,
 )
 
-/** Android's bond with the picked WiCAN (firmware 6 needs one; 4.x doesn't). */
-enum class BleBond { NotBonded, Bonding, Bonded }
-
 /** Messages the Config screen surfaces in a snackbar (eg. "Sent 17 logs"). */
 sealed interface ConfigToast {
     data class FlushedOk(val count: Int) : ConfigToast
@@ -101,6 +98,7 @@ sealed interface ConfigToast {
     object BridgePausedForPairing : ConfigToast
     object CompanionUnpaired : ConfigToast
     data class CompanionError(val message: String) : ConfigToast
+    object WicanBluetoothFailed : ConfigToast
     data class SetupImported(val fields: List<String>) : ConfigToast
     object SetupLinkInvalid : ConfigToast
     object SetupLinkEmpty : ConfigToast
@@ -228,6 +226,7 @@ class ConfigViewModel @Inject constructor(
     private val activityBus: ActivityRecognitionBus,
     private val wifiSsidReader: WifiSsidReader,
     private val appPrefs: com.pitstop.data.AppPrefs,
+    private val wicanSetup: com.pitstop.companion.WicanSetupTracker,
 ) : AndroidViewModel(application) {
 
     // ── Notification toggles (AppPrefs, not the Settings form) ──────────
@@ -252,65 +251,54 @@ class ConfigViewModel @Inject constructor(
      *  the pairing card below this since it buys nothing there. */
     val companionPresenceSupported: Boolean = companionManager.presenceSupported
 
-    /**
-     * Android's bond state with the picked WiCAN (firmware 6 requires a
-     * Secure Connections bond with the WiCAN's static passkey; 4.x needs
-     * none). Null = no device picked / no permission / no adapter.
-     */
-    private val _bleBond = MutableStateFlow<BleBond?>(null)
-    val bleBond: StateFlow<BleBond?> = _bleBond.asStateFlow()
-
-    private val appContext = application.applicationContext
-
-    @android.annotation.SuppressLint("MissingPermission")
-    private fun bondStateOf(mac: String?): BleBond? {
-        if (mac.isNullOrBlank()) return null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.BLUETOOTH_CONNECT) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return null
-        val adapter = (appContext.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
-            as? android.bluetooth.BluetoothManager)?.adapter ?: return null
-        val device = runCatching { adapter.getRemoteDevice(mac) }.getOrNull() ?: return null
-        return when (device.bondState) {
-            android.bluetooth.BluetoothDevice.BOND_BONDED -> BleBond.Bonded
-            android.bluetooth.BluetoothDevice.BOND_BONDING -> BleBond.Bonding
-            else -> BleBond.NotBonded
-        }
+    /** Unified WiCAN setup (Bluetooth bond + auto-start link) for the card. */
+    private val _wicanBusy = MutableStateFlow(false)
+    // Lazy: _pairingInProgress is declared further down this class.
+    val wicanSetupUi: StateFlow<com.pitstop.ui.components.WicanSetupUi?> by lazy {
+        combine(
+            wicanSetup.inputs,
+            _wicanBusy,
+            _pairingInProgress,
+        ) { inputs, busy, cdmBusy ->
+            com.pitstop.ui.components.WicanSetupUi(inputs = inputs, busy = busy || cdmBusy)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     }
 
-    /** Re-read the bond state (on Settings resume, and while pairing). */
-    fun refreshBleBond() {
-        _bleBond.value = bondStateOf(_form.value.bleDeviceMac)
-    }
+    fun refreshWicanSetup() = wicanSetup.refresh()
 
     /**
-     * Start Android pairing with the picked WiCAN. The system dialog asks for
-     * the passkey shown on the WiCAN's Settings › Bluetooth page. Only needed
-     * on firmware 6 — 4.x needs no bond, and bonding a 4.x dongle is
-     * pointless, so this is a button, never automatic. The bridge also pairs
-     * on demand when a firmware-6 WiCAN asks (see WiCanBleManager).
+     * The ONE primary action: run whichever WiCAN step is missing.
+     *  - no device → [onNeedDevice] (the screen opens Devices and scans)
+     *  - Bluetooth needed / rejected → bond (fresh for rejected: remove the
+     *    stale bond first), then, if auto-start wants it, chain straight into
+     *    the auto-start link — forgetting the device in Android settings drops
+     *    the association too, so a re-bond usually needs both
+     *  - auto-start off → the CompanionDeviceManager link
      */
-    @android.annotation.SuppressLint("MissingPermission")
-    fun pairBle() {
-        val mac = _form.value.bleDeviceMac ?: return
-        if (bondStateOf(mac) == null) {
-            _bleBond.value = null
-            return
-        }
-        val adapter = (appContext.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
-            as android.bluetooth.BluetoothManager).adapter
-        val device = adapter.getRemoteDevice(mac)
-        val started = runCatching { device.createBond() }.getOrDefault(false)
-        logBuffer.info("config: ble createBond", mapOf("started" to started))
-        viewModelScope.launch {
-            // The dialog is the system's; poll the result for up to 2 min.
-            repeat(120) {
-                val st = bondStateOf(mac)
-                _bleBond.value = st
-                if (it > 2 && st != BleBond.Bonding) return@launch
-                delay(1_000)
+    fun runWicanAction(onNeedDevice: () -> Unit) {
+        val ui = wicanSetupUi.value ?: return
+        if (ui.busy) return
+        when (ui.state) {
+            com.pitstop.domain.WicanSetup.State.NoDevice -> onNeedDevice()
+            com.pitstop.domain.WicanSetup.State.BluetoothNeeded,
+            com.pitstop.domain.WicanSetup.State.BluetoothRejected,
+            -> viewModelScope.launch {
+                _wicanBusy.value = true
+                val ok = runCatching {
+                    wicanSetup.bond(fresh = ui.state == com.pitstop.domain.WicanSetup.State.BluetoothRejected)
+                }.getOrDefault(false)
+                _wicanBusy.value = false
+                if (!ok) {
+                    _toast.tryEmit(ConfigToast.WicanBluetoothFailed)
+                    return@launch
+                }
+                val i = ui.inputs
+                if (i.autoStartOn && i.cdmSupported && !companionManager.hasAssociation()) pairCompanion()
             }
+            com.pitstop.domain.WicanSetup.State.AutoStartOff -> pairCompanion()
+            com.pitstop.domain.WicanSetup.State.BluetoothInProgress,
+            com.pitstop.domain.WicanSetup.State.Ready,
+            -> Unit
         }
     }
 
@@ -618,6 +606,15 @@ class ConfigViewModel @Inject constructor(
     fun onCompanionConfirmed(associationId: Int, mac: String?) {
         companionManager.onAssociationConfirmed(associationId, mac)
         refreshCompanionState()
+        // The association picked a WiCAN; if none was picked by scan yet
+        // (setup wizard), make it the bridge's device too, so "Connect
+        // WiCAN" from the wizard ends with a usable link, not just a link
+        // to auto-start.
+        if (_form.value.bleDeviceMac.isNullOrBlank() && !mac.isNullOrBlank()) {
+            _form.value = _form.value.copy(bleDeviceMac = mac, saved = false)
+            viewModelScope.launch { runCatching { persistForm() } }
+        }
+        wicanSetup.refresh()
         viewModelScope.launch { _toast.emit(ConfigToast.CompanionPaired) }
     }
 
@@ -821,11 +818,13 @@ class ConfigViewModel @Inject constructor(
     fun canReadWifiSsid(): Boolean = wifiSsidReader.hasPermission()
 
     fun pickDevice(device: ScannedDevice) {
+        val changed = device.mac != _form.value.bleDeviceMac
         _form.value = _form.value.copy(
             bleDeviceMac = device.mac,
             bleDeviceName = device.name,
             saved = false,
         )
+        if (changed) wicanSetup.onDevicePicked()
     }
 
     fun startScan() {

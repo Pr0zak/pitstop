@@ -845,6 +845,35 @@ data class TripDetailDto(
     @kotlinx.serialization.SerialName("fuel_level_end_pct") val fuelLevelEndPct: Double? = null,
     val samples: List<TripSampleDto> = emptyList(),
     val dtcs: List<TripDtcDto> = emptyList(),
+    // Braking (brake_pressure, bar). All null when the trip has no brake
+    // sample — "not measured" must never read as "never braked".
+    @kotlinx.serialization.SerialName("brake_events") val brakeEvents: Int? = null,
+    @kotlinx.serialization.SerialName("hard_brake_events") val hardBrakeEvents: Int? = null,
+    @kotlinx.serialization.SerialName("max_brake_bar") val maxBrakeBar: Double? = null,
+    @kotlinx.serialization.SerialName("braking_s") val brakingS: Double? = null,
+    /** Per-corner TPMS summary; null when the trip has no tire reading. */
+    val tires: TripTiresDto? = null,
+)
+
+/** `tires` on GET /api/trips/{id} (backend `_tire_summary`). */
+@kotlinx.serialization.Serializable
+data class TripTiresDto(
+    val corners: List<TripTireCornerDto> = emptyList(),
+    /** Corners ("fl"...) >= low_delta_psi below the highest, at trip end. */
+    @kotlinx.serialization.SerialName("low_corners") val lowCorners: List<String> = emptyList(),
+    @kotlinx.serialization.SerialName("low_delta_psi") val lowDeltaPsi: Double? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class TripTireCornerDto(
+    /** "fl" | "fr" | "rl" | "rr" */
+    val corner: String,
+    @kotlinx.serialization.SerialName("pressure_start_kpa") val pressureStartKpa: Double? = null,
+    @kotlinx.serialization.SerialName("pressure_end_kpa") val pressureEndKpa: Double? = null,
+    @kotlinx.serialization.SerialName("pressure_min_kpa") val pressureMinKpa: Double? = null,
+    @kotlinx.serialization.SerialName("pressure_max_kpa") val pressureMaxKpa: Double? = null,
+    @kotlinx.serialization.SerialName("temp_start_c") val tempStartC: Double? = null,
+    @kotlinx.serialization.SerialName("temp_end_c") val tempEndC: Double? = null,
 )
 
 @kotlinx.serialization.Serializable

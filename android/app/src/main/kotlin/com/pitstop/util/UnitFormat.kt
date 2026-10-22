@@ -55,6 +55,10 @@ object UnitFormat {
          */
         Lambda("λ", "λ"),
 
+        /** Hydraulic brake pressure. bar in both systems — what the VSA
+         *  module reports and what the web shows (no psi conversion). */
+        Bar("bar", "bar"),
+
         // ── Converted ────────────────────────────────────────────────
         TempC("°C", "°F", toImperial = { it * 9.0 / 5.0 + 32.0 }),
 

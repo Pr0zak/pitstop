@@ -32,28 +32,33 @@ enum class BlePairing {
     Rejected,
     ;
 
-    /** One line for the bridge sheet / Live banner; null when nothing to say. */
+    /**
+     * One line for the Live banner; null when nothing to say. Same words as
+     * [com.pitstop.domain.WicanSetup] (no "Pair" anywhere).
+     */
     fun message(): String? = when (this) {
         None -> null
         InProgress ->
-            "Pairing with the WiCAN — type the passkey shown on the WiCAN's Settings › Bluetooth page."
+            "Connecting the WiCAN — type the passkey shown on its Settings › Bluetooth page."
         Required ->
-            "The WiCAN needs Bluetooth pairing. Pair it in Settings › Devices & capture, " +
-                "using the passkey from the WiCAN's Settings › Bluetooth page."
+            "The WiCAN needs a Bluetooth connection with this phone. Tap Connect WiCAN in the " +
+                "top bar and type the passkey from its Settings › Bluetooth page."
         Failed ->
-            "Pairing with the WiCAN failed — check the passkey on the WiCAN's Settings › Bluetooth page and pair again."
+            "The WiCAN didn't connect — check the passkey on its Settings › Bluetooth page and " +
+                "tap Connect WiCAN again."
         Rejected ->
-            "The WiCAN rejected the saved pairing (it was probably reflashed). Forget it in " +
-                "Android Bluetooth settings, then pair again with the passkey from its Settings › Bluetooth page."
+            "The WiCAN no longer accepts this phone's saved Bluetooth connection (it was probably " +
+                "reset or reflashed). Tap Reconnect WiCAN, or forget the WiC_ device in Android " +
+                "Bluetooth settings first."
     }
 
     /** Short foreground-notification text; null keeps the current one. */
     fun notificationText(): String? = when (this) {
         None -> null
-        InProgress -> "Pairing with the WiCAN — enter its passkey"
-        Required -> "WiCAN needs Bluetooth pairing"
-        Failed -> "WiCAN pairing failed — check the passkey"
-        Rejected -> "WiCAN rejected the saved pairing — re-pair it"
+        InProgress -> "Connecting the WiCAN — enter its passkey"
+        Required -> "Connect WiCAN — Bluetooth passkey needed"
+        Failed -> "WiCAN didn't connect — check the passkey"
+        Rejected -> "Reconnect WiCAN — saved Bluetooth connection rejected"
     }
 }
 

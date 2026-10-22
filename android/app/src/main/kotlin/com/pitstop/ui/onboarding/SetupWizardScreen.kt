@@ -103,6 +103,7 @@ fun SetupWizardScreen(
     val pendingImport by viewModel.pendingImport.collectAsStateWithLifecycle()
     val companionAssociated by viewModel.companionAssociated.collectAsStateWithLifecycle()
     val pairing by viewModel.pairingInProgress.collectAsStateWithLifecycle()
+    val wicanUi by viewModel.wicanSetupUi.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -165,6 +166,7 @@ fun SetupWizardScreen(
         companionSupported = viewModel.companionPresenceSupported,
         companionPaired = companionAssociated,
         pairing = pairing,
+        wican = wicanUi,
         snackbarHostState = snackbarHostState,
         onPasteLink = {
             val pasted = clipboard.getText()?.text
@@ -181,7 +183,9 @@ fun SetupWizardScreen(
         onSlugChange = { slug -> viewModel.update { it.copy(vehicleSlug = slug) } },
         onTest = { viewModel.testConnection() },
         onRequestPermissions = { permissionLauncher.launch(wizardPermissions()) },
-        onPair = { viewModel.pairCompanion() },
+        // No scanner in the wizard: with no WiCAN picked yet, the auto-start
+        // link's chooser is how one gets picked (its MAC becomes the bridge's).
+        onPair = { viewModel.runWicanAction(onNeedDevice = { viewModel.pairCompanion() }) },
         onNext = {
             viewModel.save()
             if (step == WizardStep.Permissions) onDone() else step = WizardStep.entries[step.ordinal + 1]
@@ -215,6 +219,8 @@ internal fun SetupWizardContent(
     companionSupported: Boolean,
     companionPaired: Boolean,
     pairing: Boolean,
+    /** Unified WiCAN setup; null renders the step without the WiCAN card. */
+    wican: com.pitstop.ui.components.WicanSetupUi? = null,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onPasteLink: () -> Unit = {},
     onFormChange: ((ConfigFormState) -> ConfigFormState) -> Unit = {},
@@ -284,6 +290,7 @@ internal fun SetupWizardContent(
                     companionSupported = companionSupported,
                     companionPaired = companionPaired,
                     pairing = pairing,
+                    wican = wican,
                     onRequestPermissions = onRequestPermissions,
                     onPair = onPair,
                 )
@@ -426,6 +433,7 @@ private fun PermissionsStep(
     companionSupported: Boolean,
     companionPaired: Boolean,
     pairing: Boolean,
+    wican: com.pitstop.ui.components.WicanSetupUi?,
     onRequestPermissions: () -> Unit,
     onPair: () -> Unit,
 ) {
@@ -440,38 +448,26 @@ private fun PermissionsStep(
     FilledTonalButton(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
         Text(if (permissionsAsked) "Review permissions again" else "Allow permissions")
     }
-    if (companionSupported) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Sensors, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(10.dp))
-                    Text("Pair the WiCAN (optional)", style = MaterialTheme.typography.titleSmall)
-                }
-                Text(
-                    "Pairing lets drives start logging on their own when the dongle wakes — even " +
-                        "with the app closed. Plug it in and turn the ignition on first; Android " +
-                        "then shows a pairing dialog.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (companionPaired) {
-                    StatusPill(tone = PillTone.Healthy, label = "Paired", compact = true, subject = "WiCAN")
-                } else {
-                    OutlinedButton(onClick = onPair, enabled = !pairing) {
-                        if (pairing) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text("Pair WiCAN")
-                    }
-                }
-            }
-        }
-    }
+    // The same WiCAN card Settings shows: Bluetooth (firmware 6) then
+    // auto-start, one action. Optional here — Skip/Next never wait on it.
+    val w = wican ?: com.pitstop.ui.components.WicanSetupUi(
+        com.pitstop.domain.WicanSetup.Inputs(
+            deviceKnown = companionPaired,
+            bond = com.pitstop.domain.WicanSetup.Bond.Unknown,
+            bondRequired = false,
+            autoStartOn = true,
+            cdmSupported = companionSupported,
+            cdmAssociated = companionPaired,
+        ),
+        busy = pairing,
+    )
+    com.pitstop.ui.components.WicanSetupCard(ui = w, onAction = onPair)
+    Text(
+        "Plug the WiCAN in and turn the ignition on first. Setting it up is optional — drives " +
+            "can always be started from Home.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
     Text(
         "You can change any of this later in Settings.",
         style = MaterialTheme.typography.bodySmall,

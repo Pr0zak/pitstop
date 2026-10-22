@@ -461,6 +461,10 @@ private fun PitstopRootBody(
                                 goTo(Tab.Trips)
                             },
                             onOpenSettings = { settingsOpen = true },
+                            onWicanAction = {
+                                settingsTarget = com.pitstop.ui.config.SettingsTarget.WicanAction
+                                settingsOpen = true
+                            },
                             onOpenDtc = { code, vehicleId ->
                                 historyVm().openDtc(code, vehicleId)
                                 goTo(Tab.Car)
@@ -521,6 +525,11 @@ private fun PitstopRootBody(
                 onStop = appBarVm::stopBridge,
                 onOpenSettings = {
                     bridgeSheetOpen = false
+                    settingsOpen = true
+                },
+                onWicanAction = {
+                    bridgeSheetOpen = false
+                    settingsTarget = com.pitstop.ui.config.SettingsTarget.WicanAction
                     settingsOpen = true
                 },
                 modifier = Modifier.navigationBarsPadding(),
