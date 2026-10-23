@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fuel &amp; tires (ComboWidgetProvider). The diagram is drawn to a
+     transparent bitmap per size AND per theme; this layout supplies the
+     theme-following background and shows the matching bitmap
+     (layout/ = light, layout-night/ = dark). @android:id/background lets
+     Android 12+ clip the corners. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/combo_widget_bg"
+    android:clipToOutline="true"
+    android:padding="4dp">
+
+    <ImageView
+        android:id="@+id/combo_widget_image_light"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter"
+        android:visibility="gone"
+        android:contentDescription="@string/combo_widget_desc" />
+
+    <ImageView
+        android:id="@+id/combo_widget_image_dark"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter"
+        android:visibility="visible"
+        android:contentDescription="@string/combo_widget_desc" />
+</FrameLayout>

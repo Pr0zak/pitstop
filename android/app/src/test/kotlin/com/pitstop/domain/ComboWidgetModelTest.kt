@@ -40,4 +40,15 @@ class ComboWidgetModelTest {
         assertTrue(none.empty)
         assertNull(none.age)
     }
+
+    @Test
+    fun `ageMs is the older half's age and the chip label is compact`() {
+        val m = ComboWidgetRender.modelOf(61.0, now - 3L * 3_600_000L, null, tires, now - 4 * 60_000L, now)
+        assertEquals(3L * 3_600_000L, m.ageMs)
+        assertTrue(m.ageMs!! >= ComboWidgetRender.AGE_SHOWN_AFTER_MS)
+        assertFalse(m.stale)
+        assertEquals("3h", ComboWidgetRender.compactAge(m.ageMs!!))
+        assertEquals("45m", ComboWidgetRender.compactAge(45 * 60_000L))
+        assertEquals("1d", ComboWidgetRender.compactAge(26L * 3_600_000L))
+    }
 }

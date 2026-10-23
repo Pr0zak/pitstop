@@ -159,59 +159,92 @@ class ScreenShots {
         }
     }
 
-    /** "Fuel & tires" widget (design B): 1×1, 2×1 and 2×2 — fresh, stale, never read. */
-    @Test fun comboWidget() = shot("combo_b_final") {
+    /**
+     * "Fuel & tires" widget (design B, polished 2026-10-22): every state at
+     * 1×1, 2×1 and 2×2, on a dark and a light wallpaper with the matching
+     * theme's tile and bitmap.
+     */
+    @Test fun comboWidgetDark() = shot("combo_b_polish_dark") { comboWidgetSheet(dark = true) }
+
+    @Test fun comboWidgetLight() = shot("combo_b_polish_light", dark = false) { comboWidgetSheet(dark = false) }
+
+    @Composable
+    private fun comboWidgetSheet(dark: Boolean) {
         val now = Fixtures.NOW
-        fun tires(ageMs: Long) = mapOf(
-            "tire_pressure_fl" to com.pitstop.data.CachedReading(213.0, now - ageMs),
-            "tire_pressure_fr" to com.pitstop.data.CachedReading(196.0, now - ageMs),
-            "tire_pressure_rl" to com.pitstop.data.CachedReading(209.0, now - ageMs),
-            "tire_pressure_rr" to com.pitstop.data.CachedReading(205.0, now - ageMs),
+        val min = 60_000L
+        val hour = 3_600_000L
+        // psi → kPa as stored: 35 = 241.3, 34 = 234.4, 32 = 220.6, 26 = 179.3.
+        fun tires(fr: Double, ageMs: Long) = mapOf(
+            "tire_pressure_fl" to com.pitstop.data.CachedReading(241.3, now - ageMs),
+            "tire_pressure_fr" to com.pitstop.data.CachedReading(fr, now - ageMs),
+            "tire_pressure_rl" to com.pitstop.data.CachedReading(234.4, now - ageMs),
+            "tire_pressure_rr" to com.pitstop.data.CachedReading(241.3, now - ageMs),
             "_tire_placard_front_kpa" to com.pitstop.data.CachedReading(241.3, now),
             "_tire_placard_rear_kpa" to com.pitstop.data.CachedReading(241.3, now),
         )
-        fun fuel(ageMs: Long) = com.pitstop.data.CachedFuel(44.7 / 73.8 * 100, 240.0, now - ageMs, "Cluster")
-        val fresh = com.pitstop.widget.ComboWidgetProvider.modelOf(fuel(5 * 60_000L), tires(4 * 60_000L), now, "imperial")
-        // Fuel fresh, tires a day old: the OLDER age is what shows.
-        val stale = com.pitstop.widget.ComboWidgetProvider.modelOf(fuel(5 * 60_000L), tires(26 * 3_600_000L), now, "imperial")
-        val never = com.pitstop.widget.ComboWidgetProvider.modelOf(null, emptyMap(), now, "imperial")
-        @androidx.compose.runtime.Composable
-        fun tile(m: com.pitstop.widget.ComboWidgetRender.Model, size: com.pitstop.widget.ComboWidgetRender.Size) {
+        fun fuel(pct: Double, mi: Double, ageMs: Long) = com.pitstop.data.CachedFuel(pct, mi, now - ageMs, "Cluster")
+        fun model(fr: Double = 241.3, pct: Double = 62.0, mi: Double = 260.0, ageMs: Long = min) =
+            com.pitstop.widget.ComboWidgetProvider.modelOf(fuel(pct, mi, ageMs), tires(fr, ageMs), now, "imperial")
+        val states = listOf(
+            "normal" to model(),
+            "tire low (amber)" to model(fr = 220.6),
+            "tire under (red)" to model(fr = 179.3),
+            "fuel 12 %" to model(pct = 12.0, mi = 45.0),
+            "3 h old" to model(ageMs = 3 * hour),
+            "1 day old" to model(ageMs = 26 * hour),
+            "never read" to com.pitstop.widget.ComboWidgetProvider.modelOf(null, emptyMap(), now, "imperial"),
+        )
+        val tileBg = androidx.compose.ui.graphics.Color(if (dark) 0xFF2A2F37 else 0xFFF1EFF4)
+        val wallpaper = if (dark) {
+            androidx.compose.ui.graphics.Brush.linearGradient(listOf(androidx.compose.ui.graphics.Color(0xFF2C3E58), androidx.compose.ui.graphics.Color(0xFF07090D)))
+        } else {
+            androidx.compose.ui.graphics.Brush.linearGradient(listOf(androidx.compose.ui.graphics.Color(0xFFCBD8EC), androidx.compose.ui.graphics.Color(0xFFFFF3E0)))
+        }
+        val labelColor = androidx.compose.ui.graphics.Color(if (dark) 0xFFC9D1DC else 0xFF3B4250)
+
+        @Composable
+        fun tile(m: com.pitstop.widget.ComboWidgetRender.Model, size: com.pitstop.widget.ComboWidgetRender.Size, label: String) {
             val (wDp, hDp) = when (size) {
-                com.pitstop.widget.ComboWidgetRender.Size.Tiny -> 90 to 90
-                com.pitstop.widget.ComboWidgetRender.Size.Wide -> 190 to 88
-                com.pitstop.widget.ComboWidgetRender.Size.Large -> 180 to 180
+                com.pitstop.widget.ComboWidgetRender.Size.Tiny -> 72 to 72
+                com.pitstop.widget.ComboWidgetRender.Size.Wide -> 170 to 80
+                com.pitstop.widget.ComboWidgetRender.Size.Large -> 170 to 170
             }
-            androidx.compose.foundation.layout.Box(
-                Modifier
-                    .size(wDp.dp, hDp.dp)
-                    .background(androidx.compose.ui.graphics.Color(0xFF2A2F37), androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
-                    .padding(6.dp),
-            ) {
-                androidx.compose.foundation.Image(
-                    bitmap = com.pitstop.widget.ComboWidgetRender.render(m, size).asImageBitmap(),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                )
+            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                androidx.compose.foundation.layout.Box(
+                    Modifier
+                        .size(wDp.dp, hDp.dp)
+                        .background(tileBg, androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                        .padding(4.dp),
+                ) {
+                    androidx.compose.foundation.Image(
+                        bitmap = com.pitstop.widget.ComboWidgetRender.render(m, size, dark).asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                androidx.compose.material3.Text(label, color = labelColor, fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp))
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(16.dp)) {
-            androidx.compose.material3.Text("Wide (2×1) never read", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onBackground)
-            tile(never, com.pitstop.widget.ComboWidgetRender.Size.Wide)
+
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.background(wallpaper).padding(12.dp),
+        ) {
             for (size in com.pitstop.widget.ComboWidgetRender.Size.entries) {
                 androidx.compose.material3.Text(
-                    "${size.name} (${when (size) {
+                    when (size) {
                         com.pitstop.widget.ComboWidgetRender.Size.Tiny -> "1×1"
                         com.pitstop.widget.ComboWidgetRender.Size.Wide -> "2×1"
                         com.pitstop.widget.ComboWidgetRender.Size.Large -> "2×2"
-                    }})   fresh · stale (tires 1d) · never read",
+                    } + if (dark) " · dark" else " · light",
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onBackground,
+                    color = labelColor,
                 )
-                androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    tile(fresh, size)
-                    tile(stale, size)
-                    if (size == com.pitstop.widget.ComboWidgetRender.Size.Tiny) tile(never, size)
+                val perRow = if (size == com.pitstop.widget.ComboWidgetRender.Size.Tiny) 4 else 2
+                for (row in states.chunked(perRow)) {
+                    androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        for ((label, m) in row) tile(m, size, label)
+                    }
                 }
             }
         }

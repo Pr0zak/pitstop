@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fuel & tires widget background, light theme (pre-Android 12). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#F1EFF4" />
+    <corners android:radius="16dp" />
+</shape>

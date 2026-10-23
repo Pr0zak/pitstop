@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+, light theme: the launcher's widget corner radius and a
+     dynamic (Material You) light neutral. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@android:color/system_neutral1_50" />
+    <corners android:radius="@android:dimen/system_app_widget_background_radius" />
+</shape>

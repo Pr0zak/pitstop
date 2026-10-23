@@ -133,8 +133,14 @@ class ComboWidgetProvider : AppWidgetProvider() {
 
     private fun viewsFor(context: Context, m: ComboWidgetRender.Model, size: ComboWidgetRender.Size) =
         RemoteViews(context.packageName, R.layout.combo_widget).apply {
-            setImageViewBitmap(R.id.combo_widget_image, ComboWidgetRender.render(m, size))
-            setContentDescription(R.id.combo_widget_image, describe(m))
+            // One bitmap per theme; layout/ shows the light one, layout-night/
+            // the dark one. The launcher re-inflates on a light/dark switch,
+            // which never reaches the provider, so both must already be there.
+            setImageViewBitmap(R.id.combo_widget_image_light, ComboWidgetRender.render(m, size, dark = false))
+            setImageViewBitmap(R.id.combo_widget_image_dark, ComboWidgetRender.render(m, size, dark = true))
+            val desc = describe(m)
+            setContentDescription(R.id.combo_widget_image_light, desc)
+            setContentDescription(R.id.combo_widget_image_dark, desc)
             setOnClickPendingIntent(android.R.id.background, openHome(context))
         }
 
