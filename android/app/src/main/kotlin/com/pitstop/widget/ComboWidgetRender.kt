@@ -214,16 +214,16 @@ internal object ComboWidgetRender {
 
     private fun specFor(size: Size, ageShown: Boolean, empty: Boolean) = when (size) {
         Size.Tiny -> Spec(
-            footer = if (ageShown || empty) 34f else 0f, carFrac = 0.32f, carHFrac = 0.9f,
-            psiSize = 56f, fuelCap = 74f, stroke = 4.5f, chipText = 24f, footerText = 22f,
+            footer = if (ageShown || empty) 46f else 0f, carFrac = 0.29f, carHFrac = 0.9f,
+            psiSize = 66f, fuelCap = 78f, stroke = 4.5f, chipText = 34f, footerText = 30f,
         )
         Size.Wide -> Spec(
-            footer = 38f, carFrac = 0.27f, carHFrac = 0.88f,
-            psiSize = 60f, fuelCap = 60f, stroke = 5f, chipText = 24f, footerText = 24f,
+            footer = 46f, carFrac = 0.27f, carHFrac = 0.88f,
+            psiSize = 68f, fuelCap = 64f, stroke = 5f, chipText = 32f, footerText = 32f,
         )
         Size.Large -> Spec(
-            footer = 50f, carFrac = 0.30f, carHFrac = 0.88f,
-            psiSize = 84f, fuelCap = 96f, stroke = 6f, chipText = 30f, footerText = 30f,
+            footer = 60f, carFrac = 0.30f, carHFrac = 0.88f,
+            psiSize = 94f, fuelCap = 100f, stroke = 6f, chipText = 38f, footerText = 38f,
         )
     }
 
@@ -421,7 +421,7 @@ internal object ComboWidgetRender {
         val ds = digitPaint.textSize
         val textMid = body.top + carH * 0.56f
         val digitsBase = textMid + ds * 0.30f
-        val pctPaint = textPaint(ds * 0.42f, p.text)
+        val pctPaint = textPaint(ds * 0.5f, p.text)
         val pctBase = digitsBase + pctPaint.textSize * 1.15f
         val above = when (fuelLvl) {
             Level.Bad -> p.badInk
