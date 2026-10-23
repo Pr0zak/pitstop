@@ -20,6 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ..auth import require_query_token
 from ..db.deps import get_pool
 from ..tires import (
+    KPA_PER_PSI,
+    TIRE_AIR_UP_MAX_GAP_S,
+    TIRE_AIR_UP_PSI,
     TIRE_COLD_PARK_HOURS,
     TIRE_METRICS,
     TIRE_PRESSURE_METRICS,
@@ -1370,6 +1373,58 @@ async def tire_history(
             """,
             vehicle_id, list(TIRE_PRESSURE_METRICS), cutoff, TIRE_COLD_PARK_HOURS,
         )
+        # Air going in: a reading at least TIRE_AIR_UP_PSI above the lowest
+        # one in the preceding TIRE_AIR_UP_MAX_GAP_S (tires.py). A fill can
+        # land over two sensor updates; warm-up from driving is far slower.
+        air_rows = await conn.fetch(
+            """
+            SELECT metric, time FROM (
+                SELECT time, metric, value_num,
+                       min(value_num) OVER (
+                           PARTITION BY metric ORDER BY time
+                           RANGE BETWEEN make_interval(secs => $5) PRECEDING
+                                     AND CURRENT ROW
+                       ) AS recent_min
+                  FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = ANY($2::text[])
+                   AND time >= $3
+                   AND value_num IS NOT NULL AND value_num > 0
+            ) x
+             WHERE value_num - recent_min >= $4
+            """,
+            vehicle_id, list(TIRE_PRESSURE_METRICS), cutoff,
+            TIRE_AIR_UP_PSI * KPA_PER_PSI, TIRE_AIR_UP_MAX_GAP_S,
+        )
+        # Newest reading per corner with its tire temp and the outside temp,
+        # for the estimated cold pressure after a fill.
+        latest_rows = await conn.fetch(
+            """
+            SELECT p.metric, p.time, p.value_num,
+                   (SELECT t.value_num FROM pid_readings t
+                     WHERE t.vehicle_id = $1
+                       AND t.metric = replace(p.metric, 'tire_pressure_', 'tire_temp_')
+                       AND t.time BETWEEN p.time - interval '2 minutes' AND p.time
+                       AND t.value_num IS NOT NULL AND t.value_num > -40
+                     ORDER BY t.time DESC LIMIT 1) AS temp_c,
+                   (SELECT a.value_num FROM pid_readings a
+                     WHERE a.vehicle_id = $1
+                       AND a.metric = 'ambient_air_temp_f'
+                       AND a.time BETWEEN p.time - interval '6 hours' AND p.time
+                       AND a.value_num IS NOT NULL
+                     ORDER BY a.time DESC LIMIT 1) AS ambient_f
+              FROM (
+                SELECT DISTINCT ON (metric) metric, time, value_num
+                  FROM pid_readings
+                 WHERE vehicle_id = $1
+                   AND metric = ANY($2::text[])
+                   AND time >= $3
+                   AND value_num IS NOT NULL AND value_num > 0
+                 ORDER BY metric, time DESC
+              ) p
+            """,
+            vehicle_id, list(TIRE_PRESSURE_METRICS), cutoff,
+        )
 
     def _day(b: Any) -> date:
         return b.date() if isinstance(b, datetime) else b
@@ -1398,9 +1453,22 @@ async def tire_history(
         )
         for r in cold_rows
     ]
+    air_ups: dict[str, list[datetime]] = {}
+    for r in air_rows:
+        air_ups.setdefault(r["metric"].removeprefix("tire_pressure_"), []).append(r["time"])
+    latest = {
+        r["metric"].removeprefix("tire_pressure_"): (
+            r["time"],
+            float(r["value_num"]),
+            float(r["temp_c"]) if r["temp_c"] is not None else None,
+            float(r["ambient_f"]) if r["ambient_f"] is not None else None,
+        )
+        for r in latest_rows
+    }
     out = assemble_tire_analytics(
         window_days, daily, cold,
         placard_front_kpa=placard[0], placard_rear_kpa=placard[1],
+        air_ups=air_ups, latest=latest,
     )
     out["window_days"] = days
     return out

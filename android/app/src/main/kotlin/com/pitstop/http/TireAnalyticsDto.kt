@@ -45,6 +45,9 @@ data class TireCornerHistoryDto(
     @SerialName("cold_readings") val coldReadings: List<TireColdReadingDto> = emptyList(),
     @SerialName("current_cold_kpa") val currentColdKpa: Double? = null,
     @SerialName("current_cold_at") val currentColdAt: String? = null,
+    /** After air was added with no cold reading since: an estimate. */
+    @SerialName("current_cold_estimated") val currentColdEstimated: Boolean = false,
+    @SerialName("aired_up_at") val airedUpAt: String? = null,
     @SerialName("slope_psi_per_week") val slopePsiPerWeek: Double? = null,
     @SerialName("slope_samples") val slopeSamples: Double? = null,
     @SerialName("possible_slow_leak") val possibleSlowLeak: Boolean = false,

@@ -198,3 +198,86 @@ def test_no_placard_no_verdicts() -> None:
     fl = out["corners"][0]
     assert fl["placard_kpa"] is None and fl["below_placard_psi"] is None
     assert fl["under_inflated"] is False and fl["below_spec"] is False
+
+
+# ── air added ────────────────────────────────────────────────────────────
+
+
+def test_fill_while_running_estimates_cold_and_restarts_trend() -> None:
+    days = _days(4)
+    psi = KPA_PER_PSI
+    cold = [
+        (datetime(d.year, d.month, d.day, 11, tzinfo=UTC), "fr", 29.0 * psi, 15.0, 59.0)
+        for d in days
+    ]
+    fill = datetime(days[3].year, days[3].month, days[3].day, 19, tzinfo=UTC)
+    # Newest reading: 38 psi hot (40 °C) with 68 °F outside, after the fill.
+    latest = {"fr": (fill + timedelta(hours=3), 38.0 * psi, 40.0, 68.0)}
+    daily = {(days[3], "tire_pressure_fr"): (34.0 * psi, 29.0 * psi, 38.0 * psi)}
+    out = assemble_tire_analytics(days, daily, cold, air_ups={"fr": [fill]}, latest=latest)
+    fr = out["corners"][1]
+    assert fr["aired_up_at"] == fill.isoformat()
+    assert fr["current_cold_estimated"] is True
+    # 38 psi at 40 °C corrected to 20 °C ≈ 34.6 psi: not the pre-fill 29.
+    assert fr["current_cold_kpa"] / psi == pytest.approx(34.6, abs=0.05)
+    assert fr["current_cold_at"] == latest["fr"][0].isoformat()
+    # Every cold reading predates the fill: no trend yet.
+    assert fr["slope_psi_per_week"] is None
+    assert fr["slope_samples"] == 0
+    # The fill day's max is the new pressure, not warm-up.
+    assert fr["daily"][3]["warmup_psi"] is None
+
+
+def test_fill_without_temperatures_leaves_cold_unknown() -> None:
+    d = D0
+    fill = datetime(2026, 10, 1, 19, tzinfo=UTC)
+    cold = [(datetime(2026, 10, 1, 11, tzinfo=UTC), "rr", 200.0, None, None)]
+    out = assemble_tire_analytics(
+        [d], {}, cold, air_ups={"rr": [fill]},
+        latest={"rr": (fill + timedelta(hours=1), 260.0, None, None)},
+    )
+    rr = out["corners"][3]
+    assert rr["current_cold_kpa"] is None
+    assert rr["current_cold_estimated"] is False
+
+
+def test_fill_with_the_car_off_is_found_from_cold_readings() -> None:
+    days = _days(6)
+    psi = KPA_PER_PSI
+    cold = []
+    for i, d in enumerate(days):
+        # 30 psi cold, then 35 psi from day 3 on (air added while parked).
+        p = 30.0 if i < 3 else 35.0
+        cold.append((datetime(d.year, d.month, d.day, 11, tzinfo=UTC), "rl", p * psi, 20.0, 68.0))
+    out = assemble_tire_analytics(days, {}, cold)
+    rl = out["corners"][2]
+    assert rl["aired_up_at"] == cold[3][0].isoformat()
+    assert rl["current_cold_estimated"] is False
+    assert rl["current_cold_kpa"] / psi == pytest.approx(35.0, abs=0.05)
+    # Trend only over the 3 readings since the fill: not a +5 psi rise.
+    assert rl["slope_psi_per_week"] is None
+    assert rl["slope_samples"] == 3
+
+
+def test_cold_morning_after_warm_afternoon_is_not_a_fill() -> None:
+    # 31 psi at 23 °C, then 32.2 psi at 12 °C: corrected, that is the same
+    # air (warm-to-cold), and the 30.5 -> 32.2 raw rise is under 2 psi anyway.
+    psi = KPA_PER_PSI
+    cold = [
+        (datetime(2026, 10, 1, 20, tzinfo=UTC), "fl", 31.0 * psi, 23.0, 75.0),
+        (datetime(2026, 10, 2, 11, tzinfo=UTC), "fl", 30.5 * psi, 12.0, 52.0),
+    ]
+    out = assemble_tire_analytics(_days(2), {}, cold)
+    assert out["corners"][0]["aired_up_at"] is None
+
+
+def test_same_reading_on_a_colder_morning_is_not_a_fill() -> None:
+    # 2026-10-23 RR: 30 psi at 24 °C, then 30 psi at 10 °C. Corrected that is
+    # a 2.2 psi "rise", but nothing went in.
+    psi = KPA_PER_PSI
+    cold = [
+        (datetime(2026, 10, 1, 20, tzinfo=UTC), "rr", 30.0 * psi, 24.0, 75.0),
+        (datetime(2026, 10, 2, 11, tzinfo=UTC), "rr", 30.0 * psi, 10.0, 50.0),
+    ]
+    out = assemble_tire_analytics(_days(2), {}, cold)
+    assert out["corners"][3]["aired_up_at"] is None

@@ -208,6 +208,30 @@ def slope_psi_per_week(
     return sxy / sxx, n
 
 
+# Air added: a corner reading at least this much above its lowest reading
+# in the previous TIRE_AIR_UP_MAX_GAP_S. Driving warms a tire by well under
+# 1 psi a minute, while a hose adds 2-4 psi per 30-second sensor update
+# (2026-10-23: FR 29.0 -> 32.5 -> 34.8 -> 36.4 psi parked at a pump; RR
+# went 32.9 -> 34.7 -> 36.3, under 2 psi per step).
+TIRE_AIR_UP_PSI = 2.0
+TIRE_AIR_UP_MAX_GAP_S = 180
+# Air added with the car off shows up as a cold reading this much above the
+# previous one, both as read and after both are corrected to one temperature
+# (gas law). Both, because sensor temperature is noisy: on 2026-10-23 RR read
+# the same 30 psi at 10 °C as the day before at 24 °C, a corrected "rise" of
+# 2.2 psi with no air added.
+TIRE_REF_C = 20.0
+ATM_KPA = 101.325
+
+
+def compensate_kpa(kpa: float, temp_c: float | None, to_c: float = TIRE_REF_C) -> float:
+    """Gauge kPa the tire would read at [to_c], by the gas law on absolute
+    pressure. Without the tire's temperature the reading is returned as is."""
+    if temp_c is None:
+        return kpa
+    return (kpa + ATM_KPA) * (to_c + 273.15) / (temp_c + 273.15) - ATM_KPA
+
+
 def median(values: Iterable[float]) -> float | None:
     vs = sorted(values)
     if not vs:
@@ -229,6 +253,8 @@ def assemble_tire_analytics(
     *,
     placard_front_kpa: float | None = None,
     placard_rear_kpa: float | None = None,
+    air_ups: Mapping[str, Iterable[datetime]] | None = None,
+    latest: Mapping[str, tuple[datetime, float, float | None, float | None]] | None = None,
 ) -> dict[str, Any]:
     """Build the /analytics/tires body from pre-aggregated inputs.
 
@@ -240,6 +266,13 @@ def assemble_tire_analytics(
                     gap; the heat guard is applied here.
     placard_*_kpa   door-placard cold pressure; each corner's placard verdict
                     is judged on its current cold pressure.
+    air_ups         corner -> times air was seen going in (a fast rise, see
+                    TIRE_AIR_UP_PSI). Cold readings before the last one no
+                    longer describe the tire: the trend restarts there.
+    latest          corner -> (time, kPa, tire °C, outside °F) of the newest
+                    reading. After an air-up with no cold reading since, the
+                    current cold pressure is this reading corrected to the
+                    outside temperature, flagged current_cold_estimated.
     """
     cold_by_corner: dict[str, list[dict[str, Any]]] = {c: [] for c in TIRE_CORNERS}
     for t, corner, kpa, temp_c, ambient_f in sorted(cold_candidates, key=lambda r: r[0]):
@@ -255,10 +288,26 @@ def assemble_tire_analytics(
     corners_out: list[dict[str, Any]] = []
     current_cold: dict[str, float | None] = {}
     for c in TIRE_CORNERS:
-        colds = cold_by_corner[c]
+        all_colds = cold_by_corner[c]
+        # Fills: seen live (a fast rise), or with the car off (a cold reading
+        # well above the previous one at the same temperature).
+        fills = sorted((air_ups or {}).get(c, ()))
+        for prev, cur in zip(all_colds, all_colds[1:], strict=False):
+            rise = compensate_kpa(cur["pressure_kpa"], cur["temp_c"]) - compensate_kpa(
+                prev["pressure_kpa"], prev["temp_c"]
+            )
+            raw_rise = cur["pressure_kpa"] - prev["pressure_kpa"]
+            if min(rise, raw_rise) * PSI_PER_KPA >= TIRE_AIR_UP_PSI:
+                fills.append(cur["time"])
+        fills.sort()
+        last_fill = fills[-1] if fills else None
+        fill_days = {f.astimezone(UTC).date() for f in fills}
+        # Trend on the cold readings since the last fill only, so adding air
+        # never reads as a rising trend.
+        colds = [cr for cr in all_colds if last_fill is None or cr["time"] >= last_fill]
         # First cold reading of each day is that day's cold pressure.
         cold_day: dict[date, float] = {}
-        for cr in colds:
+        for cr in all_colds:
             cold_day.setdefault(cr["time"].astimezone(UTC).date(), cr["pressure_kpa"])
         daily_out: list[dict[str, Any]] = []
         warmups: list[float] = []
@@ -267,7 +316,8 @@ def assemble_tire_analytics(
             t_mean, _t_min, t_max = daily.get((d, f"tire_temp_{c}"), (None, None, None))
             cold = cold_day.get(d)
             warm = None
-            if cold is not None and p_max is not None:
+            # A fill day's max is the new pressure, not warm-up.
+            if cold is not None and p_max is not None and d not in fill_days:
                 warm = max(0.0, (float(p_max) - cold) * PSI_PER_KPA)
                 warmups.append(warm)
             if p_mean is not None or t_mean is not None:
@@ -285,9 +335,21 @@ def assemble_tire_analytics(
                 }
             )
         slope, n = slope_psi_per_week((cr["time"], cr["pressure_kpa"]) for cr in colds)
-        last = colds[-1] if colds else None
+        last = all_colds[-1] if all_colds else None
         current_cold[c] = last["pressure_kpa"] if last else None
-        if colds:
+        current_at = last["time"] if last else None
+        estimated = False
+        if last_fill is not None and (last is None or last["time"] < last_fill):
+            # The cold reading predates the fill. Estimate cold from the
+            # newest reading; unknown temperatures leave it unknown rather
+            # than passing a hot reading off as cold.
+            current_cold[c], current_at = None, None
+            lt = (latest or {}).get(c)
+            if lt is not None and lt[0] >= last_fill and lt[2] is not None and lt[3] is not None:
+                current_cold[c] = compensate_kpa(lt[1], lt[2], f_to_c(lt[3]))
+                current_at = lt[0]
+                estimated = True
+        if all_colds:
             has_data = True
         corners_out.append(
             {
@@ -299,10 +361,12 @@ def assemble_tire_analytics(
                         "pressure_kpa": _r(cr["pressure_kpa"]),
                         "temp_c": cr["temp_c"],
                     }
-                    for cr in colds
+                    for cr in all_colds
                 ],
                 "current_cold_kpa": _r(current_cold[c]),
-                "current_cold_at": last["time"].isoformat() if last else None,
+                "current_cold_at": current_at.isoformat() if current_at else None,
+                "current_cold_estimated": estimated,
+                "aired_up_at": last_fill.isoformat() if last_fill else None,
                 "slope_psi_per_week": _r(slope, 3),
                 "slope_samples": n,
                 "possible_slow_leak": (

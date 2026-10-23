@@ -176,10 +176,19 @@ object TireHistory {
             CornerStat(
                 corner = c,
                 coldPsi = VehicleSignals.tirePressure(p),
-                coldCaption = h?.currentColdAt?.let { at ->
-                    runCatching { "cold · " + DAY_FMT.format(OffsetDateTime.parse(at).atZoneSameInstant(zone)) }.getOrNull()
-                } ?: if (p != null) "cold" else "no cold reading yet",
-                trend = if (trendKnown) psiPerWeek(slope) else "needs $minSamples cold readings (have $samples)",
+                coldCaption = run {
+                    val label = if (h?.currentColdEstimated == true) "est. cold, air added" else "cold"
+                    h?.currentColdAt?.let { at ->
+                        runCatching { "$label · " + DAY_FMT.format(OffsetDateTime.parse(at).atZoneSameInstant(zone)) }.getOrNull()
+                    } ?: if (p != null) label else "no cold reading yet"
+                },
+                trend = if (trendKnown) {
+                    psiPerWeek(slope)
+                } else if (h?.airedUpAt != null) {
+                    "needs $minSamples cold readings since air was added (have $samples)"
+                } else {
+                    "needs $minSamples cold readings (have $samples)"
+                },
                 trendKnown = trendKnown,
                 spread = spread,
                 vsPlacard = h?.belowPlacardPsi?.let { placardDelta(it) + " psi" },

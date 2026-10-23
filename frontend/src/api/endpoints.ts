@@ -684,6 +684,11 @@ export interface TireCornerHistory {
   cold_readings: TireColdReading[];
   current_cold_kpa: number | null;
   current_cold_at: string | null;
+  /** True after air was added and no cold reading since: current_cold_kpa
+   *  is the newest reading corrected to the outside temperature. */
+  current_cold_estimated?: boolean;
+  /** Last time air was seen going in; the trend restarts there. */
+  aired_up_at?: string | null;
   slope_psi_per_week: number | null;
   slope_samples: number;
   possible_slow_leak: boolean;

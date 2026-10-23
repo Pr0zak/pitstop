@@ -191,6 +191,8 @@ interface CornerCard {
   label: string;
   cold: string;
   coldAt: string | null;
+  estimated: boolean;
+  airedUp: boolean;
   slope: string;
   samples: number;
   leak: boolean;
@@ -219,6 +221,8 @@ const cards = computed<CornerCard[]>(() => {
       label: r.label,
       cold: fmtTirePressure(h?.current_cold_kpa ?? null),
       coldAt: at ? at.toLocaleDateString([], { month: "short", day: "numeric" }) : null,
+      estimated: !!h?.current_cold_estimated,
+      airedUp: !!h?.aired_up_at,
       slope: fmtPsiPerWeek(h?.slope_psi_per_week ?? null),
       samples: h?.slope_samples ?? 0,
       leak: isSlowLeak(h?.slope_psi_per_week ?? null, h?.slope_samples ?? 0),
@@ -271,12 +275,12 @@ const parkHours = computed(() => q.data.value?.cold_park_hours ?? 3);
             <span v-if="c.leak" class="flag danger">possible slow leak</span>
           </div>
           <div class="cc-big num">{{ c.cold }}</div>
-          <div class="cc-sub muted small">cold<template v-if="c.coldAt"> · {{ c.coldAt }}</template></div>
+          <div class="cc-sub muted small">{{ c.estimated ? "est. cold, air added" : "cold" }}<template v-if="c.coldAt"> · {{ c.coldAt }}</template></div>
           <dl class="cc-stats">
             <dt>Trend</dt>
             <dd class="num">
               <template v-if="c.samples >= minSamples">{{ c.slope }}</template>
-              <span v-else class="muted">needs {{ minSamples }} cold readings ({{ c.samples }})</span>
+              <span v-else class="muted">needs {{ minSamples }} cold readings{{ c.airedUp ? " since air was added" : "" }} ({{ c.samples }})</span>
             </dd>
             <dt>Spread</dt>
             <dd class="num">{{ c.spread ?? "—" }}</dd>
