@@ -232,14 +232,19 @@ internal fun TripDetailContent(
         mutableStateOf(if (maxSeriesSize > 300) SmoothLevel.Medium else SmoothLevel.Off)
     }
     val seriesMap = remember(trip.samples, smoothLevel) {
-        pivotSamples(trip.samples, smoothWindow = smoothLevel.windowSize)
+        pivotSamples(
+            trip.samples,
+            smoothWindow = smoothLevel.windowSize,
+            discreteMetrics = DISCRETE_TRIP_METRICS,
+            deriveAcceleration = true,
+        )
     }
     val availableMetrics = remember(seriesMap) {
         TRIP_METRICS.filter { seriesMap[it.metric]?.points?.isNotEmpty() == true }
     }
     // Speed + RPM are the only default-on series. Fall back to the first
     // available metric (rather than "all of them") when neither is
-    // present — with 18 chartable metrics, showing everything on a
+    // present — with ~35 chartable metrics, showing everything on a
     // partially-instrumented trip would render an unreadable chart.
     val defaultMetrics = remember(availableMetrics) {
         val defaults = availableMetrics.filter { it.defaultVisible }.map { it.metric }
@@ -376,27 +381,28 @@ internal fun TripDetailContent(
                     // agnostic and the axis ticks always agree with the
                     // chip label.
                     val display = remember(shown, seriesMap, unitSystem) {
-                        availableMetrics
+                        val plotted = availableMetrics
                             .filter { it.metric in shown }
                             .mapNotNull { def ->
                                 seriesMap[def.metric]?.let { s ->
-                                    DisplaySeries(
-                                        series = s.copy(
-                                            points = s.points.map { p ->
-                                                p.copy(
-                                                    value = def.quantity
-                                                        .convert(p.value, unitSystem),
-                                                )
-                                            },
-                                        ),
-                                        color = def.color,
-                                        unitLabel = def.quantity.unit(unitSystem),
-                                        digits = def.digits,
-                                        step = def.carryMs != null,
-                                        carryMs = def.carryMs,
-                                    )
+                                    def to s.points.map { p ->
+                                        p.copy(value = def.display(p.value, unitSystem))
+                                    }
                                 }
                             }
+                        val ranges = sharedYRanges(plotted)
+                        plotted.map { (def, points) ->
+                            DisplaySeries(
+                                series = MetricSeries(def.metric, points),
+                                color = def.color,
+                                unitLabel = def.quantity.unit(unitSystem),
+                                digits = def.digits,
+                                step = def.step,
+                                carryMs = def.carryMs,
+                                yRange = ranges[def.metric],
+                                tickFormat = def.tickFormat,
+                            )
+                        }
                     }
                     LineChart(series = display, height = 260.dp)
                 }
@@ -962,7 +968,7 @@ private fun ActiveSeriesRow(
 
 /**
  * Full metric list, grouped by [MetricGroup]. A sheet rather than an
- * inline expander so the picker gets the height to show all 18 at once,
+ * inline expander so the picker gets the height to show every series at once,
  * wrapped and fully readable — no horizontal clipping, which is what
  * made the always-visible scrolling-rail alternatives worse.
  */
@@ -985,45 +991,69 @@ private fun SeriesPickerSheet(
             skipPartiallyExpanded = true,
         ),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Series",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                androidx.compose.material3.TextButton(onClick = onReset) { Text("Reset") }
-            }
-            // Only groups with data on THIS trip get a header — an
-            // "Emissions" heading over nothing reads as a broken capture.
-            for (group in MetricGroup.entries) {
-                val inGroup = available.filter { it.group == group }
-                if (inGroup.isEmpty()) continue
-                Text(
-                    group.title.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                androidx.compose.foundation.layout.FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    for (def in inGroup) {
-                        MetricChip(
-                            def,
-                            on = def.metric in visible,
-                            unitSystem = unitSystem,
-                            onToggle = onToggle,
-                        )
-                    }
+        SeriesPickerContent(
+            available = available,
+            visible = visible,
+            unitSystem = unitSystem,
+            onToggle = onToggle,
+            onReset = onReset,
+            modifier = Modifier.verticalScroll(rememberScrollState()),
+        )
+    }
+}
+
+/**
+ * Body of [SeriesPickerSheet]: one labelled chip row per [MetricGroup] with
+ * data on this trip. Split out so the screenshot tests can render it (a
+ * ModalBottomSheet is a popup window layoutlib can't draw).
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun SeriesPickerContent(
+    available: List<TripMetricDef>,
+    visible: Set<String>,
+    unitSystem: String,
+    onToggle: (String) -> Unit,
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Series",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+            androidx.compose.material3.TextButton(onClick = onReset) { Text("Reset") }
+        }
+        // Only groups with data on THIS trip get a header — an
+        // "Emissions" heading over nothing reads as a broken capture.
+        for (group in MetricGroup.entries) {
+            val inGroup = available.filter { it.group == group }
+            if (inGroup.isEmpty()) continue
+            Text(
+                group.title.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (def in inGroup) {
+                    MetricChip(
+                        def,
+                        on = def.metric in visible,
+                        unitSystem = unitSystem,
+                        onToggle = onToggle,
+                    )
                 }
             }
         }
@@ -1122,31 +1152,32 @@ internal fun SpeedLegendRow() {
  * the color, the unit label and the value conversion automatically.
  *
  * The list mirrors the backend's `_TRIP_SAMPLE_METRICS` whitelist in
- * `api/trips.py` — that endpoint decides what a trip response may
- * contain, so anything not listed there can never have points, and
- * anything listed here but missing from a given trip is filtered out
- * by `availableMetrics` before the chips are drawn.
+ * `api/trips.py` (minus the tire corners, which the Tires card charts)
+ * plus the client-derived `acceleration` — and the web's `TRIP_SERIES`
+ * in `TripDetailView.vue`, which charts the same set (web/phone parity,
+ * ADR-013). Anything listed here but missing from a given trip is
+ * filtered out by `availableMetrics` before the chips are drawn.
  *
  * Units: a def carries a [UnitFormat.Quantity], never a unit string.
  * The chip label gets the unit appended for the ACTIVE unit system, and
  * the series values are converted with the same Quantity, so the axis
  * ticks and the label can't disagree.
  *
- * Order here is the chip order — speed first, then RPM (the two
- * most-asked-about series and the only two on by default), then the
- * rest of the core drive trace, then fuel/exhaust, then emissions.
+ * Order here is the chip order within a [MetricGroup]; speed and RPM
+ * come first (the two most-asked-about series and the only two on by
+ * default).
  */
 /**
- * Category a metric is filed under in the series picker. With 17 series
- * a flat list is a wall of chips; the groups are what make it skimmable
- * — and they match the section comments in the backend allowlist
- * (`_TRIP_SAMPLE_METRICS`) so the two lists stay legible side by side.
+ * Category a metric is filed under in the series picker. Same six groups,
+ * in the same order, as the web picker's `SERIES_GROUPS`.
  */
 internal enum class MetricGroup(val title: String) {
-    Core("Core drive"),
-    FuelExhaust("Fuel & exhaust"),
+    Drive("Drive"),
+    Transmission("Transmission"),
+    Engine("Engine"),
+    Fuel("Fuel"),
+    Air("Air"),
     Emissions("Emissions"),
-    Distance("Distance"),
 }
 
 internal data class TripMetricDef(
@@ -1162,11 +1193,11 @@ internal data class TripMetricDef(
      * the table below passes digits positionally, so inserting a param
      * ahead of it would silently re-bind every one of those literals.
      */
-    val group: MetricGroup = MetricGroup.Core,
+    val group: MetricGroup = MetricGroup.Drive,
     /**
-     * Whether the series starts visible. Only speed + RPM do: with 17
+     * Whether the series starts visible. Only speed + RPM do: with ~35
      * chartable metrics, "show everything that has data" would draw an
-     * unreadable 17-line chart on a phone.
+     * unreadable chart on a phone.
      */
     val defaultVisible: Boolean = false,
     /**
@@ -1175,16 +1206,58 @@ internal data class TripMetricDef(
      * a long brake hold. Null = the old always-connected line.
      */
     val carryMs: Long? = null,
+    /**
+     * Discrete code or counter (gear, cylinder count, misfire counters):
+     * drawn as steps, never smoothed, and downsampled by the last value in
+     * a bucket — an average reads "gear 4.5".
+     */
+    val discrete: Boolean = false,
+    /**
+     * Series sharing a key share ONE y range, so a bank-to-bank gap (fuel
+     * trims) or a step on one misfire counter isn't auto-scaled away.
+     */
+    val rangeKey: String? = null,
+    /** Fixed y range in display units (overrides auto-fit). */
+    val fixedRange: Pair<Double, Double>? = null,
+    /**
+     * Value remap applied AFTER unit conversion — gear only: Reverse (code
+     * 15) is drawn at -1 so the axis reads R · P/N · D1…D9 in order.
+     */
+    val lane: ((Double) -> Double)? = null,
+    /** Tick text for one display value (gear "D4", cylinder "6"). */
+    val tickFormat: ((Double) -> String)? = null,
 ) {
     /** "Speed (mph)" / "Speed (km/h)" — unit resolved at render time. */
     fun chipLabel(system: String): String {
         val unit = quantity.unit(system)
         return if (unit.isBlank()) label else "$label ($unit)"
     }
+
+    /** Raw API value → the value the chart plots, in [system] units. */
+    fun display(value: Double, system: String): Double {
+        val v = quantity.convert(value, system)
+        return lane?.invoke(v) ?: v
+    }
+
+    /** Draw as steps: discrete states, or a carry-limited series. */
+    val step: Boolean get() = discrete || carryMs != null
 }
 
+/** gear_position code for Reverse, and the lane it is drawn on. */
+private const val GEAR_R_CODE = 15.0
+private const val GEAR_R_LANE = -1.0
+
+/** Lane value → gear text; blank between integer ticks (web `gearText`). */
+internal fun gearTick(v: Double): String {
+    if (v != kotlin.math.floor(v)) return ""
+    return com.pitstop.domain.VehicleSignals.gearLabel(if (v == GEAR_R_LANE) GEAR_R_CODE else v)
+}
+
+private fun intTick(v: Double): String =
+    if (v != kotlin.math.floor(v)) "" else v.toLong().toString()
+
 internal val TRIP_METRICS: List<TripMetricDef> = listOf(
-    // ── Core drive trace ──────────────────────────────────────────
+    // ── Drive ─────────────────────────────────────────────────────
     TripMetricDef(
         "vehicle_speed", "Speed", ChartPalette.speed,
         UnitFormat.Quantity.SpeedKph, digits = 0, defaultVisible = true,
@@ -1193,37 +1266,137 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
         "engine_rpm", "RPM", ChartPalette.rpm,
         UnitFormat.Quantity.None, digits = 0, defaultVisible = true,
     ),
-    TripMetricDef("engine_load", "Load", ChartPalette.load, UnitFormat.Quantity.Percent, 0),
-    TripMetricDef("coolant_temp", "Coolant", ChartPalette.coolant, UnitFormat.Quantity.TempC, 0),
-    TripMetricDef("fuel_level", "Fuel", ChartPalette.fuel, UnitFormat.Quantity.Percent, 0),
     TripMetricDef(
         "throttle_position", "Throttle", ChartPalette.throttle,
         UnitFormat.Quantity.Percent, 0,
     ),
-    TripMetricDef("intake_air_temp", "Intake", ChartPalette.intake, UnitFormat.Quantity.TempC, 0),
+    TripMetricDef("engine_load", "Load", ChartPalette.load, UnitFormat.Quantity.Percent, 0),
+    // Absolute odometer. The API already subtracted the vehicle's
+    // odometer_offset_km, so this line reads the same as the dash and
+    // as the fillup form — do NOT re-apply the offset here. WiCAN-only,
+    // so it is simply absent on a cellular trip.
     TripMetricDef(
-        "maf_air_flow", "MAF", ChartPalette.maf,
-        UnitFormat.Quantity.MassFlowGramsPerSec, 1,
+        "odometer", "Odometer", ChartPalette.odometer,
+        UnitFormat.Quantity.DistanceKm, 0,
     ),
+    // Brake pressure (VSA, Mode 22 224005): bar on the wire, "Brake (psi)"
+    // on the chart in both systems. Carried 3 s at most.
     TripMetricDef(
-        "manifold_pressure", "MAP", ChartPalette.map,
-        UnitFormat.Quantity.PressureKpa, 0,
+        "brake_pressure", "Brake", ChartPalette.brake,
+        UnitFormat.Quantity.BrakeBar, 0, carryMs = 3_000L,
+    ),
+    // Derived on the phone from successive speed points (dv/dt, in g),
+    // like the web's Accel lane — not a pid_readings metric.
+    TripMetricDef(
+        ACCELERATION_METRIC, "Accel", ChartPalette.accel,
+        UnitFormat.Quantity.GForce, 2,
+    ),
+    // ── Transmission (Honda Mode 22) ──────────────────────────────
+    TripMetricDef(
+        "atf_temp", "ATF", ChartPalette.atf,
+        UnitFormat.Quantity.TempC, 0, group = MetricGroup.Transmission,
+    ),
+    // 0 = P/N, 1..9 forward, 15 = R (drawn at -1).
+    TripMetricDef(
+        "gear_position", "Gear", ChartPalette.gear,
+        UnitFormat.Quantity.None, 0, group = MetricGroup.Transmission,
+        discrete = true,
+        lane = { v -> if (kotlin.math.round(v) == GEAR_R_CODE) GEAR_R_LANE else v },
+        tickFormat = ::gearTick,
+    ),
+    // ── Engine ────────────────────────────────────────────────────
+    TripMetricDef(
+        "coolant_temp", "Coolant", ChartPalette.coolant,
+        UnitFormat.Quantity.TempC, 0, group = MetricGroup.Engine,
     ),
     TripMetricDef(
         "control_module_voltage", "Battery", ChartPalette.battery,
-        UnitFormat.Quantity.Volt, 1,
+        UnitFormat.Quantity.Volt, 1, group = MetricGroup.Engine,
     ),
-    // ── Fuel + exhaust ────────────────────────────────────────────
+    TripMetricDef(
+        "fuel_rail_pressure", "Fuel rail", ChartPalette.fuelRail,
+        UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Engine,
+    ),
+    // 6, or 3 while VCM has a bank off. Pinned to 0..6 so a trip that
+    // never drops to 3 doesn't float a flat 6 mid-chart.
+    TripMetricDef(
+        "active_cylinders", "Cylinders", ChartPalette.cylinders,
+        UnitFormat.Quantity.None, 0, group = MetricGroup.Engine,
+        discrete = true, fixedRange = 0.0 to 6.0, tickFormat = ::intTick,
+    ),
+) + com.pitstop.domain.VehicleSignals.MISFIRE_CYLINDERS.mapIndexed { i, n ->
+    // Cumulative per-cylinder counters on one shared range: a step on
+    // one cylinder only stands out against the other five's scale.
+    TripMetricDef(
+        com.pitstop.domain.VehicleSignals.misfireMetric(n), "Misfire cyl $n",
+        ChartPalette.misfire[i], UnitFormat.Quantity.None, 0,
+        group = MetricGroup.Engine, discrete = true, rangeKey = "misfire",
+        tickFormat = ::intTick,
+    )
+} + listOf(
+    // ── Fuel ──────────────────────────────────────────────────────
+    TripMetricDef(
+        "fuel_level", "Fuel", ChartPalette.fuel,
+        UnitFormat.Quantity.Percent, 0, group = MetricGroup.Fuel,
+    ),
+    // The cluster's own damped litres, next to the raw % above — the gap
+    // between them is tank slosh.
+    TripMetricDef(
+        "fuel_level_l", "Dash fuel", ChartPalette.dashFuel,
+        UnitFormat.Quantity.VolumeL, 1, group = MetricGroup.Fuel,
+    ),
     // g/s on the wire → L/h or gph depending on the toggle, matching
-    // the Live tile and the web's fmtFuelRateLh().
+    // the Live tile and the web's fuel-rate lane.
     TripMetricDef(
         "engine_fuel_rate", "Fuel rate", ChartPalette.fuelRate,
-        UnitFormat.Quantity.FuelRateGramsPerSec, 2, group = MetricGroup.FuelExhaust,
+        UnitFormat.Quantity.FuelRateGramsPerSec, 2, group = MetricGroup.Fuel,
     ),
-    // kg/h in both unit systems on purpose — see the Quantity docs.
+    // Commanded vs measured equivalence ratio — the PAIR is the signal
+    // (fuel-control error); either alone is a flat line near 1.000,
+    // hence 3 decimals on the ticks.
     TripMetricDef(
-        "engine_exhaust_flow", "Exhaust", ChartPalette.exhaust,
-        UnitFormat.Quantity.MassFlowKgPerHour, 1, group = MetricGroup.FuelExhaust,
+        "commanded_afr_ratio", "Cmd AFR", ChartPalette.cmdAfr,
+        UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Fuel,
+    ),
+    TripMetricDef(
+        "o2_s1_lambda", "O2 S1", ChartPalette.o2,
+        UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Fuel,
+    ),
+    // Fuel trims on one shared range: the bank-to-bank gap is the
+    // diagnostic, which per-series auto-fit would hide.
+    TripMetricDef(
+        "stft_b1", "STFT B1", ChartPalette.stftB1,
+        UnitFormat.Quantity.Percent, 1, group = MetricGroup.Fuel, rangeKey = "trim",
+    ),
+    TripMetricDef(
+        "stft_b2", "STFT B2", ChartPalette.stftB2,
+        UnitFormat.Quantity.Percent, 1, group = MetricGroup.Fuel, rangeKey = "trim",
+    ),
+    TripMetricDef(
+        "ltft_b1", "LTFT B1", ChartPalette.ltftB1,
+        UnitFormat.Quantity.Percent, 1, group = MetricGroup.Fuel, rangeKey = "trim",
+    ),
+    TripMetricDef(
+        "ltft_b2", "LTFT B2", ChartPalette.ltftB2,
+        UnitFormat.Quantity.Percent, 1, group = MetricGroup.Fuel, rangeKey = "trim",
+    ),
+    // ── Air ───────────────────────────────────────────────────────
+    TripMetricDef(
+        "intake_air_temp", "Intake", ChartPalette.intake,
+        UnitFormat.Quantity.TempC, 0, group = MetricGroup.Air,
+    ),
+    TripMetricDef(
+        "manifold_pressure", "MAP", ChartPalette.map,
+        UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Air,
+    ),
+    TripMetricDef(
+        "maf_air_flow", "MAF", ChartPalette.maf,
+        UnitFormat.Quantity.MassFlowGramsPerSec, 1, group = MetricGroup.Air,
+    ),
+    // The cluster publishes outside air in °F (DID 7028).
+    TripMetricDef(
+        "ambient_air_temp_f", "Outside", ChartPalette.outside,
+        UnitFormat.Quantity.TempF, 0, group = MetricGroup.Air,
     ),
     // ── Emissions ─────────────────────────────────────────────────
     // Both cat banks: they normally track within a degree or two, so
@@ -1236,42 +1409,40 @@ internal val TRIP_METRICS: List<TripMetricDef> = listOf(
         "catalyst_temp_b2", "Cat B2", ChartPalette.catB2,
         UnitFormat.Quantity.TempC, 0, group = MetricGroup.Emissions,
     ),
-    // Commanded vs measured equivalence ratio — the PAIR is the signal
-    // (fuel-control error); either alone is a flat line near 1.000,
-    // hence 3 decimals on the ticks.
+    // kg/h in both unit systems on purpose — see the Quantity docs.
     TripMetricDef(
-        "commanded_afr_ratio", "Cmd AFR", ChartPalette.cmdAfr,
-        UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Emissions,
+        "engine_exhaust_flow", "Exhaust", ChartPalette.exhaust,
+        UnitFormat.Quantity.MassFlowKgPerHour, 1, group = MetricGroup.Emissions,
     ),
+    // EVAP purge duty. commanded_egr stays off (constant 0 on this PCM).
     TripMetricDef(
-        "o2_s1_lambda", "O2 S1", ChartPalette.o2,
-        UnitFormat.Quantity.Lambda, 3, group = MetricGroup.Emissions,
-    ),
-    TripMetricDef(
-        "fuel_rail_pressure", "Fuel rail", ChartPalette.fuelRail,
-        UnitFormat.Quantity.PressureKpa, 0, group = MetricGroup.Emissions,
-    ),
-    // Brake pressure (VSA, Mode 22 224005): bar on the wire, "Brake (psi)"
-    // on the chart in both systems. 1 Hz,
-    // and absent on any trip without the Mode 22 brake poll.
-    TripMetricDef(
-        "brake_pressure", "Brake", ChartPalette.brake,
-        UnitFormat.Quantity.BrakeBar, 0, carryMs = 3_000L,
-    ),
-    // ── Distance ──────────────────────────────────────────────────
-    // Absolute odometer. The API already subtracted the vehicle's
-    // odometer_offset_km, so this line reads the same as the dash and
-    // as the fillup form — do NOT re-apply the offset here.
-    //
-    // LineChart auto-fits each series to its own Y range, which is what
-    // makes a ~200 000 km value chartable next to a 0–120 km/h one at
-    // all: on a shared axis it would flatten every other series.
-    // WiCAN-only metric, so it is simply absent on a cellular trip.
-    TripMetricDef(
-        "odometer", "Odometer", ChartPalette.odometer,
-        UnitFormat.Quantity.DistanceKm, 0, group = MetricGroup.Distance,
+        "commanded_evap_purge", "EVAP purge", ChartPalette.evapPurge,
+        UnitFormat.Quantity.Percent, 0, group = MetricGroup.Emissions,
     ),
 )
+
+/** Metrics drawn as discrete steps (never smoothed or averaged). */
+internal val DISCRETE_TRIP_METRICS: Set<String> =
+    TRIP_METRICS.filter { it.discrete }.map { it.metric }.toSet()
+
+/**
+ * Y range per plotted series, in display units: a [TripMetricDef.fixedRange]
+ * wins; otherwise series sharing a [TripMetricDef.rangeKey] get the union of
+ * their points' bounds (over the series being plotted); null = auto-fit.
+ */
+internal fun sharedYRanges(
+    plotted: List<Pair<TripMetricDef, List<TimedPoint>>>,
+): Map<String, Pair<Double, Double>> {
+    val out = mutableMapOf<String, Pair<Double, Double>>()
+    plotted.filter { it.first.rangeKey != null && it.first.fixedRange == null }
+        .groupBy { it.first.rangeKey!! }
+        .forEach { (_, members) ->
+            val b = members.flatMap { it.second }.bounds() ?: return@forEach
+            for ((def, _) in members) out[def.metric] = b
+        }
+    for ((def, _) in plotted) def.fixedRange?.let { out[def.metric] = it }
+    return out
+}
 
 /**
  * "12 presses · 1 hard · max 1276 psi · 42s on pedal" — web parity. Only

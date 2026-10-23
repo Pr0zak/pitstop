@@ -136,7 +136,7 @@ internal fun LineChart(
             // Plot each series in its own y-range (or the shared one).
             for (ds in series) {
                 if (ds.series.points.size < 2) continue
-                val ybounds = shared ?: ds.series.points.bounds() ?: continue
+                val ybounds = shared ?: ds.yRange ?: ds.series.points.bounds() ?: continue
                 val (yMin, yMax) = ybounds
                 val yRange = (yMax - yMin).coerceAtLeast(1e-6)
 
@@ -184,7 +184,7 @@ internal fun LineChart(
             // series is auto-fit to its own range.
             if (series.size == 1 || shared != null) {
                 val s = series.first()
-                val bounds = shared ?: s.series.points.bounds()
+                val bounds = shared ?: s.yRange ?: s.series.points.bounds()
                 if (bounds != null) {
                     val (yMin, yMax) = bounds
                     val ticks = listOf(yMin, (yMin + yMax) / 2, yMax)
@@ -196,7 +196,8 @@ internal fun LineChart(
                     }
                     for ((i, v) in ticks.withIndex()) {
                         val y = bottom - (i * plotH / 2f)
-                        val label = formatTick(v, s.unitLabel, s.digits)
+                        val label = s.tickFormat?.invoke(v)
+                            ?: formatTick(v, s.unitLabel, s.digits)
                         nativeCanvas.drawText(label, 4f, y + 4f, paint)
                     }
                 }
@@ -226,6 +227,15 @@ internal data class DisplaySeries(
     val step: Boolean = false,
     /** Carry a value forward at most this long, then break the line. */
     val carryMs: Long? = null,
+    /**
+     * Y range in display units, instead of auto-fitting this series' own
+     * points. Set for a fixed range (cylinders 0..6) or a range shared by
+     * a family of like-for-like series (the four fuel trims, the six misfire
+     * counters) so a bank-to-bank gap isn't auto-scaled away.
+     */
+    val yRange: Pair<Double, Double>? = null,
+    /** Tick text for one display value — discrete codes such as gear ("D4"). */
+    val tickFormat: ((Double) -> String)? = null,
 )
 
 private fun Color.toArgb(): Int {

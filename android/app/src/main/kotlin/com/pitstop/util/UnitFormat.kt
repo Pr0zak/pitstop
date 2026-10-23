@@ -56,6 +56,9 @@ object UnitFormat {
          */
         Lambda("λ", "λ"),
 
+        /** Acceleration in g (standard gravity) — same in both systems. */
+        GForce("g", "g"),
+
         /**
          * Hydraulic brake pressure, STORED in bar (what the VSA module
          * reports and the backend keeps) and DISPLAYED in psi in both

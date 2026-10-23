@@ -32,6 +32,23 @@ object ChartPalette {
     val fuelRail = Color(0xFF34D399)
     val odometer = Color(0xFF8B949E)
     val brake = Color(0xFFEF4444)
+    // Added for web parity (TripDetailView TRIP_SERIES strokes).
+    val accel = Color(0xFFFB923C)
+    val atf = Color(0xFFFBBF24)
+    val gear = Color(0xFF818CF8)
+    val cylinders = Color(0xFF4ADE80)
+    /** One per cylinder 1..6, a pastel ramp so six lines stay apart. */
+    val misfire = listOf(
+        Color(0xFFFDA4AF), Color(0xFFFDBA74), Color(0xFFFDE047),
+        Color(0xFF86EFAC), Color(0xFF93C5FD), Color(0xFFC4B5FD),
+    )
+    val dashFuel = Color(0xFFFDBA74)
+    val outside = Color(0xFF67E8F9)
+    val stftB1 = Color(0xFF34D399)
+    val stftB2 = Color(0xFFA7F3D0)
+    val ltftB1 = Color(0xFFF9A8D4)
+    val ltftB2 = Color(0xFFFBCFE8)
+    val evapPurge = Color(0xFFBEF264)
 
     /** Single-series accent for stat-strip bars / sparklines. */
     val accent = Color(0xFFF97316)

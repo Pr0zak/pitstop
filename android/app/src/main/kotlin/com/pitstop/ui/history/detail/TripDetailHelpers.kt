@@ -236,6 +236,20 @@ internal fun pivotSamples(
     samples: List<com.pitstop.http.TripSampleDto>,
     maxPoints: Int = 500,
     smoothWindow: Int = 1,
+    /**
+     * Discrete codes / counters (gear, cylinder count, misfire counters).
+     * Never smoothed or averaged: a median over an even window, or a bucket
+     * mean, invents states that never existed ("gear 4.5"). Downsampled by
+     * the LAST value in each bucket instead — the same rule the backend
+     * uses for these metrics (`_TRIP_SAMPLE_LAST_METRICS`).
+     */
+    discreteMetrics: Set<String> = emptySet(),
+    /**
+     * Derive an `acceleration` series (g) from successive vehicle_speed
+     * points, like the web's "Accel (g)" lane. Off for callers that only
+     * want the raw metrics (the Tires card).
+     */
+    deriveAcceleration: Boolean = false,
 ): Map<String, MetricSeries> {
     val byMetric = mutableMapOf<String, MutableList<TimedPoint>>()
     for (s in samples) {
@@ -246,15 +260,74 @@ internal fun pivotSamples(
         byMetric.getOrPut(s.metric) { mutableListOf() }
             .add(TimedPoint(tMs, v))
     }
-    return byMetric.mapValues { (metric, pts) ->
+    val out = mutableMapOf<String, MetricSeries>()
+    var smoothedSpeed: List<TimedPoint>? = null
+    for ((metric, pts) in byMetric) {
         pts.sortBy { it.tMillis }
+        if (metric in discreteMetrics) {
+            out[metric] = MetricSeries(metric, downsampleLast(pts, maxPoints))
+            continue
+        }
         // Apply spike-removal first (rolling median) so the
         // averaging downsample doesn't carry outliers forward into
         // its bucket means. Layering order is intentional:
         // median → downsample.
         val smoothed = rollingMedian(pts, smoothWindow)
-        MetricSeries(metric, downsample(smoothed, maxPoints))
+        if (metric == SPEED_METRIC) smoothedSpeed = smoothed
+        out[metric] = MetricSeries(metric, downsample(smoothed, maxPoints))
     }
+    if (deriveAcceleration) {
+        smoothedSpeed?.let { speed ->
+            val accel = accelerationG(speed)
+            if (accel.isNotEmpty()) {
+                out[ACCELERATION_METRIC] =
+                    MetricSeries(ACCELERATION_METRIC, downsample(accel, maxPoints))
+            }
+        }
+    }
+    return out
+}
+
+private const val SPEED_METRIC = "vehicle_speed"
+
+/** Derived (client-side) metric: longitudinal acceleration in g. */
+internal const val ACCELERATION_METRIC = "acceleration"
+
+private const val STANDARD_GRAVITY = 9.80665
+
+/**
+ * dv/dt between successive speed points (km/h), in g — the web's
+ * `accelByTs` rule: km/h → m/s, divided by the gap in seconds, then by
+ * standard gravity. A point is emitted at the later sample's time; pairs
+ * with a non-positive gap are skipped.
+ */
+internal fun accelerationG(speedKph: List<TimedPoint>): List<TimedPoint> {
+    if (speedKph.size < 2) return emptyList()
+    val out = ArrayList<TimedPoint>(speedKph.size - 1)
+    for (i in 1 until speedKph.size) {
+        val a = speedKph[i - 1]
+        val b = speedKph[i]
+        val dtS = (b.tMillis - a.tMillis) / 1000.0
+        if (dtS <= 0.0) continue
+        val dvMps = (b.value - a.value) / 3.6
+        out += TimedPoint(b.tMillis, dvMps / dtS / STANDARD_GRAVITY)
+    }
+    return out
+}
+
+/** Bucketed downsample that keeps each bucket's LAST point (time and value). */
+internal fun downsampleLast(points: List<TimedPoint>, maxPoints: Int): List<TimedPoint> {
+    if (points.size <= maxPoints) return points
+    val bucketSize = points.size.toDouble() / maxPoints
+    val out = mutableListOf<TimedPoint>()
+    var i = 0
+    while (i < points.size) {
+        val end = min(((out.size + 1) * bucketSize).toInt(), points.size)
+        if (end <= i) break
+        out += points[end - 1]
+        i = end
+    }
+    return out
 }
 
 /**
