@@ -116,6 +116,9 @@ class PitstopBridgeService : Service() {
     @Volatile private var bridgeBleEnabled: Boolean = true
     @Volatile private var bridgeGpsEnabled: Boolean = true
 
+    /** Wall-clock ms of the last GPS fix at road speed; feeds the watchdog. */
+    @Volatile private var lastGpsMovingAtMs: Long? = null
+
     /**
      * Set by the watchdogs ([obdQuiet], [bleLost]) just before they
      * flip the BLE engine-state to Off, so the engine-state listener
@@ -478,11 +481,13 @@ class PitstopBridgeService : Service() {
                 // failure it replaces was a drive split six ways, which
                 // needs manual repair.
                 val gpsNow = stateBus.latestByMetric.value["gps_speed"]
+                // A stop at a light is not a park: any road-speed fix in the
+                // last 2 min also keeps the drive open (2026-10-23 split).
                 val stillMoving = com.pitstop.notif.DongleStallDetector.isStalled(
                     obdQuiet = true,
                     gpsSpeedMps = gpsNow?.value,
                     gpsFixAgeMs = gpsNow?.let { now0 - it.tsMs } ?: Long.MAX_VALUE,
-                )
+                ) || com.pitstop.notif.DongleStallDetector.movedRecently(lastGpsMovingAtMs, now0)
                 if (stillMoving) {
                     logBuffer.info(
                         "watchdog suppressed — GPS still moving, drive kept open",
@@ -2070,7 +2075,12 @@ class PitstopBridgeService : Service() {
         // any time the user opened Live without driving.
         stateBus.publishMetric("gps_lat", latR)
         stateBus.publishMetric("gps_lon", lonR)
-        if (loc.hasSpeed()) stateBus.publishMetric("gps_speed", loc.speed.toDouble())
+        if (loc.hasSpeed()) {
+            stateBus.publishMetric("gps_speed", loc.speed.toDouble())
+            if (loc.speed >= com.pitstop.notif.DongleStallDetector.MOVING_MPS) {
+                lastGpsMovingAtMs = System.currentTimeMillis()
+            }
+        }
         if (loc.hasAltitude()) stateBus.publishMetric("gps_alt", loc.altitude)
 
         // MQTT publish stays soft-gated. Original gate was strictly

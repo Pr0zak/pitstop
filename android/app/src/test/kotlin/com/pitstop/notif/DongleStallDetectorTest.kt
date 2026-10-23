@@ -64,4 +64,20 @@ class DongleStallDetectorTest {
             ),
         )
     }
+
+    @Test
+    fun `a stop at a light inside the window keeps the drive open`() {
+        // 2026-10-23: moving at 06:24:48, 0 mph at 06:25:09 when the
+        // watchdog came due, moving again at 06:25:13.
+        val now = 1_000_000L
+        assertTrue(DongleStallDetector.movedRecently(now - 21_000L, now))
+    }
+
+    @Test
+    fun `a real park is not held open`() {
+        // Parked: the last road-speed fix is as old as the OBD silence (3 min).
+        val now = 1_000_000L
+        assertFalse(DongleStallDetector.movedRecently(now - 180_000L, now))
+        assertFalse(DongleStallDetector.movedRecently(null, now))
+    }
 }

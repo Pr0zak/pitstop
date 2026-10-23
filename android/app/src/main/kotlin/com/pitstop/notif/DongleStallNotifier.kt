@@ -56,6 +56,25 @@ object DongleStallDetector {
         if (gpsFixAgeMs >= MAX_FIX_AGE_MS) return false
         return speed >= MOVING_MPS
     }
+
+    /**
+     * How long a GPS fix at road speed keeps a drive open after it.
+     *
+     * The engine-off watchdog used to ask only "is GPS moving right now?".
+     * On 2026-10-23 the BLE link dropped mid-drive, and the 3-minute
+     * watchdog came due during a few seconds at 0 mph at a stop: the
+     * drive was sealed and the rest became a second trip 100 s later.
+     * A real park stops GPS movement at the same moment the OBD frames
+     * stop, so a 2-minute memory never delays sealing a parked drive
+     * past the 3-minute BLE-lost threshold.
+     */
+    const val RECENT_MOVE_MS = 120_000L
+
+    /** True when GPS showed road speed within [RECENT_MOVE_MS] of [nowMs]. */
+    fun movedRecently(lastMovingAtMs: Long?, nowMs: Long): Boolean {
+        val at = lastMovingAtMs ?: return false
+        return nowMs - at in 0 until RECENT_MOVE_MS
+    }
 }
 
 @Singleton
