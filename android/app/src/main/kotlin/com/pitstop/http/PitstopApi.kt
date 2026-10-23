@@ -384,6 +384,18 @@ interface PitstopApi {
         @Header("Cache-Control") cacheControl: String? = null,
     ): InsightsResponseDto
 
+    /**
+     * TPMS history for the Tire detail screen: every UTC day in the last
+     * [days] (7..365) per corner, cold readings, slow-leak trend, warm-up
+     * and placard verdict. Same body the web's Analytics → Tires reads.
+     */
+    @GET("api/analytics/tires")
+    suspend fun getTireAnalytics(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("days") days: Int,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): TireAnalyticsDto
+
     @GET("api/analytics/mpg")
     suspend fun getMpgTrend(
         @Query("vehicle_id") vehicleId: String,

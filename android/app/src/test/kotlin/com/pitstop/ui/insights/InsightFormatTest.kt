@@ -66,4 +66,35 @@ class InsightFormatTest {
         val engine = insightRows(data, "engine")
         assertEquals(listOf("intro", "attention", "groups", "h:engine", "c:b"), engine.map { it.key })
     }
+
+    @Test fun `home shows only critical cards, worst first`() {
+        val data = InsightsResponseDto(
+            attention = listOf("leak", "battery", "trips"),
+            insights = listOf(
+                InsightCardDto(id = "trips", status = "watch"),
+                InsightCardDto(id = "battery", status = "bad"),
+                InsightCardDto(id = "warmup", status = "good"),
+                InsightCardDto(id = "leak", status = "bad"),
+                InsightCardDto(id = "misfires", status = "learning"),
+            ),
+        )
+        assertEquals(listOf("leak", "battery"), criticalInsights(data).map { it.id })
+    }
+
+    @Test fun `amber-only or missing data has no critical cards`() {
+        assertTrue(criticalInsights(null).isEmpty())
+        val amber = InsightsResponseDto(
+            attention = listOf("trips"),
+            insights = listOf(InsightCardDto(id = "trips", status = "watch"), InsightCardDto(id = "x", status = "info")),
+        )
+        assertTrue(criticalInsights(amber).isEmpty())
+    }
+
+    @Test fun `a bad card missing from attention still counts, after ranked ones`() {
+        val data = InsightsResponseDto(
+            attention = listOf("b"),
+            insights = listOf(InsightCardDto(id = "a", status = "bad"), InsightCardDto(id = "b", status = "bad")),
+        )
+        assertEquals(listOf("b", "a"), criticalInsights(data).map { it.id })
+    }
 }

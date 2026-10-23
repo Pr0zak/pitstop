@@ -55,10 +55,16 @@ internal fun InsightChart(
     modifier: Modifier = Modifier,
     height: Dp = 120.dp,
     zone: ZoneId = ZoneId.systemDefault(),
+    /** Line colours by series name (e.g. fixed tire-corner colours); others use the palette. */
+    seriesColors: Map<String, Color> = emptyMap(),
+    /** Series drawn dashed and thinner (a backdrop such as outside temp). */
+    dashedSeries: Set<String> = emptySet(),
 ) {
     when (chart.kind) {
         "bars" -> if (!chart.bars.isNullOrEmpty()) BarsChart(chart, modifier, height)
-        "lines" -> if (chart.series.orEmpty().any { s -> s.points.any { it.xy() != null } }) LinesChart(chart, modifier, height, zone)
+        "lines" -> if (chart.series.orEmpty().any { s -> s.points.any { it.xy() != null } }) {
+            LinesChart(chart, modifier, height, zone, seriesColors, dashedSeries)
+        }
         "points" -> if (chart.points.orEmpty().any { it.xy() != null }) PointsChart(chart, modifier, height)
     }
 }
@@ -302,9 +308,17 @@ private fun DrawScope.drawBandAndRef(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LinesChart(chart: InsightChartDto, modifier: Modifier, height: Dp, zone: ZoneId) {
+private fun LinesChart(
+    chart: InsightChartDto,
+    modifier: Modifier,
+    height: Dp,
+    zone: ZoneId,
+    seriesColors: Map<String, Color> = emptyMap(),
+    dashedSeries: Set<String> = emptySet(),
+) {
     val style = rememberChartStyle()
     val series = chart.series.orEmpty().map { s -> s.name to s.points.mapNotNull { it.xy() }.sortedBy { it.first } }
+    fun colorOf(i: Int, name: String) = seriesColors[name] ?: if (name in dashedSeries) style.text else style.palette[i % style.palette.size]
     val all = series.flatMap { it.second }
     val description = remember(chart) {
         "Line chart${chart.yUnit?.let { " in $it" } ?: ""}: " + series.joinToString { (name, pts) ->
@@ -361,12 +375,22 @@ private fun LinesChart(chart: InsightChartDto, modifier: Modifier, height: Dp, z
                 }
                 canvas.drawText(InsightFormat.dateTick(x, span, zone), sx(x), h - 2f * dp, style.paint(align = align))
             }
-            series.forEachIndexed { i, (_, pts) ->
-                val color = style.palette[i % style.palette.size]
+            series.forEachIndexed { i, (name, pts) ->
+                val color = colorOf(i, name)
+                val dashed = name in dashedSeries
                 if (pts.size >= 2) {
                     val path = Path()
                     pts.forEachIndexed { j, (x, y) -> if (j == 0) path.moveTo(sx(x), sy(y)) else path.lineTo(sx(x), sy(y)) }
-                    drawPath(path, color, style = Stroke(width = 2f * dp, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    drawPath(
+                        path,
+                        color,
+                        style = Stroke(
+                            width = (if (dashed) 1.4f else 2f) * dp,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                            pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(4f * dp, 3f * dp)) else null,
+                        ),
+                    )
                 }
                 if (pts.size <= 12) {
                     for ((x, y) in pts) {
@@ -381,10 +405,13 @@ private fun LinesChart(chart: InsightChartDto, modifier: Modifier, height: Dp, z
             }
         }
         ChartLegend(
-            series.mapIndexed { i, (name, _) -> name to style.palette[i % style.palette.size] },
+            series.filter { it.second.isNotEmpty() }.map { (name, _) ->
+                name to colorOf(series.indexOfFirst { it.first == name }, name)
+            },
             chart.band,
             chart.ref,
             style,
+            dashedSeries,
         )
     }
 }
@@ -399,9 +426,10 @@ private fun ChartLegend(
     band: InsightBandDto?,
     ref: InsightRefDto?,
     style: ChartStyle,
+    dashedSeries: Set<String> = emptySet(),
 ) {
     val entries = buildList {
-        series.forEach { (name, color) -> add(Triple(name, color, Glyph.Line)) }
+        series.forEach { (name, color) -> add(Triple(name, color, if (name in dashedSeries) Glyph.Dashed else Glyph.Line)) }
         if (band?.lo != null && band.hi != null) add(Triple(band.label ?: "Healthy range", style.good, Glyph.Band))
         if (ref?.value != null) add(Triple(ref.label ?: "Reference", style.text, Glyph.Dashed))
     }

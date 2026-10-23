@@ -143,6 +143,8 @@ fun StatusScreen(
     onOpenFuel: () -> Unit = {},
     onOpenFillup: (String) -> Unit = {},
     onWicanAction: () -> Unit = onOpenSettings,
+    /** Tapping the Tires card: the Tire detail screen. */
+    onOpenTires: () -> Unit = {},
     /** Home's Insights card (HomeSection supplies it); null = none. */
     insightsCard: (@Composable () -> Unit)? = null,
 ) {
@@ -168,6 +170,7 @@ fun StatusScreen(
         onOpenFillup = onOpenFillup,
         onNavigate = { spot -> navigateTo(context, spot) },
         onWicanAction = onWicanAction,
+        onOpenTires = onOpenTires,
         pairCardCompact = pairCardCompact,
         onPairCardShown = viewModel::onPairCardShown,
         onCollapsePairCard = viewModel::collapsePairCard,
@@ -213,6 +216,7 @@ internal fun StatusContent(
     onNavigate: (ParkedSpot) -> Unit = {},
     /** Settings, on the WiCAN card, running its primary action. */
     onWicanAction: () -> Unit = onOpenSettings,
+    onOpenTires: () -> Unit = {},
     nowMs: Long = System.currentTimeMillis(),
     pairCardCompact: Boolean = false,
     onPairCardShown: () -> Unit = {},
@@ -321,7 +325,7 @@ internal fun StatusContent(
                     onOpenService = onOpenService,
                 )
 
-                // Insights: the verdict and the worst findings, one tap from Home.
+                // Insights: always shown; lists only critical (red) findings.
                 insightsCard?.invoke()
 
                 // Drive-upload state. Renders nothing when the queue is
@@ -350,6 +354,7 @@ internal fun StatusContent(
                         system = system,
                         placardFrontKpa = it.placardFrontKpa,
                         placardRearKpa = it.placardRearKpa,
+                        onClick = onOpenTires,
                     )
                 }
 

@@ -181,7 +181,22 @@ object InsightsFixtures {
 
     val ui = InsightsUi(data = response)
     val uiAllClear = InsightsUi(data = allClear)
-    val uiWatchOnly = InsightsUi(data = response.copy(attention = listOf("short_trips"), pendingTrips = 0.0))
+    /** Amber findings only, nothing red: Home says "Nothing critical". */
+    val uiWatchOnly = InsightsUi(
+        data = response.copy(
+            attention = listOf("short_trips", "battery"),
+            insights = response.insights.map { if (it.status == "bad") it.copy(status = "watch") else it },
+            pendingTrips = 0.0,
+        ),
+    )
+
+    /** Three red findings: Home shows two headlines and "+1 more". */
+    val uiThreeCritical = InsightsUi(
+        data = response.copy(
+            attention = listOf("tire_leak", "battery", "short_trips"),
+            insights = response.insights.map { if (it.id == "battery" || it.id == "short_trips") it.copy(status = "bad") else it },
+        ),
+    )
     val uiLoading = InsightsUi(loading = true)
     val uiError = InsightsUi(error = "This server doesn't have Insights yet. Update the server to see them.")
 }

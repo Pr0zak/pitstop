@@ -95,7 +95,7 @@ class ScreenShots {
 
     @Test fun homeMetric() = shot("home_metric", units = "metric") { home(Fixtures.home) }
 
-    /** Home's Tires card: FR highlighted low (verified 2026-10-21 values). */
+    /** Home's Tires card: FR highlighted low (verified 2026-10-21 values), tappable into Tire detail. */
     @Test fun homeTires() = shot("home_tires") {
         androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.padding(16.dp)) {
             com.pitstop.ui.components.TiresCard(
@@ -105,6 +105,7 @@ class ScreenShots {
                 system = "imperial",
                 placardFrontKpa = Fixtures.homeTires.placardFrontKpa,
                 placardRearKpa = Fixtures.homeTires.placardRearKpa,
+                onClick = {},
             )
         }
     }
@@ -345,14 +346,60 @@ class ScreenShots {
         insightsCard = { com.pitstop.ui.insights.HomeInsightsCard(insights, onOpen = {}) },
     )
 
-    /** Home's Insights card: attention (red, 3 → two headlines + "1 more"), amber, all clear, loading. */
+    /**
+     * Home's Insights card is always there and lists critical (red) findings
+     * only: one red, three red (two headlines + "1 more"), then the calm
+     * "Nothing critical" state for amber-only and all-clear, loading, error.
+     */
     @Test fun homeInsights() = shot("home_insights") {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.ui, onOpen = {})
+            com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiThreeCritical, onOpen = {})
             com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiWatchOnly, onOpen = {})
             com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiAllClear, onOpen = {})
             com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiLoading, onOpen = {})
             com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiError, onOpen = {})
+        }
+    }
+
+    // ── Tire detail (Home → Tires) ──────────────────────────────────
+    private fun tireDetail(
+        ui: com.pitstop.ui.tires.TireDetailUi,
+        mode: com.pitstop.domain.TireHistory.PressureMode = com.pitstop.domain.TireHistory.PressureMode.Cold,
+        insights: List<com.pitstop.http.InsightCardDto> = listOf(InsightsFixtures.tireLeak),
+        live: com.pitstop.ui.status.HomeTires? = Fixtures.homeTires,
+    ): @Composable () -> Unit = {
+        com.pitstop.ui.tires.TireDetailContent(
+            ui = ui, live = live, tireInsights = insights, mode = mode,
+            onMode = {}, onDays = {}, onRefresh = {}, onBack = {},
+            nowMs = Fixtures.NOW, zone = java.time.ZoneOffset.UTC,
+        )
+    }
+
+    @Test fun tireDetail() = shot("tire_detail", content = tireDetail(TireFixtures.ui))
+
+    @Test fun tireDetailLight() = shot("tire_detail_light", dark = false, content = tireDetail(TireFixtures.ui))
+
+    @Test fun tireDetailAverageMetric() = shot(
+        "tire_detail_average_metric",
+        units = "metric",
+        content = tireDetail(TireFixtures.ui, mode = com.pitstop.domain.TireHistory.PressureMode.Average),
+    )
+
+    /** Few cold readings, no placard, no tire insight. */
+    @Test fun tireDetailYoung() = shot("tire_detail_young", content = tireDetail(TireFixtures.uiYoung, insights = emptyList()))
+
+    @Test fun tireDetailStates() = shot("tire_detail_states") {
+        Column {
+            androidx.compose.foundation.layout.Box(Modifier.size(width = 412.dp, height = 520.dp)) {
+                tireDetail(TireFixtures.uiEmpty, insights = emptyList())()
+            }
+            androidx.compose.foundation.layout.Box(Modifier.size(width = 412.dp, height = 520.dp)) {
+                tireDetail(TireFixtures.uiLoading, insights = emptyList())()
+            }
+            androidx.compose.foundation.layout.Box(Modifier.size(width = 412.dp, height = 520.dp)) {
+                tireDetail(TireFixtures.uiError, insights = emptyList(), live = null)()
+            }
         }
     }
 

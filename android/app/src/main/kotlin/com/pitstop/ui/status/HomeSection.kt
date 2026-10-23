@@ -11,14 +11,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.pitstop.domain.VehicleSignals
 import com.pitstop.ui.insights.HomeInsightsCard
 import com.pitstop.ui.insights.InsightsScreen
 import com.pitstop.ui.insights.InsightsViewModel
+import com.pitstop.ui.tires.TireDetailScreen
 import com.pitstop.util.requireActivity
 
 /**
  * The Home tab's own back stack: the dashboard, and the detail screens
- * Home opens itself (MPG over time, Insights). Everything else Home links to
+ * Home opens itself (MPG over time, Insights, Tires). Everything else Home links to
  * lives on another tab and is handed over by MainActivity's callbacks.
  *
  * [StatusViewModel] is resolved HERE, outside the NavHost, so it keeps the
@@ -54,6 +56,7 @@ fun HomeSection(
                 onOpenFuel = onOpenFuel,
                 onOpenFillup = onOpenFillup,
                 onWicanAction = onWicanAction,
+                onOpenTires = { nav.navigate(ROUTE_TIRES) },
                 insightsCard = {
                     LaunchedEffect(Unit) { insightsVm.refreshIfStale() }
                     HomeInsightsCard(insights, onOpen = { nav.navigate(ROUTE_INSIGHTS) })
@@ -67,9 +70,17 @@ fun HomeSection(
         composable(ROUTE_INSIGHTS) {
             InsightsScreen(onBack = { nav.popBackStack() })
         }
+        composable(ROUTE_TIRES) {
+            val ui by viewModel.uiState.collectAsStateWithLifecycle()
+            TireDetailScreen(
+                live = ui.tires ?: if (ui.hasVehicle) HomeTires(VehicleSignals.tpms(emptyMap()), null) else null,
+                onBack = { nav.popBackStack() },
+            )
+        }
     }
 }
 
 private const val ROUTE_HOME = "home"
 private const val ROUTE_MPG = "mpg-history"
 private const val ROUTE_INSIGHTS = "insights"
+private const val ROUTE_TIRES = "tires"

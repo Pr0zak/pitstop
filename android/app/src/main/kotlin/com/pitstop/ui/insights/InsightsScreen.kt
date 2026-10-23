@@ -646,34 +646,52 @@ internal fun InsightsEntryCard(ui: InsightsUi, onOpen: () -> Unit, modifier: Mod
 // ── Home tab entry ──────────────────────────────────────────────────
 
 /**
- * Home's Insights card: the verdict (red / amber "N need attention", green
- * "All clear") and up to two attention headlines; tapping opens Insights.
- * Renders nothing when the load failed with nothing to show (an older server
- * without the endpoint), so Home never carries a broken card.
+ * The insights Home surfaces: only the critical ones (status "bad", red),
+ * worst first in the server's attention order. Watch/good/info cards stay on
+ * the full Insights screen (Car tab entry card).
+ */
+internal fun criticalInsights(data: InsightsResponseDto?): List<InsightCardDto> {
+    if (data == null) return emptyList()
+    val rank = data.attention.withIndex().associate { (i, id) -> id to i }
+    return data.insights.filter { it.status == "bad" }.sortedBy { rank[it.id] ?: Int.MAX_VALUE }
+}
+
+/**
+ * Home's Insights card: always on Home, so Insights is easy to find. Inside
+ * it lists critical (red) findings only, up to two headlines plus "+N more".
+ * With nothing critical it stays as one calm line ("Nothing critical") with
+ * the count of other findings. Tapping always opens the full Insights screen.
  */
 @Composable
 internal fun HomeInsightsCard(ui: InsightsUi, onOpen: () -> Unit, modifier: Modifier = Modifier) {
     val data = ui.data
-    if (data == null && !ui.loading) return
-    val byId = data?.insights?.associateBy { it.id }.orEmpty()
-    val attention = data?.attention?.mapNotNull { byId[it] }.orEmpty()
+    val critical = criticalInsights(data)
     val ext = MaterialTheme.ext
-    val tint = when {
-        data == null -> MaterialTheme.colorScheme.onSurfaceVariant
-        attention.isEmpty() -> ext.good
-        attention.any { it.status == "bad" } -> ext.bad
-        else -> ext.warn
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val (verdict, tint) = when {
+        critical.isNotEmpty() ->
+            (if (critical.size == 1) "1 needs attention" else "${critical.size} need attention") to ext.bad
+        data != null -> "Nothing critical" to ext.good
+        ui.loading -> "Looking for patterns…" to muted
+        else -> null to muted
     }
-    val verdict = when {
-        data == null -> "Looking for patterns…"
-        attention.isEmpty() -> "All clear"
-        attention.size == 1 -> "1 needs attention"
-        else -> "${attention.size} need attention"
+    val subline = when {
+        critical.isNotEmpty() -> null
+        data != null -> {
+            val n = data.insights.count { it.status != "learning" }
+            when (n) {
+                0 -> "See all insights"
+                1 -> "1 other finding · see all insights"
+                else -> "$n other findings · see all insights"
+            }
+        }
+        ui.loading -> null
+        else -> ui.error?.let { "Couldn't load. Tap to open Insights." } ?: "See what your driving data says"
     }
     Card(
         onClick = onOpen,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = if (attention.isNotEmpty()) BorderStroke(1.dp, tint.copy(alpha = 0.45f)) else null,
+        border = if (critical.isNotEmpty()) BorderStroke(1.dp, ext.bad.copy(alpha = 0.45f)) else null,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -681,53 +699,49 @@ internal fun HomeInsightsCard(ui: InsightsUi, onOpen: () -> Unit, modifier: Modi
                 Icon(Icons.Outlined.Insights, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Insights", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(tint.copy(alpha = 0.12f))
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (data != null) {
-                        Box(Modifier.size(7.dp).clip(CircleShape).background(tint))
-                        Spacer(Modifier.width(5.dp))
+                verdict?.let {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(tint.copy(alpha = 0.12f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (data != null) {
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(tint))
+                            Spacer(Modifier.width(5.dp))
+                        }
+                        Text(it, style = MaterialTheme.typography.labelMedium, color = tint, fontWeight = FontWeight.SemiBold)
                     }
-                    Text(verdict, style = MaterialTheme.typography.labelMedium, color = tint, fontWeight = FontWeight.SemiBold)
                 }
                 Icon(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    contentDescription = "Open Insights",
+                    tint = muted,
                 )
             }
-            if (attention.isNotEmpty()) {
-                for (c in attention.take(2)) {
-                    val look = statusLook(c.status)
-                    Row(verticalAlignment = Alignment.Top) {
-                        Box(Modifier.padding(top = 6.dp).size(8.dp).clip(CircleShape).background(look.color))
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            c.headline,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                if (attention.size > 2) {
+            for (c in critical.take(2)) {
+                Row(verticalAlignment = Alignment.Top) {
+                    Box(Modifier.padding(top = 6.dp).size(8.dp).clip(CircleShape).background(ext.bad))
+                    Spacer(Modifier.width(10.dp))
                     Text(
-                        "+${attention.size - 2} more",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 18.dp),
+                        c.headline,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            } else if (data != null) {
+            }
+            if (critical.size > 2) {
                 Text(
-                    "${data.insights.count { it.status != "learning" }} findings about your fuel, engine, tires and costs. Nothing to worry about.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    "+${critical.size - 2} more",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = muted,
+                    modifier = Modifier.padding(start = 18.dp),
                 )
+            }
+            subline?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = muted)
             }
         }
     }

@@ -14,7 +14,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -186,15 +189,15 @@ fun TiresCard(
     modifier: Modifier = Modifier,
     placardFrontKpa: Double? = null,
     placardRearKpa: Double? = null,
+    title: String = "Tires",
+    /** Home: opens the Tire detail screen (history + charts); null = not tappable. */
+    onClick: (() -> Unit)? = null,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
+    val body: @Composable () -> Unit = {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Tires",
+                    title,
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier
                         .weight(1f)
@@ -207,6 +210,14 @@ fun TiresCard(
                     // Over a day old: still shown, flagged amber, values dimmed.
                     color = if (stale) MaterialTheme.ext.warn else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (onClick != null) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
             }
             TpmsGrid(
                 tires, system,
@@ -223,7 +234,25 @@ fun TiresCard(
                     modifier = Modifier.padding(top = 8.dp),
                 )
             }
+            if (onClick != null) {
+                Text(
+                    "Tap for pressure history and charts",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
         }
+    }
+    val colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    if (onClick != null) {
+        Card(
+            onClick = onClick,
+            modifier = modifier.fillMaxWidth(),
+            colors = colors,
+        ) { body() }
+    } else {
+        Card(modifier = modifier.fillMaxWidth(), colors = colors) { body() }
     }
 }
 
