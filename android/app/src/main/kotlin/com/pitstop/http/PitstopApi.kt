@@ -369,6 +369,21 @@ interface PitstopApi {
         @Header("Cache-Control") cacheControl: String? = null,
     ): EiaWeeklyResponse
 
+    /**
+     * Car → Insights. [days] 30..3650, [tz] the phone's IANA zone (the server
+     * files fill-ups by weekday with it). The server caches a build for 10
+     * minutes; [refresh] = true rebuilds, and goes with `cacheControl =
+     * "no-cache"` so OkHttp's 60 s cache doesn't replay the old body.
+     */
+    @GET("api/analytics/insights")
+    suspend fun getInsights(
+        @Query("vehicle_id") vehicleId: String,
+        @Query("days") days: Int,
+        @Query("tz") tz: String,
+        @Query("refresh") refresh: Boolean? = null,
+        @Header("Cache-Control") cacheControl: String? = null,
+    ): InsightsResponseDto
+
     @GET("api/analytics/mpg")
     suspend fun getMpgTrend(
         @Query("vehicle_id") vehicleId: String,

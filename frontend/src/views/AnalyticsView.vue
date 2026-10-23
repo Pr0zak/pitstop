@@ -620,6 +620,7 @@ const odoData = computed<uPlot.AlignedData | null>(() => {
     <template v-else>
       <nav class="elsewhere" aria-label="Related pages">
         <span class="muted small">Also see</span>
+        <RouterLink to="/insights">Insights (plain-language findings) →</RouterLink>
         <RouterLink to="/fuel?tab=stats">Spending &amp; fuel stats →</RouterLink>
         <RouterLink to="/dtcs">DTC history →</RouterLink>
         <RouterLink to="/">Lifetime cost →</RouterLink>

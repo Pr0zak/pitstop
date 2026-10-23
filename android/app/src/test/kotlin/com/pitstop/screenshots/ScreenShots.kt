@@ -72,9 +72,9 @@ class ScreenShots {
         useDeviceResolution = true,
     )
 
-    private fun shot(name: String, units: String = "imperial", content: @Composable () -> Unit) =
+    private fun shot(name: String, units: String = "imperial", dark: Boolean = true, content: @Composable () -> Unit) =
         paparazzi.snapshot(name) {
-            PitstopTheme {
+            PitstopTheme(useDarkTheme = dark) {
                 // Inspection mode: lazy lists skip their prefetch scheduler,
                 // which layoutlib can't run (see rememberPitstopListState).
                 CompositionLocalProvider(
@@ -471,6 +471,60 @@ class ScreenShots {
 
     @Test fun carServicePresets() = shot("car_service_presets") {
         CarContent(section = CarSection.Service, onSection = {}, service = { ServiceContent(Fixtures.serviceEmpty) })
+    }
+
+    // ── Insights ────────────────────────────────────────────────────
+    private fun insights(ui: com.pitstop.ui.insights.InsightsUi, group: String? = null, expanded: Set<String> = emptySet()): @Composable () -> Unit = {
+        com.pitstop.ui.insights.InsightsContent(
+            ui = ui, group = group, onGroup = {}, expandedHow = expanded, onToggleHow = {},
+            onWindow = {}, onRefresh = {}, onBack = {},
+        )
+    }
+
+    @Test fun insights() = shot("insights", content = insights(InsightsFixtures.ui))
+
+    @Test fun insightsLight() = shot("insights_light", dark = false, content = insights(InsightsFixtures.ui))
+
+    @Test fun insightsEngine() = shot("insights_engine", content = insights(InsightsFixtures.ui, group = "engine", expanded = setOf("battery")))
+
+    @Test fun insightsAllClear() = shot("insights_all_clear", content = insights(InsightsFixtures.uiAllClear))
+
+    @Test fun insightsLoading() = shot("insights_loading", content = insights(InsightsFixtures.uiLoading))
+
+    @Test fun insightsError() = shot("insights_error", content = insights(InsightsFixtures.uiError))
+
+    /** Every card in a plain column (the lazy list only lays out what fits). */
+    @Test fun insightCards() = shot("insight_cards") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            for (c in listOf(InsightsFixtures.bestSpeed, InsightsFixtures.fillDay, InsightsFixtures.tireLeak, InsightsFixtures.priceVsMarket, InsightsFixtures.warmup, InsightsFixtures.misfires)) {
+                com.pitstop.ui.insights.InsightCard(card = c, howExpanded = c.id == "tire_leak", onToggleHow = {})
+            }
+        }
+    }
+
+    @Test fun insightCardsLight() = shot("insight_cards_light", dark = false) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            for (c in listOf(InsightsFixtures.shortTrips, InsightsFixtures.trimSplit, InsightsFixtures.battery, InsightsFixtures.fillDay)) {
+                com.pitstop.ui.insights.InsightCard(card = c, howExpanded = false, onToggleHow = {})
+            }
+        }
+    }
+
+    @Test fun carInsightsEntry() = shot("car_insights_entry") {
+        CarContent(
+            section = CarSection.Service, onSection = {},
+            service = { ServiceContent(Fixtures.serviceWithReminders) },
+            insightsEntry = { com.pitstop.ui.insights.InsightsEntryCard(InsightsFixtures.ui, onOpen = {}) },
+        )
+    }
+
+    @Test fun insightsEntryStates() = shot("insights_entry_states") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            com.pitstop.ui.insights.InsightsEntryCard(InsightsFixtures.ui, onOpen = {})
+            com.pitstop.ui.insights.InsightsEntryCard(InsightsFixtures.uiAllClear, onOpen = {})
+            com.pitstop.ui.insights.InsightsEntryCard(InsightsFixtures.uiLoading, onOpen = {})
+            com.pitstop.ui.insights.InsightsEntryCard(InsightsFixtures.uiError, onOpen = {})
+        }
     }
 
     // ── Details ─────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   Car,
   FileJson,
   HelpCircle,
+  Lightbulb,
   Map as MapIcon,
   Settings as SettingsIcon,
 } from "lucide-vue-next";
@@ -29,6 +30,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { to: "/trips", label: "Trips", icon: Route },
   { to: "/heatmap", label: "Map", icon: MapIcon },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/insights", label: "Insights", icon: Lightbulb },
   { to: "/fuel", label: "Fuel", icon: Fuel },
   { to: "/maintenance", label: "Maintenance", icon: Wrench },
   { to: "/dtcs", label: "DTCs", icon: AlertTriangle },

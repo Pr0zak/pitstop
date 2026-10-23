@@ -599,3 +599,80 @@ export interface FuelioImportPreview {
   // backend may include other fields; we accept them as-is
   [key: string]: unknown;
 }
+
+// ─── insights (GET /analytics/insights) ─────────────────────────────────
+// Contract: backend pitstop/insights.py module docstring. Every number is
+// already in display units and every sentence is server-written; the web
+// only lays them out (ADR-013).
+
+export type InsightStatus = "good" | "watch" | "bad" | "info" | "learning";
+
+export interface InsightBand {
+  lo: number;
+  hi: number;
+  label: string;
+}
+export interface InsightRef {
+  value: number;
+  label: string;
+}
+export interface InsightBar {
+  label: string;
+  value: number;
+  n: number;
+  highlight: boolean;
+}
+export interface InsightBarsChart {
+  kind: "bars";
+  y_unit: string;
+  bars: InsightBar[];
+  band: InsightBand | null;
+  ref: InsightRef | null;
+}
+export interface InsightLinesChart {
+  kind: "lines";
+  x_type: "time";
+  y_unit: string;
+  /** points: [epoch_ms, y] */
+  series: { name: string; points: [number, number][] }[];
+  band: InsightBand | null;
+  ref: InsightRef | null;
+}
+export interface InsightPointsChart {
+  kind: "points";
+  x_unit: string;
+  y_unit: string;
+  points: [number, number][];
+}
+export type InsightChart = InsightBarsChart | InsightLinesChart | InsightPointsChart;
+
+export interface InsightCard {
+  id: string;
+  group: string;
+  title: string;
+  status: InsightStatus;
+  headline: string;
+  detail: string | null;
+  value: number | null;
+  value_unit: string | null;
+  chart: InsightChart | null;
+  how: string;
+  tip: string | null;
+  sample: string | null;
+  progress: { have: number; need: number; unit: string } | null;
+}
+
+export interface InsightGroup {
+  id: string;
+  title: string;
+  subtitle: string;
+}
+
+export interface InsightsResponse {
+  groups: InsightGroup[];
+  /** Insight ids that need a look, worst first. */
+  attention: string[];
+  insights: InsightCard[];
+  generated_at: string;
+  window_days: number;
+}

@@ -143,11 +143,13 @@ import java.time.ZoneId
  *   fillup/{id}                 – FillupDetailScreen
  *   fillup/{editId}/edit        – the Fuel form, prefilled, in edit mode
  *   dtc/{code}?vehicleId=       – DtcDetailScreen
+ *   insights                    – InsightsScreen (opened from Car)
  */
 class SectionNav(
     val openTrip: (String) -> Unit,
     val openFillup: (String) -> Unit,
     val openDtc: (code: String, vehicleId: String) -> Unit,
+    val openInsights: () -> Unit = {},
 )
 
 /**
@@ -171,6 +173,7 @@ fun SectionHost(
             openTrip = { id -> nav.navigate("trip/$id") },
             openFillup = { id -> nav.navigate("fillup/$id") },
             openDtc = openDtc,
+            openInsights = { nav.navigate(ROUTE_INSIGHTS) },
         )
     }
 
@@ -264,10 +267,14 @@ fun SectionHost(
                 onOpenTrip = { id -> nav.navigate("trip/$id") },
             )
         }
+        composable(ROUTE_INSIGHTS) {
+            com.pitstop.ui.insights.InsightsScreen(onBack = { nav.popBackStack() })
+        }
     }
 }
 
 private const val ROUTE_LIST = "list"
+private const val ROUTE_INSIGHTS = "insights"
 
 /** The Trips tab: Trips | Map under the shared top bar. */
 @Composable

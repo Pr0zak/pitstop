@@ -26,6 +26,7 @@ import type {
   LogEntry,
   LogIngestEntry,
   LogRecentParams,
+  InsightsResponse,
 } from "./types";
 
 // ─── vehicles ─────────────────────────────────────────────────────────
@@ -872,6 +873,24 @@ export async function getTripBaseline(
 ): Promise<TripBaseline> {
   const r = await apiQuery.get<TripBaseline>("/analytics/trip-baseline", {
     params: { vehicle_id: vehicleId, distance_km: distanceKm },
+  });
+  return r.data;
+}
+
+/** GET /analytics/insights — plain-language correlation cards (backend
+ *  pitstop/insights.py). `tz` buckets "by day / by weekday" findings in the
+ *  user's own zone; `refresh` skips the server cache. */
+export interface InsightsParams {
+  vehicle_id: string;
+  days: number;
+  tz: string;
+  refresh?: boolean;
+}
+export async function getInsights(p: InsightsParams): Promise<InsightsResponse> {
+  const r = await apiQuery.get<InsightsResponse>("/analytics/insights", {
+    params: { ...p, refresh: p.refresh ? true : undefined },
+    // A cold build walks a year of samples; give it room past the 30 s default.
+    timeout: 60_000,
   });
   return r.data;
 }

@@ -28,6 +28,7 @@ from .api import (
 )
 from .api import fuel_prices as fuel_prices_api
 from .api import hondalink as hondalink_api
+from .api import insights as insights_api
 from .api import logs as logs_api
 from .api import pidlab as pidlab_api
 from .api import settings as settings_api
@@ -204,6 +205,7 @@ app.include_router(settings_api.router)
 app.include_router(fillups.router)
 app.include_router(expenses.router)
 app.include_router(analytics.router)
+app.include_router(insights_api.router)
 app.include_router(maintenance.router)
 app.include_router(dashboard.router)
 app.include_router(live_ws.router)

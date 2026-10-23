@@ -88,6 +88,8 @@ import com.pitstop.ui.history.SectionHost
 import com.pitstop.ui.history.SectionHostId
 import com.pitstop.ui.history.TagChip
 import com.pitstop.ui.history.listStates
+import com.pitstop.ui.insights.InsightsEntryCard
+import com.pitstop.ui.insights.InsightsViewModel
 import com.pitstop.ui.live.LiveScreen
 import com.pitstop.ui.theme.LocalUnitSystem
 import com.pitstop.ui.theme.ext
@@ -127,10 +129,14 @@ fun CarScreen(
                 CarSection.Live -> Unit
             }
         }
+        val insightsVm: InsightsViewModel = hiltViewModel(LocalContext.current.requireActivity())
+        val insights by insightsVm.ui.collectAsStateWithLifecycle()
+        LaunchedEffect(Unit) { insightsVm.refreshIfStale() }
         CarContent(
             section = section,
             onSection = historyVm::selectCarSection,
             snackbarHostState = snackbar,
+            insightsEntry = { InsightsEntryCard(insights, onOpen = nav.openInsights) },
             live = { LiveScreen(onOpenBridgeStatus = onOpenBridgeStatus, showTopBar = false) },
             codes = {
                 CodesList(
@@ -164,6 +170,8 @@ internal fun CarContent(
     live: @Composable () -> Unit = {},
     codes: @Composable () -> Unit = {},
     service: @Composable () -> Unit = {},
+    /** The way into Car → Insights, under the section tabs. Empty = hidden. */
+    insightsEntry: (@Composable () -> Unit)? = null,
 ) {
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -179,6 +187,9 @@ internal fun CarContent(
                 for (s in CarSection.entries) {
                     Tab(selected = s == section, onClick = { onSection(s) }, text = { Text(s.label) })
                 }
+            }
+            insightsEntry?.let { entry ->
+                Box(Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp)) { entry() }
             }
             Box(Modifier.weight(1f)) {
                 when (section) {

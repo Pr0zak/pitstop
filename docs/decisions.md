@@ -750,3 +750,40 @@ Not every station reports prices, and a reported price can be days old.
 
 **Consequences.** Each uncached lookup sends a location to Google. A missing price is shown as
 "—", never 0, and every price carries its age. Setting or clearing the key clears the cache.
+
+## ADR-027 — Insights are server-written cards; clients only render them
+
+**Context.** The raw data already answers questions nobody asks it: does cold weather cost
+MPG, is a tire leaking or just cold, is one bank of the V6 drifting, which weekday is cheapest
+to fill up. Each answer combines two or more sources (trip MPG × weather, tire pressure × tire
+temperature, fuel trims × load, fill-up price × the EIA weekly average). Computing these on
+both clients would break the parity rule (ADR-013) and duplicate thresholds.
+
+**Decision.**
+
+1. **One endpoint, `GET /analytics/insights`, returns finished cards.** Each card carries a
+   status (`good`/`watch`/`bad`/`info`/`learning`), a one-sentence headline, an optional big
+   number, an optional chart (`bars`, `lines` or `points`, already in display units), a
+   "how we worked this out" paragraph, a tip and a sample size. The web and the phone render
+   every card with one component and never compute anything. The builders are pure functions
+   in `pitstop/insights.py`; `api/insights.py` only fetches rows.
+2. **Not enough data is a state, not a number.** Below each card's minimum (trips, days,
+   readings) the card is `learning` with `progress: {have, need, unit}` instead of a figure
+   that can't be trusted.
+3. **The PID stream is read once.** One query pivots the needed metrics into 2-second
+   buckets over at most 180 days; every PID-based card shares it. The response is cached in
+   memory for 10 minutes per (vehicle, window, tz); `refresh=true` rebuilds.
+4. **`engine_fuel_rate` is grams of fuel per second** (PID 0x9D), converted with the same
+   749.9 g/L density as `trip_stats`. Treating it as L/h produced 127 mpg.
+5. **Tire leaks are judged on temperature-corrected pressure** (gas law on absolute pressure,
+   corrected to 68 °F with each tire's own temperature sensor) and measured between air-ups:
+   a corrected rise of 2 psi or more between hourly medians is air being added, and splits
+   the series. A loss in the last segment before an air-up is still reported, so a fast leak
+   that was topped up stays visible.
+6. **US units in the text**, like `/dashboard/summary`. `tz` (the viewer's IANA zone) is used
+   only to file fill-ups by weekday.
+
+**Consequences.** Correlations from observational data are confounded (cold-weather trips
+are also shorter; the "best speed" bands include acceleration) — each card's `how` says what
+was compared so the reader can judge. Station-level MPG is not offered: fill-ups carry no
+station. Adding a card means adding a builder and a test; the clients need no change.
