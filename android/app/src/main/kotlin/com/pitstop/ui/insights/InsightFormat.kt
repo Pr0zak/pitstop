@@ -54,6 +54,12 @@ internal object InsightFormat {
         return ValueParts(n, u)
     }
 
+    /** "Last 30 days · 2,400 readings"; either part may be missing. */
+    fun footnote(window: String?, sample: String?): String? =
+        listOfNotNull(window?.takeIf { it.isNotBlank() }, sample?.takeIf { it.isNotBlank() })
+            .joinToString(" · ")
+            .ifEmpty { null }
+
     /** "2 of 7 days". */
     fun progress(have: Double, need: Double, unit: String?): String =
         "${number(have, 0)} of ${number(need, 0)}" + (unit?.let { " $it" } ?: "")

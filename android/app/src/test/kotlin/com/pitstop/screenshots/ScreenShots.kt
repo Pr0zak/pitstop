@@ -305,11 +305,23 @@ class ScreenShots {
     }
 
     @Composable
-    private fun home(ui: StatusUiState) = StatusContent(
+    private fun home(ui: StatusUiState, insights: com.pitstop.ui.insights.InsightsUi = InsightsFixtures.ui) = StatusContent(
         ui = ui, uploadProgress = UploadProgress.Idle, pendingDrives = 0,
         onRefresh = {}, onSync = {}, onCancelSync = {},
         onOpenHistory = {}, onOpenSettings = {},
+        insightsCard = { com.pitstop.ui.insights.HomeInsightsCard(insights, onOpen = {}) },
     )
+
+    /** Home's Insights card: attention (red, 3 → two headlines + "1 more"), amber, all clear, loading. */
+    @Test fun homeInsights() = shot("home_insights") {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.ui, onOpen = {})
+            com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiWatchOnly, onOpen = {})
+            com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiAllClear, onOpen = {})
+            com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiLoading, onOpen = {})
+            com.pitstop.ui.insights.HomeInsightsCard(InsightsFixtures.uiError, onOpen = {})
+        }
+    }
 
     @Test fun bridgeSheet() = shot("bridge_sheet") {
         BridgeSheetContent(
@@ -477,7 +489,7 @@ class ScreenShots {
     private fun insights(ui: com.pitstop.ui.insights.InsightsUi, group: String? = null, expanded: Set<String> = emptySet()): @Composable () -> Unit = {
         com.pitstop.ui.insights.InsightsContent(
             ui = ui, group = group, onGroup = {}, expandedHow = expanded, onToggleHow = {},
-            onWindow = {}, onRefresh = {}, onBack = {},
+            onRefresh = {}, onBack = {},
         )
     }
 

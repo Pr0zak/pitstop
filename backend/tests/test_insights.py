@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from pitstop import insights as ins
+from pitstop.insight_features import day_features, trip_features
 
 T0 = datetime(2026, 6, 1, 12, 0, tzinfo=UTC).timestamp()
 DAY = 86400.0
@@ -53,11 +54,16 @@ def test_fuel_rate_is_grams_per_second() -> None:
     for mph in (30, 45, 60, 75):
         for k in range(60):
             samples.append(ins.Sample(t=k, spd=mph * ins.KM_PER_MI + 1, fr=1.0))
-    card = ins.best_speed(samples)
+    feats = trip_features(samples, {})
+    bins = {int(k): v for k, v in feats["speed_bins"].items()}
+    card = ins.best_speed(bins)
     sixty = next(b for b in card["chart"]["bars"] if b["label"] == "60–65")
     assert sixty["value"] == pytest.approx(47.9, abs=0.6)
-    idle = [ins.Sample(t=k, spd=0, fr=0.5, rpm=650) for k in range(40)]
-    assert ins.idle_rate_lph(idle) == pytest.approx(0.5 * 3600 / 749.9)
+    trips = [_trip(i, minutes=20, idle_s=600) for i in range(3)]
+    idle = ins.idle_cost(trips, 0.5, 4.0)
+    # 3 x 10 min = 0.5 h idle x 0.634 gal/h = 0.32 gal = $1.27
+    assert idle["value"] == 1
+    assert "0.63 gal an hour" in idle["detail"]
 
 
 def test_hard_events_debounced() -> None:
@@ -65,19 +71,6 @@ def test_hard_events_debounced() -> None:
     speeds = [0, 30, 60, 60, 60, 30, 0]
     ss = [ins.Sample(t=i * 2.0, spd=v) for i, v in enumerate(speeds)]
     assert ins.hard_events(ss) == (1, 1)
-
-
-def test_fuel_trim_split_flags_idle_only_lean_as_air_leak() -> None:
-    ss = []
-    for k in range(60):
-        ss.append(ins.Sample(t=k, spd=0, rpm=700, ect=90, ltft1=8, stft1=4, ltft2=7, stft2=3))
-        ss.append(ins.Sample(t=k, spd=80, load=50, ect=90, ltft1=1, stft1=0, ltft2=0, stft2=1))
-    card = ins.fuel_trim_split(ss)
-    assert card["status"] == "bad"
-    assert "air (vacuum) leak" in card["headline"]
-    healthy = [ins.Sample(t=s.t, spd=s.spd, rpm=s.rpm, load=s.load, ect=90, ltft1=1, stft1=0,
-                          ltft2=-1, stft2=1) for s in ss]
-    assert ins.fuel_trim_split(healthy)["status"] == "good"
 
 
 def test_compensated_psi_removes_temperature() -> None:
@@ -88,14 +81,14 @@ def test_compensated_psi_removes_temperature() -> None:
     assert ins.compensated_psi(hot_abs - ins.ATM_KPA, 40) == pytest.approx(35, abs=0.01)
 
 
-def _tire_rows(psi_by_hour: list[tuple[float, float]], temp_c: float = 20):
-    return [(T0 + h * 3600, p / ins.PSI_PER_KPA, temp_c) for h, p in psi_by_hour]
+def _hourly(psi_by_hour: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    return [(T0 + h * 3600, p) for h, p in psi_by_hour]
 
 
 def test_tire_leak_detects_loss_before_air_up() -> None:
     # FR loses 4 psi over 24 h, then is aired back up; the others hold.
-    fr = _tire_rows([(0, 30), (8, 28.7), (16, 27.3), (24, 26), (25, 33), (26, 33)])
-    steady = _tire_rows([(0, 33), (12, 33), (24, 33), (26, 33)])
+    fr = _hourly([(0, 30), (8, 28.7), (16, 27.3), (24, 26), (25, 33), (26, 33)])
+    steady = _hourly([(0, 33), (12, 33), (24, 33), (26, 33)])
     card = ins.tire_leak({"fl": steady, "fr": fr, "rl": steady, "rr": steady}, 241.3, -0.5)
     assert card["status"] == "bad"
     assert card["headline"].startswith("Front right was losing 4.0 psi a day")
@@ -104,10 +97,37 @@ def test_tire_leak_detects_loss_before_air_up() -> None:
 
 
 def test_tire_leak_learning_then_good() -> None:
-    steady = _tire_rows([(h, 33) for h in range(0, 48, 6)])
+    steady = _hourly([(h, 33) for h in range(0, 48, 6)])
     assert ins.tire_leak({"fl": steady}, None, -0.5)["status"] == "learning"
-    week = _tire_rows([(h, 33) for h in range(0, 24 * 9, 12)])
+    week = _hourly([(h, 33) for h in range(0, 24 * 9, 12)])
     assert ins.tire_leak({"fl": week, "fr": week}, None, -0.5)["status"] == "good"
+
+
+def test_day_features_correct_tire_pressure_hourly() -> None:
+    # Same air, read cold (20 °C) and hot (40 °C) in different hours: both 35 psi corrected.
+    cold_kpa = 35 / ins.PSI_PER_KPA
+    hot_kpa = (cold_kpa + ins.ATM_KPA) * (40 + 273.15) / (20 + 273.15) - ins.ATM_KPA
+    f = day_features([], rest_v=[12.5, 14.1], run_v=[14.2], misfire_max={1: 0.0}, atf_c=[50.0, 105.0],
+                     tires={"fr": [(T0, cold_kpa, 20.0), (T0 + 7200, hot_kpa, 40.0)]}, gps_pairs=None)
+    assert [p[1] for p in f["tires"]["fr"]] == [35.0, 35.0]
+    assert f["rest_v"] == [12.5, 1]  # 14.1 V is a running reading, not rest
+    assert f["atf"] == {"max": 221.0, "bins": [1, 0, 0, 0, 1]}
+
+
+def test_trip_features_warmup_and_hard_events() -> None:
+    ss = [ins.Sample(t=i * 2.0, spd=0, ect=20 + i) for i in range(70)]  # reaches 80 °C at 120 s
+    f = trip_features(ss, {"fl": [240.0, 242.0]})
+    assert f["warmup_min"] == 2.0
+    assert f["tire_kpa"] == {"fl": [241.0, 2]}
+    assert f["hard_acc"] == 0 and f["n"] == 70
+
+
+def test_fuel_trim_split_combines_days() -> None:
+    day = {"trim": {"1idle": [9.0, 40], "1cruise": [1.0, 40], "2idle": [8.0, 40], "2cruise": [0.5, 40]}}
+    card = ins.fuel_trim_split([day, day])
+    assert card["status"] == "watch"
+    assert "air (vacuum) leak" in card["headline"]
+    assert ins.fuel_trim_split([day])["status"] == "learning"
 
 
 def test_price_vs_market_and_fill_day() -> None:
@@ -119,15 +139,17 @@ def test_price_vs_market_and_fill_day() -> None:
     assert ins.fill_day(fills, UTC)["status"] == "learning"
 
 
-def test_battery_reads_daily_median() -> None:
-    rest = [(T0 + d * DAY + k * 60, v) for d in range(6) for k, v in enumerate((12.5, 12.6, 11.0))]
-    card = ins.battery(rest, [], [14.2])
-    assert card["value"] == 12.5
-    assert card["status"] == "good"
+def test_battery_judges_last_14_days() -> None:
+    per_day = {f"2026-06-{d:02d}": 12.6 for d in range(1, 21)}
+    per_day.update({f"2026-07-{d:02d}": 12.1 for d in range(1, 15)})
+    card = ins.battery(per_day, 14.2)
+    assert card["value"] == 12.1
+    assert card["status"] == "watch"
 
 
 def test_order_cards_attention_worst_first() -> None:
     cards = [{"id": "a", "status": "watch"}, {"id": "b", "status": "good"}, {"id": "c", "status": "bad"}]
     out = ins.order_cards(cards)  # type: ignore[arg-type]
     assert out["attention"] == ["c", "a"]
+    assert all("window" in c for c in out["insights"])
     assert [g["id"] for g in out["groups"]] == ["fuel", "engine", "tires", "cost"]

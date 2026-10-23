@@ -26,6 +26,13 @@ class InsightFormatTest {
         assertEquals(InsightFormat.ValueParts("3", null), InsightFormat.valueParts(3.0, null))
     }
 
+    @Test fun `footnote joins window and sample`() {
+        assertEquals("Last 30 days · 2,400 readings", InsightFormat.footnote("Last 30 days", "2,400 readings"))
+        assertEquals("All data", InsightFormat.footnote("All data", null))
+        assertEquals("30 fill-ups", InsightFormat.footnote(null, "30 fill-ups"))
+        assertEquals(null, InsightFormat.footnote(null, " "))
+    }
+
     @Test fun `progress reads as have of need`() {
         assertEquals("2 of 7 days", InsightFormat.progress(2.0, 7.0, "days"))
     }
@@ -52,11 +59,11 @@ class InsightFormatTest {
         )
         val all = insightRows(data, null)
         assertEquals(
-            listOf("window", "attention", "groups", "h:fuel", "c:a", "c:l", "h:engine", "c:b", "h:other", "c:x"),
+            listOf("intro", "attention", "groups", "h:fuel", "c:a", "c:l", "h:engine", "c:b", "h:other", "c:x"),
             all.map { it.key },
         )
         assertEquals(listOf("b"), (all[1] as InsightRow.Attention).cards.map { it.id })
         val engine = insightRows(data, "engine")
-        assertEquals(listOf("window", "attention", "groups", "h:engine", "c:b"), engine.map { it.key })
+        assertEquals(listOf("intro", "attention", "groups", "h:engine", "c:b"), engine.map { it.key })
     }
 }

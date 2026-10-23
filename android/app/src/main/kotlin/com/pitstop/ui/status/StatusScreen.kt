@@ -143,6 +143,8 @@ fun StatusScreen(
     onOpenFuel: () -> Unit = {},
     onOpenFillup: (String) -> Unit = {},
     onWicanAction: () -> Unit = onOpenSettings,
+    /** Home's Insights card (HomeSection supplies it); null = none. */
+    insightsCard: (@Composable () -> Unit)? = null,
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
@@ -169,6 +171,7 @@ fun StatusScreen(
         pairCardCompact = pairCardCompact,
         onPairCardShown = viewModel::onPairCardShown,
         onCollapsePairCard = viewModel::collapsePairCard,
+        insightsCard = insightsCard,
     )
 }
 
@@ -214,6 +217,7 @@ internal fun StatusContent(
     pairCardCompact: Boolean = false,
     onPairCardShown: () -> Unit = {},
     onCollapsePairCard: () -> Unit = {},
+    insightsCard: (@Composable () -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val refreshing = remember { mutableStateOf(false) }
@@ -316,6 +320,9 @@ internal fun StatusContent(
                     onOpenDtc = onOpenDtc,
                     onOpenService = onOpenService,
                 )
+
+                // Insights: the verdict and the worst findings, one tap from Home.
+                insightsCard?.invoke()
 
                 // Drive-upload state. Renders nothing when the queue is
                 // empty and no pass has run recently.

@@ -19,6 +19,7 @@ Card shape::
       "tip": "what to do about it" | None,
       "sample": "Based on 214 trips" | None,
       "progress": None | {"have": 2, "need": 7, "unit": "days"},
+      "window": "All data" | "Last 30 days" | ...,  # what the card looked at
     }
 
 Charts (all values already in display units):
@@ -36,7 +37,6 @@ more it needs instead of showing a number that can't be trusted.
 
 from __future__ import annotations
 
-import bisect
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -262,21 +262,6 @@ def _month_label(key: str) -> str:
     return datetime.strptime(key, "%Y-%m").strftime("%b")
 
 
-def samples_by_trip(trips: Sequence[Trip], samples: Sequence[Sample]) -> dict[int, list[Sample]]:
-    """Index of trip -> its samples (samples sorted by time)."""
-    order = sorted(range(len(trips)), key=lambda i: trips[i].start)
-    starts = [trips[i].start for i in order]
-    out: dict[int, list[Sample]] = defaultdict(list)
-    for s in samples:
-        k = bisect.bisect_right(starts, s.t) - 1
-        if k < 0:
-            continue
-        i = order[k]
-        if s.t <= trips[i].end:
-            out[i].append(s)
-    return out
-
-
 # ── fuel economy ───────────────────────────────────────────────────────
 
 _TEMP_BINS = [
@@ -428,24 +413,11 @@ def short_trips(trips: Sequence[Trip]) -> dict[str, Any]:
     )
 
 
-def idle_rate_lph(samples: Sequence[Sample]) -> float | None:
-    """Median fuel flow while stopped with the engine running (L/h)."""
-    vals = [
-        s.fr
-        for s in samples
-        if s.fr is not None
-        and s.fr > 0
-        and s.spd is not None
-        and s.spd < 1
-        and s.rpm is not None
-        and s.rpm > 400
-    ]
-    return statistics.median(vals) * 3600 / GASOLINE_G_PER_L if len(vals) >= 30 else None
-
-
 def idle_cost(
-    trips: Sequence[Trip], samples: Sequence[Sample], price_per_gal: float | None
+    trips: Sequence[Trip], idle_gs: float | None, price_per_gal: float | None
 ) -> dict[str, Any]:
+    """trips: the last 12 months. idle_gs: typical fuel flow while stopped
+    with the engine running, grams per second."""
     how = (
         "Idle time is how long the engine ran while the car stood still, summed over "
         "your trips. The fuel it burned comes from the engine's measured fuel flow "
@@ -453,8 +425,7 @@ def idle_cost(
     )
     title = "Idling"
     idle_trips = [t for t in trips if t.idle_s is not None]
-    rate = idle_rate_lph(samples)
-    if not idle_trips or rate is None:
+    if not idle_trips or idle_gs is None:
         return _learning(
             "idle_cost",
             "fuel",
@@ -468,7 +439,7 @@ def idle_cost(
     idle_h = sum(t.idle_s or 0 for t in idle_trips) / 3600
     run_h = sum(t.duration_s for t in idle_trips) / 3600
     share = idle_h / run_h * 100 if run_h else 0
-    gal_h = rate / L_PER_GAL
+    gal_h = idle_gs * 3600 / GASOLINE_G_PER_L / L_PER_GAL
     gal = idle_h * gal_h
     cost = gal * price_per_gal if price_per_gal else None
     months: dict[str, float] = defaultdict(float)
@@ -476,45 +447,40 @@ def idle_cost(
         months[_month(t.start)] += (t.idle_s or 0) / 3600 * gal_h * (price_per_gal or 1)
     keys = sorted(months)[-12:]
     unit = "$" if price_per_gal else "gal"
-    chart = _bars([_bar(_month_label(k), months[k]) for k in keys], unit)
     money = f"${cost:,.0f} ({gal:.1f} gal)" if cost is not None else f"{gal:.1f} gal"
     return _card(
         "idle_cost",
         "fuel",
         title,
         "watch" if share >= 25 else "info",
-        f"Idling burned {money} over this period.",
+        f"Idling burned {money} in the last 12 months.",
         value=_r(cost if cost is not None else gal, 0),
         value_unit="$" if cost is not None else "gal",
         detail=(
             f"The engine idled {idle_h:.1f} hours, {share:.0f}% of its running time, "
             f"burning about {gal_h:.2f} gal an hour while stopped."
         ),
-        chart=chart,
+        chart=_bars([_bar(_month_label(k), months[k]) for k in keys], unit),
         how=how,
         tip="Idle-stop saves fuel at lights; for waits over a minute, shutting off is cheaper than idling.",
-        sample=f"Based on {len(idle_trips)} trips",
+        sample=f"{len(idle_trips)} trips",
     )
 
 
-def best_speed(samples: Sequence[Sample]) -> dict[str, Any]:
+def best_speed(bins: dict[int, Sequence[float]]) -> dict[str, Any]:
+    """bins: 5-mph band floor -> [sum of mph, sum of fuel g/s, samples],
+    summed over every trip's 2-second samples."""
     how = (
         "Every two seconds of driving is filed by road speed. For each 5-mph band, "
         "fuel economy is the average speed divided by the average fuel flow, so "
         "time spent coasting with the fuel cut off counts in your favour."
     )
     title = "Most efficient speed"
-    bins: dict[int, list[float]] = defaultdict(lambda: [0.0, 0.0, 0])  # mph sum, gal/h sum, n
-    for s in samples:
-        if s.spd is None or s.fr is None or s.spd < 8:
-            continue
-        mph = s.spd / KM_PER_MI
-        b = min(int(mph // 5) * 5, 80)
-        acc = bins[b]
-        acc[0] += mph
-        acc[1] += s.fr * 3600 / GASOLINE_G_PER_L / L_PER_GAL
-        acc[2] += 1
-    rows = [(b, acc[0] / acc[1]) for b, acc in sorted(bins.items()) if acc[2] >= 50 and acc[1] > 0]
+    rows = []
+    for b, (mph, gs, n) in sorted(bins.items()):
+        gal_h = gs * 3600 / GASOLINE_G_PER_L / L_PER_GAL
+        if n >= 50 and gal_h > 0:
+            rows.append((b, mph / gal_h, int(n)))
     if len(rows) < 4:
         return _learning(
             "best_speed",
@@ -526,7 +492,6 @@ def best_speed(samples: Sequence[Sample]) -> dict[str, Any]:
             need=4,
             unit="speed bands",
         )
-    # Best band among speeds a driver can actually hold (25 mph and up).
     cruise = [r for r in rows if r[0] >= 25] or rows
     best = max(cruise, key=lambda r: r[1])
 
@@ -534,25 +499,26 @@ def best_speed(samples: Sequence[Sample]) -> dict[str, Any]:
         return "80+" if b >= 80 else f"{b}–{b + 5}"
 
     fast = next((r for r in rows if r[0] == 70), rows[-1])
-    headline = f"Your Pilot is most efficient at {label(best[0])} mph ({best[1]:.0f} mpg)."
     detail = None
     if fast[0] > best[0]:
         detail = (
             f"At {label(fast[0])} mph it gets {fast[1]:.0f} mpg, "
             f"{abs(_pct(fast[1], best[1])):.0f}% less. Air drag grows with the square of speed."
         )
+    hours = sum(r[2] for r in rows) * 2 / 3600
     return _card(
         "best_speed",
         "fuel",
         title,
         "info",
-        headline,
+        f"Your Pilot is most efficient at {label(best[0])} mph ({best[1]:.0f} mpg).",
         value=_r(best[1], 0),
         value_unit="mpg",
         detail=detail,
-        chart=_bars([_bar(label(b), m, 0, b == best[0]) for b, m in rows], "mpg"),
+        chart=_bars([_bar(label(b), m, n, b == best[0]) for b, m, n in rows], "mpg"),
         how=how,
         tip="On the highway, 65 instead of 75 mph is the cheapest fuel saving there is.",
+        sample=f"{hours:,.0f} hours of driving",
     )
 
 
@@ -669,7 +635,8 @@ def hard_events(samples: Sequence[Sample]) -> tuple[int, int]:
     return acc, brk
 
 
-def driving_style(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> dict[str, Any]:
+def driving_style(trips: Sequence[Trip], feats: Sequence[dict[str, Any] | None]) -> dict[str, Any]:
+    """feats[i]: stored features of trips[i] (hard_acc, hard_brk, n)."""
     how = (
         "For each trip we count hard starts and hard stops (speed changing faster than "
         "about a quarter of a g) per 10 miles. Trips are ranked by that and split into "
@@ -677,12 +644,10 @@ def driving_style(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> di
     )
     title = "Driving style"
     rows = []
-    for i, t in enumerate(trips):
-        ss = by_trip.get(i)
-        if t.mpg is None or t.miles < 2 or not ss or len(ss) < 60:
+    for t, f in zip(trips, feats, strict=True):
+        if t.mpg is None or t.miles < 2 or not f or f.get("n", 0) < 60:
             continue
-        a, b = hard_events(ss)
-        rows.append(((a + b) / t.miles * 10, t))
+        rows.append(((f["hard_acc"] + f["hard_brk"]) / t.miles * 10, t))
     if len(rows) < 15:
         return _learning(
             "driving_style",
@@ -701,12 +666,10 @@ def driving_style(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> di
         ("Normal", rows[k : len(rows) - k]),
         ("Hard", rows[len(rows) - k :]),
     ]
-    bars = []
-    stats = []
+    bars, stats = [], []
     for label, grp in groups:
         m, n = _mpg_of(t for _, t in grp)
-        rate = statistics.fmean(r for r, _ in grp)
-        stats.append((label, m, rate))
+        stats.append((label, m, statistics.fmean(r for r, _ in grp)))
         bars.append(_bar(label, m, n, label == "Gentle"))
     g, h = stats[0][1], stats[2][1]
     if not g or not h:
@@ -736,52 +699,47 @@ def driving_style(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> di
         chart=_bars(bars, "mpg"),
         how=how,
         tip="Look further ahead and lift off early. Coasting to a red light uses no fuel at all.",
-        sample=f"Based on {len(rows)} trips",
+        sample=f"{len(rows)} trips",
     )
 
 
-def cylinder_mode(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> dict[str, Any]:
+def cylinder_mode(trips: Sequence[Trip], feats: Sequence[dict[str, Any] | None]) -> dict[str, Any]:
+    """feats[i]["cyl"]: {band: [moving samples, samples on 3 cylinders]}."""
     how = (
         "The engine reports how many cylinders are firing. While the car is moving, we "
         "measure how much of the time it ran on 3 instead of 6, by road type."
     )
     title = "3-cylinder cruising"
-    moving = [
-        s
-        for ss in by_trip.values()
-        for s in ss
-        if s.cyl is not None and s.spd is not None and s.spd >= 8
-    ]
-    if len(moving) < 300:
+    bands: dict[str, list[int]] = {"City": [0, 0], "Suburban": [0, 0], "Highway": [0, 0]}
+    pairs = []
+    for t, f in zip(trips, feats, strict=True):
+        cyl = (f or {}).get("cyl")
+        if not cyl:
+            continue
+        n = n3 = 0
+        for band, (bn, b3) in cyl.items():
+            bands.setdefault(band, [0, 0])
+            bands[band][0] += bn
+            bands[band][1] += b3
+            n += bn
+            n3 += b3
+        if t.mpg is not None and n >= 60:
+            pairs.append((n3 / n, t))
+    moving = sum(v[0] for v in bands.values())
+    if moving < 300:
         return _learning(
             "cylinder_mode",
             "fuel",
             title,
-            "Collecting cylinder readings. Needs about 10 more minutes of driving.",
+            "Collecting cylinder readings. Needs about 10 minutes of driving.",
             how=how,
-            have=len(moving) * 2 // 60,
+            have=moving * 2 // 60,
             need=10,
             unit="minutes",
         )
-    share = sum(1 for s in moving if s.cyl <= 3.5) / len(moving) * 100  # type: ignore[operator]
-    bands = [("City", 0, 56), ("Suburban", 56, 88), ("Highway", 88, 999)]
-    bars = []
-    for label, lo, hi in bands:
-        grp = [s for s in moving if lo <= s.spd < hi]  # type: ignore[operator]
-        if len(grp) >= 30:
-            bars.append(_bar(label, sum(1 for s in grp if s.cyl <= 3.5) / len(grp) * 100, len(grp)))  # type: ignore[operator]
-    # Per-trip share vs MPG once there are enough trips.
-    pairs = []
-    for i, t in enumerate(trips):
-        grp = [
-            s for s in by_trip.get(i, []) if s.cyl is not None and s.spd is not None and s.spd >= 8
-        ]
-        if t.mpg is not None and len(grp) >= 60:
-            pairs.append((sum(1 for s in grp if s.cyl <= 3.5) / len(grp), t))  # type: ignore[operator]
-    detail = (
-        "Honda's Variable Cylinder Management shuts off one bank at light, steady load "
-        "to save fuel."
-    )
+    share = sum(v[1] for v in bands.values()) / moving * 100
+    bars = [_bar(b, v[1] / v[0] * 100, v[0]) for b, v in bands.items() if v[0] >= 30]
+    detail = "Honda's Variable Cylinder Management shuts off one bank at light, steady load to save fuel."
     if len(pairs) >= 8:
         pairs.sort(key=lambda p: p[0])
         half = len(pairs) // 2
@@ -808,7 +766,7 @@ def cylinder_mode(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> di
         chart=_bars(bars, "%"),
         how=how,
         tip="Gentle, steady throttle keeps it in 3-cylinder mode longer.",
-        sample=f"{len(moving) * 2 / 3600:.1f} hours of driving",
+        sample=f"{moving * 2 / 3600:.1f} hours of driving",
     )
 
 
@@ -871,43 +829,44 @@ def tire_pressure_mpg(trips: Sequence[Trip], trip_psi_below: dict[int, float]) -
 # ── engine health ──────────────────────────────────────────────────────
 
 
-def fuel_trim_split(samples: Sequence[Sample]) -> dict[str, Any]:
+def _combine(meds: Iterable[Sequence[float] | None]) -> tuple[float, int] | None:
+    """Count-weighted mean of stored [median, count] pairs."""
+    tot = n = 0.0
+    for m in meds:
+        if m and m[1]:
+            tot += m[0] * m[1]
+            n += m[1]
+    return (tot / n, int(n)) if n else None
+
+
+def fuel_trim_split(days: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """days: stored day features for the window (last 30 days)."""
     how = (
         "Fuel trim is how much fuel the computer adds (+) or removes (−) to hit the "
         "right mixture. We add the short- and long-term trims for each side of the V6 "
         "and compare idle (stopped, warm) with steady cruising. Within ±5% is healthy."
     )
     title = "Fuel mixture"
-    buckets: dict[str, list[float]] = defaultdict(list)
-    for s in samples:
-        if s.ect is None or s.ect < 70 or s.spd is None:
-            continue
-        if s.spd < 2 and s.rpm is not None and s.rpm < 1000:
-            mode = "idle"
-        elif s.spd >= 40 and s.load is not None and 30 <= s.load <= 80:
-            mode = "cruise"
-        else:
-            continue
-        for bank, lt, st in ((1, s.ltft1, s.stft1), (2, s.ltft2, s.stft2)):
-            if lt is not None and st is not None and -40 < lt < 40 and -40 < st < 40:
-                buckets[f"{bank}{mode}"].append(lt + st)
     keys = ["1idle", "1cruise", "2idle", "2cruise"]
-    if any(len(buckets[k]) < 50 for k in keys):
+    comb = {k: _combine((d.get("trim") or {}).get(k) for d in days) for k in keys}
+    if any(comb[k] is None or comb[k][1] < 50 for k in keys):  # type: ignore[index]
+        have = min((comb[k][1] if comb[k] else 0) for k in keys)  # type: ignore[index]
         return _learning(
             "fuel_trim_split",
             "engine",
             title,
             "Needs more warm-engine idle and cruise readings.",
             how=how,
-            have=min(len(buckets[k]) for k in keys),
+            have=have,
             need=50,
             unit="readings",
         )
-    v = {k: statistics.median(buckets[k]) for k in keys}
+    v = {k: comb[k][0] for k in keys}  # type: ignore[index]
     worst = max(abs(x) for x in v.values())
     status = "good" if worst <= 5 else "watch" if worst <= 10 else "bad"
     idle = max(v["1idle"], v["2idle"])
     cruise = max(v["1cruise"], v["2cruise"])
+    tip: str | None
     if idle > 5 and idle > cruise + 4:
         headline = (
             "Extra fuel is being added mostly at idle, a classic sign of an air (vacuum) leak."
@@ -931,6 +890,7 @@ def fuel_trim_split(samples: Sequence[Sample]) -> dict[str, Any]:
         "2idle": "Right idle",
         "2cruise": "Right cruise",
     }
+    n_total = sum(comb[k][1] for k in keys)  # type: ignore[index]
     return _card(
         "fuel_trim_split",
         "engine",
@@ -941,18 +901,14 @@ def fuel_trim_split(samples: Sequence[Sample]) -> dict[str, Any]:
         value_unit="% max correction",
         detail="Bank 1 (left) and bank 2 (right) are the two sides of the V6.",
         chart=_bars(
-            [_bar(labels[k], v[k], len(buckets[k]), abs(v[k]) == worst) for k in keys],
-            "%",
+            [_bar(labels[k], v[k], comb[k][1], abs(v[k]) == worst) for k in keys],
+            "%",  # type: ignore[index]
             band={"lo": -5, "hi": 5, "label": "Healthy ±5%"},
         ),
         how=how,
         tip=tip,
-        sample=f"Last {_span_days(samples)} days",
+        sample=f"{n_total:,} readings",
     )
-
-
-def _span_days(samples: Sequence[Sample]) -> int:
-    return max(1, round((samples[-1].t - samples[0].t) / 86400)) if samples else 0
 
 
 def bank_balance(daily: dict[str, dict[str, float]]) -> dict[str, Any]:
@@ -1048,24 +1004,17 @@ def _baseline_trend(
     return b, r, _pct(r, b)
 
 
-def airflow(samples: Sequence[Sample]) -> dict[str, Any]:
+def airflow(daily: dict[str, float]) -> dict[str, Any]:
+    """daily: day -> median breathing efficiency (%), all days with enough
+    moderate-load samples."""
     how = (
         "At moderate load (2,000–3,500 rpm, firm throttle, all 6 cylinders) we compare "
         "the air the engine actually drew in with what it should draw at that speed and "
         "pressure. That ratio should stay constant; a slow fall means a clogging air "
-        "filter, a dirty airflow sensor or carbon build-up."
+        "filter, a dirty airflow sensor or carbon build-up. We compare your first month "
+        "with the last two weeks."
     )
     title = "Engine breathing"
-    per_day: dict[str, list[float]] = defaultdict(list)
-    for s in samples:
-        if s.rpm is None or not (2000 <= s.rpm <= 3500) or s.map is None or s.map < 70:
-            continue
-        if s.cyl is not None and s.cyl <= 3.5:
-            continue
-        ve = volumetric_efficiency(s)
-        if ve is not None and 30 < ve < 130:
-            per_day[_day(s.t)].append(ve)
-    daily = {d: statistics.median(v) for d, v in per_day.items() if len(v) >= 10}
     trend = _baseline_trend(daily)
     if trend is None:
         return _learning(
@@ -1106,18 +1055,14 @@ def airflow(samples: Sequence[Sample]) -> dict[str, Any]:
     )
 
 
-def fuel_pressure(samples: Sequence[Sample]) -> dict[str, Any]:
+def fuel_pressure(daily: dict[str, float]) -> dict[str, Any]:
+    """daily: day -> median rail pressure (psi) at 60 %+ load."""
     how = (
-        "The direct-injection pump raises fuel to thousands of psi under load. We take "
-        "the daily median rail pressure at 60% engine load or more and compare recent "
-        "days with the first month. A weakening pump shows as a slow fall."
+        "The direct-injection pump raises fuel to over a thousand psi under load. We take "
+        "the daily median rail pressure at 60% engine load or more and compare the last "
+        "two weeks with your first month. A weakening pump shows as a slow fall."
     )
     title = "Fuel pump"
-    per_day: dict[str, list[float]] = defaultdict(list)
-    for s in samples:
-        if s.frp is not None and s.load is not None and s.load >= 60 and s.frp > 0:
-            per_day[_day(s.t)].append(s.frp * PSI_PER_KPA)
-    daily = {d: statistics.median(v) for d, v in per_day.items() if len(v) >= 5}
     trend = _baseline_trend(daily)
     if trend is None:
         return _learning(
@@ -1168,21 +1113,15 @@ def _soc_label(v: float) -> str:
     return "low"
 
 
-def battery(
-    rest: Sequence[tuple[float, float]], samples: Sequence[Sample], running_v: Sequence[float]
-) -> dict[str, Any]:
-    """rest: (epoch s, volts) readings with the engine off (< 13 V)."""
+def battery(per_day: dict[str, float], running_v: float | None) -> dict[str, Any]:
+    """per_day: day -> median resting voltage (engine off). The verdict uses
+    the last 14 days; the chart and trend use all of them."""
     how = (
         "Resting voltage is read while the car is parked. 12.6 V is a full battery, "
-        "12.4 V about 75%, 12.2 V about half. We take the median reading each day; a "
-        "slow slide over months means the battery is ageing."
+        "12.4 V about 75%, 12.2 V about half. The verdict uses the last 14 days; the "
+        "chart shows every day, and a slow slide over months means the battery is ageing."
     )
     title = "Battery"
-    per_vals: dict[str, list[float]] = defaultdict(list)
-    for t, v in rest:
-        if 10.5 < v < 13.0:
-            per_vals[_day(t)].append(v)
-    per_day = {d: statistics.median(v) for d, v in per_vals.items()}
     if len(per_day) < 5:
         return _learning(
             "battery",
@@ -1207,9 +1146,8 @@ def battery(
             else ""
         )
     if running_v:
-        rv = statistics.median(running_v)
         detail = (detail + " " if detail else "") + (
-            f"While driving the system runs at {rv:.1f} V (Honda varies charging to save fuel; 12.5–14.8 V is normal)."
+            f"While driving the system runs at {running_v:.1f} V (Honda varies charging to save fuel; 12.5–14.8 V is normal)."
         )
     return _card(
         "battery",
@@ -1234,46 +1172,48 @@ def battery(
         tip=None
         if status == "good"
         else "Short trips don't fully recharge it; a long drive or a trickle charger helps. Most batteries last 4–6 years.",
-        sample=f"{len(days)} days",
+        sample=f"Chart: {len(days)} days",
     )
 
 
-def warmup(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> dict[str, Any]:
+def warmup(
+    trips: Sequence[Trip], feats: Sequence[dict[str, Any] | None], recent_since: float
+) -> dict[str, Any]:
+    """Warm-up time from every cold start; running temperature (the
+    verdict) from trips since ``recent_since`` (epoch s)."""
     how = (
         "On every cold start (coolant under 104 °F) we time how long the engine takes "
-        "to reach 176 °F, and plot that against the outside temperature. We also take "
-        "the coolant temperature during steady driving once warm."
+        "to reach 176 °F, and plot that against the outside temperature. The verdict "
+        "uses the coolant temperature during steady driving over the last 30 days."
     )
     title = "Warm-up & cooling"
     pts: list[list[float]] = []
     mins: list[float] = []
-    cruise: list[float] = []
-    for i, t in enumerate(trips):
-        ss = [s for s in by_trip.get(i, []) if s.ect is not None]
-        if len(ss) < 10:
+    recent: list[Sequence[float]] = []
+    for t, f in zip(trips, feats, strict=True):
+        if not f:
             continue
-        if ss[0].ect < 40:  # type: ignore[operator]
-            hot = next((s for s in ss if s.ect >= 80), None)  # type: ignore[operator]
-            if hot is not None:
-                m = (hot.t - ss[0].t) / 60
-                if m < 60:
-                    mins.append(m)
-                    if t.temp_c is not None:
-                        pts.append([round(c_to_f(t.temp_c)), round(m, 1)])
-        cruise += [s.ect for s in ss if s.t - ss[0].t > 900 and s.spd is not None and s.spd > 60]  # type: ignore[misc]
-    if len(mins) < 5 or len(cruise) < 100:
+        m = f.get("warmup_min")
+        if m is not None:
+            mins.append(m)
+            if t.temp_c is not None:
+                pts.append([round(c_to_f(t.temp_c)), round(m, 1)])
+        if f.get("cruise_ect") and t.start >= recent_since:
+            recent.append(f["cruise_ect"])
+    run = _combine(recent)
+    if len(mins) < 5 or run is None or run[1] < 100:
         return _learning(
             "warmup",
             "engine",
             title,
-            "Needs a few more cold starts to time the warm-up.",
+            "Needs a few more cold starts and steady drives.",
             how=how,
             have=len(mins),
             need=5,
             unit="cold starts",
         )
     med = statistics.median(mins)
-    run_f = c_to_f(statistics.median(cruise))
+    run_f = c_to_f(run[0])
     if run_f < 176:
         status, headline = (
             "watch",
@@ -1282,7 +1222,9 @@ def warmup(trips: Sequence[Trip], by_trip: dict[int, list[Sample]]) -> dict[str,
                 "A thermostat stuck open is the usual cause."
             ),
         )
-        tip = "A stuck-open thermostat costs MPG and heater output; it's an inexpensive part."
+        tip: str | None = (
+            "A stuck-open thermostat costs MPG and heater output; it's an inexpensive part."
+        )
     elif run_f > 220:
         status, headline = "bad", f"The engine runs hot at {run_f:.0f} °F during steady driving."
         tip = "Check the coolant level and radiator fans soon."
@@ -1378,36 +1320,36 @@ _ATF_BINS = [
 ]
 
 
-def transmission(atf_c: Sequence[float]) -> dict[str, Any]:
+def transmission(peak_f: float | None, bins: Sequence[int]) -> dict[str, Any]:
+    """bins: reading counts per _ATF_BINS range, summed over every day."""
     how = (
         "We look at every transmission-fluid temperature reading and how the time "
         "splits across temperature ranges. Fluid life halves for roughly every 20 °F "
         "above 175 °F."
     )
     title = "Transmission fluid"
-    if len(atf_c) < 100:
+    total = sum(bins)
+    if total < 100 or peak_f is None:
         return _learning(
             "transmission",
             "engine",
             title,
             "Needs more transmission temperature readings.",
             how=how,
-            have=len(atf_c),
+            have=total,
             need=100,
             unit="readings",
         )
-    f = [c_to_f(c) for c in atf_c]
-    peak = max(f)
-    hot = sum(1 for v in f if v >= 220) / len(f) * 100
+    hot = bins[-1] / total * 100
     bars = [
-        _bar(lbl, sum(1 for v in f if lo <= v < hi) / len(f) * 100, 0, lo >= 200)
-        for lbl, lo, hi in _ATF_BINS
+        _bar(lbl, c / total * 100, c, lo >= 200)
+        for (lbl, lo, _), c in zip(_ATF_BINS, bins, strict=True)
     ]
-    status = "bad" if hot > 5 else "watch" if peak >= 230 else "good"
+    status = "bad" if hot > 5 else "watch" if peak_f >= 230 else "good"
     headline = (
-        f"Transmission fluid stays cool: it peaked at {peak:.0f} °F."
+        f"Transmission fluid stays cool: it peaked at {peak_f:.0f} °F."
         if status == "good"
-        else f"Transmission fluid reached {peak:.0f} °F and spent {hot:.0f}% of the time above 220 °F."
+        else f"Transmission fluid reached {peak_f:.0f} °F and spent {hot:.0f}% of the time above 220 °F."
     )
     return _card(
         "transmission",
@@ -1415,14 +1357,14 @@ def transmission(atf_c: Sequence[float]) -> dict[str, Any]:
         title,
         status,
         headline,
-        value=_r(peak, 0),
+        value=_r(peak_f, 0),
         value_unit="°F peak",
         chart=_bars(bars, "% of time"),
         how=how,
         tip=None
         if status == "good"
         else "Heavy towing or long climbs heat the fluid; change it sooner if this keeps happening.",
-        sample=f"{len(f)} readings",
+        sample=f"{total:,} readings",
     )
 
 
@@ -1444,14 +1386,6 @@ def compensated_psi(pressure_kpa: float, tire_c: float) -> float:
 TIRE_AIR_ADDED_PSI = 2.0
 _CORNER_NAMES = {"fl": "Front left", "fr": "Front right", "rl": "Rear left", "rr": "Rear right"}
 _CORNER_SHORT = {"fl": "FL", "fr": "FR", "rl": "RL", "rr": "RR"}
-
-
-def _hourly_compensated(rows: Sequence[tuple[float, float, float]]) -> list[tuple[float, float]]:
-    per: dict[int, list[float]] = defaultdict(list)
-    for t, p, tc in rows:
-        if p is not None and tc is not None and 100 < p < 450 and -40 < tc < 120:
-            per[int(t // 3600)].append(compensated_psi(p, tc))
-    return [(h * 3600.0, statistics.median(v)) for h, v in sorted(per.items())]
 
 
 def _days_txt(days: float) -> str:
@@ -1485,11 +1419,11 @@ def _rate_txt(per_day: float) -> str:
 
 
 def tire_leak(
-    readings: dict[str, Sequence[tuple[float, float, float]]],
+    hourly: dict[str, Sequence[Sequence[float]]],
     placard_kpa: float | None,
     leak_psi_week: float,
 ) -> dict[str, Any]:
-    """readings: corner -> [(epoch s, pressure kPa, tire temp C)]."""
+    """hourly: corner -> [(epoch s, psi corrected to 68 °F)], the last 30 days."""
     how = (
         "Tire pressure drops about 1 psi for every 10 °F colder, so a raw reading can't "
         "tell a leak from a cold morning. We correct every reading to what it would be at "
@@ -1497,8 +1431,7 @@ def tire_leak(
         "loses pressure between the times air was added."
     )
     title = "Slow-leak check"
-    hourly = {c: _hourly_compensated(rows) for c, rows in readings.items()}
-    hourly = {c: h for c, h in hourly.items() if h}
+    hourly = {c: [(float(t), float(v)) for t, v in h] for c, h in hourly.items() if h}
     if not hourly:
         return _learning(
             "tire_leak",
@@ -1669,7 +1602,7 @@ def speedometer(monthly: dict[str, tuple[float, int]]) -> dict[str, Any]:
 
 def braking(
     trips: Sequence[Trip],
-    by_trip: dict[int, list[Sample]],
+    feats: Sequence[dict[str, Any] | None],
     last_brake_service: tuple[str, float] | None,
     odo_mi: float | None,
 ) -> dict[str, Any]:
@@ -1682,11 +1615,10 @@ def braking(
     months: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
     total_b = 0
     total_mi = 0.0
-    for i, t in enumerate(trips):
-        ss = by_trip.get(i)
-        if not ss or len(ss) < 30 or t.miles < 1:
+    for t, f in zip(trips, feats, strict=True):
+        if not f or f.get("n", 0) < 30 or t.miles < 1:
             continue
-        _, b = hard_events(ss)
+        b = f["hard_brk"]
         months[_month(t.start)][0] += b
         months[_month(t.start)][1] += t.miles
         total_b += b
@@ -1919,8 +1851,46 @@ def cost_per_mile(trips: Sequence[Trip], price_per_gal: float | None) -> dict[st
     )
 
 
+# The data each card looks at. Relationships ("does X move Y") use everything
+# -- more trips, steadier answer, and they don't go stale. Health checks
+# ("is something wrong now") judge recent data so an old problem doesn't
+# linger and a new one isn't diluted. Money uses a fixed 12 months.
+WINDOW_ALL = "All data"
+WINDOW_12M = "Last 12 months"
+WINDOW_30D = "Last 30 days"
+WINDOW_14D = "Last 14 days"
+WINDOWS: dict[str, str] = {
+    "cold_weather": WINDOW_ALL,
+    "short_trips": WINDOW_ALL,
+    "idle_cost": WINDOW_12M,
+    "best_speed": WINDOW_ALL,
+    "driving_style": WINDOW_ALL,
+    "cylinder_mode": WINDOW_ALL,
+    "wind_rain": WINDOW_ALL,
+    "tire_pressure_mpg": WINDOW_ALL,
+    "towing": WINDOW_ALL,
+    "fuel_trim_split": WINDOW_30D,
+    "bank_balance": WINDOW_14D,
+    "airflow": "First month vs last 14 days",
+    "fuel_pressure": "First month vs last 14 days",
+    "battery": WINDOW_14D,
+    "warmup": WINDOW_ALL,
+    "misfires": WINDOW_30D,
+    "transmission": WINDOW_ALL,
+    "tire_leak": WINDOW_30D,
+    "speedometer": WINDOW_ALL,
+    "braking": WINDOW_ALL,
+    "price_vs_market": WINDOW_12M,
+    "fill_day": WINDOW_ALL,
+    "cost_per_mile": WINDOW_ALL,
+}
+
+
 def order_cards(cards: list[dict[str, Any]]) -> dict[str, Any]:
-    """Wrap cards with groups and the 'needs attention' list (bad, then watch)."""
+    """Stamp each card's window, and wrap them with groups and the 'needs
+    attention' list (bad, then watch)."""
+    for c in cards:
+        c["window"] = WINDOWS.get(c["id"])
     attention = sorted(
         (c for c in cards if c["status"] in ("bad", "watch")),
         key=lambda c: STATUS_RANK[c["status"]],

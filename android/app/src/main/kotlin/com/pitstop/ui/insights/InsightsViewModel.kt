@@ -19,17 +19,8 @@ import retrofit2.HttpException
 import java.time.ZoneId
 import javax.inject.Inject
 
-/** The look-back windows the Insights screen offers, in days. */
-enum class InsightsWindow(val days: Int, val label: String) {
-    ThreeMonths(90, "3 mo"),
-    SixMonths(180, "6 mo"),
-    OneYear(365, "1 yr"),
-    All(3650, "All"),
-}
-
 data class InsightsUi(
-    val window: InsightsWindow = InsightsWindow.OneYear,
-    /** The response for [window]; null until the first load lands. */
+    /** The latest response; null until the first load lands. */
     val data: InsightsResponseDto? = null,
     val loading: Boolean = false,
     /** Plain-language failure; shown over [data] when there is some. */
@@ -41,8 +32,9 @@ data class InsightsUi(
  *
  * Activity-scoped by both callers (`hiltViewModel(activity)`): a tab's
  * ViewModel is disposed when the pager swipes away, which would cancel a
- * slow first build mid-flight. One response is kept per window so the
- * chips switch instantly once each has loaded.
+ * slow first build mid-flight. Home's entry card, Car's entry card and the
+ * screen all read the same response. Each card picks its own data window on
+ * the server, so there is one response per vehicle.
  */
 @HiltViewModel
 class InsightsViewModel @Inject constructor(
@@ -55,7 +47,7 @@ class InsightsViewModel @Inject constructor(
     private val _ui = MutableStateFlow(InsightsUi())
     val ui: StateFlow<InsightsUi> = _ui.asStateFlow()
 
-    private val cache = mutableMapOf<InsightsWindow, Pair<Long, InsightsResponseDto>>()
+    private var loadedAtMs = 0L
     private var loadJob: Job? = null
 
     init {
@@ -65,7 +57,7 @@ class InsightsViewModel @Inject constructor(
                 val switched = last != null && last != slug
                 last = slug
                 if (switched) {
-                    cache.clear()
+                    loadedAtMs = 0L
                     _ui.update { it.copy(data = null, error = null) }
                 }
                 load(force = false)
@@ -73,27 +65,25 @@ class InsightsViewModel @Inject constructor(
         }
     }
 
-    /** Reload when the shown window's result is older than the server's cache. */
+    /** Reload when the result is older than the server's cache. */
     fun refreshIfStale() {
         if (loadJob?.isActive == true) return
-        val hit = cache[_ui.value.window]
-        if (hit == null || System.currentTimeMillis() - hit.first > STALE_MS) load(force = false)
+        val data = _ui.value.data
+        val age = System.currentTimeMillis() - loadedAtMs
+        val pending = (data?.pendingTrips ?: 0.0) > 0
+        when {
+            data == null || age > STALE_MS -> load(force = false)
+            // Trips were still being summarised: rebuild past the server's
+            // 10-minute cache so the cards that were waiting fill in.
+            pending && age > PENDING_STALE_MS -> load(force = true)
+        }
     }
 
     /** The top bar's refresh: the server rebuilds instead of serving its cache. */
     fun refresh() = load(force = true)
 
-    fun selectWindow(window: InsightsWindow) {
-        if (window == _ui.value.window) return
-        _ui.update { it.copy(window = window, data = cache[window]?.second, loading = false, error = null) }
-        loadJob?.cancel()
-        loadJob = null
-        refreshIfStale()
-    }
-
     private fun load(force: Boolean) {
         loadJob?.cancel()
-        val window = _ui.value.window
         val cc = if (force) "no-cache" else null
         loadJob = viewModelScope.launch {
             _ui.update { it.copy(loading = true, error = null) }
@@ -105,7 +95,6 @@ class InsightsViewModel @Inject constructor(
                     ?: throw NoVehicle(if (slug.isBlank()) "Pick a vehicle in Settings" else "Vehicle \"$slug\" not on server")
                 api.getInsights(
                     vehicleId = v.id,
-                    days = window.days,
                     tz = ZoneId.systemDefault().id,
                     refresh = if (force) true else null,
                     cacheControl = cc,
@@ -114,18 +103,17 @@ class InsightsViewModel @Inject constructor(
             result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             val body = result.getOrNull()
             if (body != null) {
-                cache[window] = System.currentTimeMillis() to body
-                // The user may have switched windows while this was in flight.
-                _ui.update { s -> if (s.window == window) s.copy(data = body, loading = false, error = null) else s }
+                loadedAtMs = System.currentTimeMillis()
+                _ui.update { it.copy(data = body, loading = false, error = null) }
             } else {
                 val e = result.exceptionOrNull()
-                logs.warn("insights: load failed", mapOf("err" to (e?.message ?: "?"), "days" to window.days.toString()))
+                logs.warn("insights: load failed", mapOf("err" to (e?.message ?: "?")))
                 val msg = when {
                     e is NoVehicle -> e.message
                     e is HttpException && e.code() == 404 -> "This server doesn't have Insights yet. Update the server to see them."
                     else -> "Couldn't reach the server"
                 }
-                _ui.update { s -> if (s.window == window) s.copy(loading = false, error = msg) else s }
+                _ui.update { it.copy(loading = false, error = msg) }
             }
         }
     }
@@ -135,5 +123,8 @@ class InsightsViewModel @Inject constructor(
     private companion object {
         /** Matches the server's 10-minute cache. */
         const val STALE_MS = 10 * 60_000L
+
+        /** Re-ask sooner while the server reports trips still being analysed. */
+        const val PENDING_STALE_MS = 2 * 60_000L
     }
 }

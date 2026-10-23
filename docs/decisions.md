@@ -770,9 +770,17 @@ both clients would break the parity rule (ADR-013) and duplicate thresholds.
 2. **Not enough data is a state, not a number.** Below each card's minimum (trips, days,
    readings) the card is `learning` with `progress: {have, need, unit}` instead of a figure
    that can't be trusted.
-3. **The PID stream is read once.** One query pivots the needed metrics into 2-second
-   buckets over at most 180 days; every PID-based card shares it. The response is cached in
-   memory for 10 minutes per (vehicle, window, tz); `refresh=true` rebuilds.
+3. **Raw readings are summarised once, never per request** (migration 0026,
+   `workers/insight_features.py`). Each trip and each UTC day is reduced to a small JSONB
+   document (`insight_trip_features`, `insight_day_features`): exact sums where they add up
+   (speed-band miles and fuel, hard events, cylinder samples, ATF histogram, wheel-vs-GPS
+   speed) and `[median, count]` pairs otherwise (fuel trims, airflow, rail pressure, resting
+   voltage), combined as count-weighted means. A trip is redone when its `ended_at` changes;
+   a day when `pid_daily` counts a different number of readings than the summary saw (late
+   uploads), and the last three days always (pid_daily lags). Bumping `FEATURE_VERSION`
+   recomputes everything whose raw data still exists. The endpoint reads only these rows,
+   trips, fill-ups and `pid_daily`: 0.04 s on the first five months of data instead of
+   6.5 s, and flat as history grows. The summaries also outlive the retention purge.
 4. **`engine_fuel_rate` is grams of fuel per second** (PID 0x9D), converted with the same
    749.9 g/L density as `trip_stats`. Treating it as L/h produced 127 mpg.
 5. **Tire leaks are judged on temperature-corrected pressure** (gas law on absolute pressure,
@@ -782,6 +790,12 @@ both clients would break the parity rule (ADR-013) and duplicate thresholds.
    that was topped up stays visible.
 6. **US units in the text**, like `/dashboard/summary`. `tz` (the viewer's IANA zone) is used
    only to file fill-ups by weekday.
+7. **Each card picks its own window; there is no period selector** (`insights.WINDOWS`,
+   echoed as `window` on every card). Relationships ("does X move Y") use all data — more
+   trips make a steadier answer and they don't go stale. Health checks judge recent data
+   (fuel trims, misfires and tire leaks the last 30 days, battery and bank balance the last
+   14) while their charts keep the full history. Money uses a fixed 12 months. A single
+   selector silently changed some cards and not others.
 
 **Consequences.** Correlations from observational data are confounded (cold-weather trips
 are also shorter; the "best speed" bands include acceleration) — each card's `how` says what

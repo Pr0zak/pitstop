@@ -19,7 +19,8 @@ data class InsightsResponseDto(
     @SerialName("attention") val attention: List<String> = emptyList(),
     @SerialName("insights") val insights: List<InsightCardDto> = emptyList(),
     @SerialName("generated_at") val generatedAt: String? = null,
-    @SerialName("window_days") val windowDays: Double? = null,
+    /** Trips the server hasn't summarised yet; cards may still fill in. */
+    @SerialName("pending_trips") val pendingTrips: Double? = null,
 )
 
 @Serializable
@@ -46,6 +47,8 @@ data class InsightCardDto(
     @SerialName("how") val how: String? = null,
     @SerialName("tip") val tip: String? = null,
     @SerialName("sample") val sample: String? = null,
+    /** The data window this card looked at, e.g. "Last 30 days". */
+    @SerialName("window") val window: String? = null,
     /** Only on "learning" cards: how much data it has vs needs. */
     @SerialName("progress") val progress: InsightProgressDto? = null,
 )

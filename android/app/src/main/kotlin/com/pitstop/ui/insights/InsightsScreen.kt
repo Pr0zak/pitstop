@@ -104,7 +104,6 @@ fun InsightsScreen(
         onGroup = { group = it },
         expandedHow = expanded,
         onToggleHow = { id -> expanded = if (id in expanded) expanded - id else expanded + id },
-        onWindow = viewModel::selectWindow,
         onRefresh = viewModel::refresh,
         onBack = onBack,
         jumpTo = jumpTo,
@@ -121,8 +120,8 @@ fun InsightsScreen(
 internal sealed interface InsightRow {
     val key: String
 
-    data object Window : InsightRow {
-        override val key = "window"
+    data object Intro : InsightRow {
+        override val key = "intro"
     }
 
     data class Attention(val cards: List<InsightCardDto>) : InsightRow {
@@ -149,7 +148,7 @@ internal sealed interface InsightRow {
  * didn't list go under an "Other" header at the end.
  */
 internal fun insightRows(data: InsightsResponseDto, group: String?): List<InsightRow> {
-    val rows = mutableListOf<InsightRow>(InsightRow.Window)
+    val rows = mutableListOf<InsightRow>(InsightRow.Intro)
     val byId = data.insights.associateBy { it.id }
     rows += InsightRow.Attention(data.attention.mapNotNull { byId[it] })
     val known = data.groups.map { it.id }.toSet()
@@ -179,7 +178,6 @@ internal fun InsightsContent(
     onGroup: (String?) -> Unit,
     expandedHow: Set<String>,
     onToggleHow: (String) -> Unit,
-    onWindow: (InsightsWindow) -> Unit,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
     jumpTo: String? = null,
@@ -220,7 +218,6 @@ internal fun InsightsContent(
         ) {
             when {
                 rows == null && ui.error != null -> Column(Modifier.fillMaxSize()) {
-                    WindowChips(ui.window, onWindow, null)
                     EmptyState(
                         icon = Icons.Outlined.CloudOff,
                         title = "Couldn't load insights",
@@ -230,7 +227,6 @@ internal fun InsightsContent(
                     )
                 }
                 rows == null -> Column(Modifier.fillMaxSize()) {
-                    WindowChips(ui.window, onWindow, null)
                     Column(
                         Modifier.fillMaxWidth().padding(top = 64.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -252,16 +248,7 @@ internal fun InsightsContent(
                 ) {
                     items(rows, key = { it.key }) { row ->
                         when (row) {
-                            InsightRow.Window -> Column {
-                                WindowChips(ui.window, onWindow, data?.generatedAt, padded = false)
-                                if (ui.error != null) {
-                                    Text(
-                                        "Couldn't refresh. Showing the last result.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.ext.warn,
-                                    )
-                                }
-                            }
+                            InsightRow.Intro -> Intro(data, ui.error != null)
                             is InsightRow.Attention -> AttentionPanel(row.cards, onJump)
                             is InsightRow.Groups -> GroupChips(row.groups, group, onGroup)
                             is InsightRow.Header -> GroupHeader(row.group)
@@ -290,21 +277,46 @@ internal fun InsightsContent(
 
 // ── pieces ──────────────────────────────────────────────────────────
 
+/**
+ * What the page is, when it was built, and whether cards are still filling
+ * in (trips the server hasn't summarised yet).
+ */
 @Composable
-private fun WindowChips(
-    window: InsightsWindow,
-    onWindow: (InsightsWindow) -> Unit,
-    generatedAt: String?,
-    padded: Boolean = true,
-) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = if (padded) 12.dp else 0.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (w in InsightsWindow.entries) {
-                FilterChip(selected = w == window, onClick = { onWindow(w) }, label = { Text(w.label) })
+private fun Intro(data: InsightsResponseDto?, refreshFailed: Boolean) {
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp, start = 4.dp, end = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "Each card looks at the period that fits its question: relationships use all your data, health checks use recent days.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        updatedLabel(data?.generatedAt)?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        val pending = data?.pendingTrips?.toInt() ?: 0
+        if (pending > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.ext.infoContainer)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.ext.info)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Still analysing ${if (pending == 1) "1 trip" else "$pending trips"}. Some cards will fill in over the next few minutes.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
-        updatedLabel(generatedAt)?.let {
-            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (refreshFailed) {
+            Text(
+                "Couldn't refresh. Showing the last result.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.ext.warn,
+            )
         }
     }
 }
@@ -533,7 +545,8 @@ internal fun InsightCard(
                     Text(tip, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
                 }
             }
-            if (!card.how.isNullOrBlank() || card.sample != null) {
+            val footnote = InsightFormat.footnote(card.window, card.sample)
+            if (!card.how.isNullOrBlank() || footnote != null) {
                 Column {
                     if (!card.how.isNullOrBlank()) {
                         Row(
@@ -565,7 +578,7 @@ internal fun InsightCard(
                             )
                         }
                     }
-                    card.sample?.let {
+                    footnote?.let {
                         Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -626,6 +639,96 @@ internal fun InsightsEntryCard(ui: InsightsUi, onOpen: () -> Unit, modifier: Mod
                 }
             }
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+// ── Home tab entry ──────────────────────────────────────────────────
+
+/**
+ * Home's Insights card: the verdict (red / amber "N need attention", green
+ * "All clear") and up to two attention headlines; tapping opens Insights.
+ * Renders nothing when the load failed with nothing to show (an older server
+ * without the endpoint), so Home never carries a broken card.
+ */
+@Composable
+internal fun HomeInsightsCard(ui: InsightsUi, onOpen: () -> Unit, modifier: Modifier = Modifier) {
+    val data = ui.data
+    if (data == null && !ui.loading) return
+    val byId = data?.insights?.associateBy { it.id }.orEmpty()
+    val attention = data?.attention?.mapNotNull { byId[it] }.orEmpty()
+    val ext = MaterialTheme.ext
+    val tint = when {
+        data == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        attention.isEmpty() -> ext.good
+        attention.any { it.status == "bad" } -> ext.bad
+        else -> ext.warn
+    }
+    val verdict = when {
+        data == null -> "Looking for patterns…"
+        attention.isEmpty() -> "All clear"
+        attention.size == 1 -> "1 needs attention"
+        else -> "${attention.size} need attention"
+    }
+    Card(
+        onClick = onOpen,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = if (attention.isNotEmpty()) BorderStroke(1.dp, tint.copy(alpha = 0.45f)) else null,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Insights, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Insights", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(tint.copy(alpha = 0.12f))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (data != null) {
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(tint))
+                        Spacer(Modifier.width(5.dp))
+                    }
+                    Text(verdict, style = MaterialTheme.typography.labelMedium, color = tint, fontWeight = FontWeight.SemiBold)
+                }
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (attention.isNotEmpty()) {
+                for (c in attention.take(2)) {
+                    val look = statusLook(c.status)
+                    Row(verticalAlignment = Alignment.Top) {
+                        Box(Modifier.padding(top = 6.dp).size(8.dp).clip(CircleShape).background(look.color))
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            c.headline,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (attention.size > 2) {
+                    Text(
+                        "+${attention.size - 2} more",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 18.dp),
+                    )
+                }
+            } else if (data != null) {
+                Text(
+                    "${data.insights.count { it.status != "learning" }} findings about your fuel, engine, tires and costs. Nothing to worry about.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

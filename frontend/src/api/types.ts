@@ -659,6 +659,9 @@ export interface InsightCard {
   how: string;
   tip: string | null;
   sample: string | null;
+  /** The period this card looked at ("Last 30 days", "All data", …).
+   *  Each card picks its own window server-side. */
+  window: string | null;
   progress: { have: number; need: number; unit: string } | null;
 }
 
@@ -674,5 +677,7 @@ export interface InsightsResponse {
   attention: string[];
   insights: InsightCard[];
   generated_at: string;
-  window_days: number;
+  /** Trips the background worker hasn't analysed yet (backfill after an
+   *  upgrade); cards that need them fill in as it catches up. */
+  pending_trips: number;
 }

@@ -4,12 +4,11 @@
 // orders and lays them out: what needs a look first, then one section per
 // group in the server's order.
 import { computed, nextTick, ref } from "vue";
-import { CheckCircle2, RotateCw } from "lucide-vue-next";
+import { CheckCircle2, Loader2, RotateCw } from "lucide-vue-next";
 import StateCard from "@/components/StateCard.vue";
 import WindowChips from "@/components/WindowChips.vue";
 import InsightCardView from "@/components/insights/InsightCard.vue";
 import { useAsync } from "@/composables/useAsync";
-import { useQueryParam } from "@/composables/useQueryParam";
 import { fmtWhen } from "@/composables/useFormat";
 import { useVehiclesStore } from "@/stores/vehicles";
 import * as api from "@/api/endpoints";
@@ -18,14 +17,6 @@ import type { InsightCard, InsightsResponse } from "@/api/types";
 const vehicles = useVehiclesStore();
 const vehicleId = computed(() => vehicles.selectedVehicleId);
 
-type DaysKey = "90" | "180" | "365" | "3650";
-const DAYS_OPTIONS = [
-  { value: "90" as const, label: "3 mo", title: "Last 3 months" },
-  { value: "180" as const, label: "6 mo", title: "Last 6 months" },
-  { value: "365" as const, label: "1 yr", title: "Last 12 months" },
-  { value: "3650" as const, label: "All", title: "All history" },
-];
-const days = useQueryParam<DaysKey>("days", "365", ["90", "180", "365", "3650"]);
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 // Refresh = the same request with refresh=true (skips the server cache).
@@ -35,8 +26,8 @@ const q = useAsync<InsightsResponse | null>(() => {
   const refresh = forceNext;
   forceNext = false;
   if (!vehicleId.value) return Promise.resolve(null);
-  return api.getInsights({ vehicle_id: vehicleId.value, days: Number(days.value), tz, refresh });
-}, [vehicleId, days]);
+  return api.getInsights({ vehicle_id: vehicleId.value, tz, refresh });
+}, [vehicleId]);
 const refreshing = ref(false);
 async function refresh() {
   forceNext = true;
@@ -49,6 +40,7 @@ async function refresh() {
 }
 
 const data = computed(() => q.data.value);
+const pending = computed(() => data.value?.pending_trips ?? 0);
 const updated = computed(() =>
   data.value ? `Updated ${fmtWhen(data.value.generated_at, { withTime: true })}` : "",
 );
@@ -120,9 +112,12 @@ async function jumpTo(id: string) {
           What your trips, fillups and sensors say, in plain words. Anything that needs a
           look is listed first.
         </p>
+        <p class="explainer sub-ex">
+          Each card looks at the period that fits its question: relationships use all your
+          data, health checks use recent days.
+        </p>
       </div>
       <div class="controls">
-        <WindowChips v-model="days" :options="DAYS_OPTIONS" label="Time window" />
         <button
           type="button"
           class="ghost refresh"
@@ -136,6 +131,12 @@ async function jumpTo(id: string) {
         <span v-if="updated" class="updated">{{ updated }}</span>
       </div>
     </header>
+
+    <p v-if="pending > 0" class="pending" role="status">
+      <Loader2 :size="14" class="spin" aria-hidden="true" />
+      Still analysing {{ pending.toLocaleString() }} {{ pending === 1 ? "trip" : "trips" }} —
+      some cards will fill in over the next few minutes.
+    </p>
 
     <StateCard v-if="!vehicleId" state="empty" title="Select a vehicle." />
     <StateCard v-else-if="q.loading.value && !data" state="loading" title="Working out your insights…" />
@@ -234,6 +235,27 @@ async function jumpTo(id: string) {
   margin: 0;
   max-width: 60ch;
   color: var(--c-ink2);
+}
+.sub-ex {
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--c-ink3);
+}
+.pending {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  background: var(--c-info-soft);
+  color: var(--c-ink1);
+  font-size: 0.85rem;
+}
+.pending svg {
+  flex: none;
+  color: var(--c-info);
 }
 .controls {
   display: flex;

@@ -878,11 +878,11 @@ export async function getTripBaseline(
 }
 
 /** GET /analytics/insights — plain-language correlation cards (backend
- *  pitstop/insights.py). `tz` buckets "by day / by weekday" findings in the
- *  user's own zone; `refresh` skips the server cache. */
+ *  pitstop/insights.py). Each card picks its own data window server-side.
+ *  `tz` buckets "by day / by weekday" findings in the user's own zone;
+ *  `refresh` skips the server's 2-minute cache. */
 export interface InsightsParams {
   vehicle_id: string;
-  days: number;
   tz: string;
   refresh?: boolean;
 }

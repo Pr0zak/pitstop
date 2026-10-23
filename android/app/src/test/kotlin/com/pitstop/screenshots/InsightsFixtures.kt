@@ -29,6 +29,7 @@ object InsightsFixtures {
     )
 
     val shortTrips = InsightCardDto(
+        window = "All data",
         id = "short_trips", group = "fuel", title = "Short trips", status = "watch",
         headline = "Trips under 10 minutes average 15 mpg, 20% worse than trips over 20 minutes (19).",
         detail = "A cold engine runs rich until it warms up, so short hops cost the most per mile.",
@@ -46,6 +47,7 @@ object InsightsFixtures {
     )
 
     val bestSpeed = InsightCardDto(
+        window = "All data",
         id = "best_speed", group = "fuel", title = "Most efficient speed", status = "info",
         headline = "Your car is most efficient at 55–60 mph (25 mpg).",
         value = 25.0, valueUnit = "mpg",
@@ -61,6 +63,7 @@ object InsightsFixtures {
     )
 
     val fillDay = InsightCardDto(
+        window = "Last 12 months",
         id = "fill_day", group = "cost", title = "Cheapest day to fill up", status = "info",
         headline = "Tuesday has been your cheapest day, 8¢/gal below your usual.",
         value = 12.0, valueUnit = "¢ spread",
@@ -77,6 +80,7 @@ object InsightsFixtures {
     )
 
     val trimSplit = InsightCardDto(
+        window = "Last 30 days",
         id = "fuel_trim_split", group = "engine", title = "Fuel correction", status = "good",
         headline = "Both sides of the engine need very little fuel correction. Healthy.",
         value = 3.1, valueUnit = "% max correction",
@@ -90,6 +94,7 @@ object InsightsFixtures {
     )
 
     val battery = InsightCardDto(
+        window = "Last 30 days",
         id = "battery", group = "engine", title = "Battery", status = "watch",
         headline = "Your battery rests at 12.3 V, about half charged.",
         detail = "Resting voltage is read before each start, after the car has sat for a few hours.",
@@ -105,6 +110,7 @@ object InsightsFixtures {
     )
 
     val warmup = InsightCardDto(
+        window = "Last 12 months",
         id = "warmup", group = "engine", title = "Warm-up", status = "good",
         headline = "The engine warms up in about 4 minutes and runs at 190 °F once warm. Normal.",
         value = 4.0, valueUnit = "min warm-up",
@@ -124,6 +130,7 @@ object InsightsFixtures {
     )
 
     val tireLeak = InsightCardDto(
+        window = "Last 14 days",
         id = "tire_leak", group = "tires", title = "Slow leak", status = "bad",
         headline = "Front right is losing 1.5 psi a day (temperature-corrected). Check it for a nail.",
         value = -1.5, valueUnit = "psi/day",
@@ -143,6 +150,7 @@ object InsightsFixtures {
     )
 
     val priceVsMarket = InsightCardDto(
+        window = "Last 12 months",
         id = "price_vs_market", group = "cost", title = "Price vs the market", status = "good",
         headline = "You paid 20¢/gal less than the US average, about $90 saved.",
         value = -20.0, valueUnit = "¢/gal vs average",
@@ -162,16 +170,18 @@ object InsightsFixtures {
         attention = listOf("tire_leak", "short_trips", "battery"),
         insights = listOf(shortTrips, bestSpeed, trimSplit, battery, warmup, misfires, tireLeak, priceVsMarket, fillDay),
         generatedAt = "2026-01-15T14:30:00+00:00",
-        windowDays = 365.0,
+        pendingTrips = 3.0,
     )
 
     val allClear = response.copy(
         attention = emptyList(),
         insights = listOf(trimSplit, warmup.copy(), misfires),
+        pendingTrips = 0.0,
     )
 
     val ui = InsightsUi(data = response)
     val uiAllClear = InsightsUi(data = allClear)
+    val uiWatchOnly = InsightsUi(data = response.copy(attention = listOf("short_trips"), pendingTrips = 0.0))
     val uiLoading = InsightsUi(loading = true)
     val uiError = InsightsUi(error = "This server doesn't have Insights yet. Update the server to see them.")
 }

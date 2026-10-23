@@ -27,6 +27,10 @@ const STATUS_LABEL: Record<InsightStatus, string> = {
 const big = computed(() =>
   props.card.value == null ? null : valueWithUnit(props.card.value, props.card.value_unit),
 );
+/** "Last 30 days · 2,400 readings" — whichever parts the server sent. */
+const footnote = computed(() =>
+  [props.card.window, props.card.sample].filter((s): s is string => !!s).join(" · "),
+);
 const progress = computed(() => {
   const p = props.card.progress;
   if (!p) return null;
@@ -95,7 +99,7 @@ const progress = computed(() => {
         </summary>
         <p>{{ card.how }}</p>
       </details>
-      <span v-if="card.sample" class="sample">{{ card.sample }}</span>
+      <span v-if="footnote" class="sample">{{ footnote }}</span>
     </footer>
   </article>
 </template>

@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI):
     deriver_task: asyncio.Task | None = None
     weather_task: asyncio.Task | None = None
     fuel_state_task: asyncio.Task | None = None
+    insight_task: asyncio.Task | None = None
     ingest: MqttIngest | None = None
     ha_mirror: HaMirror | None = None
     try:
@@ -172,6 +173,13 @@ async def lifespan(app: FastAPI):
         fuel_state_task = asyncio.create_task(
             fuel_state_worker.run(pool, settings), name="fuel-state-worker"
         )
+        # Insight features — summarises each trip and UTC day once into
+        # insight_*_features so /analytics/insights never rescans raw
+        # readings (ADR-027).
+        from .workers import insight_features as insight_features_worker  # noqa: E402
+        insight_task = asyncio.create_task(
+            insight_features_worker.run(pool), name="insight-features"
+        )
         yield
     finally:
         log.info("pitstop backend stopping")
@@ -182,7 +190,7 @@ async def lifespan(app: FastAPI):
         for task in (
             ingest_task, ha_task, log_drain_task,
             retention_task, eia_task, deriver_task, weather_task,
-            fuel_state_task,
+            fuel_state_task, insight_task,
         ):
             if task is None:
                 continue

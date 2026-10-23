@@ -28,14 +28,14 @@ class InsightsDtoTest {
               {"label":"Warm","value":19,"n":99,"highlight":true},
               {"label":"Hot","value":null,"n":0,"highlight":false}],
              "band":{"lo":-5,"hi":5,"label":"Healthy"},"ref":null},
-           "how":"Grouped trips by outside temperature.","tip":"Warm up less.","sample":"Based on 100 trips","progress":null},
+           "how":"Grouped trips by outside temperature.","tip":"Warm up less.","sample":"Based on 100 trips","window":"All data","progress":null},
           {"id":"leak","group":"tires","title":"Slow leak","status":"bad",
            "headline":"One tire is losing air.","value":-4.6,"value_unit":"psi/day",
            "chart":{"kind":"lines","x_type":"time","y_unit":"psi","series":[
               {"name":"FL","points":[[1700000000000,30.4],[1700086400000,30]]},
               {"name":"FR","points":[[1700000000000,28.1],[1700086400000,null]]}],
              "band":null,"ref":{"value":35,"label":"Door placard"}},
-           "how":"Least-squares slope.","tip":null,"sample":null,"progress":null},
+           "how":"Least-squares slope.","tip":null,"sample":null,"window":null,"progress":null},
           {"id":"warm","group":"engine","title":"Warm-up","status":"good",
            "headline":"Warms up in 4 minutes.","value":4.0,"value_unit":"min warm-up",
            "chart":{"kind":"points","x_unit":"°F outside","y_unit":"min to warm","points":[[78,3.8],[56,5],[40.5,null]]},
@@ -45,18 +45,21 @@ class InsightsDtoTest {
            "how":"Needs more data.","tip":null,"sample":null,"progress":{"have":2,"need":7,"unit":"days"}},
           {"id":"bare","group":"engine","title":"Bare","status":"something_new","headline":"Minimal card.","how":"x"}
          ],
-         "generated_at":"2026-01-02T03:04:05.123456+00:00","window_days":365}
+         "generated_at":"2026-01-02T03:04:05.123456+00:00","pending_trips":4}
     """.trimIndent()
 
     @Test fun `every chart kind and null field decodes`() {
         val dto = json.decodeFromString(InsightsResponseDto.serializer(), body)
         assertEquals(2, dto.groups.size)
         assertEquals(listOf("leak", "missing_card"), dto.attention)
-        assertEquals(365.0, dto.windowDays)
+        assertEquals(4.0, dto.pendingTrips)
         assertEquals(5, dto.insights.size)
 
         val temp = dto.insights[0]
         assertEquals(10.0, temp.value)
+        assertEquals("All data", temp.window)
+        assertNull(dto.insights[1].window)
+        assertNull(dto.insights[4].window)
         assertNull(temp.detail)
         val bars = temp.chart!!
         assertEquals("bars", bars.kind)
@@ -100,5 +103,6 @@ class InsightsDtoTest {
         val dto = json.decodeFromString(InsightsResponseDto.serializer(), """{"groups":[],"attention":[],"insights":[]}""")
         assertTrue(dto.insights.isEmpty())
         assertNull(dto.generatedAt)
+        assertNull(dto.pendingTrips)
     }
 }
