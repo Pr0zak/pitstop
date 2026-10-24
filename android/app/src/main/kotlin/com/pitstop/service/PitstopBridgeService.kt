@@ -178,9 +178,15 @@ class PitstopBridgeService : Service() {
      * Extended (Mode 22) polling switched off for THIS session after
      * repeated ELM desyncs (`STOPPED` / `?`), so standard capture heals by
      * itself instead of staying broken until the user finds the toggle.
-     * Reset on the next bridge start.
+     * Lifted again after [EXTENDED_RETRY_MS], on every new BLE link and on
+     * the next bridge start: a suspension used to last the whole session, so
+     * a WiCAN rebooted mid-drive (its own start-up queries collide with ours
+     * for the first seconds) lost TPMS, ATF, gear and cylinders for the rest
+     * of the drive (2026-10-23 19:05).
      */
     @Volatile private var extendedSuspended: Boolean = false
+    @Volatile private var extendedSuspendedAtMs: Long = 0L
+    @Volatile private var extendedSuspendCount: Int = 0
     private val desyncTimesMs = ArrayDeque<Long>()
     @Volatile private var pendingExtendedAtMs: Long = 0L
 
@@ -639,6 +645,7 @@ class PitstopBridgeService : Service() {
             suppressedPids.clear()
             pendingExtended = null
             extendedSuspended = false
+            extendedSuspendCount = 0
             synchronized(desyncTimesMs) { desyncTimesMs.clear() }
 
             // Both collectors off → the bridge would do nothing useful.
@@ -1085,6 +1092,8 @@ class PitstopBridgeService : Service() {
                 reconnectAttempt = 0
                 logShipper.batterySaving = false
                 logBuffer.info("ble link ready; entering poll loop")
+                // A new link is a fresh ELM session: give Mode 22 another go.
+                resumeExtendedIfSuspended("new ble link")
                 updateNotification(
                     getString(
                         R.string.bridge_state_connected,
@@ -1267,12 +1276,35 @@ class PitstopBridgeService : Service() {
             desyncTimesMs.clear()
         }
         extendedSuspended = true
+        extendedSuspendedAtMs = now
+        extendedSuspendCount++
         pendingExtended = null
         pidsToPoll = Pids.DEFAULT.filter { it.name !in suppressedPids }
         // The poll loop restores the header (paced) before its next PID.
         logBuffer.warn(
             "obd: extended (mode 22) polling suspended for this session — ELM desync",
-            mapOf("desyncs" to EXTENDED_DESYNC_LIMIT, "window_s" to EXTENDED_DESYNC_WINDOW_MS / 1000),
+            mapOf(
+                "desyncs" to EXTENDED_DESYNC_LIMIT,
+                "window_s" to EXTENDED_DESYNC_WINDOW_MS / 1000,
+                "suspensions" to extendedSuspendCount,
+            ),
+        )
+    }
+
+    /**
+     * Turn Mode 22 back on after a desync suspension. Gives up for the
+     * session after [EXTENDED_MAX_SUSPENDS] suspensions so a link that
+     * really can't carry extended traffic doesn't flap forever.
+     */
+    private fun resumeExtendedIfSuspended(reason: String) {
+        if (!extendedSuspended || !extendedPidsEnabled) return
+        if (extendedSuspendCount >= EXTENDED_MAX_SUSPENDS) return
+        extendedSuspended = false
+        synchronized(desyncTimesMs) { desyncTimesMs.clear() }
+        applyExtendedPidToggle()
+        logBuffer.info(
+            "obd: extended (mode 22) polling resumed",
+            mapOf("reason" to reason, "suspensions" to extendedSuspendCount),
         )
     }
 
@@ -1302,6 +1334,12 @@ class PitstopBridgeService : Service() {
             // because the rx path can't be relied on to do it (see
             // [expireStaleExtendedRequest]).
             expireStaleExtendedRequest()
+
+            if (extendedSuspended &&
+                System.currentTimeMillis() - extendedSuspendedAtMs >= EXTENDED_RETRY_MS
+            ) {
+                resumeExtendedIfSuspended("cooldown")
+            }
 
             val t = System.currentTimeMillis()
             val due = pidsToPoll
@@ -2330,6 +2368,12 @@ class PitstopBridgeService : Service() {
          */
         private const val EXTENDED_DESYNC_LIMIT = 4
         private const val EXTENDED_DESYNC_WINDOW_MS = 30_000L
+
+        /** How long a desync suspension lasts before Mode 22 is retried. */
+        private const val EXTENDED_RETRY_MS = 120_000L
+
+        /** Suspensions after which Mode 22 stays off for the session. */
+        private const val EXTENDED_MAX_SUSPENDS = 3
 
         /** Longest we wait for the `ATI` prompt that ends the rx sync. */
         private const val RX_SYNC_TIMEOUT_MS = 2_000L
