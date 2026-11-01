@@ -189,4 +189,64 @@ object VehicleSignals {
             else -> "${s / 86_400}d ago"
         }
     }
+
+    // ── Tire status + one-line verdict (TpmsGrid; web tireStatus/tireHeadline) ──
+
+    /**
+     * How a tire is drawn. LOW (≥ 2 psi below the highest tire, the dash's
+     * own rule) is the one to act on and gets full amber; UNDER_PLACARD (only
+     * ≥ 3 psi under the door placard, often just a cold morning) gets a dim
+     * amber so the low tire still stands out; UNDER_INFLATED (≥ 25 % under
+     * placard, the car's warning light) is red. NONE = no reading.
+     */
+    enum class TireStatus { NONE, GOOD, UNDER_PLACARD, LOW, UNDER_INFLATED }
+
+    fun tireStatus(tire: Tire?, placardKpa: Double?): TireStatus {
+        val p = tire?.pressureKpa ?: return TireStatus.NONE
+        val v = placardVerdict(p, placardKpa)
+        return when {
+            v?.underInflated == true -> TireStatus.UNDER_INFLATED
+            tire.low -> TireStatus.LOW
+            v?.belowSpec == true -> TireStatus.UNDER_PLACARD
+            else -> TireStatus.GOOD
+        }
+    }
+
+    /** "FL", "FL and FR", "FL, FR and RL". */
+    private fun cornerList(cs: List<Corner>): String =
+        if (cs.size == 1) cs[0].label
+        else cs.dropLast(1).joinToString(", ") { it.label } + " and " + cs.last().label
+
+    /**
+     * The whole set in one sentence, worst status first: "FR is under-inflated:
+     * add air now", "FR is 3 psi lower than the others", "2 tires under the
+     * 35 psi placard", "All four tires look good". Null when no tire reports.
+     */
+    fun tireHeadline(tires: List<Tire>, placardFrontKpa: Double?, placardRearKpa: Double?): Pair<TireStatus, String>? {
+        val st = tires.associate { it.corner to tireStatus(it, placardFor(it.corner, placardFrontKpa, placardRearKpa)) }
+        val reporting = st.filterValues { it != TireStatus.NONE }
+        if (reporting.isEmpty()) return null
+        val worst = reporting.values.maxBy { it.ordinal }
+        val hit = Corner.entries.filter { st[it] == worst }
+        val text = when (worst) {
+            TireStatus.UNDER_INFLATED ->
+                "${cornerList(hit)} ${if (hit.size == 1) "is" else "are"} under-inflated: add air now"
+            TireStatus.LOW -> if (hit.size == 1) {
+                val highest = tires.mapNotNull { it.pressureKpa }.max()
+                // Difference of the whole-psi numbers on screen, so "3 psi lower"
+                // matches 31 vs 28 even when the raw gap is 2.5.
+                val gap = (highest * PSI_PER_KPA).roundToInt() -
+                    (tires.first { it.corner == hit[0] }.pressureKpa!! * PSI_PER_KPA).roundToInt()
+                "${hit[0].label} is $gap psi lower than the others"
+            } else "${cornerList(hit)} are low"
+            TireStatus.UNDER_PLACARD -> {
+                val f = placardFrontKpa?.let { (it * PSI_PER_KPA).roundToInt() }
+                val r = placardRearKpa?.let { (it * PSI_PER_KPA).roundToInt() }
+                val which = if (f != null && (r == null || r == f)) "the $f psi placard" else "the door placard"
+                "${hit.size} ${if (hit.size == 1) "tire" else "tires"} under $which"
+            }
+            else -> if (reporting.size == Corner.entries.size) "All four tires look good" else "All reporting tires look good"
+        }
+        return worst to text
+    }
 }

@@ -521,7 +521,6 @@ function trimClass(v: number | null): string {
         <h3 class="section-title">Tires</h3>
         <div class="card tpms-card">
           <TpmsGrid :pressure-kpa="tirePressure" :temp-c="tireTemp" :placard="tirePlacard" />
-          <div class="muted small">highlighted: 2 psi or more below the highest tire</div>
           <div v-if="parked" class="tile-age">{{ asOf(...tireKeys) }}</div>
         </div>
       </section>

@@ -484,17 +484,14 @@ internal fun LiveContent(
                         placardRearKpa = placardRearKpa,
                     )
                     val newest = VehicleSignals.newestPressureMs(shown.mapValues { it.value.tsMs })
-                    Text(
-                        buildString {
-                            append("Highlighted: 2 psi or more below the highest tire")
-                            if (parked && newest != null) {
-                                append(" · as of ${com.pitstop.ui.status.parkedFor(nowMs - newest)} ago")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
-                    )
+                    if (parked && newest != null) {
+                        Text(
+                            "As of ${com.pitstop.ui.status.parkedFor(nowMs - newest)} ago",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
+                        )
+                    }
                 },
             )
 

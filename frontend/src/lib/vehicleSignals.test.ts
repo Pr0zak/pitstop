@@ -24,6 +24,9 @@ import {
   gearLabel,
   tpmsReadings,
   vcmActive,
+  tireHeadline,
+  tireStatus,
+  placardCaption,
 } from "./vehicleSignals";
 
 describe("gearLabel", () => {
@@ -179,5 +182,47 @@ describe("door placard", () => {
     const none = tpmsReadings({ fl: 20 * KPA });
     expect(none[0].placardKpa).toBeNull();
     expect(none[0].underInflated).toBe(false);
+  });
+});
+
+/** Parity with Android TireHeadlineTest. */
+describe("tireHeadline", () => {
+  const K = 1 / 0.145038;
+  const P = { frontKpa: 35 * K, rearKpa: 35 * K };
+  const set = (fl: number | null, fr: number | null, rl: number | null, rr: number | null, p: TirePlacardArg = P) =>
+    tpmsReadings(
+      { fl: fl == null ? null : fl * K, fr: fr == null ? null : fr * K, rl: rl == null ? null : rl * K, rr: rr == null ? null : rr * K },
+      {},
+      p,
+    );
+  type TirePlacardArg = { frontKpa: number; rearKpa: number } | null;
+  const head = (t: ReturnType<typeof set>, p: TirePlacardArg = P) => tireHeadline(t, p);
+
+  it("names one low tire with its on-screen gap", () => {
+    expect(head(set(31, 28, 30, 30))).toEqual({ status: "low", text: "FR is 3 psi lower than the others" });
+    expect(head(set(30.9, 28.4, 30, 30))?.text).toBe("FR is 3 psi lower than the others");
+  });
+
+  it("under placard only is the softer status; low wins over it", () => {
+    const even = set(31, 31, 32, 32);
+    expect(tireStatus(even[0])).toBe("placard");
+    expect(head(even)?.text).toBe("4 tires under the 35 psi placard");
+    expect(head(set(31, 31, 34, 35))?.text).toBe("FL and FR are low");
+  });
+
+  it("under-inflated beats low", () => {
+    expect(head(set(35, 26, 35, 35))).toEqual({ status: "under", text: "FR is under-inflated: add air now" });
+  });
+
+  it("good, partial, empty and no placard", () => {
+    expect(head(set(35, 35, 35, 36))?.text).toBe("All four tires look good");
+    expect(head(set(35, null, 35, 36))?.text).toBe("All reporting tires look good");
+    expect(head(set(null, null, null, null))).toBeNull();
+    expect(head(set(31, 31, 32, 32, null), null)?.text).toBe("All four tires look good");
+    const mixed = { frontKpa: 35 * K, rearKpa: 33 * K };
+    expect(head(set(31, 31, 32, 32, mixed), mixed)?.text).toBe("2 tires under the door placard");
+    expect(tireStatus(set(null, 1, 1, 1)[0])).toBe("none");
+    expect(placardCaption(mixed)).toBe("Door placard 35 front / 33 rear psi cold");
+    expect(placardCaption(null)).toBeNull();
   });
 });

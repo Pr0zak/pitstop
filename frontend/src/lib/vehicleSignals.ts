@@ -297,3 +297,78 @@ export const MISFIRE_CYLINDERS = [1, 2, 3, 4, 5, 6] as const;
 export function misfireMetric(cyl: number): string {
   return `misfire_count_${cyl}`;
 }
+
+// ─── Tire status + one-line verdict (TpmsGrid; Android VehicleSignals.tireStatus/tireHeadline) ──
+
+/** How a tire is drawn. "low" (≥ 2 psi below the highest tire, the dash's own
+ *  rule) is the one to act on: full amber. "placard" (only ≥ 3 psi under the
+ *  door placard, often just a cold morning) is a dim amber so the low tire
+ *  still stands out. "under" (≥ 25 % under placard, the car's warning light)
+ *  is red. "none" = no reading. Ordered least to most severe. */
+export type TireStatus = "none" | "good" | "placard" | "low" | "under";
+const TIRE_STATUS_ORDER: TireStatus[] = ["none", "good", "placard", "low", "under"];
+
+export function tireStatus(t: TireReading | null | undefined): TireStatus {
+  if (!t || t.pressureKpa == null || !Number.isFinite(t.pressureKpa)) return "none";
+  if (t.underInflated) return "under";
+  if (t.low) return "low";
+  if (t.belowSpec) return "placard";
+  return "good";
+}
+
+function cornerList(labels: string[]): string {
+  return labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+/** The whole set in one sentence, worst status first: "FR is under-inflated:
+ *  add air now", "FR is 3 psi lower than the others", "2 tires under the 35
+ *  psi placard", "All four tires look good". Null when no tire reports. */
+export function tireHeadline(
+  tires: TireReading[],
+  placard: TirePlacard | null = null,
+): { status: TireStatus; text: string } | null {
+  const st = tires.map((t) => ({ t, s: tireStatus(t) }));
+  const reporting = st.filter((x) => x.s !== "none");
+  if (!reporting.length) return null;
+  const worst = reporting.reduce<TireStatus>(
+    (w, x) => (TIRE_STATUS_ORDER.indexOf(x.s) > TIRE_STATUS_ORDER.indexOf(w) ? x.s : w),
+    "none",
+  );
+  const hit = TIRE_CORNERS.map((c) => st.find((x) => x.t.corner === c)).filter(
+    (x): x is { t: TireReading; s: TireStatus } => x != null && x.s === worst,
+  );
+  const labels = hit.map((x) => x.t.label);
+  let text: string;
+  if (worst === "under") {
+    text = `${cornerList(labels)} ${hit.length === 1 ? "is" : "are"} under-inflated: add air now`;
+  } else if (worst === "low") {
+    if (hit.length === 1) {
+      const highest = Math.max(...reporting.map((x) => x.t.pressureKpa as number));
+      // Difference of the whole-psi numbers on screen, so "3 psi lower"
+      // matches 31 vs 28 even when the raw gap is 2.5.
+      const gap =
+        Math.round(highest * PSI_PER_KPA) - Math.round((hit[0].t.pressureKpa as number) * PSI_PER_KPA);
+      text = `${labels[0]} is ${gap} psi lower than the others`;
+    } else {
+      text = `${cornerList(labels)} are low`;
+    }
+  } else if (worst === "placard") {
+    const f = placardPsiText(placardKpa("fl", placard));
+    const r = placardPsiText(placardKpa("rl", placard));
+    const which = f != null && (r == null || r === f) ? `the ${f} psi placard` : "the door placard";
+    text = `${hit.length} ${hit.length === 1 ? "tire" : "tires"} under ${which}`;
+  } else {
+    text = reporting.length === TIRE_CORNERS.length ? "All four tires look good" : "All reporting tires look good";
+  }
+  return { status: worst, text };
+}
+
+/** "Door placard 35 psi cold" / "… 35 front / 38 rear psi cold"; null without one. */
+export function placardCaption(placard: TirePlacard | null | undefined): string | null {
+  const f = placardPsiText(placardKpa("fl", placard));
+  const r = placardPsiText(placardKpa("rl", placard));
+  if (f == null && r == null) return null;
+  if (f === r || r == null) return `Door placard ${f} psi cold`;
+  if (f == null) return `Door placard ${r} psi cold (rear)`;
+  return `Door placard ${f} front / ${r} rear psi cold`;
+}

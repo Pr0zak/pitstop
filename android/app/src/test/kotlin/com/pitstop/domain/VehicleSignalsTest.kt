@@ -90,3 +90,49 @@ class VehicleSignalsTest {
         assertNull(VehicleSignals.placardVerdict(0.0, placard))
     }
 }
+
+/** Tire status + headline; parity with tireStatus/tireHeadline in vehicleSignals.ts. */
+class TireHeadlineTest {
+    private val kpa = 1 / VehicleSignals.PSI_PER_KPA
+    private val placard = 35 * kpa
+    private fun set(fl: Double?, fr: Double?, rl: Double?, rr: Double?) = VehicleSignals.tpms(
+        mapOf(Corner.FL to fl?.times(kpa), Corner.FR to fr?.times(kpa), Corner.RL to rl?.times(kpa), Corner.RR to rr?.times(kpa)),
+    )
+    private fun head(t: List<VehicleSignals.Tire>, p: Double? = placard) = VehicleSignals.tireHeadline(t, p, p)
+
+    @Test
+    fun `one low tire is named with its gap`() {
+        val h = head(set(31.0, 28.0, 30.0, 30.0))!!
+        assertEquals(VehicleSignals.TireStatus.LOW, h.first)
+        assertEquals("FR is 3 psi lower than the others", h.second)
+        // Raw 30.9 vs 28.4 (2.5 psi) shows as 31 vs 28: the sentence says 3.
+        assertEquals("FR is 3 psi lower than the others", head(set(30.9, 28.4, 30.0, 30.0))!!.second)
+    }
+
+    @Test
+    fun `under placard only is the softer status`() {
+        // All 3–4 psi under placard but within 1 psi of each other: not LOW.
+        val even = set(31.0, 31.0, 32.0, 32.0)
+        assertEquals(VehicleSignals.TireStatus.UNDER_PLACARD, VehicleSignals.tireStatus(even[0], placard))
+        assertEquals("4 tires under the 35 psi placard", head(even)!!.second)
+        // FL/FR are also 4 under the highest tire, so LOW wins.
+        assertEquals("FL and FR are low", head(set(31.0, 31.0, 34.0, 35.0))!!.second)
+    }
+
+    @Test
+    fun `under-inflated beats low`() {
+        val h = head(set(35.0, 26.0, 35.0, 35.0))!!
+        assertEquals(VehicleSignals.TireStatus.UNDER_INFLATED, h.first)
+        assertEquals("FR is under-inflated: add air now", h.second)
+    }
+
+    @Test
+    fun `good, partial, empty and no placard`() {
+        assertEquals("All four tires look good", head(set(35.0, 35.0, 35.0, 36.0))!!.second)
+        assertEquals("All reporting tires look good", head(set(35.0, null, 35.0, 36.0))!!.second)
+        assertNull(head(set(null, null, null, null)))
+        assertEquals("All four tires look good", head(set(31.0, 31.0, 32.0, 32.0), p = null)!!.second)
+        assertEquals("2 tires under the door placard", VehicleSignals.tireHeadline(set(31.0, 31.0, 32.0, 32.0), placard, 33 * kpa)!!.second)
+        assertEquals(VehicleSignals.TireStatus.NONE, VehicleSignals.tireStatus(set(null, 1.0, 1.0, 1.0)[0], placard))
+    }
+}
