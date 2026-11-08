@@ -20,6 +20,7 @@ import {
 } from "@/composables/useFormat";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import StateCard from "@/components/StateCard.vue";
+import OilLifeCard from "@/components/OilLifeCard.vue";
 
 const vehicles = useVehiclesStore();
 const toast = useToastStore();
@@ -344,6 +345,8 @@ async function saveService() {
         <Plus :size="14" aria-hidden="true" /> Add service
       </button>
     </header>
+
+    <OilLifeCard />
 
     <StateCard v-if="loading && !data" state="loading" title="Loading reminders…" />
     <StateCard v-else-if="error" state="error" :message="error" @retry="reload()" />

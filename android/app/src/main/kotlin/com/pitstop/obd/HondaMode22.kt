@@ -24,6 +24,7 @@ package com.pitstop.obd
  *   module 60 (cluster)  227022 odometer mi = p[9..11] BE (24-bit)
  *                        227029 fuel L = p[15..16] BE / 100
  *                        227028 outside °F = 12-bit signed ((p[19]&0x0F)<<8 | p[20])
+ *                        227068 oil life % = p[14]
  *   module 26 (TPMS)     226001 kPa FR=[11..12] FL=[13..14] RR=[15..16] RL=[17..18]
  *                               °C (signed) FR=[27] FL=[28] RR=[29] RL=[30]
  *   module 28 (VSA)      224005 brake pressure bar = p[10..11] BE − 25
@@ -88,6 +89,19 @@ object HondaMode22 {
         val lo = u8(p, 20) ?: return null
         val raw = ((hi and 0x0F) shl 8) or lo
         return (if (raw >= 0x800) raw - 0x1000 else raw).toDouble()
+    }
+
+    /**
+     * Maintenance Minder oil life, percent: payload[14]. Verified against the
+     * dash twice: 30 on 2026-10-21 ("Oil Life 30 %, B12") and 15 on
+     * 2026-11-08, the drive the "B12 due soon" message came on. Honda shows
+     * "due soon" at 15 % and "due now" at 5 %. DID 7060, the documented
+     * Minder DID, answers 7F 22 31 on this cluster. Anything above 100 is
+     * not a percentage and decodes to null.
+     */
+    fun decodeOilLifePct(p: ByteArray): Double? {
+        val v = u8(p, 14) ?: return null
+        return if (v <= 100) v.toDouble() else null
     }
 
     /**
@@ -156,6 +170,9 @@ object HondaMode22 {
     val FuelLevelLitres = did(0x7029, CLUSTER, "fuel_level_l", 30_000, ::decodeFuelLitres)
     val AmbientAirTempF = did(0x7028, CLUSTER, "ambient_air_temp_f", 30_000, ::decodeAmbientF)
 
+    /** 5 min: oil life drops about 1 % per 50–100 mi, faster is wasted bus time. */
+    val OilLife = did(0x7068, CLUSTER, "oil_life_pct", 300_000, ::decodeOilLifePct)
+
     /**
      * 1 s: a brake application lasts a second or two, so anything slower
      * misses presses. VSA is alone on its module, so each batch pays one
@@ -173,7 +190,7 @@ object HondaMode22 {
     val ALL: List<Pid> = listOf(
         ZfTcm.GearPosition, ZfTcm.AtfTemp,
         ActiveCylinders, Misfires,
-        OdometerDash, FuelLevelLitres, AmbientAirTempF,
+        OdometerDash, FuelLevelLitres, AmbientAirTempF, OilLife,
         Tpms,
         BrakePressure,
     )

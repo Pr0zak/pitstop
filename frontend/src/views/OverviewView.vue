@@ -4,6 +4,7 @@ import { RouterLink } from "vue-router";
 import FillupModal from "@/components/FillupModal.vue";
 import StateCard from "@/components/StateCard.vue";
 import TpmsGrid from "@/components/TpmsGrid.vue";
+import OilLifeCard from "@/components/OilLifeCard.vue";
 import { TIRE_CORNERS, vehiclePlacard, type TireCorner } from "@/lib/vehicleSignals";
 import { formatReadingAge, pickFuelDisplay } from "@/lib/fuelDisplay";
 import Sparkline from "@/components/charts/Sparkline.vue";
@@ -1208,6 +1209,8 @@ function onFillupSaved() {
           </h3>
           <TpmsGrid :pressure-kpa="tires.pressure" :temp-c="tires.temp" :placard="tirePlacard" />
         </section>
+
+        <OilLifeCard />
 
         <section v-if="battery" class="card battery">
           <h3>

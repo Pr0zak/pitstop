@@ -135,6 +135,16 @@ CATALOG: tuple[Probe, ...] = (
         verified=True,
     ),
     Probe(
+        "oil_life",
+        "Instrument cluster",
+        "60",
+        "7068",
+        "Oil life (Maintenance Minder)",
+        (Signal("oil_life", 88, 8, "%"),),
+        "Should equal the dash oil-life percent. Read 30 and 15 against the dash.",
+        verified=True,
+    ),
+    Probe(
         "maintenance",
         "Instrument cluster",
         "60",

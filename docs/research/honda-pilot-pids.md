@@ -248,7 +248,7 @@ frame, ~1 in 3 reads). Pausing AutoPID alone did not help. Indexing as above
 | Load/rev bytes | `0x10` `2610` `payload[9]`, `[12]`, `[24]`, `[48]` | rose only while revving | low — not decoded |
 | Generator duty | `0x10` `2610` `payload[26]` (OBDb bix 184) | 0 throughout, revving included | OBDb's offset reads nothing on this car |
 | Steering | `0x28` `4002` `payload[48]` 0 → 240 | one sample while turning | low — needs repeating |
-| Maintenance Minder candidate | `0x60` `7068` `payload[14..17]` = 30, 36, 44, 30 | dash showed "Oil Life 30 %, B12" | low — confirm when oil life drops to 29 % |
+| **Oil life %** | `0x60` `7068` `payload[14]` | 30 on 2026-10-21 (dash "Oil Life 30 %, B12"), 15 on 2026-11-08 (dash 15 %, "B12 due soon") | **verified** — polled as `oil_life_pct`. Bytes 15 and 17 moved 36→34 and 30→29 over the same span; likely other Minder items, undecoded |
 | Counters (ignore) | `0x10` `2662` `[18]`/`[20]`, `2665` `[12]`, `2678` `[10]`, `2683` `[20]` | rise steadily and wrap | — |
 
 Raw captures: `data/probes/` (gitignored).

@@ -226,3 +226,17 @@ describe("tireHeadline", () => {
     expect(placardCaption(null)).toBeNull();
   });
 });
+
+describe("oil life", () => {
+  it("follows the Minder thresholds", async () => {
+    const { oilLifeStatus, oilLifeHeadline } = await import("./vehicleSignals");
+    expect(oilLifeStatus(null)).toBe("none");
+    expect(oilLifeStatus(16)).toBe("good");
+    expect(oilLifeStatus(15)).toBe("due_soon");
+    expect(oilLifeStatus(6)).toBe("due_soon");
+    expect(oilLifeStatus(5)).toBe("due_now");
+    expect(oilLifeStatus(0)).toBe("due_now");
+    expect(oilLifeHeadline(15)).toBe("Oil change due soon");
+    expect(oilLifeHeadline(null)).toBe("No reading yet");
+  });
+});

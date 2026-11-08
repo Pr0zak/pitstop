@@ -130,6 +130,8 @@ data class StatusUiState(
     val loadProblem: String? = null,
     /** Four-corner TPMS; null until any corner has ever reported. */
     val tires: HomeTires? = null,
+    /** Maintenance Minder oil life; null until the car has reported it. */
+    val oilLife: com.pitstop.ui.components.OilLife? = null,
 ) {
     /**
      * The WiCAN needs something from the user: a Bluetooth connection
@@ -246,6 +248,17 @@ class StatusViewModel @Inject constructor(
             placardFrontKpa = v?.tirePlacardFrontKpa,
             placardRearKpa = v?.tirePlacardRearKpa,
         )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Newest oil_life_pct: server snapshot or a live sample, whichever is newer. */
+    private val homeOil: StateFlow<com.pitstop.ui.components.OilLife?> = combine(
+        serverReadings,
+        bridgeStateBus.latestByMetric,
+    ) { server, live ->
+        val key = com.pitstop.domain.VehicleSignals.OIL_LIFE
+        val s = server[key]?.let { com.pitstop.ui.components.OilLife(it.first, it.second) }
+        val l = live[key]?.let { com.pitstop.ui.components.OilLife(it.value, it.tsMs) }
+        listOfNotNull(s, l).maxByOrNull { it.atMs }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Read once per ViewModel, so the full pairing card doesn't collapse
@@ -742,6 +755,7 @@ class StatusViewModel @Inject constructor(
             homeFuel,
             homeTires,
             wicanSetup.state,
+            homeOil,
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             val bridge = values[0] as BridgeBundle
@@ -797,6 +811,7 @@ class StatusViewModel @Inject constructor(
                 homeMarket = fuel.market,
                 tanks = fuel.tanks,
                 tires = tires,
+                oilLife = values[16] as com.pitstop.ui.components.OilLife?,
                 activeDtcs = dtcs,
                 range = drive.range,
                 lastDrive = drive.lastDrive,

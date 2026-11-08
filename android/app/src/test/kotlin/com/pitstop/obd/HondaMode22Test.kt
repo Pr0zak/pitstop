@@ -81,6 +81,17 @@ class HondaMode22Test {
     }
 
     @Test
+    fun `oil life is payload 14 as a percent`() {
+        // The 2026-11-08 capture: dash said 15 %.
+        val p = payload(27, 0x7068, 13 to 0x00, 14 to 0x0F, 15 to 0x22)
+        assertEquals(15.0, HondaMode22.decodeOilLifePct(p)!!, 0.0)
+        assertEquals(100.0, HondaMode22.decodeOilLifePct(payload(27, 0x7068, 14 to 100))!!, 0.0)
+        assertNull(HondaMode22.decodeOilLifePct(payload(27, 0x7068, 14 to 0xFF)))
+        // The truncated single-frame answer the cluster sometimes returns.
+        assertNull(HondaMode22.decodeOilLifePct(payload(13, 0x7068)))
+    }
+
+    @Test
     fun `outside temp is a 12-bit signed Fahrenheit value`() {
         // 76 °F, high nibble garbage in byte 19 must be masked off.
         assertEquals(76.0, HondaMode22.decodeAmbientF(payload(24, 0x7028, 19 to 0xA0, 20 to 76))!!, 0.0)
@@ -196,6 +207,7 @@ class HondaMode22Test {
         assertEquals("227029\r", HondaMode22.FuelLevelLitres.command())
         assertEquals("227028\r", HondaMode22.AmbientAirTempF.command())
         assertEquals("226001\r", HondaMode22.Tpms.command())
+        assertEquals("227068\r", HondaMode22.OilLife.command())
         for (p in HondaMode22.ALL) {
             assertTrue(p.isExtended)
             assertTrue(p.isoTp)
@@ -211,6 +223,7 @@ class HondaMode22Test {
             assertEquals(p.name, 30_000L, p.periodMs)
         }
         assertEquals(60_000L, HondaMode22.Misfires.periodMs)
+        assertEquals(300_000L, HondaMode22.OilLife.periodMs)
     }
 
     @Test
@@ -219,6 +232,7 @@ class HondaMode22Test {
         assertEquals("odometer_dash", HondaMode22.OdometerDash.name)
         assertEquals("fuel_level_l", HondaMode22.FuelLevelLitres.name)
         assertEquals("ambient_air_temp_f", HondaMode22.AmbientAirTempF.name)
+        assertEquals("oil_life_pct", HondaMode22.OilLife.name)
         val names = HondaMode22.ALL.map { it.name }
         assertEquals(names.size, names.toSet().size)
     }

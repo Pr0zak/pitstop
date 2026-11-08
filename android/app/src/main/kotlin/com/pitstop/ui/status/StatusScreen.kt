@@ -358,6 +358,8 @@ internal fun StatusContent(
                     )
                 }
 
+                ui.oilLife?.let { com.pitstop.ui.components.OilLifeCard(it, nowMs = nowMs) }
+
                 // Long-range trends as one swipeable card. Pages only render
                 // state the ViewModel already loaded.
                 val trendPages = buildList {

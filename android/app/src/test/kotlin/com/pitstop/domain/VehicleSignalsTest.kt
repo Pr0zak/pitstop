@@ -135,4 +135,15 @@ class TireHeadlineTest {
         assertEquals("2 tires under the door placard", VehicleSignals.tireHeadline(set(31.0, 31.0, 32.0, 32.0), placard, 33 * kpa)!!.second)
         assertEquals(VehicleSignals.TireStatus.NONE, VehicleSignals.tireStatus(set(null, 1.0, 1.0, 1.0)[0], placard))
     }
+
+    @Test fun `oil life follows the Minder thresholds`() {
+        assertEquals(VehicleSignals.OilStatus.NONE, VehicleSignals.oilLifeStatus(null))
+        assertEquals(VehicleSignals.OilStatus.GOOD, VehicleSignals.oilLifeStatus(16.0))
+        assertEquals(VehicleSignals.OilStatus.DUE_SOON, VehicleSignals.oilLifeStatus(15.0))
+        assertEquals(VehicleSignals.OilStatus.DUE_SOON, VehicleSignals.oilLifeStatus(6.0))
+        assertEquals(VehicleSignals.OilStatus.DUE_NOW, VehicleSignals.oilLifeStatus(5.0))
+        assertEquals(VehicleSignals.OilStatus.DUE_NOW, VehicleSignals.oilLifeStatus(0.0))
+        assertEquals("Oil change due soon", VehicleSignals.oilLifeHeadline(15.0))
+        assertEquals("No reading yet", VehicleSignals.oilLifeHeadline(null))
+    }
 }

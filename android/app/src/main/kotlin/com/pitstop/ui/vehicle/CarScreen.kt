@@ -349,6 +349,18 @@ internal fun ServiceContent(
                 ui.error != null && ui.reminders.isEmpty() -> LoadErrorState(what = "service reminders", onRetry = onRefresh)
             }
 
+            // Maintenance Minder oil life, from vehicle_state.latest.
+            ui.vehicle?.latest?.get(com.pitstop.domain.VehicleSignals.OIL_LIFE)?.let { e ->
+                val pct = e.valueNum
+                val at = com.pitstop.util.DateLabel.epochMs(e.time)
+                if (pct != null && at != null) {
+                    com.pitstop.ui.components.OilLifeCard(
+                        com.pitstop.ui.components.OilLife(pct, at),
+                        nowMs = System.currentTimeMillis(),
+                    )
+                }
+            }
+
             ui.stale?.let { st ->
                 Row(
                     modifier = Modifier

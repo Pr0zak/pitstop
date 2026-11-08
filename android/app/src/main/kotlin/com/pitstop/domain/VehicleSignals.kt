@@ -20,6 +20,7 @@ object VehicleSignals {
     const val ODOMETER_DASH = "odometer_dash"
     const val FUEL_LEVEL_L = "fuel_level_l"
     const val AMBIENT_F = "ambient_air_temp_f"
+    const val OIL_LIFE = "oil_life_pct"
 
     fun misfireMetric(cyl: Int): String = "misfire_count_$cyl"
     val MISFIRE_CYLINDERS: List<Int> = (1..6).toList()
@@ -248,5 +249,28 @@ object VehicleSignals {
             else -> if (reporting.size == Corner.entries.size) "All four tires look good" else "All reporting tires look good"
         }
         return worst to text
+    }
+
+    // ── Oil life (Maintenance Minder; web oilLifeStatus/oilLifeHeadline) ──
+
+    /** Honda's Minder shows "due soon" at 15 % and "due now" at 5 %. */
+    const val OIL_DUE_SOON_PCT = 15.0
+    const val OIL_DUE_NOW_PCT = 5.0
+
+    enum class OilStatus { NONE, GOOD, DUE_SOON, DUE_NOW }
+
+    fun oilLifeStatus(pct: Double?): OilStatus = when {
+        pct == null || !pct.isFinite() -> OilStatus.NONE
+        pct <= OIL_DUE_NOW_PCT -> OilStatus.DUE_NOW
+        pct <= OIL_DUE_SOON_PCT -> OilStatus.DUE_SOON
+        else -> OilStatus.GOOD
+    }
+
+    /** One line under the percentage, matching the dash's wording. */
+    fun oilLifeHeadline(pct: Double?): String = when (oilLifeStatus(pct)) {
+        OilStatus.NONE -> "No reading yet"
+        OilStatus.DUE_NOW -> "Oil change due now"
+        OilStatus.DUE_SOON -> "Oil change due soon"
+        OilStatus.GOOD -> "No service needed yet"
     }
 }

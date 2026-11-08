@@ -372,3 +372,31 @@ export function placardCaption(placard: TirePlacard | null | undefined): string 
   if (f == null) return `Door placard ${r} psi cold (rear)`;
   return `Door placard ${f} front / ${r} rear psi cold`;
 }
+
+// ── Oil life (Maintenance Minder; VehicleSignals.oilLifeStatus parity) ──
+
+/** Honda's Minder shows "due soon" at 15 % and "due now" at 5 %. */
+/** Metric name the phone's 7068 poll publishes. */
+export const OIL_LIFE_METRIC = "oil_life_pct";
+
+export const OIL_DUE_SOON_PCT = 15;
+export const OIL_DUE_NOW_PCT = 5;
+
+export type OilStatus = "none" | "good" | "due_soon" | "due_now";
+
+export function oilLifeStatus(pct: number | null | undefined): OilStatus {
+  if (pct == null || !Number.isFinite(pct)) return "none";
+  if (pct <= OIL_DUE_NOW_PCT) return "due_now";
+  if (pct <= OIL_DUE_SOON_PCT) return "due_soon";
+  return "good";
+}
+
+/** One line under the percentage, matching the dash's wording. */
+export function oilLifeHeadline(pct: number | null | undefined): string {
+  switch (oilLifeStatus(pct)) {
+    case "none": return "No reading yet";
+    case "due_now": return "Oil change due now";
+    case "due_soon": return "Oil change due soon";
+    default: return "No service needed yet";
+  }
+}
