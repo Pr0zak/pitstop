@@ -52,6 +52,8 @@ data class TireWidgetModel(
             val tires = VehicleSignals.tpms(
                 pressure,
                 VehicleSignals.Corner.entries.associateWith { readings[it.tempMetric]?.first },
+                placardFrontKpa,
+                placardRearKpa,
             )
             val newest = VehicleSignals.Corner.entries
                 .mapNotNull { c -> readings[c.pressureMetric]?.takeIf { it.first > 0 }?.second }

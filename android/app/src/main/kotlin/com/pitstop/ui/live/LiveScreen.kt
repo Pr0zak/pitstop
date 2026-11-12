@@ -471,6 +471,8 @@ internal fun LiveContent(
             val tires = VehicleSignals.tpms(
                 VehicleSignals.Corner.entries.associateWith { shown[it.pressureMetric]?.value },
                 VehicleSignals.Corner.entries.associateWith { shown[it.tempMetric]?.value },
+                placardFrontKpa,
+                placardRearKpa,
             )
             LiveSection(
                 title = "Tires",

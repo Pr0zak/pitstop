@@ -46,6 +46,20 @@ def test_low_rule_threshold_is_two_psi_inclusive() -> None:
     assert _low_tire_corners({"fl": hi, "fr": exactly + 0.5}) == []
 
 
+def test_low_rule_ignores_a_tire_at_or_above_placard() -> None:
+    """2026-11-11: 38/38/37/35 psi on a 35 psi placard -- RR is 2.8 psi under
+    FR but fully inflated, so it is not low. Under placard it still is."""
+    placard = 241.3  # 35 psi
+    kpa = {"fl": 259, "fr": 262, "rl": 254, "rr": 243}
+    assert _low_tire_corners(kpa) == ["rr"]
+    assert _low_tire_corners(kpa, placard, placard) == []
+    assert _low_tire_corners({**kpa, "rr": 235}, placard, placard) == ["rr"]
+    # Only the rear placard applies to RR.
+    assert _low_tire_corners(kpa, placard, None) == ["rr"]
+    # The 2026-10-21 dash case is far under placard and still fires.
+    assert _low_tire_corners({"fl": 213, "fr": 196, "rl": 209, "rr": 205}, placard, placard) == ["fr"]
+
+
 def test_low_rule_needs_two_tires() -> None:
     assert _low_tire_corners({"fl": 150, "fr": None, "rl": None, "rr": None}) == []
     assert _low_tire_corners({}) == []

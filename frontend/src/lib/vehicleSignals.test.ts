@@ -210,6 +210,17 @@ describe("tireHeadline", () => {
     expect(head(set(31, 31, 34, 35))?.text).toBe("FL and FR are low");
   });
 
+  it("a tire at or above placard is never low (2026-11-11)", () => {
+    // 38/38/37/35 on a 35 placard: RR is 2.8 psi under FR but fully inflated.
+    const k = 1 / 0.145038;
+    const r = tpmsReadings({ fl: 259, fr: 262, rl: 254, rr: 243 }, {}, P);
+    expect(r.map((t) => t.low)).toEqual([false, false, false, false]);
+    expect(head(r)?.text).toBe("All four tires look good");
+    // Same spread without a placard still flags RR; under placard it still fires.
+    expect(tpmsReadings({ fl: 259, fr: 262, rl: 254, rr: 243 }).map((t) => t.low)).toEqual([false, false, false, true]);
+    expect(tpmsReadings({ fl: 259, fr: 262, rl: 254, rr: 34.9 * k }, {}, P).map((t) => t.low)).toEqual([false, false, false, true]);
+  });
+
   it("under-inflated beats low", () => {
     expect(head(set(35, 26, 35, 35))).toEqual({ status: "under", text: "FR is under-inflated: add air now" });
   });

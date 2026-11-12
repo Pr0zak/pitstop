@@ -120,6 +120,20 @@ class TireHeadlineTest {
     }
 
     @Test
+    fun `a tire at or above placard is never low (2026-11-11)`() {
+        // 38/38/37/35 on a 35 placard: RR is 2.8 psi under FR but fully inflated.
+        val kpaSet = mapOf(Corner.FL to 259.0, Corner.FR to 262.0, Corner.RL to 254.0, Corner.RR to 243.0)
+        val t = VehicleSignals.tpms(kpaSet, placardFrontKpa = placard, placardRearKpa = placard)
+        assertTrue(t.none { it.low })
+        assertEquals("All four tires look good", head(t)!!.second)
+        // Without a placard the spread rule alone still flags RR.
+        assertEquals(listOf(Corner.RR), VehicleSignals.tpms(kpaSet).filter { it.low }.map { it.corner })
+        // Under placard it still fires.
+        val under = VehicleSignals.tpms(kpaSet + (Corner.RR to 34.9 * kpa), placardFrontKpa = placard, placardRearKpa = placard)
+        assertEquals(listOf(Corner.RR), under.filter { it.low }.map { it.corner })
+    }
+
+    @Test
     fun `under-inflated beats low`() {
         val h = head(set(35.0, 26.0, 35.0, 35.0))!!
         assertEquals(VehicleSignals.TireStatus.UNDER_INFLATED, h.first)

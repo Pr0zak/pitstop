@@ -135,7 +135,7 @@ def build_summary(
             "under_inflated": verdict["under_inflated"],
             "below_spec": verdict["below_spec"],
         }
-    low = low_tire_corners(kpa)
+    low = low_tire_corners(kpa, front, rear)
     tires = {
         **corners,
         "low": low,

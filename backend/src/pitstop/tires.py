@@ -28,6 +28,12 @@ KPA_PER_PSI = 1 / PSI_PER_KPA
 # placard pressure and can't fire on a uniform cold morning. 2 psi because
 # on 2026-10-21 the dash flagged FR at a 2.5 psi spread. psi regardless of
 # the display unit.
+#
+# When the corner's door placard is known, a tire at or above it is never
+# low, whatever the spread: on 2026-11-11 the set read 38/38/37/35 psi on a
+# 35 psi placard and RR showed amber for being 2.8 psi under FR, though every
+# tire was fully inflated. The dash's 2026-10-21 case (28.4 psi) was well
+# under placard, so it still fires.
 TPMS_LOW_DELTA_PSI = 2.0
 
 # PROVISIONAL: a cold-pressure trend at or below this, resting on at least
@@ -50,8 +56,13 @@ TIRE_COLD_PARK_HOURS = 3
 TIRE_COLD_MAX_ABOVE_AMBIENT_C = 8.0
 
 
-def low_tire_corners(pressure_kpa: Mapping[str, float | None]) -> list[str]:
-    """Corners >= TPMS_LOW_DELTA_PSI below the highest reporting tire.
+def low_tire_corners(
+    pressure_kpa: Mapping[str, float | None],
+    placard_front_kpa: float | None = None,
+    placard_rear_kpa: float | None = None,
+) -> list[str]:
+    """Corners >= TPMS_LOW_DELTA_PSI below the highest reporting tire and,
+    when that corner's placard is known, below the placard.
 
     Mirrors tpmsReadings() on the web, including its 1e-6 slack so a spread
     of exactly 2.0 psi (after the kPa round-trip) counts as low.
@@ -61,11 +72,16 @@ def low_tire_corners(pressure_kpa: Mapping[str, float | None]) -> list[str]:
         return []
     high = max(known)
     threshold = TPMS_LOW_DELTA_PSI * KPA_PER_PSI
-    return [
-        c
-        for c in TIRE_CORNERS
-        if (p := pressure_kpa.get(c)) is not None and high - p >= threshold - 1e-6
-    ]
+    out = []
+    for c in TIRE_CORNERS:
+        p = pressure_kpa.get(c)
+        if p is None or high - p < threshold - 1e-6:
+            continue
+        plc = placard_kpa(c, placard_front_kpa, placard_rear_kpa)
+        if plc is not None and plc > 0 and p >= plc:
+            continue
+        out.append(c)
+    return out
 
 
 # ── Door-placard baseline ─────────────────────────────────────────────
@@ -391,7 +407,7 @@ def assemble_tire_analytics(
         "days": [d.isoformat() for d in days],
         "ambient": ambient,
         "corners": corners_out,
-        "low_corners": low_tire_corners(current_cold),
+        "low_corners": low_tire_corners(current_cold, placard_front_kpa, placard_rear_kpa),
         "low_delta_psi": TPMS_LOW_DELTA_PSI,
         "slow_leak_psi_per_week": TIRE_SLOW_LEAK_PSI_PER_WEEK,
         "slow_leak_min_samples": TIRE_SLOW_LEAK_MIN_SAMPLES,

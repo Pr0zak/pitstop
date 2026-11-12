@@ -72,6 +72,11 @@ object VehicleSignals {
      * uniform cold-morning drop. 2 psi, not 3: on 2026-10-21 the dash lit
      * TPMS for FR at 28.4 psi against a 30.9 psi high (2.5 psi spread). The
      * threshold is in psi whatever the display unit.
+     *
+     * When the corner's door placard is known, a tire at or above it is never
+     * low, whatever the spread: on 2026-11-11 the set read 38/38/37/35 psi on
+     * a 35 psi placard and RR showed amber for being 2.8 psi under FR, though
+     * every tire was fully inflated. Mirrors backend tires.low_tire_corners.
      */
     const val LOW_DELTA_PSI = 2.0
     const val PSI_PER_KPA = 0.145038
@@ -86,19 +91,26 @@ object VehicleSignals {
     )
 
     /** Four tires (always FL, FR, RL, RR) with the low flag applied. */
-    fun tpms(pressureKpa: Map<Corner, Double?>, tempC: Map<Corner, Double?> = emptyMap()): List<Tire> {
+    fun tpms(
+        pressureKpa: Map<Corner, Double?>,
+        tempC: Map<Corner, Double?> = emptyMap(),
+        placardFrontKpa: Double? = null,
+        placardRearKpa: Double? = null,
+    ): List<Tire> {
         val known = Corner.entries.mapNotNull { c -> pressureKpa[c]?.takeIf { it.isFinite() } }
         // One reading can't be "below" itself.
         val max = if (known.size >= 2) known.max() else null
         val threshold = LOW_DELTA_PSI / PSI_PER_KPA
         return Corner.entries.map { c ->
             val p = pressureKpa[c]?.takeIf { it.isFinite() }
+            val plc = placardFor(c, placardFrontKpa, placardRearKpa)?.takeIf { it > 0 }
             Tire(
                 corner = c,
                 pressureKpa = p,
                 tempC = tempC[c]?.takeIf { it.isFinite() },
                 // 1e-6 slack so exactly 2.0 psi (after the kPa round-trip) counts.
-                low = p != null && max != null && max - p >= threshold - 1e-6,
+                low = p != null && max != null && max - p >= threshold - 1e-6 &&
+                    (plc == null || p < plc),
             )
         }
     }

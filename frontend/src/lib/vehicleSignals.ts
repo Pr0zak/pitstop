@@ -61,6 +61,11 @@ export const TIRE_CORNER_LABEL: Record<TireCorner, string> = {
  * a 30.9 psi high (a 2.5 psi spread), and 3 psi would have missed the very tire
  * the car itself was flagging. The threshold is in psi regardless of the
  * display unit.
+ *
+ * When the corner's door placard is known, a tire at or above it is never low,
+ * whatever the spread: on 2026-11-11 the set read 38/38/37/35 psi on a 35 psi
+ * placard and RR showed amber for being 2.8 psi under FR, though every tire
+ * was fully inflated. Mirrors backend tires.low_tire_corners.
  */
 export const TPMS_LOW_DELTA_PSI = 2;
 const KPA_PER_PSI = 1 / 0.145038;
@@ -101,7 +106,11 @@ export function tpmsReadings(
       pressureKpa: p,
       tempC: t,
       // 1e-6 slack so exactly 2.0 psi (after the kPa round-trip) counts as low.
-      low: p != null && max != null && max - p >= threshold - 1e-6,
+      low:
+        p != null &&
+        max != null &&
+        max - p >= threshold - 1e-6 &&
+        !atOrAbovePlacard(p, placardKpa(c, placard)),
       placardKpa: placardKpa(c, placard),
       belowPlacardPsi: belowPlacardPsi(p, placardKpa(c, placard)),
       underInflated: isUnderInflated(p, placardKpa(c, placard)),
@@ -155,6 +164,11 @@ export function belowPlacardPsi(
     return null;
   }
   return (placard - pressureKpa) * PSI_PER_KPA;
+}
+
+/** True only when a placard is set and the reading is at or above it. */
+function atOrAbovePlacard(pressureKpa: number, placard: number | null): boolean {
+  return placard != null && placard > 0 && pressureKpa >= placard;
 }
 
 export function isUnderInflated(pressureKpa: number | null | undefined, placard: number | null | undefined): boolean {

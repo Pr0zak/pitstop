@@ -300,7 +300,7 @@ def _tire_summary(
         )
     return {
         "corners": corners,
-        "low_corners": low_tire_corners(end_kpa),
+        "low_corners": low_tire_corners(end_kpa, placard_front_kpa, placard_rear_kpa),
         "low_delta_psi": TPMS_LOW_DELTA_PSI,
         **placard_meta(placard_front_kpa, placard_rear_kpa),
     }

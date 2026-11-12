@@ -158,7 +158,9 @@ object TireHistory {
 
     fun cornerStats(dto: TireAnalyticsDto, zone: ZoneId = ZoneId.systemDefault()): List<CornerStat> {
         val cold = VehicleSignals.Corner.entries.associateWith { corner(dto, it)?.currentColdKpa?.takeIf { p -> p > 0 } }
-        val tires = VehicleSignals.tpms(cold).associateBy { it.corner }
+        val tires = VehicleSignals.tpms(
+            cold, placardFrontKpa = dto.placardFrontKpa, placardRearKpa = dto.placardRearKpa,
+        ).associateBy { it.corner }
         val known = cold.values.filterNotNull()
         val minSamples = (dto.slowLeakMinSamples ?: 4.0).roundToInt()
         return VehicleSignals.Corner.entries.map { c ->

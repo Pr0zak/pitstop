@@ -870,7 +870,7 @@ const tireSummary = computed<TireSummaryRow[] | null>(() => {
   const endKpa = Object.fromEntries(
     TIRE_CORNERS.map((c) => [c, byCorner.get(c)?.pressure_end_kpa ?? null]),
   ) as Record<TireCorner, number | null>;
-  const readings = tpmsReadings(endKpa);
+  const readings = tpmsReadings(endKpa, {}, tripPlacard.value);
   return readings.map((r) => {
     const c = byCorner.get(r.corner);
     const start = fmtTirePressure(c?.pressure_start_kpa ?? null);

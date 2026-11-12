@@ -65,6 +65,8 @@ internal fun tireSummaryRows(tires: TripTiresDto, system: String): List<TireSumm
     val byCorner = tires.corners.associateBy { it.corner.lowercase() }
     val localLow = VehicleSignals.tpms(
         VehicleSignals.Corner.entries.associateWith { byCorner[it.name.lowercase()]?.pressureEndKpa },
+        placardFrontKpa = tires.placardFrontKpa,
+        placardRearKpa = tires.placardRearKpa,
     ).filter { it.low }.map { it.corner.name.lowercase() }.toSet()
     val low = tires.lowCorners.map { it.lowercase() }.toSet().ifEmpty { localLow }
     return VehicleSignals.Corner.entries.map { c ->

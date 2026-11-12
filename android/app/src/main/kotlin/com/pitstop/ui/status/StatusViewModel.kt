@@ -241,6 +241,8 @@ class StatusViewModel @Inject constructor(
         val tires = com.pitstop.domain.VehicleSignals.tpms(
             com.pitstop.domain.VehicleSignals.Corner.entries.associateWith { merged[it.pressureMetric]?.first },
             com.pitstop.domain.VehicleSignals.Corner.entries.associateWith { merged[it.tempMetric]?.first },
+            v?.tirePlacardFrontKpa,
+            v?.tirePlacardRearKpa,
         )
         HomeTires(
             tires = tires,

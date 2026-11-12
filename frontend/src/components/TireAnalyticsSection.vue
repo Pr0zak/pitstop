@@ -211,7 +211,7 @@ const cards = computed<CornerCard[]>(() => {
   const cold = Object.fromEntries(
     TIRE_CORNERS.map((c) => [c, byCorner.get(c)?.current_cold_kpa ?? null]),
   ) as Record<TireCorner, number | null>;
-  const lows = tpmsReadings(cold);
+  const lows = tpmsReadings(cold, {}, placard.value);
   return lows.map((r) => {
     const h = byCorner.get(r.corner);
     const spread = tireSpreadPsi(cold, r.corner);
