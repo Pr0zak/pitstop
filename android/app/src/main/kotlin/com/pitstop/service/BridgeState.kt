@@ -144,6 +144,9 @@ data class MetricSample(
  * and the widgets showed the 06:17 frame, FR 32 psi, over the drive's
  * final FR 25 psi from 06:35).
  */
+/** How long a phone-polled sample shields its metric from WiCAN-MQTT values. */
+const val OWN_SAMPLE_PRIORITY_MS = 120_000L
+
 fun Map<String, MetricSample>.ownTireSamples(): Map<String, Pair<Double, Long>> =
     filter { (k, v) -> k.startsWith("tire_") && !v.fromWicanMqtt }
         .mapValues { it.value.value to it.value.tsMs }
@@ -263,6 +266,14 @@ class BridgeStateBus @Inject constructor() {
         val sample = MetricSample(
             name = name, value = value, tsMs = System.currentTimeMillis(), fromWicanMqtt = fromWicanMqtt,
         )
+        // While the phone polls the car itself, the WiCAN's AutoPID is paused
+        // and its MQTT frames are replays: never let one overwrite a recent
+        // reading from the phone's own poll (Live tiles flipped to the
+        // frozen frame mid-drive).
+        if (fromWicanMqtt) {
+            val cur = _latestByMetric.value[name]
+            if (cur != null && !cur.fromWicanMqtt && sample.tsMs - cur.tsMs < OWN_SAMPLE_PRIORITY_MS) return
+        }
         _latestByMetric.update { it + (name to sample) }
         _status.update {
             it.copy(
