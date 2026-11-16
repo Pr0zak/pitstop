@@ -2,6 +2,7 @@ package com.pitstop.domain
 
 import com.pitstop.http.MetricLatestDto
 import com.pitstop.http.VehicleDto
+import com.pitstop.service.ownTireSamples
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -97,5 +98,37 @@ class TireReadingsTest {
             mapOf("tire_pressure_fr" to (0.0 to now)),
         )
         assertEquals(203.0, merged["tire_pressure_fr"]!!.first, 0.0)
+    }
+
+    /**
+     * 2026-11-16: the drive ended at 06:35 with FR 170 kPa (25 psi). The WiCAN
+     * reconnected at home and republished its 06:17 frame (FR 218 kPa) until
+     * 06:40; the phone stamped it at receipt and Home + the widgets showed it.
+     */
+    @Test
+    fun wican_mqtt_replay_never_outranks_the_server() {
+        val drive = java.time.Instant.parse("2026-11-16T12:35:22Z").toEpochMilli()
+        val replay = java.time.Instant.parse("2026-11-16T12:40:00Z").toEpochMilli()
+        val server = mapOf("tire_pressure_fr" to (170.0 to drive))
+        val live = mapOf(
+            "tire_pressure_fr" to com.pitstop.service.MetricSample("tire_pressure_fr", 218.0, replay, fromWicanMqtt = true),
+            "rpm" to com.pitstop.service.MetricSample("rpm", 700.0, replay),
+        )
+        val merged = TireReadings.merge(emptyMap(), server, live.ownTireSamples())
+        assertEquals(170.0, merged["tire_pressure_fr"]!!.first, 0.0)
+    }
+
+    @Test
+    fun own_obd_tire_samples_still_win_when_newer() {
+        val drive = java.time.Instant.parse("2026-11-16T12:35:22Z").toEpochMilli()
+        val poll = drive + 30_000
+        val live = mapOf(
+            "tire_pressure_fr" to com.pitstop.service.MetricSample("tire_pressure_fr", 171.0, poll),
+            "rpm" to com.pitstop.service.MetricSample("rpm", 700.0, poll),
+        )
+        val own = live.ownTireSamples()
+        assertEquals(setOf("tire_pressure_fr"), own.keys)
+        val merged = TireReadings.merge(mapOf("tire_pressure_fr" to (170.0 to drive)), own)
+        assertEquals(171.0 to poll, merged["tire_pressure_fr"])
     }
 }

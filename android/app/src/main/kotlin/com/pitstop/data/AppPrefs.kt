@@ -60,7 +60,10 @@ class AppPrefs @Inject constructor(
         fun seenDtcs(vehicleId: String) = stringSetPreferencesKey("seen_dtcs_$vehicleId")
         fun dtcSeeded(vehicleId: String) = booleanPreferencesKey("dtc_seeded_$vehicleId")
         fun rangeBasis(slug: String) = stringPreferencesKey("range_basis_$slug")
-        fun tireSnapshot(slug: String) = stringPreferencesKey("tire_snapshot_$slug")
+        // v2 (2026-11-16): v1 snapshots could hold a WiCAN replay stamped
+        // after the drive's real last reading; newest-wins kept it forever.
+        fun tireSnapshot(slug: String) = stringPreferencesKey("tire_snapshot_v2_$slug")
+        fun tireSnapshotV1(slug: String) = stringPreferencesKey("tire_snapshot_$slug")
         fun fuelSnapshot(slug: String) = stringPreferencesKey("fuel_snapshot_$slug")
     }
 
@@ -123,6 +126,7 @@ class AppPrefs @Inject constructor(
             }
             out = merged
             p[Keys.tireSnapshot(slug)] = json.encodeToString(tireMap, merged)
+            p.remove(Keys.tireSnapshotV1(slug))
         }
         return out
     }

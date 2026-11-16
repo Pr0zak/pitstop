@@ -126,7 +126,27 @@ data class MetricSample(
     val name: String,
     val value: Double,
     val tsMs: Long,
+    /**
+     * True for a value that came off the WiCAN's MQTT topic. Those carry no
+     * capture time, so [tsMs] is when the phone RECEIVED them — and the
+     * WiCAN (firmware 6) republishes its last AutoPID frame every period
+     * after key-off and while the phone holds BLE. A frame captured at the
+     * start of a drive can therefore land after the drive with a fresh
+     * stamp. Fine for a Live tile; never let it outrank a real reading.
+     */
+    val fromWicanMqtt: Boolean = false,
 )
+
+/**
+ * Live tire samples that are safe to merge by timestamp: the phone's own
+ * OBD poll only. WiCAN-MQTT tire values are stamped at receipt, so a
+ * replayed frame would beat the server's newer reading (2026-11-16: Home
+ * and the widgets showed the 06:17 frame, FR 32 psi, over the drive's
+ * final FR 25 psi from 06:35).
+ */
+fun Map<String, MetricSample>.ownTireSamples(): Map<String, Pair<Double, Long>> =
+    filter { (k, v) -> k.startsWith("tire_") && !v.fromWicanMqtt }
+        .mapValues { it.value.value to it.value.tsMs }
 
 /**
  * Singleton in-process bus the foreground service writes to and the UI reads from.
@@ -239,8 +259,10 @@ class BridgeStateBus @Inject constructor() {
         }
     }
 
-    fun publishMetric(name: String, value: Double) {
-        val sample = MetricSample(name = name, value = value, tsMs = System.currentTimeMillis())
+    fun publishMetric(name: String, value: Double, fromWicanMqtt: Boolean = false) {
+        val sample = MetricSample(
+            name = name, value = value, tsMs = System.currentTimeMillis(), fromWicanMqtt = fromWicanMqtt,
+        )
         _latestByMetric.update { it + (name to sample) }
         _status.update {
             it.copy(

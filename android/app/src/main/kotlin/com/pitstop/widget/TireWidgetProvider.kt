@@ -1,5 +1,6 @@
 package com.pitstop.widget
 
+import com.pitstop.service.ownTireSamples
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -98,8 +99,9 @@ class TireWidgetProvider : AppWidgetProvider() {
         if (slug.isEmpty()) return null
         val fresh = HashMap<String, CachedReading>()
         // Live in-process samples first (bridge running): newest wins anyway.
-        for ((k, v) in entry.stateBus().latestByMetric.value) {
-            if (k.startsWith("tire_")) fresh[k] = CachedReading(v.value, v.tsMs)
+        // WiCAN-MQTT samples are excluded: stamped at receipt, see ownTireSamples.
+        for ((k, v) in entry.stateBus().latestByMetric.value.ownTireSamples()) {
+            fresh[k] = CachedReading(v.first, v.second)
         }
         val settings = entry.settings().current().settings
         if (settings.apiBaseUrl.isNotBlank()) {

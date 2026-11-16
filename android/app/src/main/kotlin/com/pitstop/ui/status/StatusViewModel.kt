@@ -1,5 +1,6 @@
 package com.pitstop.ui.status
 
+import com.pitstop.service.ownTireSamples
 import android.app.Application
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -234,7 +235,7 @@ class StatusViewModel @Inject constructor(
         vehicle,
     ) { cache, server, live, v ->
         val merged = com.pitstop.domain.TireReadings.merge(
-            cache, server, live.mapValues { it.value.value to it.value.tsMs },
+            cache, server, live.ownTireSamples(),
         )
         // ALWAYS a Tires section on Home: four corners from whatever is
         // known (dashes only if nothing was ever read for this vehicle).

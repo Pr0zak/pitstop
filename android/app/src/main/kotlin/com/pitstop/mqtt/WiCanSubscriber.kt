@@ -127,7 +127,7 @@ class WiCanSubscriber @Inject constructor(
         for ((key, value) in obj) {
             val canonical = canonicalName(key) ?: continue
             val num = numericValue(value) ?: continue
-            stateBus.publishMetric(canonical, num)
+            stateBus.publishMetric(canonical, num, fromWicanMqtt = true)
             // Mirror to the home-screen widget so it doesn't sit stale
             // between Android's 30-min updatePeriodMillis ticks. Rate
             // limit lives in WidgetRefresher itself.

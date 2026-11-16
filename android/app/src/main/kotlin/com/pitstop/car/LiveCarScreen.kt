@@ -1,5 +1,6 @@
 package com.pitstop.car
 
+import com.pitstop.service.ownTireSamples
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
@@ -362,11 +363,11 @@ class LiveCarScreen(
     /** Snapshot + live bus samples, newest per metric — the widget's model. */
     private fun tireModel(settings: com.pitstop.data.Settings, now: Long): com.pitstop.domain.TireWidgetModel {
         val merged = HashMap(tireSnapshot)
-        for ((k, v) in stateBus.latestByMetric.value) {
-            if (!k.startsWith("tire_")) continue
-            if (k.startsWith("tire_pressure_") && v.value <= 0) continue
+        // WiCAN-MQTT samples are excluded: stamped at receipt, see ownTireSamples.
+        for ((k, v) in stateBus.latestByMetric.value.ownTireSamples()) {
+            if (k.startsWith("tire_pressure_") && v.first <= 0) continue
             val cur = merged[k]
-            if (cur == null || v.tsMs >= cur.t) merged[k] = com.pitstop.data.CachedReading(v.value, v.tsMs)
+            if (cur == null || v.second >= cur.t) merged[k] = com.pitstop.data.CachedReading(v.first, v.second)
         }
         return com.pitstop.widget.TireWidgetProvider.modelOf(merged, now, settings.unitSystem)
     }

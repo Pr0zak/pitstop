@@ -1,5 +1,6 @@
 package com.pitstop.widget
 
+import com.pitstop.service.ownTireSamples
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -85,8 +86,9 @@ class ComboWidgetProvider : AppWidgetProvider() {
                     entry.appPrefs().setFuelSnapshot(slug, fuel!!)
                 }
                 val fresh = HashMap<String, CachedReading>()
-                for ((k, v) in entry.stateBus().latestByMetric.value) {
-                    if (k.startsWith("tire_")) fresh[k] = CachedReading(v.value, v.tsMs)
+                // WiCAN-MQTT samples are excluded: stamped at receipt, see ownTireSamples.
+                for ((k, v) in entry.stateBus().latestByMetric.value.ownTireSamples()) {
+                    fresh[k] = CachedReading(v.first, v.second)
                 }
                 vehicle.tirePlacardFrontKpa?.let { fresh["_tire_placard_front_kpa"] = CachedReading(it, System.currentTimeMillis()) }
                 vehicle.tirePlacardRearKpa?.let { fresh["_tire_placard_rear_kpa"] = CachedReading(it, System.currentTimeMillis()) }
