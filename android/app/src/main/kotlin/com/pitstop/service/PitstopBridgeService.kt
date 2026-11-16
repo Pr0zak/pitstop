@@ -241,6 +241,9 @@ class PitstopBridgeService : Service() {
      */
     private val noDataStreakByPid = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
+    /** Holds back TPMS readings until the sensors wake; see TpmsWakeGate. */
+    private val tpmsWakeGate = com.pitstop.domain.TpmsWakeGate()
+
     /** Once-per-run dedupe for the two formerly-silent OBD drop paths.
      *  Cleared in startBridge alongside the no-data streaks so each drive
      *  reports its own failures exactly once. */
@@ -1727,6 +1730,9 @@ class PitstopBridgeService : Service() {
      * ISO-TP path so a metric can't end up on two thirds of the surfaces.
      */
     private fun recordMetric(name: String, value: Double) {
+        // TPMS answers with a stored set of unknown age until the sensors
+        // wake a minute or so into a drive: keep it off every surface.
+        if (!tpmsWakeGate.admit(name, value, System.currentTimeMillis())) return
         stateBus.publishMetric(name, value)
         // Track the last time we saw real vehicle motion — the engine-off
         // debounce holds the drive open through a no-data burst if the car

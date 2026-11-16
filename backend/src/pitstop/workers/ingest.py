@@ -29,6 +29,7 @@ import asyncpg
 
 from ..config import Settings
 from ..config import settings as default_settings
+from ..tires import TpmsWakeGate
 from .bus import EventBus, TelemetryEvent
 from .bus import bus as default_bus
 from .wican_aliases import normalise
@@ -357,6 +358,8 @@ class MqttIngest:
         # Last WiCAN AutoPID snapshot per vehicle, minus its timestamp; see
         # _is_frozen_wican_snapshot.
         self._last_wican_snapshot: dict[UUID, str] = {}
+        # WiCAN TPMS values stay out until the sensors wake; see tires.TpmsWakeGate.
+        self._tpms_gate = TpmsWakeGate()
         # wican_lwt debounce state: per vehicle, last RECORDED (state, time).
         # WiCAN's LWT message conflates broker-connection state with
         # engine state. On flaky cellular, the broker can fire LWT
@@ -700,6 +703,13 @@ class MqttIngest:
                         source=parsed.source,
                     )
                 ]
+        if parsed.source == "wican":
+            # Pressures before temps: a corner's temp follows its pressure.
+            readings.sort(key=lambda r: not r.metric.startswith("tire_pressure_"))
+            readings = [
+                r for r in readings
+                if self._tpms_gate.admit(r.vehicle_id, r.metric, r.value_num, r.time)
+            ]
         if not readings:
             return
 

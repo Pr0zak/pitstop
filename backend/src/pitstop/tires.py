@@ -56,6 +56,52 @@ TIRE_COLD_PARK_HOURS = 3
 TIRE_COLD_MAX_ABOVE_AMBIENT_C = 8.0
 
 
+# TPMS wake gate. The Pilot's TPMS module answers with the last set it
+# heard; the sensors sleep while parked and transmit again a minute or so
+# into a drive, so the first answers after a park are a stored set of unknown
+# age (2026-11-16: FR 218 kPa for six minutes, then 152 kPa once the sensor
+# woke -- the tire had lost air overnight). Per corner, after
+# TIRE_WAKE_REARM_S without a pressure the next one is latched and nothing
+# for that corner is admitted until the pressure differs from the latch.
+# Over 25 days of drives the first change came 30 s to 12 min after the first
+# reading, usually by 1 to 3 kPa. Mirrored by the phone's
+# domain/TpmsWakeGate.kt, which gates its own poll; the server gates the
+# WiCAN's AutoPID frames. Keep the two in step.
+TIRE_WAKE_REARM_S = 600
+# Rows before this went in ungated, so the cold-reading query skips each
+# session's leading stored run itself for sessions that started earlier.
+TIRE_WAKE_GATE_SINCE = datetime(2026, 11, 17, tzinfo=UTC)
+
+
+class TpmsWakeGate:
+    """Stateful per-(key, corner) gate; feed readings in time order."""
+
+    def __init__(self, rearm_s: float = TIRE_WAKE_REARM_S) -> None:
+        self._rearm_s = rearm_s
+        # (key, corner) -> [latch kPa, awake, last time]
+        self._corners: dict[tuple[Any, str], list[Any]] = {}
+
+    def admit(self, key: Any, metric: str, value: float | None, when: datetime) -> bool:
+        if metric.startswith("tire_temp_"):
+            c = self._corners.get((key, metric.removeprefix("tire_temp_")))
+            if c is None:
+                return False
+            return bool(c[1]) and (when - c[2]).total_seconds() < self._rearm_s
+        if not metric.startswith("tire_pressure_"):
+            return True
+        if value is None or value <= 0:
+            return False
+        ck = (key, metric.removeprefix("tire_pressure_"))
+        c = self._corners.get(ck)
+        if c is None or (when - c[2]).total_seconds() >= self._rearm_s:
+            self._corners[ck] = [value, False, when]
+            return False
+        c[2] = when
+        if not c[1] and value != c[0]:
+            c[1] = True
+        return bool(c[1])
+
+
 def low_tire_corners(
     pressure_kpa: Mapping[str, float | None],
     placard_front_kpa: float | None = None,

@@ -26,6 +26,7 @@ from ..tires import (
     TIRE_COLD_PARK_HOURS,
     TIRE_METRICS,
     TIRE_PRESSURE_METRICS,
+    TIRE_WAKE_GATE_SINCE,
     assemble_tire_analytics,
     valid_tire_value,
 )
@@ -1339,7 +1340,7 @@ async def tire_history(
         )
         cold_rows = await conn.fetch(
             """
-            WITH p AS (
+            WITH l AS (
                 SELECT time, metric, value_num,
                        lag(time) OVER (PARTITION BY metric ORDER BY time) AS prev_time
                   FROM pid_readings
@@ -1347,6 +1348,30 @@ async def tire_history(
                    AND metric = ANY($2::text[])
                    AND time >= $3::timestamptz - make_interval(hours => $4)
                    AND value_num IS NOT NULL AND value_num > 0
+            ), s AS (
+                -- One session per park: a new one after >= $4 h with no reading.
+                SELECT *, sum(CASE WHEN prev_time IS NULL
+                                     OR time - prev_time >= make_interval(hours => $4)
+                                   THEN 1 ELSE 0 END)
+                          OVER (PARTITION BY metric ORDER BY time) AS sess
+                  FROM l
+            ), f AS (
+                SELECT *, first_value(value_num) OVER w AS sess_first,
+                          first_value(time) OVER w AS sess_start
+                  FROM s
+                WINDOW w AS (PARTITION BY metric, sess ORDER BY time)
+            ), p AS (
+                -- The session's cold reading. Sessions from before the TPMS
+                -- wake gate ($5, tires.TIRE_WAKE_GATE_SINCE) start with the
+                -- module's stored set, so take the first reading after the
+                -- pressure changed (the sensor woke). Gated sessions already
+                -- start with a woken reading. A session that never changed
+                -- has no cold reading.
+                SELECT DISTINCT ON (metric, sess) time, metric, value_num
+                  FROM f
+                 WHERE sess_start >= $3
+                   AND (sess_start >= $5 OR value_num <> sess_first)
+                 ORDER BY metric, sess, time
             )
             SELECT p.time, p.metric, p.value_num,
                    (SELECT t.value_num FROM pid_readings t
@@ -1366,12 +1391,10 @@ async def tire_history(
                      ORDER BY abs(extract(epoch FROM (a.time - p.time)))
                      LIMIT 1) AS ambient_f
               FROM p
-             WHERE p.time >= $3
-               AND (p.prev_time IS NULL
-                    OR p.time - p.prev_time >= make_interval(hours => $4))
              ORDER BY p.time ASC
             """,
             vehicle_id, list(TIRE_PRESSURE_METRICS), cutoff, TIRE_COLD_PARK_HOURS,
+            TIRE_WAKE_GATE_SINCE,
         )
         # Air going in: a reading at least TIRE_AIR_UP_PSI above the lowest
         # one in the preceding TIRE_AIR_UP_MAX_GAP_S (tires.py). A fill can
