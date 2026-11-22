@@ -28,7 +28,7 @@ import com.pitstop.domain.VehicleSignals
  *  - 4B: light and dark palettes; the provider draws one bitmap per theme
  *    and night-qualified layouts pick the right one (see ComboWidgetProvider).
  *  - 5B: an age chip ("3h") once the older half is [AGE_SHOWN_AFTER_MS] old,
- *    a light dim from then and a stronger one past a day ([Model.stale]).
+ *    amber past a day ([Model.stale]). The diagram is never dimmed.
  *  - 6B: a smoother body (round nose, slight waist, rear window).
  *
  * Sizes: [Size.Tiny] 1×1 (the target), [Size.Wide] 2×1 and [Size.Large] 2×2
@@ -268,16 +268,9 @@ internal object ComboWidgetRender {
             Size.Large -> RectF(0f, 6f, w, h - s.footer)
         }
 
-        // Dim the diagram (not the footer): lightly once the age chip shows,
-        // more past a day.
-        val dimAlpha = when {
-            m.stale -> 140
-            ageShown -> 205
-            else -> 255
-        }
-        val layer = if (dimAlpha < 255) c.saveLayerAlpha(0f, 0f, w, h, dimAlpha) else -1
+        // Never dim the diagram: a faded widget is hard to read. Age is shown
+        // by the chip alone (amber past a day).
         drawDiagram(c, m, p, s, box)
-        if (layer >= 0) c.restoreToCount(layer)
 
         drawFooter(c, m, p, s, size, w, h, ageShown)
         return bmp

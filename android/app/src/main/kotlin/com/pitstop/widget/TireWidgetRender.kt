@@ -55,9 +55,6 @@ internal object TireWidgetRender {
             typeface = Typeface.create("sans-serif-condensed", if (bold) Typeface.BOLD else Typeface.NORMAL)
         }
 
-    private fun Int.dim(stale: Boolean) =
-        if (!stale) this else Color.argb(140, Color.red(this), Color.green(this), Color.blue(this))
-
     /**
      * Number + wheel colour: red under-inflated, amber LOW (2 psi under the
      * highest tire). Below-spec vs placard colours only its "−4" delta — on
@@ -97,7 +94,7 @@ internal object TireWidgetRender {
         val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = if (size == Size.Tiny) 4f else 5f
-            color = OUTLINE.dim(stale)
+            color = OUTLINE
         }
         c.drawRoundRect(body, carW * 0.45f, carW * 0.45f, stroke)
         val wsY = body.top + carH * 0.28f
@@ -121,7 +118,7 @@ internal object TireWidgetRender {
             c.drawRoundRect(
                 RectF(wx, wy, wx + wheelW, wy + wheelH), wheelW / 2, wheelW / 2,
                 Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = (if (tone == TEXT) OUTLINE else tone).dim(stale)
+                    color = (if (tone == TEXT) OUTLINE else tone)
                 },
             )
         }
@@ -137,7 +134,7 @@ internal object TireWidgetRender {
             val left = corner == VehicleSignals.Corner.FL || corner == VehicleSignals.Corner.RL
             val front = corner == VehicleSignals.Corner.FL || corner == VehicleSignals.Corner.FR
             val cell = byCorner[corner]
-            val tone = toneOf(cell).dim(stale)
+            val tone = toneOf(cell)
             val colX = if (left) sideW / 2f else w - sideW / 2f
             val rowMid = if (front) areaH * 0.27f else areaH * 0.73f
             val num = cell?.psi ?: "—"
@@ -154,7 +151,7 @@ internal object TireWidgetRender {
                         cell?.underInflated == true -> BAD
                         cell?.belowSpec == true -> WARN
                         else -> MUTED
-                    }.dim(stale)
+                    }
                     val detailSize = numSize * (if (size == Size.Wide) 0.4f else 0.3f)
                     c.drawText(bits.joinToString("  "), colX, baseline + detailSize * 1.25f, paint(detailSize, detailColor))
                 }
